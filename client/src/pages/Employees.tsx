@@ -1,18 +1,80 @@
+import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useQuery } from "@tanstack/react-query";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import type { Employee, AttendanceRecord } from "@shared/schema";
 
 export default function Employees() {
+  const { toast } = useToast();
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: attendance, isLoading: attLoading } = useQuery<AttendanceRecord[]>({ queryKey: ["/api/attendance"] });
 
   const activeCount = employees?.filter((e) => e.isActive).length ?? 0;
+
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [form, setForm] = useState({ name: "", email: "", phone: "", department: "Sales", designation: "", salary: "", isActive: true });
+
+  const employeeMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (editingEmployee) {
+        await apiRequest("PATCH", `/api/employees/${editingEmployee.id}`, data);
+      } else {
+        await apiRequest("POST", "/api/employees", data);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      toast({ title: editingEmployee ? "Employee updated" : "Employee added" });
+      setDialogOpen(false);
+      setEditingEmployee(null);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/employees/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      toast({ title: "Employee deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openNew = () => {
+    setEditingEmployee(null);
+    setForm({ name: "", email: "", phone: "", department: "Sales", designation: "", salary: "", isActive: true });
+    setDialogOpen(true);
+  };
+
+  const openEdit = (emp: Employee) => {
+    setEditingEmployee(emp);
+    setForm({
+      name: emp.name,
+      email: emp.email,
+      phone: emp.phone || "",
+      department: emp.department,
+      designation: emp.designation,
+      salary: emp.salary ? String(emp.salary) : "",
+      isActive: emp.isActive,
+    });
+    setDialogOpen(true);
+  };
 
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
@@ -21,7 +83,7 @@ export default function Employees() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Employee Management</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage staff, attendance, and field activities</p>
         </div>
-        <Button data-testid="button-add-employee">
+        <Button data-testid="button-add-employee" onClick={openNew}>
           <Plus className="w-4 h-4 mr-2" />
           Add Employee
         </Button>
@@ -99,13 +161,14 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Designation</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {empLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 5 }).map((_, j) => (
+                          {Array.from({ length: 6 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -136,11 +199,21 @@ export default function Employees() {
                               {emp.isActive ? "Active" : "Inactive"}
                             </span>
                           </td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button size="icon" variant="ghost" data-testid={`button-edit-employee-${emp.id}`} onClick={() => openEdit(emp)}>
+                                <Pencil className="w-4 h-4" />
+                              </Button>
+                              <Button size="icon" variant="ghost" data-testid={`button-delete-employee-${emp.id}`} onClick={() => { if (confirm("Delete this employee?")) deleteMutation.mutate(emp.id); }}>
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={5} className="p-8 text-center text-muted-foreground">No employees found.</td>
+                        <td colSpan={6} className="p-8 text-center text-muted-foreground">No employees found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -197,6 +270,58 @@ export default function Employees() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingEmployee ? "Edit Employee" : "Add Employee"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="empName">Name</Label>
+              <Input id="empName" data-testid="input-employee-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empEmail">Email</Label>
+              <Input id="empEmail" type="email" data-testid="input-employee-email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empPhone">Phone</Label>
+              <Input id="empPhone" data-testid="input-employee-phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empDept">Department</Label>
+              <Select value={form.department} onValueChange={(v) => setForm({ ...form, department: v })}>
+                <SelectTrigger data-testid="select-employee-department">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["Sales", "Operations", "Warehouse", "Finance", "HR", "IT"].map((d) => (
+                    <SelectItem key={d} value={d}>{d}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empDesignation">Designation</Label>
+              <Input id="empDesignation" data-testid="input-employee-designation" value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empSalary">Salary</Label>
+              <Input id="empSalary" type="number" data-testid="input-employee-salary" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox id="empActive" data-testid="checkbox-employee-active" checked={form.isActive} onCheckedChange={(checked) => setForm({ ...form, isActive: !!checked })} />
+              <Label htmlFor="empActive">Active</Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button data-testid="button-submit-employee" disabled={employeeMutation.isPending} onClick={() => employeeMutation.mutate(form)}>
+              {employeeMutation.isPending ? "Saving..." : editingEmployee ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

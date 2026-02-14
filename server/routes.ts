@@ -1,9 +1,15 @@
-import type { Express } from "express";
+import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-import { loginSchema } from "@shared/schema";
+import {
+  loginSchema, insertCustomerSchema, insertSupplierSchema, insertProductSchema,
+  insertWarehouseSchema, insertSalesOrderSchema, insertQuotationSchema,
+  insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
+  insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
+  insertFieldStaffActivitySchema, insertUserSchema,
+} from "@shared/schema";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
 
@@ -19,16 +25,33 @@ function authenticateToken(req: any, res: any, next: any) {
   });
 }
 
+function requireRole(...roles: string[]) {
+  return (req: any, res: any, next: any) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ message: "Access denied. Insufficient permissions." });
+    }
+    next();
+  };
+}
+
+async function logAction(userId: string, action: string, module: string, details?: string) {
+  try {
+    await storage.createAuditLog({ userId, action, module, details });
+  } catch (e) {
+    console.error("Audit log error:", e);
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
-  // Seed admin user
+  // Seed admin user and demo data
   const existingAdmin = await storage.getUserByUsername("admin");
   if (!existingAdmin) {
     const hashedPassword = await bcrypt.hash("admin123", 10);
-    await storage.createUser({
+    const admin = await storage.createUser({
       username: "admin",
       password: hashedPassword,
       fullName: "Admin User",
@@ -37,9 +60,84 @@ export async function registerRoutes(
       isActive: true,
     });
     console.log("Admin user seeded: admin / admin123");
+
+    // Seed demo data
+    try {
+      const cust1 = await storage.createCustomer({ name: "Rajesh Solar Industries", email: "rajesh@solarind.com", phone: "+91-9876543210", address: "Plot 45, MIDC Andheri, Mumbai, Maharashtra 400093", gstNumber: "27AABCS1234D1ZP", contactPerson: "Rajesh Sharma" });
+      const cust2 = await storage.createCustomer({ name: "GreenTech Power Solutions", email: "info@greentechpower.in", phone: "+91-9823456789", address: "Sector 18, Gurugram, Haryana 122015", gstNumber: "06AABCG5678E1ZQ", contactPerson: "Priya Gupta" });
+      const cust3 = await storage.createCustomer({ name: "SunPeak Energy Pvt Ltd", email: "contact@sunpeak.co.in", phone: "+91-9834567890", address: "Anna Nagar, Chennai, Tamil Nadu 600040", gstNumber: "33AABCS9012F1ZR", contactPerson: "Suresh Kumar" });
+      const cust4 = await storage.createCustomer({ name: "Bharat Electronics Hub", email: "sales@bharatelec.com", phone: "+91-9845678901", address: "Koregaon Park, Pune, Maharashtra 411001", gstNumber: "27AABCB3456G1ZS", contactPerson: "Amit Patel" });
+      const cust5 = await storage.createCustomer({ name: "Vishwa Commodities Trading", email: "info@vishwacomm.in", phone: "+91-9856789012", address: "Ellis Bridge, Ahmedabad, Gujarat 380006", gstNumber: "24AABCV7890H1ZT", contactPerson: "Deepak Mehta" });
+
+      const sup1 = await storage.createSupplier({ name: "Trina Solar Ltd", email: "orders@trinasolar.com", phone: "+91-22-45678901", address: "BKC, Mumbai, Maharashtra 400051", gstNumber: "27AABCT1234I1ZU", contactPerson: "Li Wei", category: "Solar Panels" });
+      const sup2 = await storage.createSupplier({ name: "Havells India Ltd", email: "b2b@havells.com", phone: "+91-11-23456789", address: "Sector 6, Noida, UP 201301", gstNumber: "09AABCH5678J1ZV", contactPerson: "Ravi Sharma", category: "Electronics" });
+      const sup3 = await storage.createSupplier({ name: "Adani Solar Energy", email: "supply@adanisolar.com", phone: "+91-79-34567890", address: "SG Highway, Ahmedabad, Gujarat 380054", gstNumber: "24AABCA9012K1ZW", contactPerson: "Nitin Joshi", category: "Solar Panels" });
+      const sup4 = await storage.createSupplier({ name: "Delta Electronics India", email: "sales@deltaindia.com", phone: "+91-80-45678902", address: "Electronic City, Bangalore, Karnataka 560100", gstNumber: "29AABCD3456L1ZX", contactPerson: "Karthik Reddy", category: "Electronics" });
+
+      const prod1 = await storage.createProduct({ name: "Monocrystalline Solar Panel 400W", sku: "SP-MONO-400", category: "Solar Panels", description: "High-efficiency monocrystalline solar panel", unitPrice: "18500", unit: "pcs", minStockLevel: 50 });
+      const prod2 = await storage.createProduct({ name: "Polycrystalline Solar Panel 330W", sku: "SP-POLY-330", category: "Solar Panels", description: "Cost-effective polycrystalline panel", unitPrice: "12800", unit: "pcs", minStockLevel: 75 });
+      const prod3 = await storage.createProduct({ name: "Solar Inverter 5kW", sku: "INV-5KW-01", category: "Electronics", description: "Grid-tie solar inverter 5kW capacity", unitPrice: "45000", unit: "pcs", minStockLevel: 20 });
+      const prod4 = await storage.createProduct({ name: "Solar Inverter 10kW", sku: "INV-10KW-01", category: "Electronics", description: "Grid-tie solar inverter 10kW capacity", unitPrice: "85000", unit: "pcs", minStockLevel: 15 });
+      const prod5 = await storage.createProduct({ name: "MC4 Connector Pair", sku: "ACC-MC4-01", category: "Accessories", description: "Waterproof MC4 solar connectors", unitPrice: "150", unit: "pcs", minStockLevel: 500 });
+      const prod6 = await storage.createProduct({ name: "Solar Cable 4mm (100m)", sku: "CAB-SOL-4MM", category: "Accessories", description: "UV-resistant solar DC cable", unitPrice: "3500", unit: "box", minStockLevel: 100 });
+      const prod7 = await storage.createProduct({ name: "Copper Wire 2.5mm (90m)", sku: "COM-COP-25", category: "Commodities", description: "Electrical grade copper wire", unitPrice: "8500", unit: "box", minStockLevel: 60 });
+      const prod8 = await storage.createProduct({ name: "Aluminium Mounting Structure", sku: "MNT-ALU-01", category: "Accessories", description: "Rooftop mounting structure for panels", unitPrice: "4200", unit: "pcs", minStockLevel: 40 });
+
+      const wh1 = await storage.createWarehouse({ name: "Main Warehouse - Mumbai", location: "Plot 12, MIDC Industrial Area, Andheri East, Mumbai", capacity: 5000 });
+      const wh2 = await storage.createWarehouse({ name: "Distribution Center - Delhi", location: "Sector 63, Noida, Uttar Pradesh", capacity: 3000 });
+      const wh3 = await storage.createWarehouse({ name: "South Hub - Chennai", location: "Ambattur Industrial Estate, Chennai", capacity: 2000 });
+
+      await storage.createSalesOrder({ orderNumber: "SO-2026-001", customerId: cust1.id, status: "confirmed", totalAmount: "370000", orderDate: new Date("2026-02-01"), notes: "10kW rooftop installation" });
+      await storage.createSalesOrder({ orderNumber: "SO-2026-002", customerId: cust2.id, status: "shipped", totalAmount: "256000", orderDate: new Date("2026-02-05"), notes: "Solar panel bulk order" });
+      await storage.createSalesOrder({ orderNumber: "SO-2026-003", customerId: cust3.id, status: "pending", totalAmount: "185000", orderDate: new Date("2026-02-10"), notes: "Inverter and accessories" });
+      await storage.createSalesOrder({ orderNumber: "SO-2026-004", customerId: cust4.id, status: "delivered", totalAmount: "92500", orderDate: new Date("2026-01-20"), notes: "Electronic components" });
+      await storage.createSalesOrder({ orderNumber: "SO-2026-005", customerId: cust5.id, status: "confirmed", totalAmount: "425000", orderDate: new Date("2026-02-12"), notes: "Commodity supply agreement" });
+
+      await storage.createQuotation({ quoteNumber: "QT-2026-001", customerId: cust1.id, status: "sent", totalAmount: "550000", validUntil: new Date("2026-03-15"), createdAt: new Date("2026-02-01"), notes: "Large installation project quote" });
+      await storage.createQuotation({ quoteNumber: "QT-2026-002", customerId: cust3.id, status: "draft", totalAmount: "180000", validUntil: new Date("2026-03-01"), createdAt: new Date("2026-02-10"), notes: "5kW system package" });
+      await storage.createQuotation({ quoteNumber: "QT-2026-003", customerId: cust5.id, status: "accepted", totalAmount: "720000", validUntil: new Date("2026-04-01"), createdAt: new Date("2026-01-25"), notes: "Annual supply contract" });
+
+      await storage.createProject({ name: "Rajesh Solar 10kW Rooftop", description: "10kW rooftop solar installation for commercial building", customerId: cust1.id, status: "in_progress", priority: "high", startDate: new Date("2026-02-01"), endDate: new Date("2026-03-15"), budget: "450000" });
+      await storage.createProject({ name: "GreenTech Warehouse Solar", description: "50kW ground-mounted solar for warehouse", customerId: cust2.id, status: "planning", priority: "medium", startDate: new Date("2026-03-01"), endDate: new Date("2026-05-30"), budget: "2500000" });
+      await storage.createProject({ name: "SunPeak Residential Complex", description: "Solar installation for 20-unit residential complex", customerId: cust3.id, status: "in_progress", priority: "high", startDate: new Date("2026-01-15"), endDate: new Date("2026-04-30"), budget: "1800000" });
+      await storage.createProject({ name: "Bharat Electronics Retrofit", description: "Inverter upgrade and panel replacement", customerId: cust4.id, status: "completed", priority: "low", startDate: new Date("2025-12-01"), endDate: new Date("2026-01-30"), budget: "350000" });
+
+      await storage.createPurchaseOrder({ poNumber: "PO-2026-001", supplierId: sup1.id, status: "received", totalAmount: "925000", orderDate: new Date("2026-01-15"), expectedDelivery: new Date("2026-02-01"), notes: "50x Mono 400W panels" });
+      await storage.createPurchaseOrder({ poNumber: "PO-2026-002", supplierId: sup2.id, status: "approved", totalAmount: "450000", orderDate: new Date("2026-02-05"), expectedDelivery: new Date("2026-02-20"), notes: "10x 5kW inverters" });
+      await storage.createPurchaseOrder({ poNumber: "PO-2026-003", supplierId: sup3.id, status: "shipped", totalAmount: "640000", orderDate: new Date("2026-02-08"), expectedDelivery: new Date("2026-02-25"), notes: "50x Poly 330W panels" });
+      await storage.createPurchaseOrder({ poNumber: "PO-2026-004", supplierId: sup4.id, status: "pending", totalAmount: "170000", orderDate: new Date("2026-02-12"), expectedDelivery: new Date("2026-03-05"), notes: "2x 10kW inverters" });
+
+      const inv1 = await storage.createInvoice({ invoiceNumber: "INV-2026-001", customerId: cust1.id, amount: "370000", status: "paid", dueDate: new Date("2026-03-01"), issuedDate: new Date("2026-02-01") });
+      const inv2 = await storage.createInvoice({ invoiceNumber: "INV-2026-002", customerId: cust2.id, amount: "256000", status: "unpaid", dueDate: new Date("2026-03-05"), issuedDate: new Date("2026-02-05") });
+      const inv3 = await storage.createInvoice({ invoiceNumber: "INV-2026-003", customerId: cust3.id, amount: "185000", status: "unpaid", dueDate: new Date("2026-03-10"), issuedDate: new Date("2026-02-10") });
+      const inv4 = await storage.createInvoice({ invoiceNumber: "INV-2026-004", customerId: cust4.id, amount: "92500", status: "paid", dueDate: new Date("2026-02-20"), issuedDate: new Date("2026-01-20") });
+      const inv5 = await storage.createInvoice({ invoiceNumber: "INV-2026-005", customerId: cust5.id, amount: "425000", status: "partial", dueDate: new Date("2026-03-12"), issuedDate: new Date("2026-02-12") });
+
+      await storage.createPayment({ invoiceId: inv1.id, amount: "370000", method: "bank_transfer", status: "completed", paymentDate: new Date("2026-02-10"), reference: "NEFT/2026/0210/001" });
+      await storage.createPayment({ invoiceId: inv4.id, amount: "92500", method: "upi", status: "completed", paymentDate: new Date("2026-02-05"), reference: "UPI/2026/0205/045" });
+      await storage.createPayment({ invoiceId: inv5.id, amount: "200000", method: "cheque", status: "completed", paymentDate: new Date("2026-02-13"), reference: "CHQ/467892" });
+
+      const emp1 = await storage.createEmployee({ name: "Vikram Singh", email: "vikram@nexerp.com", phone: "+91-9812345678", department: "Sales", designation: "Sales Manager", joinDate: new Date("2024-06-15"), isActive: true, salary: "65000" });
+      const emp2 = await storage.createEmployee({ name: "Anita Desai", email: "anita@nexerp.com", phone: "+91-9823456789", department: "Operations", designation: "Operations Head", joinDate: new Date("2024-03-01"), isActive: true, salary: "75000" });
+      const emp3 = await storage.createEmployee({ name: "Mohammed Khan", email: "khan@nexerp.com", phone: "+91-9834567890", department: "Warehouse", designation: "Warehouse Manager", joinDate: new Date("2024-08-20"), isActive: true, salary: "55000" });
+      const emp4 = await storage.createEmployee({ name: "Priya Nair", email: "priya@nexerp.com", phone: "+91-9845678901", department: "Finance", designation: "Senior Accountant", joinDate: new Date("2024-04-10"), isActive: true, salary: "60000" });
+      const emp5 = await storage.createEmployee({ name: "Rahul Verma", email: "rahul@nexerp.com", phone: "+91-9856789012", department: "Sales", designation: "Field Executive", joinDate: new Date("2025-01-05"), isActive: true, salary: "35000" });
+      const emp6 = await storage.createEmployee({ name: "Sneha Patil", email: "sneha@nexerp.com", phone: "+91-9867890123", department: "HR", designation: "HR Manager", joinDate: new Date("2024-07-01"), isActive: true, salary: "58000" });
+      const emp7 = await storage.createEmployee({ name: "Arjun Reddy", email: "arjun@nexerp.com", phone: "+91-9878901234", department: "IT", designation: "Technical Lead", joinDate: new Date("2024-02-15"), isActive: true, salary: "80000" });
+
+      const today = new Date();
+      for (const emp of [emp1, emp2, emp3, emp4, emp5, emp6, emp7]) {
+        await storage.createAttendanceRecord({ employeeId: emp.id, date: today, checkIn: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 0), checkOut: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 18, 0), status: "present" });
+      }
+
+      await logAction(admin.id, "seed", "system", "Demo data seeded successfully");
+      console.log("Demo data seeded successfully");
+    } catch (seedError) {
+      console.error("Error seeding demo data:", seedError);
+    }
   }
 
-  // Auth routes
+  // ======================== AUTH ========================
   app.post("/api/auth/login", async (req, res) => {
     try {
       const parsed = loginSchema.safeParse(req.body);
@@ -51,6 +149,9 @@ export async function registerRoutes(
       if (!user) {
         return res.status(401).json({ message: "Invalid username or password" });
       }
+      if (!user.isActive) {
+        return res.status(401).json({ message: "Account is deactivated" });
+      }
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) {
         return res.status(401).json({ message: "Invalid username or password" });
@@ -61,12 +162,7 @@ export async function registerRoutes(
         { expiresIn: "24h" }
       );
 
-      await storage.createAuditLog({
-        userId: user.id,
-        action: "login",
-        module: "auth",
-        details: `User ${user.username} logged in`,
-      });
+      await logAction(user.id, "login", "auth", `User ${user.username} logged in`);
 
       res.json({
         token,
@@ -79,6 +175,7 @@ export async function registerRoutes(
         },
       });
     } catch (error) {
+      console.error("Login error:", error);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -95,88 +192,665 @@ export async function registerRoutes(
     });
   });
 
-  // Dashboard
-  app.get("/api/dashboard/stats", authenticateToken, async (_req, res) => {
-    const stats = await storage.getDashboardStats();
-    res.json(stats);
+  // ======================== DASHBOARD ========================
+  app.get("/api/dashboard/stats", authenticateToken, async (req: any, res) => {
+    try {
+      const stats = await storage.getDashboardStats();
+      res.json(stats);
+    } catch (error) {
+      console.error("Dashboard error:", error);
+      res.status(500).json({ message: "Failed to fetch dashboard stats" });
+    }
   });
 
-  // Customers
+  // ======================== USERS ========================
+  app.get("/api/users", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const data = await storage.getUsers();
+      const sanitized = data.map(u => ({ ...u, password: undefined }));
+      res.json(sanitized);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  app.post("/api/users", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertUserSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const data = parsed.data;
+      data.password = await bcrypt.hash(data.password, 10);
+      const created = await storage.createUser(data);
+      await logAction(req.user.id, "create", "users", `Created user ${data.username}`);
+      res.status(201).json({ ...created, password: undefined });
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Username already exists" });
+      res.status(500).json({ message: "Failed to create user" });
+    }
+  });
+
+  // ======================== CUSTOMERS ========================
   app.get("/api/customers", authenticateToken, async (_req, res) => {
-    const data = await storage.getCustomers();
-    res.json(data);
+    try {
+      const data = await storage.getCustomers();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch customers" });
+    }
   });
 
-  // Suppliers
+  app.get("/api/customers/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getCustomer(req.params.id);
+      if (!data) return res.status(404).json({ message: "Customer not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch customer" });
+    }
+  });
+
+  app.post("/api/customers", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertCustomerSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createCustomer(parsed.data);
+      await logAction(req.user.id, "create", "customers", `Created customer ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create customer" });
+    }
+  });
+
+  app.patch("/api/customers/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateCustomer(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Customer not found" });
+      await logAction(req.user.id, "update", "customers", `Updated customer ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update customer" });
+    }
+  });
+
+  app.delete("/api/customers/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteCustomer(req.params.id);
+      await logAction(req.user.id, "delete", "customers", `Deleted customer ${req.params.id}`);
+      res.json({ message: "Customer deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete customer" });
+    }
+  });
+
+  // ======================== SUPPLIERS ========================
   app.get("/api/suppliers", authenticateToken, async (_req, res) => {
-    const data = await storage.getSuppliers();
-    res.json(data);
+    try {
+      const data = await storage.getSuppliers();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch suppliers" });
+    }
   });
 
-  // Products
+  app.get("/api/suppliers/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getSupplier(req.params.id);
+      if (!data) return res.status(404).json({ message: "Supplier not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch supplier" });
+    }
+  });
+
+  app.post("/api/suppliers", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertSupplierSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createSupplier(parsed.data);
+      await logAction(req.user.id, "create", "suppliers", `Created supplier ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create supplier" });
+    }
+  });
+
+  app.patch("/api/suppliers/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateSupplier(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Supplier not found" });
+      await logAction(req.user.id, "update", "suppliers", `Updated supplier ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update supplier" });
+    }
+  });
+
+  app.delete("/api/suppliers/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteSupplier(req.params.id);
+      await logAction(req.user.id, "delete", "suppliers", `Deleted supplier ${req.params.id}`);
+      res.json({ message: "Supplier deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete supplier" });
+    }
+  });
+
+  // ======================== PRODUCTS ========================
   app.get("/api/products", authenticateToken, async (_req, res) => {
-    const data = await storage.getProducts();
-    res.json(data);
+    try {
+      const data = await storage.getProducts();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch products" });
+    }
   });
 
-  // Warehouses
+  app.get("/api/products/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getProduct(req.params.id);
+      if (!data) return res.status(404).json({ message: "Product not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch product" });
+    }
+  });
+
+  app.post("/api/products", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertProductSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createProduct(parsed.data);
+      await logAction(req.user.id, "create", "products", `Created product ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "SKU already exists" });
+      res.status(500).json({ message: "Failed to create product" });
+    }
+  });
+
+  app.patch("/api/products/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateProduct(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Product not found" });
+      await logAction(req.user.id, "update", "products", `Updated product ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update product" });
+    }
+  });
+
+  app.delete("/api/products/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteProduct(req.params.id);
+      await logAction(req.user.id, "delete", "products", `Deleted product ${req.params.id}`);
+      res.json({ message: "Product deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete product" });
+    }
+  });
+
+  // ======================== WAREHOUSES ========================
   app.get("/api/warehouses", authenticateToken, async (_req, res) => {
-    const data = await storage.getWarehouses();
-    res.json(data);
+    try {
+      const data = await storage.getWarehouses();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch warehouses" });
+    }
   });
 
-  // Sales Orders
+  app.post("/api/warehouses", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertWarehouseSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createWarehouse(parsed.data);
+      await logAction(req.user.id, "create", "warehouses", `Created warehouse ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create warehouse" });
+    }
+  });
+
+  app.patch("/api/warehouses/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateWarehouse(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Warehouse not found" });
+      await logAction(req.user.id, "update", "warehouses", `Updated warehouse ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update warehouse" });
+    }
+  });
+
+  app.delete("/api/warehouses/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteWarehouse(req.params.id);
+      await logAction(req.user.id, "delete", "warehouses", `Deleted warehouse ${req.params.id}`);
+      res.json({ message: "Warehouse deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete warehouse" });
+    }
+  });
+
+  // ======================== INVENTORY STOCK ========================
+  app.get("/api/inventory-stock", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getInventoryStock();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch inventory stock" });
+    }
+  });
+
+  app.post("/api/inventory-stock", authenticateToken, async (req: any, res) => {
+    try {
+      const created = await storage.createInventoryStock(req.body);
+      await logAction(req.user.id, "create", "inventory", `Added stock entry`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create inventory stock" });
+    }
+  });
+
+  app.patch("/api/inventory-stock/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateInventoryStock(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Stock entry not found" });
+      await logAction(req.user.id, "update", "inventory", `Updated stock entry`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update inventory stock" });
+    }
+  });
+
+  // ======================== SALES ORDERS ========================
   app.get("/api/sales-orders", authenticateToken, async (_req, res) => {
-    const data = await storage.getSalesOrders();
-    res.json(data);
+    try {
+      const data = await storage.getSalesOrders();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch sales orders" });
+    }
   });
 
-  // Quotations
+  app.get("/api/sales-orders/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getSalesOrder(req.params.id);
+      if (!data) return res.status(404).json({ message: "Sales order not found" });
+      const items = await storage.getSalesOrderItems(req.params.id);
+      res.json({ ...data, items });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch sales order" });
+    }
+  });
+
+  app.post("/api/sales-orders", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertSalesOrderSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createSalesOrder(parsed.data);
+      await logAction(req.user.id, "create", "sales", `Created sales order ${parsed.data.orderNumber}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Order number already exists" });
+      res.status(500).json({ message: "Failed to create sales order" });
+    }
+  });
+
+  app.patch("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateSalesOrder(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Sales order not found" });
+      await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update sales order" });
+    }
+  });
+
+  app.delete("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteSalesOrder(req.params.id);
+      await logAction(req.user.id, "delete", "sales", `Deleted sales order ${req.params.id}`);
+      res.json({ message: "Sales order deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete sales order" });
+    }
+  });
+
+  // ======================== QUOTATIONS ========================
   app.get("/api/quotations", authenticateToken, async (_req, res) => {
-    const data = await storage.getQuotations();
-    res.json(data);
+    try {
+      const data = await storage.getQuotations();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch quotations" });
+    }
   });
 
-  // Projects
+  app.post("/api/quotations", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertQuotationSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createQuotation(parsed.data);
+      await logAction(req.user.id, "create", "sales", `Created quotation ${parsed.data.quoteNumber}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Quote number already exists" });
+      res.status(500).json({ message: "Failed to create quotation" });
+    }
+  });
+
+  app.patch("/api/quotations/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateQuotation(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Quotation not found" });
+      await logAction(req.user.id, "update", "sales", `Updated quotation ${updated.quoteNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update quotation" });
+    }
+  });
+
+  app.delete("/api/quotations/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteQuotation(req.params.id);
+      await logAction(req.user.id, "delete", "sales", `Deleted quotation ${req.params.id}`);
+      res.json({ message: "Quotation deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete quotation" });
+    }
+  });
+
+  // ======================== PROJECTS ========================
   app.get("/api/projects", authenticateToken, async (_req, res) => {
-    const data = await storage.getProjects();
-    res.json(data);
+    try {
+      const data = await storage.getProjects();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch projects" });
+    }
   });
 
-  // Purchase Orders
+  app.get("/api/projects/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getProject(req.params.id);
+      if (!data) return res.status(404).json({ message: "Project not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch project" });
+    }
+  });
+
+  app.post("/api/projects", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertProjectSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createProject(parsed.data);
+      await logAction(req.user.id, "create", "projects", `Created project ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create project" });
+    }
+  });
+
+  app.patch("/api/projects/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateProject(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Project not found" });
+      await logAction(req.user.id, "update", "projects", `Updated project ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update project" });
+    }
+  });
+
+  app.delete("/api/projects/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteProject(req.params.id);
+      await logAction(req.user.id, "delete", "projects", `Deleted project ${req.params.id}`);
+      res.json({ message: "Project deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete project" });
+    }
+  });
+
+  // ======================== PURCHASE ORDERS ========================
   app.get("/api/purchase-orders", authenticateToken, async (_req, res) => {
-    const data = await storage.getPurchaseOrders();
-    res.json(data);
+    try {
+      const data = await storage.getPurchaseOrders();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch purchase orders" });
+    }
   });
 
-  // Invoices
+  app.post("/api/purchase-orders", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertPurchaseOrderSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createPurchaseOrder(parsed.data);
+      await logAction(req.user.id, "create", "supply_chain", `Created PO ${parsed.data.poNumber}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "PO number already exists" });
+      res.status(500).json({ message: "Failed to create purchase order" });
+    }
+  });
+
+  app.patch("/api/purchase-orders/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updatePurchaseOrder(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Purchase order not found" });
+      await logAction(req.user.id, "update", "supply_chain", `Updated PO ${updated.poNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update purchase order" });
+    }
+  });
+
+  app.delete("/api/purchase-orders/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deletePurchaseOrder(req.params.id);
+      await logAction(req.user.id, "delete", "supply_chain", `Deleted PO ${req.params.id}`);
+      res.json({ message: "Purchase order deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete purchase order" });
+    }
+  });
+
+  // ======================== INVOICES ========================
   app.get("/api/invoices", authenticateToken, async (_req, res) => {
-    const data = await storage.getInvoices();
-    res.json(data);
+    try {
+      const data = await storage.getInvoices();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch invoices" });
+    }
   });
 
-  // Payments
+  app.post("/api/invoices", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertInvoiceSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createInvoice(parsed.data);
+      await logAction(req.user.id, "create", "accounts", `Created invoice ${parsed.data.invoiceNumber}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Invoice number already exists" });
+      res.status(500).json({ message: "Failed to create invoice" });
+    }
+  });
+
+  app.patch("/api/invoices/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateInvoice(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Invoice not found" });
+      await logAction(req.user.id, "update", "accounts", `Updated invoice ${updated.invoiceNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update invoice" });
+    }
+  });
+
+  app.delete("/api/invoices/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteInvoice(req.params.id);
+      await logAction(req.user.id, "delete", "accounts", `Deleted invoice ${req.params.id}`);
+      res.json({ message: "Invoice deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete invoice" });
+    }
+  });
+
+  // ======================== PAYMENTS ========================
   app.get("/api/payments", authenticateToken, async (_req, res) => {
-    const data = await storage.getPayments();
-    res.json(data);
+    try {
+      const data = await storage.getPayments();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payments" });
+    }
   });
 
-  // Employees
+  app.post("/api/payments", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertPaymentSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createPayment(parsed.data);
+      await logAction(req.user.id, "create", "accounts", `Recorded payment of ₹${parsed.data.amount}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create payment" });
+    }
+  });
+
+  app.patch("/api/payments/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updatePayment(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Payment not found" });
+      await logAction(req.user.id, "update", "accounts", `Updated payment ${updated.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update payment" });
+    }
+  });
+
+  app.delete("/api/payments/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deletePayment(req.params.id);
+      await logAction(req.user.id, "delete", "accounts", `Deleted payment ${req.params.id}`);
+      res.json({ message: "Payment deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete payment" });
+    }
+  });
+
+  // ======================== EMPLOYEES ========================
   app.get("/api/employees", authenticateToken, async (_req, res) => {
-    const data = await storage.getEmployees();
-    res.json(data);
+    try {
+      const data = await storage.getEmployees();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch employees" });
+    }
   });
 
-  // Attendance
+  app.get("/api/employees/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getEmployee(req.params.id);
+      if (!data) return res.status(404).json({ message: "Employee not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch employee" });
+    }
+  });
+
+  app.post("/api/employees", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertEmployeeSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createEmployee(parsed.data);
+      await logAction(req.user.id, "create", "employees", `Added employee ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create employee" });
+    }
+  });
+
+  app.patch("/api/employees/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateEmployee(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Employee not found" });
+      await logAction(req.user.id, "update", "employees", `Updated employee ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update employee" });
+    }
+  });
+
+  app.delete("/api/employees/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteEmployee(req.params.id);
+      await logAction(req.user.id, "delete", "employees", `Deleted employee ${req.params.id}`);
+      res.json({ message: "Employee deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete employee" });
+    }
+  });
+
+  // ======================== ATTENDANCE ========================
   app.get("/api/attendance", authenticateToken, async (_req, res) => {
-    const data = await storage.getAttendance();
-    res.json(data);
+    try {
+      const data = await storage.getAttendance();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch attendance" });
+    }
   });
 
-  // Audit Logs
+  app.post("/api/attendance", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertAttendanceSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createAttendanceRecord(parsed.data);
+      await logAction(req.user.id, "create", "attendance", `Recorded attendance for employee ${parsed.data.employeeId}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to record attendance" });
+    }
+  });
+
+  // ======================== FIELD STAFF ACTIVITIES ========================
+  app.get("/api/field-activities", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getFieldStaffActivities();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch field activities" });
+    }
+  });
+
+  app.post("/api/field-activities", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertFieldStaffActivitySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createFieldStaffActivity(parsed.data);
+      await logAction(req.user.id, "create", "field_activities", `Logged field activity`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to log field activity" });
+    }
+  });
+
+  // ======================== AUDIT LOGS ========================
   app.get("/api/audit-logs", authenticateToken, async (_req, res) => {
-    const data = await storage.getAuditLogs();
-    res.json(data);
+    try {
+      const data = await storage.getAuditLogs();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
   });
 
   return httpServer;

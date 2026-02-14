@@ -1,0 +1,204 @@
+Build a full-stack Manufacturing ERP system.
+
+Tech Stack:
+- Frontend: React + Tailwind CSS
+- Backend: Node.js + Express
+- Database: PostgreSQL
+- ORM: Prisma
+- Authentication: JWT-based auth
+- Realtime: Socket.io
+- Maps: Google Maps API or OpenStreetMap
+- WhatsApp Notification: Twilio API
+- File Uploads: Multer
+- Password Hashing: bcrypt
+- Role-Based Access Control (RBAC)
+
+Architecture:
+- Clean modular architecture
+- MVC structure
+- Separate folders for:
+  /client
+  /server
+  /prisma
+- Use environment variables (.env)
+- Secure production-ready structure
+
+------------------------------------------------------
+CORE SYSTEM RULES
+------------------------------------------------------
+
+1. Only ONE Owner account exists.
+2. Default Owner login:
+   username: owner
+   password: Owner@123abc
+3. Owner can create other user accounts.
+4. All other roles are considered employees.
+
+Roles:
+- Owner
+- Manager
+- Sales
+- Accounts
+- Operations
+- Field Staff
+
+Implement strict RBAC middleware:
+- Role-based route protection
+- Module-based access control
+
+------------------------------------------------------
+MODULES TO IMPLEMENT
+------------------------------------------------------
+
+1) AUTHENTICATION MODULE
+- Login via username/password
+- JWT token system
+- Role-based access middleware
+- Owner can create/manage users
+- Secure password hashing
+- Account status (Active/Inactive)
+
+------------------------------------------------------
+
+2) SALES & PROJECT MANAGEMENT
+- Lead capture
+- Quotation generation
+- Cost calculation
+- Convert quotation to project
+- Project milestone tracking
+- Project profitability calculation
+
+------------------------------------------------------
+
+3) INVENTORY & STOCK
+- Product Master
+- Batch/Lot tracking (commodities)
+- Serial tracking (electronics)
+- Stock reservation
+- Custom low stock alerts
+- Stock valuation
+
+------------------------------------------------------
+
+4) SUPPLY CHAIN
+- Vendor database
+- Purchase orders
+- Material inward recording
+- Vendor aging reports
+
+------------------------------------------------------
+
+5) PAYMENT TRACKING
+- Payment request creation
+- Amount, vendor, due date, attachments
+- Status tracking:
+    Pending
+    Partially Paid
+    Paid
+- WhatsApp alert via Twilio to Owner
+
+------------------------------------------------------
+
+6) COMMISSION & LABOUR COST
+- Agent commission:
+    Fixed
+    Percentage
+- Per-project labour cost
+- Misc expense tracking
+- Profit calculation after expenses
+
+------------------------------------------------------
+
+7) HRMS MODULE
+- GPS + Selfie check-in/check-out
+- Geo-fencing support
+- 45-minute lunch break auto tracking
+- Late penalties
+- Leave management
+- Salary auto-calculation
+- Payslip generation (PDF)
+- All non-owner users are employees
+
+------------------------------------------------------
+
+8) LIVE TRACKING SYSTEM
+- Real-time GPS updates every 3–5 minutes
+- Delivery tracking mini-map UI
+- Store location history
+- Geo-fence validation
+- Mandatory selfie at:
+   Login
+   Site arrival
+   Logout
+
+------------------------------------------------------
+
+9) OWNER DASHBOARD
+Real-time metrics:
+- Total sales
+- Profit
+- Pending payments
+- Outstanding receivables
+- Stock valuation
+- Active projects
+- Attendance analytics
+- Snapshot overview
+
+------------------------------------------------------
+
+10) REPORTING MODULE
+Generate reports:
+- Project profitability
+- Commission payable
+- Labour cost analysis
+- Payment aging
+- Stock movement
+- Attendance & salary
+
+------------------------------------------------------
+
+11) AUDIT TRAIL
+- Log all system actions
+- Store:
+   user
+   timestamp
+   action
+   module
+   previous data
+   new data
+- Financial records immutable after closure
+
+------------------------------------------------------
+
+DATABASE REQUIREMENTS
+------------------------------------------------------
+
+Design normalized relational PostgreSQL schema with:
+- Proper foreign keys
+- Indexing
+- Constraints
+- Soft delete where required
+- Transaction support for financial operations
+
+------------------------------------------------------
+
+IMPORTANT DEVELOPMENT RULES
+------------------------------------------------------
+
+- Build module by module.
+- Do NOT mix logic across modules.
+- Create scalable service layer.
+- Use reusable components.
+- Ensure secure coding standards.
+- Prevent SQL injection.
+- Validate all inputs.
+- Structure API routes cleanly.
+
+First generate:
+1. Project folder structure
+2. Prisma schema design
+3. Auth module implementation
+4. RBAC middleware
+5. Basic Owner Dashboard UI skeleton
+
+Stop after that.

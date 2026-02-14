@@ -1,0 +1,302 @@
+ROLE & CONTEXT
+
+You are building a custom ERP application for a distributor dealing in solar panels, electronics, and commodities.
+
+The goal is to automate day-to-day business operations so that:
+
+Employees work entirely inside the system
+
+The owner only monitors dashboards and receives payment alerts
+
+All actual payments happen outside the application
+
+This is a business-critical system, not a demo.
+
+CORE NON-NEGOTIABLE RULES
+
+DO NOT implement payment execution
+
+DO NOT integrate bank APIs, OTP approvals, or payment gateways
+
+Payment requests are tracking + notification only
+
+Owner receives WhatsApp notification when payment is due
+
+Owner decides and pays manually outside the system
+
+The system must maintain a complete audit trail
+
+If a feature conflicts with these rules, do not build it.
+
+USER ROLES
+
+Owner (read-only dashboards, notifications)
+
+Manager
+
+Sales
+
+Accounts
+
+Operations
+
+Field Staff
+
+Each role must have strict access boundaries.
+
+MODULES TO BUILD
+1️⃣ SALES & PROJECT MANAGEMENT
+
+What it should do
+
+Capture leads
+
+Generate quotations
+
+Show profit/margin before confirmation
+
+Apply role-based discount limits
+
+Convert quotation into sale or project
+
+Track project milestones and delivery/installation
+
+Workflow
+
+Lead → Quotation → Approval → Sale / Project → Execution
+
+2️⃣ INVENTORY & STOCK MANAGEMENT
+
+What it should do
+
+Maintain product master (solar, electronics, commodities)
+
+Track stock by warehouse/location
+
+Support batch/lot tracking for commodities
+
+Support serial tracking for electronics
+
+Reserve stock on confirmed sale
+
+Track stock inward and outward
+
+Alert on low stock
+
+3️⃣ SUPPLY CHAIN MANAGEMENT
+
+What it should do
+
+Maintain vendor database
+
+Create and track purchase orders
+
+Record material inward
+
+Track logistics and transport details
+
+Record supplier invoices
+
+Show vendor aging and outstanding amounts
+
+4️⃣ PAYMENT TRACKING & NOTIFICATION (CRITICAL)
+
+Very Important: This module is NOT for payments
+
+What it should do
+
+Allow employees to create a payment request
+
+Capture:
+
+Amount
+
+Vendor / party
+
+Product or project reference
+
+Due date
+
+Remarks
+
+Optional attachment (bill / invoice image)
+
+Automatically send a WhatsApp notification to the owner
+
+Track payment status:
+
+Pending
+
+Partially Paid
+
+Paid
+
+Allow upload of payment proof after manual payment
+
+Workflow
+
+Payment Request Created
+        ↓
+WhatsApp Alert Sent to Owner
+        ↓
+Owner Pays Manually (Outside System)
+        ↓
+Status Updated for Records
+
+
+Never add approval buttons or payment triggers.
+
+5️⃣ AUTOMATED REMINDERS
+
+What it should do
+
+Send up to 3 reminders per day
+
+Support reminders for:
+
+Customer receivables
+
+Supplier payables
+
+Allow configurable reminder timings
+
+Notify via WhatsApp, SMS, or in-app notification
+
+6️⃣ COMMISSION & LABOUR COST MANAGEMENT
+
+Commission
+
+Fixed or percentage based
+
+Calculated per sale or project
+
+Agent-wise commission ledger
+
+Labour Cost
+
+Per project
+
+Per sale
+
+Daily wages
+
+Monthly salary
+
+Auto-linked to attendance and project assignment
+
+7️⃣ EMPLOYEE MANAGEMENT (HRMS)
+
+Attendance
+
+Office staff: selfie+GPS based attendance
+
+Late entry penalty rules
+
+Lunch break fixed at 45 minutes
+
+Overtime calculation
+
+Leave & Salary
+
+Leave application and approval
+
+Salary auto-calculation
+
+Deductions and incentives
+
+Payslip generation
+
+8️⃣ LIVE LOCATION & SELFIE TRACKING
+
+What it should do
+
+Track live GPS location of field staff
+
+Store route history
+
+Support geo-fencing (office/site)
+
+Require selfies at:
+
+Login
+
+Site arrival
+
+Logout
+
+Ensure selfie is captured via camera only
+
+Store time and location with every selfie
+
+9️⃣ DASHBOARDS & REPORTS
+
+Owner Dashboard
+
+Total sales and profit
+
+Pending payment requests
+
+Outstanding receivables
+
+Stock valuation
+
+Active projects
+
+Attendance snapshot
+
+Reports
+
+Project profitability
+
+Commission payable
+
+Labour cost vs revenue
+
+Payment aging
+
+Stock movement
+
+Attendance and salary
+
+DATA & SYSTEM RULES
+
+Every action must be logged with user, time, and context
+
+No record deletion without audit trail
+
+Financial data must be immutable after closure
+
+Business rules must be configurable
+
+System must be modular and extensible
+
+DELIVERY EXPECTATION
+
+Start development in this order:
+
+User authentication & roles
+
+Sales & project lifecycle
+
+Inventory & supply chain
+
+Payment tracking & notifications
+
+Attendance & workforce tracking
+
+Dashboards & reports
+
+Build clean, readable, maintainable code.
+Prefer correctness and clarity over complexity.
+
+FINAL INSTRUCTION
+
+If any requirement is unclear:
+
+Do not guess
+
+Implement the simplest valid version
+
+Keep everything configurable
+
+🔥 END OF PROMPT

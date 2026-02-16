@@ -958,6 +958,14 @@ export async function registerRoutes(
           return res.json({ type: "tea_in", message: "Back from Tea Break", record: updated });
         }
 
+        if (todayRecord.lunchIn && !todayRecord.teaOut && timeInMinutes < 990) {
+          return res.json({ type: "waiting", message: "Tea break starts at 4:30 PM. You can check out or wait for tea break.", record: todayRecord });
+        }
+
+        if (todayRecord.teaOut && !todayRecord.teaIn && timeInMinutes < 1005) {
+          return res.json({ type: "waiting", message: "Please wait before scanning back from tea break.", record: todayRecord });
+        }
+
         const updated = await storage.updateAttendanceRecord(todayRecord.id, {
           checkOut: now,
           selfieUrl: selfieUrl || todayRecord.selfieUrl,

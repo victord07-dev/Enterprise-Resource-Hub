@@ -14,7 +14,7 @@ interface EmployeeInfo {
 }
 
 interface AttendanceResult {
-  type: "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in" | "already_done";
+  type: "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in" | "already_done" | "waiting";
   message: string;
   record: any;
 }
@@ -366,7 +366,7 @@ export default function Kiosk() {
         <Card className="w-full max-w-md">
           <CardContent className="p-8 text-center space-y-6">
             <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center ${
-              result.type === "already_done"
+              result.type === "already_done" || result.type === "waiting"
                 ? "bg-amber-50 dark:bg-amber-950/40"
                 : result.type === "lunch_out" || result.type === "lunch_in"
                 ? "bg-orange-50 dark:bg-orange-950/40"
@@ -374,7 +374,7 @@ export default function Kiosk() {
                 ? "bg-purple-50 dark:bg-purple-950/40"
                 : "bg-emerald-50 dark:bg-emerald-950/40"
             }`}>
-              {result.type === "already_done" ? (
+              {result.type === "already_done" || result.type === "waiting" ? (
                 <Clock className="w-10 h-10 text-amber-500" />
               ) : result.type === "lunch_out" || result.type === "lunch_in" ? (
                 <UtensilsCrossed className="w-10 h-10 text-orange-500" />
@@ -393,6 +393,7 @@ export default function Kiosk() {
                 {result.type === "tea_out" && "Tea Break"}
                 {result.type === "tea_in" && "Back from Tea!"}
                 {result.type === "already_done" && "Already Completed"}
+                {result.type === "waiting" && "Please Wait"}
               </h2>
               <p className="text-2xl font-bold mt-2" data-testid="text-success-name">{employee?.name}</p>
               <p className="text-muted-foreground mt-1">{result.message}</p>

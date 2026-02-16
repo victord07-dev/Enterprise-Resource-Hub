@@ -74,7 +74,7 @@ export default function Login() {
               {isLoading ? "Signing in..." : "Sign In"}
             </Button>
             <p className="text-center text-xs text-muted-foreground mt-4">
-              Default: admin / admin123
+              Contact: admin@hussaingroup.co.in
             </p>
           </form>
         </CardContent>

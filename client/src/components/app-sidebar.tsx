@@ -55,7 +55,7 @@ export function AppSidebar() {
             <Shield className="w-5 h-5 text-sidebar-primary-foreground" />
           </div>
           <div>
-            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">NexERP</h2>
+            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">Hussain Group</h2>
             <p className="text-xs text-sidebar-foreground/60">Enterprise Solution</p>
           </div>
         </div>

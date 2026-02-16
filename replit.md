@@ -1,4 +1,4 @@
-# NexERP - Enterprise Resource Planning System
+# Hussain Group - Enterprise Resource Planning System
 
 ## Overview
 A comprehensive custom ERP system for solar panel, electronics, and commodities distribution business. Features custom JWT-based authentication with role-based access control and nine core modules.

@@ -94,7 +94,7 @@ export function AppSidebar() {
               {user?.fullName || "Admin"}
             </p>
             <p className="text-xs text-sidebar-foreground/60 truncate" data-testid="text-user-email">
-              {user?.email || "admin@nexerp.com"}
+              {user?.email || "admin@hussaingroup.co.in"}
             </p>
           </div>
         </div>

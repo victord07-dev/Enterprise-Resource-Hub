@@ -156,6 +156,10 @@ export const attendanceRecords = pgTable("attendance_records", {
   date: timestamp("date").notNull(),
   checkIn: timestamp("check_in"),
   checkOut: timestamp("check_out"),
+  lunchOut: timestamp("lunch_out"),
+  lunchIn: timestamp("lunch_in"),
+  teaOut: timestamp("tea_out"),
+  teaIn: timestamp("tea_in"),
   status: text("status").notNull().default("present"),
   selfieUrl: text("selfie_url"),
 });

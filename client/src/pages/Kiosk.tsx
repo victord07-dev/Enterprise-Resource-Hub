@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard } from "lucide-react";
 
 type KioskStep = "scan" | "confirm" | "selfie" | "success" | "error";
 
@@ -25,6 +26,8 @@ export default function Kiosk() {
   const [errorMsg, setErrorMsg] = useState("");
   const [scannedQrCode, setScannedQrCode] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [manualEntry, setManualEntry] = useState(false);
+  const [manualQrInput, setManualQrInput] = useState("");
   const [selfieDataUrl, setSelfieDataUrl] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -64,6 +67,8 @@ export default function Kiosk() {
     setScannedQrCode(null);
     setSelfieDataUrl(null);
     setScanning(false);
+    setManualEntry(false);
+    setManualQrInput("");
   }, [stopCamera, stopScanner]);
 
   useEffect(() => {
@@ -89,7 +94,7 @@ export default function Kiosk() {
           await scanner.stop();
           scannerRef.current = null;
           setScanning(false);
-          await lookupEmployee(decodedText);
+          await lookupEmployee(decodedText.trim());
         },
         () => {}
       );
@@ -215,14 +220,49 @@ export default function Kiosk() {
               <p className="text-muted-foreground mt-2">Hold your Employee ID card in front of the camera to mark attendance</p>
             </div>
             <div id="qr-reader" className="w-full" style={{ minHeight: scanning ? 300 : 0 }} />
-            {!scanning && (
-              <Button className="w-full" onClick={startQrScanner} data-testid="button-start-scan">
-                <Scan className="w-4 h-4 mr-2" />
-                Start Scanner
-              </Button>
+            {!scanning && !manualEntry && (
+              <div className="space-y-3 w-full">
+                <Button className="w-full" onClick={startQrScanner} data-testid="button-start-scan">
+                  <Scan className="w-4 h-4 mr-2" />
+                  Start Scanner
+                </Button>
+                <Button variant="outline" className="w-full" onClick={() => setManualEntry(true)} data-testid="button-manual-entry">
+                  <Keyboard className="w-4 h-4 mr-2" />
+                  Enter Code Manually
+                </Button>
+              </div>
             )}
             {scanning && (
               <p className="text-sm text-muted-foreground animate-pulse">Looking for QR code...</p>
+            )}
+            {manualEntry && (
+              <div className="space-y-3 w-full">
+                <Input
+                  placeholder="Enter Employee QR Code (e.g., NEXERP-EMP-...)"
+                  value={manualQrInput}
+                  onChange={(e) => setManualQrInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && manualQrInput.trim()) {
+                      lookupEmployee(manualQrInput.trim());
+                    }
+                  }}
+                  data-testid="input-manual-qr"
+                  autoFocus
+                />
+                <div className="flex gap-3">
+                  <Button variant="outline" className="flex-1" onClick={() => { setManualEntry(false); setManualQrInput(""); }} data-testid="button-cancel-manual">
+                    Cancel
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    onClick={() => manualQrInput.trim() && lookupEmployee(manualQrInput.trim())}
+                    disabled={!manualQrInput.trim()}
+                    data-testid="button-submit-manual"
+                  >
+                    Look Up
+                  </Button>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>

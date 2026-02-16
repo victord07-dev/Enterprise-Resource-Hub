@@ -862,8 +862,9 @@ export async function registerRoutes(
 
   app.get("/api/kiosk/employee/:qrCode", async (req, res) => {
     try {
+      const qrCode = decodeURIComponent(req.params.qrCode).trim();
       const employees = await storage.getEmployees();
-      const employee = employees.find(e => e.qrCode === req.params.qrCode && e.isActive);
+      const employee = employees.find(e => e.qrCode === qrCode && e.isActive);
       if (!employee) return res.status(404).json({ message: "Employee not found or inactive" });
       res.json({ id: employee.id, name: employee.name, department: employee.department, designation: employee.designation });
     } catch (error) {

@@ -18,6 +18,7 @@ import Accounts from "@/pages/Accounts";
 import Employees from "@/pages/Employees";
 import Reports from "@/pages/Reports";
 import AuditTrail from "@/pages/AuditTrail";
+import Kiosk from "@/pages/Kiosk";
 
 function Router() {
   return (
@@ -62,6 +63,17 @@ function AuthenticatedLayout() {
 function App() {
   const [location] = useLocation();
   const authenticated = isAuthenticated();
+
+  if (location === "/kiosk") {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Kiosk />
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+  }
 
   if (location === "/login" || !authenticated) {
     return (

@@ -17,9 +17,20 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 4. Inventory - Products, warehouses, stock movements
 5. Supply Chain - Suppliers, purchase orders, deliveries
 6. Accounts - Invoices, payments, financial tracking
-7. Employee Management - Staff, attendance, field staff
+7. Employee Management - Staff, attendance (with QR + selfie kiosk), field staff
 8. Reports - Business analytics with charts
 9. Audit Trail - System activity logs
+10. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)
+
+## Kiosk Attendance System
+- Standalone page at `/kiosk` - no login required (designed for office tablet)
+- Flow: QR code scan -> Employee identification -> Selfie capture -> Auto check-in/check-out
+- Each employee has unique QR code (format: NEXERP-EMP-{uuid}) generated from Employee Management
+- First scan of the day = Check In, second scan = Check Out
+- Selfie photos stored in Replit Object Storage
+- Attendance records visible in ERP Employee Management -> Attendance tab
+- API endpoints: /api/kiosk/employee/:qrCode (GET), /api/kiosk/attendance (POST)
+- QR management: /api/employees/:id/generate-qr, /api/employees/generate-all-qr, /api/employees/:id/qr-image
 
 ## Authentication
 - Custom JWT-based (NOT Replit Auth)

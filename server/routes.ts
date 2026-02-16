@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import QRCode from "qrcode";
 import {
   loginSchema, insertCustomerSchema, insertSupplierSchema, insertProductSchema,
   insertWarehouseSchema, insertSalesOrderSchema, insertQuotationSchema,
@@ -10,6 +11,7 @@ import {
   insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema,
 } from "@shared/schema";
+import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
 
@@ -850,6 +852,116 @@ export async function registerRoutes(
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch audit logs" });
+    }
+  });
+
+  // ======================== OBJECT STORAGE ========================
+  registerObjectStorageRoutes(app);
+
+  // ======================== KIOSK ATTENDANCE ========================
+
+  app.get("/api/kiosk/employee/:qrCode", async (req, res) => {
+    try {
+      const employees = await storage.getEmployees();
+      const employee = employees.find(e => e.qrCode === req.params.qrCode && e.isActive);
+      if (!employee) return res.status(404).json({ message: "Employee not found or inactive" });
+      res.json({ id: employee.id, name: employee.name, department: employee.department, designation: employee.designation });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to lookup employee" });
+    }
+  });
+
+  app.post("/api/kiosk/attendance", async (req, res) => {
+    try {
+      const { qrCode, selfieUrl } = req.body;
+      if (!qrCode) return res.status(400).json({ message: "QR code required" });
+
+      const employees = await storage.getEmployees();
+      const employee = employees.find(e => e.qrCode === qrCode && e.isActive);
+      if (!employee) return res.status(404).json({ message: "Invalid QR code or employee inactive" });
+      const employeeId = employee.id;
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const allAttendance = await storage.getAttendance();
+      const todayRecord = allAttendance.find(a => {
+        const aDate = new Date(a.date);
+        aDate.setHours(0, 0, 0, 0);
+        return a.employeeId === employeeId && aDate.getTime() === today.getTime();
+      });
+
+      const now = new Date();
+
+      if (todayRecord) {
+        if (todayRecord.checkOut) {
+          return res.json({ type: "already_done", message: "Attendance already completed for today", record: todayRecord });
+        }
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, {
+          checkOut: now,
+          selfieUrl: selfieUrl || todayRecord.selfieUrl,
+        });
+        return res.json({ type: "check_out", message: "Checked out successfully", record: updated });
+      }
+
+      const created = await storage.createAttendanceRecord({
+        employeeId,
+        date: today,
+        checkIn: now,
+        checkOut: null,
+        status: "present",
+        selfieUrl: selfieUrl || null,
+      });
+      return res.json({ type: "check_in", message: "Checked in successfully", record: created });
+    } catch (error) {
+      console.error("Kiosk attendance error:", error);
+      res.status(500).json({ message: "Failed to record attendance" });
+    }
+  });
+
+  app.post("/api/employees/:id/generate-qr", authenticateToken, async (req: any, res) => {
+    try {
+      const employee = (await storage.getEmployees()).find(e => e.id === req.params.id);
+      if (!employee) return res.status(404).json({ message: "Employee not found" });
+
+      const qrCode = `NEXERP-EMP-${employee.id}`;
+      await storage.updateEmployee(employee.id, { qrCode });
+
+      const qrDataUrl = await QRCode.toDataURL(qrCode, { width: 300, margin: 2 });
+      res.json({ qrCode, qrDataUrl, employeeName: employee.name });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to generate QR code" });
+    }
+  });
+
+  app.post("/api/employees/generate-all-qr", authenticateToken, async (req: any, res) => {
+    try {
+      const employees = await storage.getEmployees();
+      const results = [];
+      for (const emp of employees) {
+        if (!emp.qrCode) {
+          const qrCode = `NEXERP-EMP-${emp.id}`;
+          await storage.updateEmployee(emp.id, { qrCode });
+          results.push({ id: emp.id, name: emp.name, qrCode });
+        } else {
+          results.push({ id: emp.id, name: emp.name, qrCode: emp.qrCode });
+        }
+      }
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to generate QR codes" });
+    }
+  });
+
+  app.get("/api/employees/:id/qr-image", async (req, res) => {
+    try {
+      const employee = (await storage.getEmployees()).find(e => e.id === req.params.id);
+      if (!employee || !employee.qrCode) return res.status(404).json({ message: "QR code not found" });
+
+      const qrDataUrl = await QRCode.toDataURL(employee.qrCode, { width: 400, margin: 2 });
+      res.json({ qrDataUrl, qrCode: employee.qrCode, employeeName: employee.name });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to get QR image" });
     }
   });
 

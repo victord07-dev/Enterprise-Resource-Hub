@@ -147,6 +147,7 @@ export const employees = pgTable("employees", {
   joinDate: timestamp("join_date").notNull().defaultNow(),
   isActive: boolean("is_active").notNull().default(true),
   salary: decimal("salary", { precision: 12, scale: 2 }),
+  qrCode: text("qr_code"),
 });
 
 export const attendanceRecords = pgTable("attendance_records", {
@@ -156,6 +157,7 @@ export const attendanceRecords = pgTable("attendance_records", {
   checkIn: timestamp("check_in"),
   checkOut: timestamp("check_out"),
   status: text("status").notNull().default("present"),
+  selfieUrl: text("selfie_url"),
 });
 
 export const fieldStaffActivities = pgTable("field_staff_activities", {

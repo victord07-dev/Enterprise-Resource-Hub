@@ -10,9 +10,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2 } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import type { Employee, AttendanceRecord } from "@shared/schema";
 
 export default function Employees() {
@@ -25,6 +26,10 @@ export default function Employees() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [form, setForm] = useState({ name: "", email: "", phone: "", department: "Sales", designation: "", salary: "", isActive: true });
+
+  const [qrDialogOpen, setQrDialogOpen] = useState(false);
+  const [qrData, setQrData] = useState<{ qrDataUrl: string; employeeName: string; qrCode: string } | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
 
   const employeeMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -76,6 +81,71 @@ export default function Employees() {
     setDialogOpen(true);
   };
 
+  const generateQr = async (empId: string) => {
+    setQrLoading(true);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`/api/employees/${empId}/generate-qr`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to generate QR");
+      const data = await res.json();
+      setQrData(data);
+      setQrDialogOpen(true);
+      queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+    } catch {
+      toast({ title: "Error", description: "Failed to generate QR code", variant: "destructive" });
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  const viewQr = async (empId: string) => {
+    try {
+      const res = await fetch(`/api/employees/${empId}/qr-image`);
+      if (!res.ok) throw new Error("QR not found");
+      const data = await res.json();
+      setQrData(data);
+      setQrDialogOpen(true);
+    } catch {
+      toast({ title: "Error", description: "QR code not found. Generate one first.", variant: "destructive" });
+    }
+  };
+
+  const generateAllQr = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/employees/generate-all-qr", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed");
+      queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      toast({ title: "QR codes generated for all employees" });
+    } catch {
+      toast({ title: "Error", description: "Failed to generate QR codes", variant: "destructive" });
+    }
+  };
+
+  const downloadQr = () => {
+    if (!qrData) return;
+    const link = document.createElement("a");
+    link.href = qrData.qrDataUrl;
+    link.download = `QR-${qrData.employeeName.replace(/\s+/g, "-")}.png`;
+    link.click();
+  };
+
+  const getEmployeeName = (empId: string) => {
+    return employees?.find(e => e.id === empId)?.name || "Unknown";
+  };
+
+  const todayStr = new Date().toLocaleDateString();
+  const todayAttendance = attendance?.filter(a => {
+    const d = new Date(a.date);
+    return d.toLocaleDateString() === todayStr;
+  }) || [];
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -83,10 +153,16 @@ export default function Employees() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Employee Management</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage staff, attendance, and field activities</p>
         </div>
-        <Button data-testid="button-add-employee" onClick={openNew}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Employee
-        </Button>
+        <div className="flex gap-2 flex-wrap">
+          <Button variant="outline" onClick={generateAllQr} data-testid="button-generate-all-qr">
+            <QrCode className="w-4 h-4 mr-2" />
+            Generate All QR Codes
+          </Button>
+          <Button data-testid="button-add-employee" onClick={openNew}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Employee
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -118,8 +194,8 @@ export default function Employees() {
               <CalendarCheck className="w-5 h-5 text-violet-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{attendance?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Attendance Records</p>
+              <p className="text-2xl font-bold" data-testid="text-today-attendance">{todayAttendance.length}</p>
+              <p className="text-xs text-muted-foreground">Present Today</p>
             </div>
           </CardContent>
         </Card>
@@ -129,8 +205,8 @@ export default function Employees() {
               <MapPin className="w-5 h-5 text-orange-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">0</p>
-              <p className="text-xs text-muted-foreground">Field Staff Active</p>
+              <p className="text-2xl font-bold">{attendance?.length ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Total Records</p>
             </div>
           </CardContent>
         </Card>
@@ -160,6 +236,7 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Department</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Designation</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">QR Code</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -168,7 +245,7 @@ export default function Employees() {
                     {empLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 6 }).map((_, j) => (
+                          {Array.from({ length: 7 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -189,15 +266,24 @@ export default function Employees() {
                           </td>
                           <td className="p-3 text-muted-foreground">{emp.department}</td>
                           <td className="p-3 text-muted-foreground">{emp.designation}</td>
-                          <td className="p-3 text-muted-foreground">{emp.phone || "—"}</td>
+                          <td className="p-3 text-muted-foreground">{emp.phone || "\u2014"}</td>
                           <td className="p-3">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${
-                              emp.isActive
-                                ? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400"
-                                : "bg-gray-100 text-gray-800 dark:bg-gray-950/40 dark:text-gray-400"
-                            }`}>
+                            {emp.qrCode ? (
+                              <Button size="sm" variant="outline" onClick={() => viewQr(emp.id)} data-testid={`button-view-qr-${emp.id}`}>
+                                <QrCode className="w-3 h-3 mr-1" />
+                                View
+                              </Button>
+                            ) : (
+                              <Button size="sm" variant="outline" onClick={() => generateQr(emp.id)} disabled={qrLoading} data-testid={`button-gen-qr-${emp.id}`}>
+                                <QrCode className="w-3 h-3 mr-1" />
+                                Generate
+                              </Button>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <Badge variant={emp.isActive ? "default" : "secondary"}>
                               {emp.isActive ? "Active" : "Inactive"}
-                            </span>
+                            </Badge>
                           </td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1">
@@ -213,7 +299,7 @@ export default function Employees() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-muted-foreground">No employees found.</td>
+                        <td colSpan={7} className="p-8 text-center text-muted-foreground">No employees found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -230,27 +316,54 @@ export default function Employees() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check In</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check Out</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Selfie</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {attLoading ? (
-                      <tr><td colSpan={4} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : attendance && attendance.length > 0 ? (
                       attendance.map((a) => (
-                        <tr key={a.id} className="border-b last:border-0">
-                          <td className="p-3">{new Date(a.date).toLocaleDateString()}</td>
-                          <td className="p-3 text-muted-foreground">{a.checkIn ? new Date(a.checkIn).toLocaleTimeString() : "—"}</td>
-                          <td className="p-3 text-muted-foreground">{a.checkOut ? new Date(a.checkOut).toLocaleTimeString() : "—"}</td>
-                          <td className="p-3 capitalize">{a.status}</td>
+                        <tr key={a.id} className="border-b last:border-0" data-testid={`row-attendance-${a.id}`}>
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <Avatar className="w-6 h-6">
+                                <AvatarFallback className="text-[10px]">{getEmployeeName(a.employeeId).charAt(0)}</AvatarFallback>
+                              </Avatar>
+                              <span className="font-medium">{getEmployeeName(a.employeeId)}</span>
+                            </div>
+                          </td>
+                          <td className="p-3 text-muted-foreground">{new Date(a.date).toLocaleDateString("en-IN")}</td>
+                          <td className="p-3">{a.checkIn ? new Date(a.checkIn).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
+                          <td className="p-3">{a.checkOut ? new Date(a.checkOut).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
+                          <td className="p-3">
+                            {a.selfieUrl ? (
+                              <div className="w-8 h-8 rounded-md overflow-hidden bg-muted">
+                                <img src={a.selfieUrl} alt="Selfie" className="w-full h-full object-cover" data-testid={`img-selfie-${a.id}`} />
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground text-xs">No selfie</span>
+                            )}
+                          </td>
+                          <td className="p-3">
+                            <Badge variant={a.status === "present" ? "default" : "secondary"}>
+                              {a.status}
+                            </Badge>
+                          </td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={4} className="p-8 text-center text-muted-foreground">No attendance records.</td>
+                        <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                          <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
+                          <p>No attendance records yet.</p>
+                          <p className="text-xs mt-1">Attendance will appear here when employees use the Kiosk system.</p>
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -320,6 +433,32 @@ export default function Employees() {
               {employeeMutation.isPending ? "Saving..." : editingEmployee ? "Update" : "Create"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={qrDialogOpen} onOpenChange={setQrDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Employee QR Code</DialogTitle>
+          </DialogHeader>
+          {qrData && (
+            <div className="text-center space-y-4">
+              <p className="font-semibold text-lg" data-testid="text-qr-employee-name">{qrData.employeeName}</p>
+              <div className="flex justify-center">
+                <img
+                  src={qrData.qrDataUrl}
+                  alt={`QR Code for ${qrData.employeeName}`}
+                  className="w-64 h-64 border rounded-lg"
+                  data-testid="img-qr-code"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground font-mono">{qrData.qrCode}</p>
+              <Button onClick={downloadQr} className="w-full" data-testid="button-download-qr">
+                <Download className="w-4 h-4 mr-2" />
+                Download QR Code
+              </Button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

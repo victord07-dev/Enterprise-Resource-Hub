@@ -238,7 +238,7 @@ export default function Kiosk() {
             {manualEntry && (
               <div className="space-y-3 w-full">
                 <Input
-                  placeholder="Enter Employee QR Code (e.g., NEXERP-EMP-...)"
+                  placeholder="Enter Employee QR Code (e.g., HG-EMP-...)"
                   value={manualQrInput}
                   onChange={(e) => setManualQrInput(e.target.value)}
                   onKeyDown={(e) => {

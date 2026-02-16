@@ -57,7 +57,7 @@ export async function registerRoutes(
       username: "admin",
       password: hashedPassword,
       fullName: "Admin User",
-      email: "admin@nexerp.com",
+      email: "admin@hussaingroup.co.in",
       role: "admin",
       isActive: true,
     });

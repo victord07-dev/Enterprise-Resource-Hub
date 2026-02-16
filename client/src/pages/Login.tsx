@@ -37,9 +37,7 @@ export default function Login() {
       <Card className="w-full max-w-md mx-4">
         <CardHeader className="text-center space-y-2 pb-4">
           <div className="flex justify-center mb-2">
-            <div className="w-14 h-14 rounded-md flex items-center justify-center bg-primary">
-              <Shield className="w-8 h-8 text-primary-foreground" />
-            </div>
+            <img src="/favicon.png" alt="Hussain Group" className="w-14 h-14 rounded-md object-contain" />
           </div>
           <h1 className="text-2xl font-bold" data-testid="text-app-title">Hussain Group</h1>
           <p className="text-muted-foreground text-sm">Enterprise Resource Planning System</p>

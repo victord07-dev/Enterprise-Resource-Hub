@@ -99,38 +99,38 @@ export async function registerRoutes(
       await storage.createQuotation({ quoteNumber: "QT-2026-002", customerId: cust3.id, status: "draft", totalAmount: "180000", validUntil: new Date("2026-03-01"), createdAt: new Date("2026-02-10"), notes: "5kW system package" });
       await storage.createQuotation({ quoteNumber: "QT-2026-003", customerId: cust5.id, status: "accepted", totalAmount: "720000", validUntil: new Date("2026-04-01"), createdAt: new Date("2026-01-25"), notes: "Annual supply contract" });
 
-      await storage.createProject({ name: "Rajesh Solar 10kW Rooftop", description: "10kW rooftop solar installation for commercial building", customerId: cust1.id, status: "in_progress", priority: "high", startDate: new Date("2026-02-01"), endDate: new Date("2026-03-15"), budget: "450000" });
-      await storage.createProject({ name: "GreenTech Warehouse Solar", description: "50kW ground-mounted solar for warehouse", customerId: cust2.id, status: "planning", priority: "medium", startDate: new Date("2026-03-01"), endDate: new Date("2026-05-30"), budget: "2500000" });
-      await storage.createProject({ name: "SunPeak Residential Complex", description: "Solar installation for 20-unit residential complex", customerId: cust3.id, status: "in_progress", priority: "high", startDate: new Date("2026-01-15"), endDate: new Date("2026-04-30"), budget: "1800000" });
-      await storage.createProject({ name: "Bharat Electronics Retrofit", description: "Inverter upgrade and panel replacement", customerId: cust4.id, status: "completed", priority: "low", startDate: new Date("2025-12-01"), endDate: new Date("2026-01-30"), budget: "350000" });
+      await storage.createProject({ name: "Rajesh Solar 10kW Rooftop", description: "10kW rooftop solar installation for commercial building", customerId: cust1.id, status: "in_progress", priority: "high", startDate: new Date("2026-02-01"), endDate: new Date("2026-03-15"), budget: "450000", assignedTo: null });
+      await storage.createProject({ name: "GreenTech Warehouse Solar", description: "50kW ground-mounted solar for warehouse", customerId: cust2.id, status: "planning", priority: "medium", startDate: new Date("2026-03-01"), endDate: new Date("2026-05-30"), budget: "2500000", assignedTo: null });
+      await storage.createProject({ name: "SunPeak Residential Complex", description: "Solar installation for 20-unit residential complex", customerId: cust3.id, status: "in_progress", priority: "high", startDate: new Date("2026-01-15"), endDate: new Date("2026-04-30"), budget: "1800000", assignedTo: null });
+      await storage.createProject({ name: "Bharat Electronics Retrofit", description: "Inverter upgrade and panel replacement", customerId: cust4.id, status: "completed", priority: "low", startDate: new Date("2025-12-01"), endDate: new Date("2026-01-30"), budget: "350000", assignedTo: null });
 
       await storage.createPurchaseOrder({ poNumber: "PO-2026-001", supplierId: sup1.id, status: "received", totalAmount: "925000", orderDate: new Date("2026-01-15"), expectedDelivery: new Date("2026-02-01"), notes: "50x Mono 400W panels" });
       await storage.createPurchaseOrder({ poNumber: "PO-2026-002", supplierId: sup2.id, status: "approved", totalAmount: "450000", orderDate: new Date("2026-02-05"), expectedDelivery: new Date("2026-02-20"), notes: "10x 5kW inverters" });
       await storage.createPurchaseOrder({ poNumber: "PO-2026-003", supplierId: sup3.id, status: "shipped", totalAmount: "640000", orderDate: new Date("2026-02-08"), expectedDelivery: new Date("2026-02-25"), notes: "50x Poly 330W panels" });
       await storage.createPurchaseOrder({ poNumber: "PO-2026-004", supplierId: sup4.id, status: "pending", totalAmount: "170000", orderDate: new Date("2026-02-12"), expectedDelivery: new Date("2026-03-05"), notes: "2x 10kW inverters" });
 
-      const inv1 = await storage.createInvoice({ invoiceNumber: "INV-2026-001", customerId: cust1.id, amount: "370000", status: "paid", dueDate: new Date("2026-03-01"), issuedDate: new Date("2026-02-01") });
-      const inv2 = await storage.createInvoice({ invoiceNumber: "INV-2026-002", customerId: cust2.id, amount: "256000", status: "unpaid", dueDate: new Date("2026-03-05"), issuedDate: new Date("2026-02-05") });
-      const inv3 = await storage.createInvoice({ invoiceNumber: "INV-2026-003", customerId: cust3.id, amount: "185000", status: "unpaid", dueDate: new Date("2026-03-10"), issuedDate: new Date("2026-02-10") });
-      const inv4 = await storage.createInvoice({ invoiceNumber: "INV-2026-004", customerId: cust4.id, amount: "92500", status: "paid", dueDate: new Date("2026-02-20"), issuedDate: new Date("2026-01-20") });
-      const inv5 = await storage.createInvoice({ invoiceNumber: "INV-2026-005", customerId: cust5.id, amount: "425000", status: "partial", dueDate: new Date("2026-03-12"), issuedDate: new Date("2026-02-12") });
+      const inv1 = await storage.createInvoice({ invoiceNumber: "INV-2026-001", customerId: cust1.id, orderId: null, amount: "370000", status: "paid", dueDate: new Date("2026-03-01"), issuedDate: new Date("2026-02-01") });
+      const inv2 = await storage.createInvoice({ invoiceNumber: "INV-2026-002", customerId: cust2.id, orderId: null, amount: "256000", status: "unpaid", dueDate: new Date("2026-03-05"), issuedDate: new Date("2026-02-05") });
+      const inv3 = await storage.createInvoice({ invoiceNumber: "INV-2026-003", customerId: cust3.id, orderId: null, amount: "185000", status: "unpaid", dueDate: new Date("2026-03-10"), issuedDate: new Date("2026-02-10") });
+      const inv4 = await storage.createInvoice({ invoiceNumber: "INV-2026-004", customerId: cust4.id, orderId: null, amount: "92500", status: "paid", dueDate: new Date("2026-02-20"), issuedDate: new Date("2026-01-20") });
+      const inv5 = await storage.createInvoice({ invoiceNumber: "INV-2026-005", customerId: cust5.id, orderId: null, amount: "425000", status: "partial", dueDate: new Date("2026-03-12"), issuedDate: new Date("2026-02-12") });
 
       await storage.createPayment({ invoiceId: inv1.id, amount: "370000", method: "bank_transfer", status: "completed", paymentDate: new Date("2026-02-10"), reference: "NEFT/2026/0210/001" });
       await storage.createPayment({ invoiceId: inv4.id, amount: "92500", method: "upi", status: "completed", paymentDate: new Date("2026-02-05"), reference: "UPI/2026/0205/045" });
       await storage.createPayment({ invoiceId: inv5.id, amount: "200000", method: "cheque", status: "completed", paymentDate: new Date("2026-02-13"), reference: "CHQ/467892" });
 
-      const emp1 = await storage.createEmployee({ name: "Vikram Singh", email: "vikram@nexerp.com", phone: "+91-9812345678", department: "Sales", designation: "Sales Manager", joinDate: new Date("2024-06-15"), isActive: true, salary: "65000" });
-      const emp2 = await storage.createEmployee({ name: "Anita Desai", email: "anita@nexerp.com", phone: "+91-9823456789", department: "Operations", designation: "Operations Head", joinDate: new Date("2024-03-01"), isActive: true, salary: "75000" });
-      const emp3 = await storage.createEmployee({ name: "Mohammed Khan", email: "khan@nexerp.com", phone: "+91-9834567890", department: "Warehouse", designation: "Warehouse Manager", joinDate: new Date("2024-08-20"), isActive: true, salary: "55000" });
-      const emp4 = await storage.createEmployee({ name: "Priya Nair", email: "priya@nexerp.com", phone: "+91-9845678901", department: "Finance", designation: "Senior Accountant", joinDate: new Date("2024-04-10"), isActive: true, salary: "60000" });
-      const emp5 = await storage.createEmployee({ name: "Rahul Verma", email: "rahul@nexerp.com", phone: "+91-9856789012", department: "Sales", designation: "Field Executive", joinDate: new Date("2025-01-05"), isActive: true, salary: "35000" });
-      const emp6 = await storage.createEmployee({ name: "Sneha Patil", email: "sneha@nexerp.com", phone: "+91-9867890123", department: "HR", designation: "HR Manager", joinDate: new Date("2024-07-01"), isActive: true, salary: "58000" });
-      const emp7 = await storage.createEmployee({ name: "Arjun Reddy", email: "arjun@nexerp.com", phone: "+91-9878901234", department: "IT", designation: "Technical Lead", joinDate: new Date("2024-02-15"), isActive: true, salary: "80000" });
+      const emp1 = await storage.createEmployee({ name: "Vikram Singh", email: "vikram@nexerp.com", phone: "+91-9812345678", department: "Sales", designation: "Sales Manager", joinDate: new Date("2024-06-15"), isActive: true, salary: "65000", userId: null, qrCode: null });
+      const emp2 = await storage.createEmployee({ name: "Anita Desai", email: "anita@nexerp.com", phone: "+91-9823456789", department: "Operations", designation: "Operations Head", joinDate: new Date("2024-03-01"), isActive: true, salary: "75000", userId: null, qrCode: null });
+      const emp3 = await storage.createEmployee({ name: "Mohammed Khan", email: "khan@nexerp.com", phone: "+91-9834567890", department: "Warehouse", designation: "Warehouse Manager", joinDate: new Date("2024-08-20"), isActive: true, salary: "55000", userId: null, qrCode: null });
+      const emp4 = await storage.createEmployee({ name: "Priya Nair", email: "priya@nexerp.com", phone: "+91-9845678901", department: "Finance", designation: "Senior Accountant", joinDate: new Date("2024-04-10"), isActive: true, salary: "60000", userId: null, qrCode: null });
+      const emp5 = await storage.createEmployee({ name: "Rahul Verma", email: "rahul@nexerp.com", phone: "+91-9856789012", department: "Sales", designation: "Field Executive", joinDate: new Date("2025-01-05"), isActive: true, salary: "35000", userId: null, qrCode: null });
+      const emp6 = await storage.createEmployee({ name: "Sneha Patil", email: "sneha@nexerp.com", phone: "+91-9867890123", department: "HR", designation: "HR Manager", joinDate: new Date("2024-07-01"), isActive: true, salary: "58000", userId: null, qrCode: null });
+      const emp7 = await storage.createEmployee({ name: "Arjun Reddy", email: "arjun@nexerp.com", phone: "+91-9878901234", department: "IT", designation: "Technical Lead", joinDate: new Date("2024-02-15"), isActive: true, salary: "80000", userId: null, qrCode: null });
 
       const pastDate = new Date();
       pastDate.setDate(pastDate.getDate() - 2);
       for (const emp of [emp1, emp2, emp3, emp4, emp5, emp6, emp7]) {
-        await storage.createAttendanceRecord({ employeeId: emp.id, date: pastDate, checkIn: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 9, 0), checkOut: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 18, 0), status: "present" });
+        await storage.createAttendanceRecord({ employeeId: emp.id, date: pastDate, checkIn: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 9, 0), checkOut: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 18, 0), lunchOut: null, lunchIn: null, teaOut: null, teaIn: null, status: "present", selfieUrl: null });
       }
 
       await logAction(admin.id, "seed", "system", "Demo data seeded successfully");
@@ -279,7 +279,7 @@ export async function registerRoutes(
     try {
       const parsed = insertCustomerSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createCustomer(parsed.data);
+      const created = await storage.createCustomer(parsed.data as any);
       await logAction(req.user.id, "create", "customers", `Created customer ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error) {
@@ -332,7 +332,7 @@ export async function registerRoutes(
     try {
       const parsed = insertSupplierSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createSupplier(parsed.data);
+      const created = await storage.createSupplier(parsed.data as any);
       await logAction(req.user.id, "create", "suppliers", `Created supplier ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error) {
@@ -385,7 +385,7 @@ export async function registerRoutes(
     try {
       const parsed = insertProductSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createProduct(parsed.data);
+      const created = await storage.createProduct(parsed.data as any);
       await logAction(req.user.id, "create", "products", `Created product ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -429,7 +429,7 @@ export async function registerRoutes(
     try {
       const parsed = insertWarehouseSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createWarehouse(parsed.data);
+      const created = await storage.createWarehouse(parsed.data as any);
       await logAction(req.user.id, "create", "warehouses", `Created warehouse ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error) {
@@ -514,7 +514,7 @@ export async function registerRoutes(
     try {
       const parsed = insertSalesOrderSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createSalesOrder(parsed.data);
+      const created = await storage.createSalesOrder(parsed.data as any);
       await logAction(req.user.id, "create", "sales", `Created sales order ${parsed.data.orderNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -558,7 +558,7 @@ export async function registerRoutes(
     try {
       const parsed = insertQuotationSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createQuotation(parsed.data);
+      const created = await storage.createQuotation(parsed.data as any);
       await logAction(req.user.id, "create", "sales", `Created quotation ${parsed.data.quoteNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -612,7 +612,7 @@ export async function registerRoutes(
     try {
       const parsed = insertProjectSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createProject(parsed.data);
+      const created = await storage.createProject(parsed.data as any);
       await logAction(req.user.id, "create", "projects", `Created project ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error) {
@@ -655,7 +655,7 @@ export async function registerRoutes(
     try {
       const parsed = insertPurchaseOrderSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createPurchaseOrder(parsed.data);
+      const created = await storage.createPurchaseOrder(parsed.data as any);
       await logAction(req.user.id, "create", "supply_chain", `Created PO ${parsed.data.poNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -699,7 +699,7 @@ export async function registerRoutes(
     try {
       const parsed = insertInvoiceSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createInvoice(parsed.data);
+      const created = await storage.createInvoice(parsed.data as any);
       await logAction(req.user.id, "create", "accounts", `Created invoice ${parsed.data.invoiceNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -743,7 +743,7 @@ export async function registerRoutes(
     try {
       const parsed = insertPaymentSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createPayment(parsed.data);
+      const created = await storage.createPayment(parsed.data as any);
       await logAction(req.user.id, "create", "accounts", `Recorded payment of ₹${parsed.data.amount}`);
       res.status(201).json(created);
     } catch (error) {
@@ -796,7 +796,7 @@ export async function registerRoutes(
     try {
       const parsed = insertEmployeeSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createEmployee(parsed.data);
+      const created = await storage.createEmployee(parsed.data as any);
       await logAction(req.user.id, "create", "employees", `Added employee ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error) {
@@ -839,7 +839,7 @@ export async function registerRoutes(
     try {
       const parsed = insertAttendanceSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createAttendanceRecord(parsed.data);
+      const created = await storage.createAttendanceRecord(parsed.data as any);
       await logAction(req.user.id, "create", "attendance", `Recorded attendance for employee ${parsed.data.employeeId}`);
       res.status(201).json(created);
     } catch (error) {
@@ -861,7 +861,7 @@ export async function registerRoutes(
     try {
       const parsed = insertFieldStaffActivitySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createFieldStaffActivity(parsed.data);
+      const created = await storage.createFieldStaffActivity(parsed.data as any);
       await logAction(req.user.id, "create", "field_activities", `Logged field activity`);
       res.status(201).json(created);
     } catch (error) {
@@ -917,11 +917,47 @@ export async function registerRoutes(
       });
 
       const now = new Date();
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
+      const timeInMinutes = currentHour * 60 + currentMinute;
 
       if (todayRecord) {
         if (todayRecord.checkOut) {
           return res.json({ type: "already_done", message: "Attendance already completed for today", record: todayRecord });
         }
+
+        if (!todayRecord.lunchOut && timeInMinutes >= 750 && timeInMinutes < 900) {
+          const updated = await storage.updateAttendanceRecord(todayRecord.id, {
+            lunchOut: now,
+            selfieUrl: selfieUrl || todayRecord.selfieUrl,
+          });
+          return res.json({ type: "lunch_out", message: "Going for Lunch Break", record: updated });
+        }
+
+        if (todayRecord.lunchOut && !todayRecord.lunchIn && timeInMinutes >= 765 && timeInMinutes < 930) {
+          const updated = await storage.updateAttendanceRecord(todayRecord.id, {
+            lunchIn: now,
+            selfieUrl: selfieUrl || todayRecord.selfieUrl,
+          });
+          return res.json({ type: "lunch_in", message: "Back from Lunch Break", record: updated });
+        }
+
+        if (todayRecord.lunchIn && !todayRecord.teaOut && timeInMinutes >= 990 && timeInMinutes < 1080) {
+          const updated = await storage.updateAttendanceRecord(todayRecord.id, {
+            teaOut: now,
+            selfieUrl: selfieUrl || todayRecord.selfieUrl,
+          });
+          return res.json({ type: "tea_out", message: "Going for Tea Break", record: updated });
+        }
+
+        if (todayRecord.teaOut && !todayRecord.teaIn && timeInMinutes >= 1005 && timeInMinutes < 1110) {
+          const updated = await storage.updateAttendanceRecord(todayRecord.id, {
+            teaIn: now,
+            selfieUrl: selfieUrl || todayRecord.selfieUrl,
+          });
+          return res.json({ type: "tea_in", message: "Back from Tea Break", record: updated });
+        }
+
         const updated = await storage.updateAttendanceRecord(todayRecord.id, {
           checkOut: now,
           selfieUrl: selfieUrl || todayRecord.selfieUrl,
@@ -934,6 +970,10 @@ export async function registerRoutes(
         date: today,
         checkIn: now,
         checkOut: null,
+        lunchOut: null,
+        lunchIn: null,
+        teaOut: null,
+        teaIn: null,
         status: "present",
         selfieUrl: selfieUrl || null,
       });

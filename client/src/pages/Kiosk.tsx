@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard } from "lucide-react";
+import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed } from "lucide-react";
 
 type KioskStep = "scan" | "confirm" | "selfie" | "success" | "error";
 
@@ -14,7 +14,7 @@ interface EmployeeInfo {
 }
 
 interface AttendanceResult {
-  type: "check_in" | "check_out" | "already_done";
+  type: "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in" | "already_done";
   message: string;
   record: any;
 }
@@ -368,10 +368,18 @@ export default function Kiosk() {
             <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center ${
               result.type === "already_done"
                 ? "bg-amber-50 dark:bg-amber-950/40"
+                : result.type === "lunch_out" || result.type === "lunch_in"
+                ? "bg-orange-50 dark:bg-orange-950/40"
+                : result.type === "tea_out" || result.type === "tea_in"
+                ? "bg-purple-50 dark:bg-purple-950/40"
                 : "bg-emerald-50 dark:bg-emerald-950/40"
             }`}>
               {result.type === "already_done" ? (
                 <Clock className="w-10 h-10 text-amber-500" />
+              ) : result.type === "lunch_out" || result.type === "lunch_in" ? (
+                <UtensilsCrossed className="w-10 h-10 text-orange-500" />
+              ) : result.type === "tea_out" || result.type === "tea_in" ? (
+                <Coffee className="w-10 h-10 text-purple-500" />
               ) : (
                 <CheckCircle2 className="w-10 h-10 text-emerald-500" />
               )}
@@ -380,6 +388,10 @@ export default function Kiosk() {
               <h2 className="text-xl font-semibold" data-testid="text-success-heading">
                 {result.type === "check_in" && "Checked In!"}
                 {result.type === "check_out" && "Checked Out!"}
+                {result.type === "lunch_out" && "Lunch Break"}
+                {result.type === "lunch_in" && "Back from Lunch!"}
+                {result.type === "tea_out" && "Tea Break"}
+                {result.type === "tea_in" && "Back from Tea!"}
                 {result.type === "already_done" && "Already Completed"}
               </h2>
               <p className="text-2xl font-bold mt-2" data-testid="text-success-name">{employee?.name}</p>
@@ -392,6 +404,26 @@ export default function Kiosk() {
               {result.type === "check_out" && result.record?.checkOut && (
                 <p className="text-lg font-medium text-blue-600 mt-3" data-testid="text-checkout-time">
                   Check-out: {new Date(result.record.checkOut).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "lunch_out" && result.record?.lunchOut && (
+                <p className="text-lg font-medium text-orange-600 mt-3" data-testid="text-lunch-out-time">
+                  Lunch Out: {new Date(result.record.lunchOut).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "lunch_in" && result.record?.lunchIn && (
+                <p className="text-lg font-medium text-orange-600 mt-3" data-testid="text-lunch-in-time">
+                  Lunch In: {new Date(result.record.lunchIn).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "tea_out" && result.record?.teaOut && (
+                <p className="text-lg font-medium text-purple-600 mt-3" data-testid="text-tea-out-time">
+                  Tea Out: {new Date(result.record.teaOut).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "tea_in" && result.record?.teaIn && (
+                <p className="text-lg font-medium text-purple-600 mt-3" data-testid="text-tea-in-time">
+                  Tea In: {new Date(result.record.teaIn).toLocaleTimeString("en-IN")}
                 </p>
               )}
             </div>

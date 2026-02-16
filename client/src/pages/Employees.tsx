@@ -319,47 +319,59 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check In</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Lunch Out</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Lunch In</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Tea Out</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Tea In</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check Out</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Selfie</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Break Time</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {attLoading ? (
-                      <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={10} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : attendance && attendance.length > 0 ? (
-                      attendance.map((a) => (
-                        <tr key={a.id} className="border-b last:border-0" data-testid={`row-attendance-${a.id}`}>
-                          <td className="p-3">
-                            <div className="flex items-center gap-2">
-                              <Avatar className="w-6 h-6">
-                                <AvatarFallback className="text-[10px]">{getEmployeeName(a.employeeId).charAt(0)}</AvatarFallback>
-                              </Avatar>
-                              <span className="font-medium">{getEmployeeName(a.employeeId)}</span>
-                            </div>
-                          </td>
-                          <td className="p-3 text-muted-foreground">{new Date(a.date).toLocaleDateString("en-IN")}</td>
-                          <td className="p-3">{a.checkIn ? new Date(a.checkIn).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
-                          <td className="p-3">{a.checkOut ? new Date(a.checkOut).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014"}</td>
-                          <td className="p-3">
-                            {a.selfieUrl ? (
-                              <div className="w-8 h-8 rounded-md overflow-hidden bg-muted">
-                                <img src={a.selfieUrl} alt="Selfie" className="w-full h-full object-cover" data-testid={`img-selfie-${a.id}`} />
+                      attendance.map((a) => {
+                        const formatTime = (t: Date | string | null) => t ? new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+                        let totalBreakMins = 0;
+                        if (a.lunchOut && a.lunchIn) totalBreakMins += Math.round((new Date(a.lunchIn).getTime() - new Date(a.lunchOut).getTime()) / 60000);
+                        if (a.teaOut && a.teaIn) totalBreakMins += Math.round((new Date(a.teaIn).getTime() - new Date(a.teaOut).getTime()) / 60000);
+                        return (
+                          <tr key={a.id} className="border-b last:border-0" data-testid={`row-attendance-${a.id}`}>
+                            <td className="p-3">
+                              <div className="flex items-center gap-2">
+                                <Avatar className="w-6 h-6">
+                                  <AvatarFallback className="text-[10px]">{getEmployeeName(a.employeeId).charAt(0)}</AvatarFallback>
+                                </Avatar>
+                                <span className="font-medium">{getEmployeeName(a.employeeId)}</span>
                               </div>
-                            ) : (
-                              <span className="text-muted-foreground text-xs">No selfie</span>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            <Badge variant={a.status === "present" ? "default" : "secondary"}>
-                              {a.status}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))
+                            </td>
+                            <td className="p-3 text-muted-foreground">{new Date(a.date).toLocaleDateString("en-IN")}</td>
+                            <td className="p-3">{formatTime(a.checkIn)}</td>
+                            <td className="p-3 text-orange-600">{formatTime(a.lunchOut)}</td>
+                            <td className="p-3 text-orange-600">{formatTime(a.lunchIn)}</td>
+                            <td className="p-3 text-purple-600">{formatTime(a.teaOut)}</td>
+                            <td className="p-3 text-purple-600">{formatTime(a.teaIn)}</td>
+                            <td className="p-3">{formatTime(a.checkOut)}</td>
+                            <td className="p-3">
+                              {totalBreakMins > 0 ? (
+                                <span className="text-muted-foreground">{totalBreakMins} min</span>
+                              ) : (
+                                <span className="text-muted-foreground">\u2014</span>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <Badge variant={a.status === "present" ? "default" : "secondary"}>
+                                {a.status}
+                              </Badge>
+                            </td>
+                          </tr>
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
                           <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
                           <p>No attendance records yet.</p>
                           <p className="text-xs mt-1">Attendance will appear here when employees use the Kiosk system.</p>

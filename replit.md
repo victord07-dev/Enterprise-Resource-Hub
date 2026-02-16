@@ -24,11 +24,20 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Kiosk Attendance System
 - Standalone page at `/kiosk` - no login required (designed for office tablet)
-- Flow: QR code scan -> Employee identification -> Selfie capture -> Auto check-in/check-out
+- Flow: QR code scan -> Employee identification -> Selfie capture -> Auto action based on time
 - Each employee has unique QR code (format: NEXERP-EMP-{uuid}) generated from Employee Management
-- First scan of the day = Check In, second scan = Check Out
+- Multi-scan flow per day (6 scans total):
+  1. Check In (first scan of day)
+  2. Lunch Out (12:00 PM - 6:00 PM window, after check-in)
+  3. Lunch In (12:00 PM - 6:00 PM window, after lunch out)
+  4. Tea Out (4:00 PM - 8:00 PM window, after lunch in)
+  5. Tea In (4:00 PM - 8:00 PM window, after tea out)
+  6. Check Out (final scan, after all breaks or anytime)
+- Break schedule: Lunch at 1:00 PM (45 min), Tea at 5:00 PM (15 min)
+- Time-based break detection determines scan type automatically
 - Selfie photos stored in Replit Object Storage
-- Attendance records visible in ERP Employee Management -> Attendance tab
+- Attendance records visible in ERP Employee Management -> Attendance tab (shows all break times + total break duration)
+- Schema fields: checkIn, checkOut, lunchOut, lunchIn, teaOut, teaIn
 - API endpoints: /api/kiosk/employee/:qrCode (GET), /api/kiosk/attendance (POST)
 - QR management: /api/employees/:id/generate-qr, /api/employees/generate-all-qr, /api/employees/:id/qr-image
 

@@ -111,6 +111,7 @@ export interface IStorage {
   getAttendance(): Promise<AttendanceRecord[]>;
   createAttendanceRecord(data: Omit<AttendanceRecord, "id">): Promise<AttendanceRecord>;
   updateAttendanceRecord(id: string, data: Partial<Omit<AttendanceRecord, "id">>): Promise<AttendanceRecord | undefined>;
+  deleteAttendanceRecord(id: string): Promise<void>;
 
   // Field Staff Activities
   getFieldStaffActivities(): Promise<FieldStaffActivity[]>;
@@ -488,6 +489,10 @@ export class DatabaseStorage implements IStorage {
   async updateAttendanceRecord(id: string, data: Partial<Omit<AttendanceRecord, "id">>): Promise<AttendanceRecord | undefined> {
     const [updated] = await db.update(attendanceRecords).set(data).where(eq(attendanceRecords.id, id)).returning();
     return updated;
+  }
+
+  async deleteAttendanceRecord(id: string): Promise<void> {
+    await db.delete(attendanceRecords).where(eq(attendanceRecords.id, id));
   }
 
   // Field Staff Activities

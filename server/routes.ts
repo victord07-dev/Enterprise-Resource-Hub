@@ -127,9 +127,10 @@ export async function registerRoutes(
       const emp6 = await storage.createEmployee({ name: "Sneha Patil", email: "sneha@nexerp.com", phone: "+91-9867890123", department: "HR", designation: "HR Manager", joinDate: new Date("2024-07-01"), isActive: true, salary: "58000" });
       const emp7 = await storage.createEmployee({ name: "Arjun Reddy", email: "arjun@nexerp.com", phone: "+91-9878901234", department: "IT", designation: "Technical Lead", joinDate: new Date("2024-02-15"), isActive: true, salary: "80000" });
 
-      const today = new Date();
+      const pastDate = new Date();
+      pastDate.setDate(pastDate.getDate() - 2);
       for (const emp of [emp1, emp2, emp3, emp4, emp5, emp6, emp7]) {
-        await storage.createAttendanceRecord({ employeeId: emp.id, date: today, checkIn: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 0), checkOut: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 18, 0), status: "present" });
+        await storage.createAttendanceRecord({ employeeId: emp.id, date: pastDate, checkIn: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 9, 0), checkOut: new Date(pastDate.getFullYear(), pastDate.getMonth(), pastDate.getDate(), 18, 0), status: "present" });
       }
 
       await logAction(admin.id, "seed", "system", "Demo data seeded successfully");
@@ -137,6 +138,29 @@ export async function registerRoutes(
     } catch (seedError) {
       console.error("Error seeding demo data:", seedError);
     }
+  }
+
+  // One-time cleanup: remove seed attendance records for today (seed used to create today's records)
+  try {
+    const allAttendance = await storage.getAttendance();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const seedRecordsToday = allAttendance.filter(a => {
+      const aDate = new Date(a.date);
+      aDate.setHours(0, 0, 0, 0);
+      if (aDate.getTime() !== today.getTime()) return false;
+      if (a.selfieUrl) return false;
+      const checkIn = new Date(a.checkIn!);
+      return checkIn.getHours() === 9 && checkIn.getMinutes() === 0;
+    });
+    if (seedRecordsToday.length > 0) {
+      for (const rec of seedRecordsToday) {
+        await storage.deleteAttendanceRecord(rec.id);
+      }
+      console.log(`Cleaned up ${seedRecordsToday.length} seed attendance records for today`);
+    }
+  } catch (cleanupError) {
+    console.error("Attendance cleanup error:", cleanupError);
   }
 
   // ======================== AUTH ========================

@@ -25,7 +25,7 @@ export default function Employees() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", department: "Sales", designation: "", salary: "", isActive: true });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
 
   const [qrDialogOpen, setQrDialogOpen] = useState(false);
   const [qrData, setQrData] = useState<{ qrDataUrl: string; employeeName: string; qrCode: string } | null>(null);
@@ -63,7 +63,7 @@ export default function Employees() {
 
   const openNew = () => {
     setEditingEmployee(null);
-    setForm({ name: "", email: "", phone: "", department: "Sales", designation: "", salary: "", isActive: true });
+    setForm({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
     setDialogOpen(true);
   };
 
@@ -73,6 +73,7 @@ export default function Employees() {
       name: emp.name,
       email: emp.email,
       phone: emp.phone || "",
+      company: emp.company || "",
       department: emp.department,
       designation: emp.designation,
       salary: emp.salary ? String(emp.salary) : "",
@@ -236,6 +237,7 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Department</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Designation</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Company</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">QR Code</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
@@ -245,7 +247,7 @@ export default function Employees() {
                     {empLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 7 }).map((_, j) => (
+                          {Array.from({ length: 8 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -267,6 +269,7 @@ export default function Employees() {
                           <td className="p-3 text-muted-foreground">{emp.department}</td>
                           <td className="p-3 text-muted-foreground">{emp.designation}</td>
                           <td className="p-3 text-muted-foreground">{emp.phone || "\u2014"}</td>
+                          <td className="p-3 text-muted-foreground">{emp.company || "\u2014"}</td>
                           <td className="p-3">
                             {emp.qrCode ? (
                               <Button size="sm" variant="outline" onClick={() => viewQr(emp.id)} data-testid={`button-view-qr-${emp.id}`}>
@@ -299,7 +302,7 @@ export default function Employees() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-muted-foreground">No employees found.</td>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No employees found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -413,6 +416,19 @@ export default function Employees() {
             <div className="space-y-2">
               <Label htmlFor="empPhone">Phone</Label>
               <Input id="empPhone" data-testid="input-employee-phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empCompany">Company</Label>
+              <Select value={form.company} onValueChange={(v) => setForm({ ...form, company: v })}>
+                <SelectTrigger data-testid="select-employee-company">
+                  <SelectValue placeholder="Select company" />
+                </SelectTrigger>
+                <SelectContent>
+                  {["IT Futuristic Industries PVT LTD", "Hussain Enterprise", "IT Traders", "IT Construction", "IT Saif Pharma"].map((c) => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="empDept">Department</Label>

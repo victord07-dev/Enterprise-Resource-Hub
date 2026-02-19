@@ -142,6 +142,7 @@ export const employees = pgTable("employees", {
   name: text("name").notNull(),
   email: text("email").notNull(),
   phone: text("phone"),
+  company: text("company"),
   department: text("department").notNull(),
   designation: text("designation").notNull(),
   joinDate: timestamp("join_date").notNull().defaultNow(),

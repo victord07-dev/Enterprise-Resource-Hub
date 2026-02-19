@@ -2,19 +2,21 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed } from "lucide-react";
+import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed, LogOut } from "lucide-react";
 
-type KioskStep = "scan" | "confirm" | "selfie" | "success" | "error";
+type KioskStep = "scan" | "confirm" | "choose_action" | "selfie" | "success" | "error";
+type AttendanceAction = "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in";
 
 interface EmployeeInfo {
   id: string;
   name: string;
   department: string;
   designation: string;
+  todayAttendance: any;
 }
 
 interface AttendanceResult {
-  type: "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in" | "already_done" | "waiting";
+  type: AttendanceAction | "already_done" | "waiting";
   message: string;
   record: any;
 }
@@ -31,6 +33,7 @@ export default function Kiosk() {
   const [selfieDataUrl, setSelfieDataUrl] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [selectedAction, setSelectedAction] = useState<AttendanceAction | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -69,6 +72,7 @@ export default function Kiosk() {
     setScanning(false);
     setManualEntry(false);
     setManualQrInput("");
+    setSelectedAction(null);
   }, [stopCamera, stopScanner]);
 
   useEffect(() => {
@@ -116,11 +120,50 @@ export default function Kiosk() {
       const data = await res.json();
       setEmployee(data);
       setScannedQrCode(qrCode);
-      setStep("confirm");
+
+      const attendance = data.todayAttendance;
+      if (!attendance) {
+        setSelectedAction("check_in");
+        setStep("confirm");
+      } else if (attendance.checkOut) {
+        setResult({ type: "already_done", message: "Attendance already completed for today", record: attendance });
+        setStep("success");
+      } else if (attendance.lunchOut && !attendance.lunchIn) {
+        setSelectedAction("lunch_in");
+        setStep("confirm");
+      } else if (attendance.teaOut && !attendance.teaIn) {
+        setSelectedAction("tea_in");
+        setStep("confirm");
+      } else {
+        setStep("choose_action");
+      }
     } catch {
       setErrorMsg("Connection error. Please try again.");
       setStep("error");
     }
+  };
+
+  const getAvailableActions = () => {
+    if (!employee?.todayAttendance) return [];
+    const att = employee.todayAttendance;
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const timeInMinutes = hours * 60 + minutes;
+
+    const actions: { action: AttendanceAction; label: string; icon: any; color: string }[] = [];
+
+    if (!att.lunchOut && timeInMinutes >= 780 && timeInMinutes <= 870) {
+      actions.push({ action: "lunch_out", label: "Lunch Break", icon: UtensilsCrossed, color: "text-orange-500" });
+    }
+
+    if (!att.teaOut && timeInMinutes >= 1020 && timeInMinutes <= 1050) {
+      actions.push({ action: "tea_out", label: "Tea Break", icon: Coffee, color: "text-purple-500" });
+    }
+
+    actions.push({ action: "check_out", label: "Check Out", icon: LogOut, color: "text-blue-500" });
+
+    return actions;
   };
 
   const startSelfieCamera = useCallback(async () => {
@@ -154,7 +197,7 @@ export default function Kiosk() {
   }, [stopCamera]);
 
   const submitAttendance = async () => {
-    if (!employee || !scannedQrCode) return;
+    if (!employee || !scannedQrCode || !selectedAction) return;
     setIsSubmitting(true);
 
     try {
@@ -178,11 +221,12 @@ export default function Kiosk() {
       const res = await fetch("/api/kiosk/attendance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qrCode: scannedQrCode, selfieUrl: selfieObjectPath }),
+        body: JSON.stringify({ qrCode: scannedQrCode, selfieUrl: selfieObjectPath, action: selectedAction }),
       });
 
       if (!res.ok) {
-        setErrorMsg("Failed to record attendance. Please try again.");
+        const errData = await res.json().catch(() => ({ message: "Failed to record attendance" }));
+        setErrorMsg(errData.message || "Failed to record attendance. Please try again.");
         setStep("error");
         return;
       }
@@ -195,6 +239,17 @@ export default function Kiosk() {
       setStep("error");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const getActionLabel = (action: AttendanceAction) => {
+    switch (action) {
+      case "check_in": return "Check In";
+      case "check_out": return "Check Out";
+      case "lunch_out": return "Lunch Break";
+      case "lunch_in": return "Back from Lunch";
+      case "tea_out": return "Tea Break";
+      case "tea_in": return "Back from Tea";
     }
   };
 
@@ -268,18 +323,71 @@ export default function Kiosk() {
         </Card>
       )}
 
-      {step === "confirm" && employee && (
+      {step === "choose_action" && employee && (
         <Card className="w-full max-w-md">
           <CardContent className="p-8 text-center space-y-6">
             <div className="w-20 h-20 mx-auto rounded-full bg-emerald-50 dark:bg-emerald-950/40 flex items-center justify-center">
               <CheckCircle2 className="w-10 h-10 text-emerald-500" />
             </div>
             <div>
-              <h2 className="text-xl font-semibold" data-testid="text-confirm-heading">Employee Identified</h2>
+              <p className="text-2xl font-bold" data-testid="text-action-employee-name">{employee.name}</p>
+              <p className="text-muted-foreground" data-testid="text-action-employee-dept">{employee.department} &middot; {employee.designation}</p>
+              <p className="text-sm text-emerald-600 mt-2 font-medium">Checked in today</p>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold mb-4" data-testid="text-action-heading">What would you like to do?</h2>
+              <div className="space-y-3">
+                {getAvailableActions().map(({ action, label, icon: Icon, color }) => (
+                  <Button
+                    key={action}
+                    variant="outline"
+                    className="w-full justify-start gap-3 h-14 text-base"
+                    onClick={() => { setSelectedAction(action); startSelfieCamera(); }}
+                    data-testid={`button-action-${action}`}
+                  >
+                    <Icon className={`w-5 h-5 ${color}`} />
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <Button variant="ghost" onClick={resetToScan} data-testid="button-cancel-action">
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Cancel
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {step === "confirm" && employee && (
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center space-y-6">
+            <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center ${
+              selectedAction === "lunch_in" ? "bg-orange-50 dark:bg-orange-950/40"
+              : selectedAction === "tea_in" ? "bg-purple-50 dark:bg-purple-950/40"
+              : "bg-emerald-50 dark:bg-emerald-950/40"
+            }`}>
+              {selectedAction === "lunch_in" ? (
+                <UtensilsCrossed className="w-10 h-10 text-orange-500" />
+              ) : selectedAction === "tea_in" ? (
+                <Coffee className="w-10 h-10 text-purple-500" />
+              ) : (
+                <CheckCircle2 className="w-10 h-10 text-emerald-500" />
+              )}
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold" data-testid="text-confirm-heading">
+                {selectedAction === "check_in" ? "Employee Identified" : getActionLabel(selectedAction!)}
+              </h2>
               <div className="mt-4 space-y-2">
                 <p className="text-2xl font-bold" data-testid="text-employee-name">{employee.name}</p>
                 <p className="text-muted-foreground" data-testid="text-employee-dept">{employee.department} &middot; {employee.designation}</p>
               </div>
+              {selectedAction && selectedAction !== "check_in" && (
+                <p className="text-sm font-medium mt-3" data-testid="text-action-type">
+                  Action: {getActionLabel(selectedAction)}
+                </p>
+              )}
             </div>
             <div className="flex gap-3">
               <Button variant="outline" className="flex-1" onClick={resetToScan} data-testid="button-cancel-confirm">
@@ -302,7 +410,12 @@ export default function Kiosk() {
               {selfieDataUrl ? "Confirm Your Selfie" : "Take a Selfie"}
             </h2>
             {employee && (
-              <p className="text-center text-muted-foreground">{employee.name}</p>
+              <div className="text-center">
+                <p className="text-muted-foreground">{employee.name}</p>
+                {selectedAction && (
+                  <p className="text-sm font-medium mt-1">{getActionLabel(selectedAction)}</p>
+                )}
+              </div>
             )}
             <div className="relative rounded-lg overflow-hidden bg-black aspect-[4/3]">
               {!selfieDataUrl ? (

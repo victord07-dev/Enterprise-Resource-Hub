@@ -686,9 +686,12 @@ export default function Employees() {
               <div data-testid="payslip-content">
                 <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-5">
                   <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h2 className="text-lg font-bold tracking-wide">{companyName}</h2>
-                      <p className="text-slate-300 text-xs mt-0.5">A subsidiary of ITFI Group</p>
+                    <div className="flex items-center gap-3">
+                      <img src="/favicon.png" alt="ITFI Group" className="w-10 h-10 rounded-md object-contain bg-white/10 p-0.5" />
+                      <div>
+                        <h2 className="text-lg font-bold tracking-wide">{companyName}</h2>
+                        <p className="text-slate-300 text-xs mt-0.5">A subsidiary of ITFI Group</p>
+                      </div>
                     </div>
                     <div className="text-right text-xs text-slate-300 space-y-0.5">
                       <div className="flex items-center justify-end gap-1.5"><Mail className="w-3 h-3" /> admin@itfi.co.in</div>

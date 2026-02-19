@@ -935,6 +935,14 @@ export async function registerRoutes(
       const now = new Date();
 
       if (!todayRecord) {
+        const checkInHour = now.getHours();
+        const checkInMin = now.getMinutes();
+        const checkInSec = now.getSeconds();
+        const totalSeconds = checkInHour * 3600 + checkInMin * 60 + checkInSec;
+        const graceDeadline = 9 * 3600 + 35 * 60; // 9:35:00 AM
+        const isLate = totalSeconds > graceDeadline;
+        const status = isLate ? "half_day" : "present";
+
         const created = await storage.createAttendanceRecord({
           employeeId,
           date: today,
@@ -944,11 +952,12 @@ export async function registerRoutes(
           lunchIn: null,
           teaOut: null,
           teaIn: null,
-          status: "present",
+          status,
           selfieUrl: selfieUrl || null,
           location: location || null,
         });
-        return res.json({ type: "check_in", message: "Checked in successfully", record: created });
+        const message = isLate ? "Checked in - Marked as Half Day (Late arrival)" : "Checked in successfully";
+        return res.json({ type: "check_in", message, record: created, isLate });
       }
 
       if (todayRecord.checkOut) {

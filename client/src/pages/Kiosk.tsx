@@ -19,6 +19,7 @@ interface AttendanceResult {
   type: AttendanceAction | "already_done" | "waiting";
   message: string;
   record: any;
+  isLate?: boolean;
 }
 
 export default function Kiosk() {
@@ -545,9 +546,16 @@ export default function Kiosk() {
               <p className="text-2xl font-bold mt-2" data-testid="text-success-name">{employee?.name}</p>
               <p className="text-muted-foreground mt-1">{result.message}</p>
               {result.type === "check_in" && result.record?.checkIn && (
-                <p className="text-lg font-medium text-emerald-600 mt-3" data-testid="text-checkin-time">
-                  Check-in: {new Date(result.record.checkIn).toLocaleTimeString("en-IN")}
-                </p>
+                <>
+                  <p className="text-lg font-medium text-emerald-600 mt-3" data-testid="text-checkin-time">
+                    Check-in: {new Date(result.record.checkIn).toLocaleTimeString("en-IN")}
+                  </p>
+                  {result.isLate && (
+                    <div className="mt-2 px-3 py-1.5 bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 rounded-md text-sm font-medium" data-testid="text-half-day-warning">
+                      Half Day - Late arrival (after 9:35 AM)
+                    </div>
+                  )}
+                </>
               )}
               {result.type === "check_out" && result.record?.checkOut && (
                 <p className="text-lg font-medium text-blue-600 mt-3" data-testid="text-checkout-time">

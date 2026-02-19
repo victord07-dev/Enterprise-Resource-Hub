@@ -238,6 +238,8 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Designation</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Company</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Monthly Salary</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Daily Rate</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">QR Code</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
@@ -247,7 +249,7 @@ export default function Employees() {
                     {empLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 8 }).map((_, j) => (
+                          {Array.from({ length: 10 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -270,6 +272,8 @@ export default function Employees() {
                           <td className="p-3 text-muted-foreground">{emp.designation}</td>
                           <td className="p-3 text-muted-foreground">{emp.phone || "\u2014"}</td>
                           <td className="p-3 text-muted-foreground">{emp.company || "\u2014"}</td>
+                          <td className="p-3 text-right font-medium" data-testid={`text-salary-${emp.id}`}>{emp.salary ? `\u20B9${Number(emp.salary).toLocaleString("en-IN")}` : "\u2014"}</td>
+                          <td className="p-3 text-right text-muted-foreground" data-testid={`text-daily-rate-${emp.id}`}>{emp.salary ? `\u20B9${Math.round(Number(emp.salary) / 26).toLocaleString("en-IN")}` : "\u2014"}</td>
                           <td className="p-3">
                             {emp.qrCode ? (
                               <Button size="sm" variant="outline" onClick={() => viewQr(emp.id)} data-testid={`button-view-qr-${emp.id}`}>
@@ -302,7 +306,7 @@ export default function Employees() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No employees found.</td>
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">No employees found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -371,8 +375,8 @@ export default function Employees() {
                               </span>
                             </td>
                             <td className="p-3">
-                              <Badge variant={a.status === "present" ? "default" : "secondary"}>
-                                {a.status}
+                              <Badge data-testid={`badge-status-${a.id}`} variant={a.status === "present" ? "default" : a.status === "half_day" ? "outline" : "secondary"} className={a.status === "half_day" ? "border-amber-500 text-amber-600 dark:text-amber-400" : ""}>
+                                {a.status === "half_day" ? "Half Day" : a.status}
                               </Badge>
                             </td>
                           </tr>
@@ -454,8 +458,11 @@ export default function Employees() {
               <Input id="empDesignation" data-testid="input-employee-designation" value={form.designation} onChange={(e) => setForm({ ...form, designation: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="empSalary">Salary</Label>
-              <Input id="empSalary" type="number" data-testid="input-employee-salary" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })} />
+              <Label htmlFor="empSalary">Monthly Salary</Label>
+              <Input id="empSalary" type="number" data-testid="input-employee-salary" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })} placeholder="e.g. 25000" />
+              {form.salary && Number(form.salary) > 0 && (
+                <p className="text-xs text-muted-foreground" data-testid="text-daily-rate">Daily Rate: {"\u20B9"}{Math.round(Number(form.salary) / 26).toLocaleString("en-IN")} (26 working days)</p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Checkbox id="empActive" data-testid="checkbox-employee-active" checked={form.isActive} onCheckedChange={(checked) => setForm({ ...form, isActive: !!checked })} />

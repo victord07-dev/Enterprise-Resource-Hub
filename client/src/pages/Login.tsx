@@ -41,7 +41,7 @@ export default function Login() {
               <Shield className="w-8 h-8 text-primary-foreground" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold" data-testid="text-app-title">Hussain Group</h1>
+          <h1 className="text-2xl font-bold" data-testid="text-app-title">ITFI Group</h1>
           <p className="text-muted-foreground text-sm">Enterprise Resource Planning System</p>
         </CardHeader>
         <CardContent>

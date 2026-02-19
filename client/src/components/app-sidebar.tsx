@@ -51,9 +51,9 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4 pb-2">
         <div className="flex items-center gap-3">
-          <img src="/favicon.png" alt="Hussain Group" className="w-9 h-9 rounded-md object-contain" />
+          <img src="/favicon.png" alt="ITFI Group" className="w-9 h-9 rounded-md object-contain" />
           <div>
-            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">Hussain Group</h2>
+            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">ITFI Group</h2>
             <p className="text-xs text-sidebar-foreground/60">Enterprise Solution</p>
           </div>
         </div>

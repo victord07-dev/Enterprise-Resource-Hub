@@ -181,31 +181,7 @@ export default function Kiosk() {
         });
       });
       const { latitude, longitude } = position.coords;
-      try {
-        const res = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`,
-          { headers: { "Accept-Language": "en" } }
-        );
-        if (res.ok) {
-          const data = await res.json();
-          const a = data.address || {};
-          const parts = [
-            a.house_number,
-            a.road || a.pedestrian || a.path,
-            a.neighbourhood || a.hamlet,
-            a.suburb || a.village || a.town,
-            a.city || a.county || a.state_district,
-            a.state,
-            a.postcode,
-          ].filter(Boolean);
-          const addr = parts.length > 0 ? parts.join(", ") : (data.display_name || `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-          setLocationAddress(addr);
-        } else {
-          setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-        }
-      } catch {
-        setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-      }
+      setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
     } catch {
       setLocationAddress("Location not available");
     } finally {

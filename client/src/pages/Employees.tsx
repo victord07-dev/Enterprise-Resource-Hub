@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera, Wallet, ChevronLeft, ChevronRight, Eye } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera, Wallet, ChevronLeft, ChevronRight, Eye, Building2, Phone, Mail, Globe } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -675,76 +675,106 @@ export default function Employees() {
       </Dialog>
 
       <Dialog open={payslipOpen} onOpenChange={setPayslipOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
+        <DialogContent className="max-w-lg p-0 overflow-hidden">
+          <DialogHeader className="sr-only">
             <DialogTitle>Payslip - {monthNames[payrollMonth]} {payrollYear}</DialogTitle>
           </DialogHeader>
           {payslipEmployee && (() => {
             const p = getPayrollData(payslipEmployee);
+            const companyName = payslipEmployee.company || "ITFI Group";
             return (
-              <div className="space-y-4" data-testid="payslip-content">
-                <div className="flex items-center gap-3 pb-3 border-b">
-                  <Avatar className="w-10 h-10">
-                    <AvatarFallback>{payslipEmployee.name.charAt(0).toUpperCase()}</AvatarFallback>
-                  </Avatar>
+              <div data-testid="payslip-content">
+                <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-lg font-bold tracking-wide">{companyName}</h2>
+                      <p className="text-slate-300 text-xs mt-0.5">A subsidiary of ITFI Group</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-300 space-y-0.5">
+                      <div className="flex items-center justify-end gap-1.5"><Mail className="w-3 h-3" /> admin@itfi.co.in</div>
+                      <div className="flex items-center justify-end gap-1.5"><Globe className="w-3 h-3" /> www.itfi.co.in</div>
+                    </div>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-slate-600 text-center">
+                    <p className="text-sm font-semibold uppercase tracking-widest">Payslip</p>
+                    <p className="text-slate-300 text-xs mt-0.5">{monthNames[payrollMonth]} {payrollYear}</p>
+                  </div>
+                </div>
+
+                <div className="px-6 py-5 space-y-5">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm border-b pb-4">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Employee Name</p>
+                      <p className="font-semibold" data-testid="text-payslip-name">{payslipEmployee.name}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Employee ID</p>
+                      <p className="font-semibold">EMP-{String(payslipEmployee.id).padStart(4, "0")}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Designation</p>
+                      <p className="font-medium">{payslipEmployee.designation}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Department</p>
+                      <p className="font-medium">{payslipEmployee.department}</p>
+                    </div>
+                  </div>
+
                   <div>
-                    <p className="font-semibold text-lg" data-testid="text-payslip-name">{payslipEmployee.name}</p>
-                    <p className="text-sm text-muted-foreground">{payslipEmployee.designation} - {payslipEmployee.department}</p>
-                    {payslipEmployee.company && <p className="text-xs text-muted-foreground">{payslipEmployee.company}</p>}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <h3 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Attendance Summary</h3>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
-                      <span className="text-muted-foreground">Working Days</span>
-                      <span className="font-medium">{p.workingDays}</span>
-                    </div>
-                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
-                      <span className="text-muted-foreground">Full Days</span>
-                      <span className="font-medium text-emerald-600">{p.fullDays}</span>
-                    </div>
-                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
-                      <span className="text-muted-foreground">Half Days</span>
-                      <span className="font-medium text-amber-600">{p.halfDays}</span>
-                    </div>
-                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
-                      <span className="text-muted-foreground">Absent</span>
-                      <span className="font-medium text-red-600">{p.daysAbsent}</span>
+                    <h3 className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-2">Attendance Summary</h3>
+                    <div className="grid grid-cols-4 gap-2 text-center text-sm">
+                      <div className="p-2 rounded-md bg-muted/50">
+                        <p className="text-lg font-bold">{p.workingDays}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase">Working</p>
+                      </div>
+                      <div className="p-2 rounded-md bg-emerald-500/10">
+                        <p className="text-lg font-bold text-emerald-600">{p.fullDays}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase">Present</p>
+                      </div>
+                      <div className="p-2 rounded-md bg-amber-500/10">
+                        <p className="text-lg font-bold text-amber-600">{p.halfDays}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase">Half Day</p>
+                      </div>
+                      <div className="p-2 rounded-md bg-red-500/10">
+                        <p className="text-lg font-bold text-red-600">{p.daysAbsent}</p>
+                        <p className="text-[10px] text-muted-foreground uppercase">Absent</p>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-2">
-                  <h3 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Salary Breakdown</h3>
-                  <div className="space-y-1 text-sm">
-                    <div className="flex justify-between p-2">
-                      <span className="text-muted-foreground">Monthly Salary</span>
-                      <span>{"\u20B9"}{p.monthlySalary.toLocaleString("en-IN")}</span>
-                    </div>
-                    <div className="flex justify-between p-2">
-                      <span className="text-muted-foreground">Daily Rate (salary / 26)</span>
-                      <span>{"\u20B9"}{p.dailyRate.toLocaleString("en-IN")}</span>
-                    </div>
-                    <div className="flex justify-between p-2 border-t">
-                      <span className="text-muted-foreground">Full Days ({p.fullDays} x {"\u20B9"}{p.dailyRate.toLocaleString("en-IN")})</span>
-                      <span className="text-emerald-600">{"\u20B9"}{(p.fullDays * p.dailyRate).toLocaleString("en-IN")}</span>
-                    </div>
-                    <div className="flex justify-between p-2">
-                      <span className="text-muted-foreground">Half Days ({p.halfDays} x {"\u20B9"}{Math.round(p.dailyRate / 2).toLocaleString("en-IN")})</span>
-                      <span className="text-amber-600">{"\u20B9"}{(p.halfDays * Math.round(p.dailyRate / 2)).toLocaleString("en-IN")}</span>
-                    </div>
-                    <div className="flex justify-between p-2 border-t">
-                      <span className="text-muted-foreground">Total Deductions</span>
-                      <span className="text-red-600">{p.deductions > 0 ? `-\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</span>
+                  <div>
+                    <h3 className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-2">Earnings & Deductions</h3>
+                    <div className="text-sm border rounded-md">
+                      <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30">
+                        <span className="text-muted-foreground">Monthly Salary (Gross)</span>
+                        <span className="font-medium">{"\u20B9"}{p.monthlySalary.toLocaleString("en-IN")}</span>
+                      </div>
+                      <div className="flex justify-between gap-4 px-3 py-2">
+                        <span className="text-muted-foreground">Daily Rate (Salary / 26)</span>
+                        <span>{"\u20B9"}{p.dailyRate.toLocaleString("en-IN")}</span>
+                      </div>
+                      <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30">
+                        <span className="text-muted-foreground">Full Days ({p.fullDays} x {"\u20B9"}{p.dailyRate.toLocaleString("en-IN")})</span>
+                        <span className="text-emerald-600 font-medium">{"\u20B9"}{(p.fullDays * p.dailyRate).toLocaleString("en-IN")}</span>
+                      </div>
+                      <div className="flex justify-between gap-4 px-3 py-2">
+                        <span className="text-muted-foreground">Half Days ({p.halfDays} x {"\u20B9"}{Math.round(p.dailyRate / 2).toLocaleString("en-IN")})</span>
+                        <span className="text-amber-600 font-medium">{"\u20B9"}{(p.halfDays * Math.round(p.dailyRate / 2)).toLocaleString("en-IN")}</span>
+                      </div>
+                      <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30 border-t">
+                        <span className="text-muted-foreground font-medium">Total Deductions</span>
+                        <span className="text-red-600 font-medium">{p.deductions > 0 ? `-\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex justify-between items-center p-3 rounded-md bg-muted/70 border">
-                  <span className="font-semibold">Net Pay</span>
-                  <span className="text-xl font-bold" data-testid="text-payslip-net">{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</span>
+                  <div className="flex justify-between items-center px-4 py-3 rounded-md bg-slate-800 text-white">
+                    <span className="font-semibold text-sm uppercase tracking-wide">Net Payable</span>
+                    <span className="text-xl font-bold" data-testid="text-payslip-net">{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</span>
+                  </div>
+
+                  <p className="text-[10px] text-muted-foreground text-center pt-1">This is a system-generated payslip and does not require a signature.</p>
                 </div>
               </div>
             );

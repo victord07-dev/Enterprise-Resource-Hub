@@ -57,7 +57,7 @@ export async function registerRoutes(
       username: "admin",
       password: hashedPassword,
       fullName: "Admin User",
-      email: "admin@hussaingroup.co.in",
+      email: "admin@itfi.co.in",
       role: "admin",
       isActive: true,
     });

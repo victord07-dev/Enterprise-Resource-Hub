@@ -869,6 +869,57 @@ export async function registerRoutes(
     }
   });
 
+  // ======================== PAYROLL STATUS ========================
+  app.get("/api/payroll-status", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getPayrollStatuses();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payroll statuses" });
+    }
+  });
+
+  app.get("/api/payroll-status/:month/:year", authenticateToken, async (req, res) => {
+    try {
+      const month = parseInt(req.params.month);
+      const year = parseInt(req.params.year);
+      let data = await storage.getPayrollStatus(month, year);
+      const now = new Date();
+      const lastMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
+      const lastMonthYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+      if (!data && month === lastMonth && year === lastMonthYear && now.getDate() >= 2) {
+        data = await storage.createPayrollStatus({ month, year, status: "pending", totalAmount: null, disbursedAt: null });
+      }
+      res.json(data || null);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch payroll status" });
+    }
+  });
+
+  app.post("/api/payroll-status", authenticateToken, async (req: any, res) => {
+    try {
+      const { month, year, totalAmount } = req.body;
+      const existing = await storage.getPayrollStatus(month, year);
+      if (existing) {
+        return res.json(existing);
+      }
+      const created = await storage.createPayrollStatus({ month, year, status: "pending", totalAmount: totalAmount || "0", disbursedAt: null });
+      res.json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create payroll status" });
+    }
+  });
+
+  app.patch("/api/payroll-status/:id/disburse", authenticateToken, async (req, res) => {
+    try {
+      const updated = await storage.updatePayrollStatus(req.params.id, { status: "disbursed", disbursedAt: new Date() });
+      if (!updated) return res.status(404).json({ message: "Payroll status not found" });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update payroll status" });
+    }
+  });
+
   // ======================== AUDIT LOGS ========================
   app.get("/api/audit-logs", authenticateToken, async (_req, res) => {
     try {

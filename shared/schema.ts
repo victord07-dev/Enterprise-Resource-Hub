@@ -176,6 +176,15 @@ export const fieldStaffActivities = pgTable("field_staff_activities", {
   status: text("status").notNull().default("completed"),
 });
 
+export const payrollStatus = pgTable("payroll_status", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  month: integer("month").notNull(),
+  year: integer("year").notNull(),
+  status: text("status").notNull().default("pending"),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }),
+  disbursedAt: timestamp("disbursed_at"),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -203,6 +212,7 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true 
 export const insertEmployeeSchema = createInsertSchema(employees).omit({ id: true });
 export const insertAttendanceSchema = createInsertSchema(attendanceRecords).omit({ id: true });
 export const insertFieldStaffActivitySchema = createInsertSchema(fieldStaffActivities).omit({ id: true });
+export const insertPayrollStatusSchema = createInsertSchema(payrollStatus).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -222,4 +232,5 @@ export type Payment = typeof payments.$inferSelect;
 export type Employee = typeof employees.$inferSelect;
 export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
 export type FieldStaffActivity = typeof fieldStaffActivities.$inferSelect;
+export type PayrollStatus = typeof payrollStatus.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;

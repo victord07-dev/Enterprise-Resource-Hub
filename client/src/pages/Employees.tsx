@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,11 +10,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera, Wallet, ChevronLeft, ChevronRight, Eye, Building2, Phone, Mail, Globe } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera, Wallet, ChevronLeft, ChevronRight, Eye, Building2, Phone, Mail, Globe, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Employee, AttendanceRecord } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus } from "@shared/schema";
 
 export default function Employees() {
   const { toast } = useToast();
@@ -22,6 +22,10 @@ export default function Employees() {
   const { data: attendance, isLoading: attLoading } = useQuery<AttendanceRecord[]>({ queryKey: ["/api/attendance"] });
 
   const activeCount = employees?.filter((e) => e.isActive).length ?? 0;
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialTab = urlParams.get("tab") || "employees";
+  const [activeTab, setActiveTab] = useState(initialTab);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
@@ -36,6 +40,31 @@ export default function Employees() {
   const [payrollYear, setPayrollYear] = useState(now.getFullYear());
   const [payslipEmployee, setPayslipEmployee] = useState<Employee | null>(null);
   const [payslipOpen, setPayslipOpen] = useState(false);
+
+  const { data: payrollStatusData, isLoading: psLoading } = useQuery<PayrollStatus | null>({
+    queryKey: ["/api/payroll-status", payrollMonth, payrollYear],
+  });
+
+  const disburseMutation = useMutation({
+    mutationFn: async () => {
+      const totalNet = employees?.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).netPay, 0) || 0;
+      let ps = payrollStatusData;
+      if (!ps) {
+        const res = await apiRequest("POST", "/api/payroll-status", { month: payrollMonth, year: payrollYear, totalAmount: String(totalNet) });
+        ps = await res.json();
+      }
+      if (ps && ps.id) {
+        await apiRequest("PATCH", `/api/payroll-status/${ps.id}/disburse`);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/payroll-status"] });
+      toast({ title: "Payroll disbursed", description: `${monthNames[payrollMonth]} ${payrollYear} payroll marked as disbursed.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
 
   const employeeMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -257,7 +286,7 @@ export default function Employees() {
         </Card>
       </div>
 
-      <Tabs defaultValue="employees" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="employees" data-testid="tab-employees">Employees</TabsTrigger>
           <TabsTrigger value="attendance" data-testid="tab-attendance">Attendance</TabsTrigger>
@@ -466,9 +495,21 @@ export default function Employees() {
                 <ChevronRight className="w-4 h-4" />
               </Button>
             </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Wallet className="w-4 h-4" />
-              <span>Working Days: <strong className="text-foreground">{getWorkingDaysInMonth(payrollMonth, payrollYear)}</strong></span>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Wallet className="w-4 h-4" />
+                <span>Working Days: <strong className="text-foreground">{getWorkingDaysInMonth(payrollMonth, payrollYear)}</strong></span>
+              </div>
+              {payrollStatusData?.status === "disbursed" ? (
+                <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate" data-testid="badge-payroll-disbursed">
+                  <CheckCircle2 className="w-3 h-3 mr-1" /> Disbursed
+                </Badge>
+              ) : (
+                <Button variant="default" size="sm" onClick={() => disburseMutation.mutate()} disabled={disburseMutation.isPending} data-testid="button-disburse-payroll">
+                  <CheckCircle2 className="w-4 h-4 mr-1" />
+                  {disburseMutation.isPending ? "Processing..." : "Mark as Disbursed"}
+                </Button>
+              )}
             </div>
           </div>
 

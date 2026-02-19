@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -116,6 +116,12 @@ export interface IStorage {
   // Field Staff Activities
   getFieldStaffActivities(): Promise<FieldStaffActivity[]>;
   createFieldStaffActivity(data: Omit<FieldStaffActivity, "id">): Promise<FieldStaffActivity>;
+
+  // Payroll Status
+  getPayrollStatuses(): Promise<PayrollStatus[]>;
+  getPayrollStatus(month: number, year: number): Promise<PayrollStatus | undefined>;
+  createPayrollStatus(data: Omit<PayrollStatus, "id">): Promise<PayrollStatus>;
+  updatePayrollStatus(id: string, data: Partial<Omit<PayrollStatus, "id">>): Promise<PayrollStatus | undefined>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -503,6 +509,26 @@ export class DatabaseStorage implements IStorage {
   async createFieldStaffActivity(data: Omit<FieldStaffActivity, "id">): Promise<FieldStaffActivity> {
     const [created] = await db.insert(fieldStaffActivities).values(data).returning();
     return created;
+  }
+
+  // Payroll Status
+  async getPayrollStatuses(): Promise<PayrollStatus[]> {
+    return db.select().from(payrollStatus);
+  }
+
+  async getPayrollStatus(month: number, year: number): Promise<PayrollStatus | undefined> {
+    const [ps] = await db.select().from(payrollStatus).where(and(eq(payrollStatus.month, month), eq(payrollStatus.year, year)));
+    return ps;
+  }
+
+  async createPayrollStatus(data: Omit<PayrollStatus, "id">): Promise<PayrollStatus> {
+    const [created] = await db.insert(payrollStatus).values(data).returning();
+    return created;
+  }
+
+  async updatePayrollStatus(id: string, data: Partial<Omit<PayrollStatus, "id">>): Promise<PayrollStatus | undefined> {
+    const [updated] = await db.update(payrollStatus).set(data).where(eq(payrollStatus.id, id)).returning();
+    return updated;
   }
 
   // Audit Logs

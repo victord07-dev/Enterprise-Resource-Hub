@@ -1,10 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { getUser } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
-import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw } from "lucide-react";
+import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SalesOrder, AuditLog } from "@shared/schema";
+import { useLocation } from "wouter";
+import type { SalesOrder, AuditLog, PayrollStatus } from "@shared/schema";
 
 const revenueData = [
   { day: "Mon", value: 2400 },
@@ -29,8 +31,21 @@ function getRelativeTime(timestamp: string | Date): string {
   return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
 }
 
+const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
 export default function Dashboard() {
   const user = getUser();
+  const [, setLocation] = useLocation();
+
+  const today = new Date();
+  const lastMonth = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
+  const lastMonthYear = today.getMonth() === 0 ? today.getFullYear() - 1 : today.getFullYear();
+
+  const { data: payrollStatusData } = useQuery<PayrollStatus | null>({
+    queryKey: ["/api/payroll-status", lastMonth, lastMonthYear],
+  });
+
+  const showPayrollAlert = today.getDate() >= 2 && payrollStatusData !== undefined && payrollStatusData !== null && payrollStatusData.status !== "disbursed";
 
   const { data: stats, isLoading } = useQuery<{
     totalRevenue: number;
@@ -91,6 +106,29 @@ export default function Dashboard() {
           Here's what's happening in your business today.
         </p>
       </div>
+
+      {showPayrollAlert && (
+        <div className="flex items-center justify-between gap-4 flex-wrap p-4 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800" data-testid="alert-payroll-pending">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-md flex items-center justify-center bg-amber-100 dark:bg-amber-900/50">
+              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <p className="font-semibold text-sm text-amber-900 dark:text-amber-200" data-testid="text-payroll-alert-title">
+                Payroll Pending — {monthNames[lastMonth]} {lastMonthYear}
+              </p>
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                {payrollStatusData?.totalAmount
+                  ? `Total: \u20B9${Number(payrollStatusData.totalAmount).toLocaleString("en-IN")} pending disbursement`
+                  : "Salary disbursement is pending for last month"}
+              </p>
+            </div>
+          </div>
+          <Button size="sm" variant="outline" className="border-amber-300 dark:border-amber-700" onClick={() => setLocation("/employees?tab=payroll")} data-testid="button-go-to-payroll">
+            Go to Payroll <ArrowRight className="w-4 h-4 ml-1" />
+          </Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {metricCards.map((card) => (

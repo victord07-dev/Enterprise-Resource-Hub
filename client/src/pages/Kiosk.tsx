@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed, LogOut } from "lucide-react";
+import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed, LogOut, MapPin } from "lucide-react";
 
 type KioskStep = "scan" | "confirm" | "choose_action" | "selfie" | "success" | "error";
 type AttendanceAction = "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in";
@@ -34,6 +34,8 @@ export default function Kiosk() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [selectedAction, setSelectedAction] = useState<AttendanceAction | null>(null);
+  const [locationAddress, setLocationAddress] = useState<string | null>(null);
+  const [locationLoading, setLocationLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -73,6 +75,8 @@ export default function Kiosk() {
     setManualEntry(false);
     setManualQrInput("");
     setSelectedAction(null);
+    setLocationAddress(null);
+    setLocationLoading(false);
   }, [stopCamera, stopScanner]);
 
   useEffect(() => {
@@ -166,8 +170,42 @@ export default function Kiosk() {
     return actions;
   };
 
+  const captureLocation = useCallback(async () => {
+    setLocationLoading(true);
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        });
+      });
+      const { latitude, longitude } = position.coords;
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`,
+          { headers: { "Accept-Language": "en" } }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const addr = data.display_name || `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+          setLocationAddress(addr);
+        } else {
+          setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+        }
+      } catch {
+        setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+      }
+    } catch {
+      setLocationAddress("Location not available");
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
   const startSelfieCamera = useCallback(async () => {
     setStep("selfie");
+    captureLocation();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: 640, height: 480 }
@@ -180,7 +218,7 @@ export default function Kiosk() {
       setErrorMsg("Could not access front camera.");
       setStep("error");
     }
-  }, []);
+  }, [captureLocation]);
 
   const captureSelfie = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -221,7 +259,7 @@ export default function Kiosk() {
       const res = await fetch("/api/kiosk/attendance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ qrCode: scannedQrCode, selfieUrl: selfieObjectPath, action: selectedAction }),
+        body: JSON.stringify({ qrCode: scannedQrCode, selfieUrl: selfieObjectPath, action: selectedAction, location: locationAddress }),
       });
 
       if (!res.ok) {
@@ -415,6 +453,16 @@ export default function Kiosk() {
                 {selectedAction && (
                   <p className="text-sm font-medium mt-1">{getActionLabel(selectedAction)}</p>
                 )}
+                <div className="flex items-center justify-center gap-1 mt-2 text-xs text-muted-foreground" data-testid="text-location-status">
+                  <MapPin className="w-3 h-3" />
+                  {locationLoading ? (
+                    <span className="animate-pulse">Fetching location...</span>
+                  ) : locationAddress ? (
+                    <span className="max-w-xs truncate">{locationAddress}</span>
+                  ) : (
+                    <span>Location pending...</span>
+                  )}
+                </div>
               </div>
             )}
             <div className="relative rounded-lg overflow-hidden bg-black aspect-[4/3]">
@@ -539,6 +587,12 @@ export default function Kiosk() {
                 <p className="text-lg font-medium text-purple-600 mt-3" data-testid="text-tea-in-time">
                   Tea In: {new Date(result.record.teaIn).toLocaleTimeString("en-IN")}
                 </p>
+              )}
+              {result.record?.location && (
+                <div className="flex items-center justify-center gap-1 mt-3 text-sm text-muted-foreground" data-testid="text-success-location">
+                  <MapPin className="w-4 h-4 shrink-0" />
+                  <span>{result.record.location}</span>
+                </div>
               )}
             </div>
             <Button variant="outline" onClick={resetToScan} data-testid="button-done">

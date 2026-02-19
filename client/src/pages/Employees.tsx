@@ -328,12 +328,13 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Tea In</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check Out</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Break Time</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Location</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {attLoading ? (
-                      <tr><td colSpan={10} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={11} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : attendance && attendance.length > 0 ? (
                       attendance.map((a) => {
                         const formatTime = (t: Date | string | null) => t ? new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
@@ -365,6 +366,11 @@ export default function Employees() {
                               )}
                             </td>
                             <td className="p-3">
+                              <span className="text-xs text-muted-foreground max-w-[200px] truncate block" title={a.location || ""}>
+                                {a.location || "\u2014"}
+                              </span>
+                            </td>
+                            <td className="p-3">
                               <Badge variant={a.status === "present" ? "default" : "secondary"}>
                                 {a.status}
                               </Badge>
@@ -374,7 +380,7 @@ export default function Employees() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
                           <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
                           <p>No attendance records yet.</p>
                           <p className="text-xs mt-1">Attendance will appear here when employees use the Kiosk system.</p>

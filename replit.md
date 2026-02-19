@@ -33,9 +33,11 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
   - Check Out (always available)
 - If currently on a break (lunchOut/teaOut without return), auto-selects return action
 - Backend accepts explicit `action` parameter: check_in, check_out, lunch_out, lunch_in, tea_out, tea_in
+- GPS location captured during selfie step, reverse geocoded to address via OpenStreetMap Nominatim (no API key needed)
+- Location address stored with attendance record and displayed in kiosk success screen + ERP attendance table
 - Selfie photos stored in Replit Object Storage
-- Attendance records visible in ERP Employee Management -> Attendance tab (shows all break times + total break duration)
-- Schema fields: checkIn, checkOut, lunchOut, lunchIn, teaOut, teaIn
+- Attendance records visible in ERP Employee Management -> Attendance tab (shows all break times + total break duration + location)
+- Schema fields: checkIn, checkOut, lunchOut, lunchIn, teaOut, teaIn, location
 - API endpoints: /api/kiosk/employee/:qrCode (GET), /api/kiosk/attendance (POST)
 - QR management: /api/employees/:id/generate-qr, /api/employees/generate-all-qr, /api/employees/:id/qr-image
 

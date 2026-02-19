@@ -163,6 +163,7 @@ export const attendanceRecords = pgTable("attendance_records", {
   teaIn: timestamp("tea_in"),
   status: text("status").notNull().default("present"),
   selfieUrl: text("selfie_url"),
+  location: text("location"),
 });
 
 export const fieldStaffActivities = pgTable("field_staff_activities", {

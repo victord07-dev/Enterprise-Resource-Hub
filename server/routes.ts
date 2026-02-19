@@ -914,7 +914,7 @@ export async function registerRoutes(
 
   app.post("/api/kiosk/attendance", async (req, res) => {
     try {
-      const { qrCode, selfieUrl, action } = req.body;
+      const { qrCode, selfieUrl, action, location } = req.body;
       if (!qrCode) return res.status(400).json({ message: "QR code required" });
 
       const employees = await storage.getEmployees();
@@ -946,6 +946,7 @@ export async function registerRoutes(
           teaIn: null,
           status: "present",
           selfieUrl: selfieUrl || null,
+          location: location || null,
         });
         return res.json({ type: "check_in", message: "Checked in successfully", record: created });
       }
@@ -956,32 +957,32 @@ export async function registerRoutes(
 
       if (action === "lunch_out") {
         if (todayRecord.lunchOut) return res.status(400).json({ message: "Lunch break already taken" });
-        const updated = await storage.updateAttendanceRecord(todayRecord.id, { lunchOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { lunchOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "lunch_out", message: "Going for Lunch Break", record: updated });
       }
 
       if (action === "lunch_in") {
         if (!todayRecord.lunchOut) return res.status(400).json({ message: "Lunch out not recorded" });
         if (todayRecord.lunchIn) return res.status(400).json({ message: "Already back from lunch" });
-        const updated = await storage.updateAttendanceRecord(todayRecord.id, { lunchIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { lunchIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "lunch_in", message: "Back from Lunch Break", record: updated });
       }
 
       if (action === "tea_out") {
         if (todayRecord.teaOut) return res.status(400).json({ message: "Tea break already taken" });
-        const updated = await storage.updateAttendanceRecord(todayRecord.id, { teaOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { teaOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "tea_out", message: "Going for Tea Break", record: updated });
       }
 
       if (action === "tea_in") {
         if (!todayRecord.teaOut) return res.status(400).json({ message: "Tea out not recorded" });
         if (todayRecord.teaIn) return res.status(400).json({ message: "Already back from tea" });
-        const updated = await storage.updateAttendanceRecord(todayRecord.id, { teaIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { teaIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "tea_in", message: "Back from Tea Break", record: updated });
       }
 
       if (action === "check_out") {
-        const updated = await storage.updateAttendanceRecord(todayRecord.id, { checkOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { checkOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "check_out", message: "Checked out successfully", record: updated });
       }
 

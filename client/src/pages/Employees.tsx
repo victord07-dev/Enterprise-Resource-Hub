@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Camera, Wallet, ChevronLeft, ChevronRight, Eye } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,12 @@ export default function Employees() {
   const [qrDialogOpen, setQrDialogOpen] = useState(false);
   const [qrData, setQrData] = useState<{ qrDataUrl: string; employeeName: string; qrCode: string } | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
+
+  const now = new Date();
+  const [payrollMonth, setPayrollMonth] = useState(now.getMonth());
+  const [payrollYear, setPayrollYear] = useState(now.getFullYear());
+  const [payslipEmployee, setPayslipEmployee] = useState<Employee | null>(null);
+  const [payslipOpen, setPayslipOpen] = useState(false);
 
   const employeeMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -147,6 +153,44 @@ export default function Employees() {
     return d.toLocaleDateString() === todayStr;
   }) || [];
 
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+  const getWorkingDaysInMonth = (month: number, year: number) => {
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    let workingDays = 0;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const day = new Date(year, month, d).getDay();
+      if (day !== 0) workingDays++;
+    }
+    return workingDays;
+  };
+
+  const getPayrollData = (emp: Employee) => {
+    const monthlySalary = emp.salary ? Number(emp.salary) : 0;
+    const dailyRate = Math.round(monthlySalary / 26);
+    const empAttendance = attendance?.filter(a => {
+      const d = new Date(a.date);
+      return a.employeeId === emp.id && d.getMonth() === payrollMonth && d.getFullYear() === payrollYear;
+    }) || [];
+    const fullDays = empAttendance.filter(a => a.status === "present").length;
+    const halfDays = empAttendance.filter(a => a.status === "half_day").length;
+    const workingDays = getWorkingDaysInMonth(payrollMonth, payrollYear);
+    const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
+    const earnedSalary = (fullDays * dailyRate) + (halfDays * Math.round(dailyRate / 2));
+    const deductions = monthlySalary - earnedSalary;
+    const netPay = earnedSalary;
+    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, netPay };
+  };
+
+  const prevMonth = () => {
+    if (payrollMonth === 0) { setPayrollMonth(11); setPayrollYear(payrollYear - 1); }
+    else setPayrollMonth(payrollMonth - 1);
+  };
+  const nextMonth = () => {
+    if (payrollMonth === 11) { setPayrollMonth(0); setPayrollYear(payrollYear + 1); }
+    else setPayrollMonth(payrollMonth + 1);
+  };
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -218,6 +262,7 @@ export default function Employees() {
           <TabsTrigger value="employees" data-testid="tab-employees">Employees</TabsTrigger>
           <TabsTrigger value="attendance" data-testid="tab-attendance">Attendance</TabsTrigger>
           <TabsTrigger value="field-staff" data-testid="tab-field-staff">Field Staff</TabsTrigger>
+          <TabsTrigger value="payroll" data-testid="tab-payroll">Payroll</TabsTrigger>
         </TabsList>
 
         <TabsContent value="employees" className="space-y-4">
@@ -407,6 +452,132 @@ export default function Employees() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="payroll" className="space-y-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <Button size="icon" variant="outline" onClick={prevMonth} data-testid="button-prev-month">
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+              <h2 className="text-lg font-semibold min-w-[180px] text-center" data-testid="text-payroll-month">
+                {monthNames[payrollMonth]} {payrollYear}
+              </h2>
+              <Button size="icon" variant="outline" onClick={nextMonth} data-testid="button-next-month">
+                <ChevronRight className="w-4 h-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Wallet className="w-4 h-4" />
+              <span>Working Days: <strong className="text-foreground">{getWorkingDaysInMonth(payrollMonth, payrollYear)}</strong></span>
+            </div>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Company</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Monthly Salary</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Daily Rate</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Full Days</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Half Days</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Absent</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Earned</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Deductions</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Net Pay</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Payslip</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {empLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 11 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : employees && employees.filter(e => e.isActive).length > 0 ? (
+                      employees.filter(e => e.isActive).map((emp) => {
+                        const p = getPayrollData(emp);
+                        return (
+                          <tr key={emp.id} className="border-b last:border-0" data-testid={`row-payroll-${emp.id}`}>
+                            <td className="p-3">
+                              <div className="flex items-center gap-2">
+                                <Avatar className="w-7 h-7">
+                                  <AvatarFallback className="text-xs">{emp.name.charAt(0).toUpperCase()}</AvatarFallback>
+                                </Avatar>
+                                <div>
+                                  <p className="font-medium">{emp.name}</p>
+                                  <p className="text-xs text-muted-foreground">{emp.department}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="p-3 text-muted-foreground text-xs">{emp.company || "\u2014"}</td>
+                            <td className="p-3 text-right" data-testid={`text-payroll-salary-${emp.id}`}>{"\u20B9"}{p.monthlySalary.toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-right text-muted-foreground">{"\u20B9"}{p.dailyRate.toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-center">
+                              <Badge variant="default" className="no-default-hover-elevate no-default-active-elevate">{p.fullDays}</Badge>
+                            </td>
+                            <td className="p-3 text-center">
+                              {p.halfDays > 0 ? (
+                                <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate">{p.halfDays}</Badge>
+                              ) : (
+                                <span className="text-muted-foreground">0</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-center">
+                              {p.daysAbsent > 0 ? (
+                                <Badge variant="outline" className="border-red-500 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate">{p.daysAbsent}</Badge>
+                              ) : (
+                                <span className="text-muted-foreground">0</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right font-medium text-emerald-600 dark:text-emerald-400" data-testid={`text-payroll-earned-${emp.id}`}>{"\u20B9"}{p.earnedSalary.toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-right text-red-600 dark:text-red-400">{p.deductions > 0 ? `\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</td>
+                            <td className="p-3 text-right font-bold" data-testid={`text-payroll-net-${emp.id}`}>{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-center">
+                              <Button size="icon" variant="ghost" data-testid={`button-payslip-${emp.id}`} onClick={() => { setPayslipEmployee(emp); setPayslipOpen(true); }}>
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                          <Wallet className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
+                          <p>No active employees found.</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {employees && employees.filter(e => e.isActive).length > 0 && (
+                    <tfoot>
+                      <tr className="border-t-2 bg-muted/30">
+                        <td colSpan={7} className="p-3 font-semibold text-right">Total Payroll:</td>
+                        <td className="p-3 text-right font-semibold text-emerald-600 dark:text-emerald-400" data-testid="text-total-earned">
+                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).earnedSalary, 0).toLocaleString("en-IN")}
+                        </td>
+                        <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400" data-testid="text-total-deductions">
+                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).deductions, 0).toLocaleString("en-IN")}
+                        </td>
+                        <td className="p-3 text-right font-bold text-lg" data-testid="text-total-net">
+                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).netPay, 0).toLocaleString("en-IN")}
+                        </td>
+                        <td></td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -500,6 +671,84 @@ export default function Employees() {
               </Button>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={payslipOpen} onOpenChange={setPayslipOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Payslip - {monthNames[payrollMonth]} {payrollYear}</DialogTitle>
+          </DialogHeader>
+          {payslipEmployee && (() => {
+            const p = getPayrollData(payslipEmployee);
+            return (
+              <div className="space-y-4" data-testid="payslip-content">
+                <div className="flex items-center gap-3 pb-3 border-b">
+                  <Avatar className="w-10 h-10">
+                    <AvatarFallback>{payslipEmployee.name.charAt(0).toUpperCase()}</AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <p className="font-semibold text-lg" data-testid="text-payslip-name">{payslipEmployee.name}</p>
+                    <p className="text-sm text-muted-foreground">{payslipEmployee.designation} - {payslipEmployee.department}</p>
+                    {payslipEmployee.company && <p className="text-xs text-muted-foreground">{payslipEmployee.company}</p>}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Attendance Summary</h3>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
+                      <span className="text-muted-foreground">Working Days</span>
+                      <span className="font-medium">{p.workingDays}</span>
+                    </div>
+                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
+                      <span className="text-muted-foreground">Full Days</span>
+                      <span className="font-medium text-emerald-600">{p.fullDays}</span>
+                    </div>
+                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
+                      <span className="text-muted-foreground">Half Days</span>
+                      <span className="font-medium text-amber-600">{p.halfDays}</span>
+                    </div>
+                    <div className="flex justify-between gap-4 p-2 rounded-md bg-muted/50">
+                      <span className="text-muted-foreground">Absent</span>
+                      <span className="font-medium text-red-600">{p.daysAbsent}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="font-medium text-sm text-muted-foreground uppercase tracking-wider">Salary Breakdown</h3>
+                  <div className="space-y-1 text-sm">
+                    <div className="flex justify-between p-2">
+                      <span className="text-muted-foreground">Monthly Salary</span>
+                      <span>{"\u20B9"}{p.monthlySalary.toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between p-2">
+                      <span className="text-muted-foreground">Daily Rate (salary / 26)</span>
+                      <span>{"\u20B9"}{p.dailyRate.toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between p-2 border-t">
+                      <span className="text-muted-foreground">Full Days ({p.fullDays} x {"\u20B9"}{p.dailyRate.toLocaleString("en-IN")})</span>
+                      <span className="text-emerald-600">{"\u20B9"}{(p.fullDays * p.dailyRate).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between p-2">
+                      <span className="text-muted-foreground">Half Days ({p.halfDays} x {"\u20B9"}{Math.round(p.dailyRate / 2).toLocaleString("en-IN")})</span>
+                      <span className="text-amber-600">{"\u20B9"}{(p.halfDays * Math.round(p.dailyRate / 2)).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div className="flex justify-between p-2 border-t">
+                      <span className="text-muted-foreground">Total Deductions</span>
+                      <span className="text-red-600">{p.deductions > 0 ? `-\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-between items-center p-3 rounded-md bg-muted/70 border">
+                  <span className="font-semibold">Net Pay</span>
+                  <span className="text-xl font-bold" data-testid="text-payslip-net">{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</span>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </div>

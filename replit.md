@@ -17,7 +17,7 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 4. Inventory - Products, warehouses, stock movements
 5. Supply Chain - Suppliers, purchase orders, deliveries
 6. Accounts - Invoices, payments, financial tracking
-7. Employee Management - Staff, attendance (with QR + selfie kiosk), field staff
+7. Employee Management - Staff, attendance (with QR + selfie kiosk), field staff, payroll
 8. Reports - Business analytics with charts
 9. Audit Trail - System activity logs
 10. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)

@@ -185,6 +185,37 @@ export const payrollStatus = pgTable("payroll_status", {
   disbursedAt: timestamp("disbursed_at"),
 });
 
+export const travelExpenses = pgTable("travel_expenses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  date: timestamp("date").notNull().defaultNow(),
+  originLat: decimal("origin_lat", { precision: 10, scale: 7 }).notNull(),
+  originLng: decimal("origin_lng", { precision: 10, scale: 7 }).notNull(),
+  destLat: decimal("dest_lat", { precision: 10, scale: 7 }).notNull(),
+  destLng: decimal("dest_lng", { precision: 10, scale: 7 }).notNull(),
+  originAddress: text("origin_address"),
+  destAddress: text("dest_address"),
+  distance: decimal("distance", { precision: 8, scale: 2 }).notNull(),
+  transportMode: text("transport_mode").notNull(),
+  travelCost: decimal("travel_cost", { precision: 10, scale: 2 }).notNull(),
+  lunchMoney: decimal("lunch_money", { precision: 10, scale: 2 }).notNull().default("200"),
+  totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
+  status: text("status").notNull().default("pending"),
+  notes: text("notes"),
+  approvedAt: timestamp("approved_at"),
+  disbursedAt: timestamp("disbursed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const locationLogs = pgTable("location_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  lat: decimal("lat", { precision: 10, scale: 7 }).notNull(),
+  lng: decimal("lng", { precision: 10, scale: 7 }).notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  tripActive: boolean("trip_active").notNull().default(true),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -213,6 +244,8 @@ export const insertEmployeeSchema = createInsertSchema(employees).omit({ id: tru
 export const insertAttendanceSchema = createInsertSchema(attendanceRecords).omit({ id: true });
 export const insertFieldStaffActivitySchema = createInsertSchema(fieldStaffActivities).omit({ id: true });
 export const insertPayrollStatusSchema = createInsertSchema(payrollStatus).omit({ id: true });
+export const insertTravelExpenseSchema = createInsertSchema(travelExpenses).omit({ id: true });
+export const insertLocationLogSchema = createInsertSchema(locationLogs).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -233,4 +266,6 @@ export type Employee = typeof employees.$inferSelect;
 export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
 export type FieldStaffActivity = typeof fieldStaffActivities.$inferSelect;
 export type PayrollStatus = typeof payrollStatus.$inferSelect;
+export type TravelExpense = typeof travelExpenses.$inferSelect;
+export type LocationLog = typeof locationLogs.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;

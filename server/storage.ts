@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, locationLogs, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type LocationLog, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -122,6 +122,18 @@ export interface IStorage {
   getPayrollStatus(month: number, year: number): Promise<PayrollStatus | undefined>;
   createPayrollStatus(data: Omit<PayrollStatus, "id">): Promise<PayrollStatus>;
   updatePayrollStatus(id: string, data: Partial<Omit<PayrollStatus, "id">>): Promise<PayrollStatus | undefined>;
+
+  // Travel Expenses
+  getTravelExpenses(): Promise<TravelExpense[]>;
+  getTravelExpensesByEmployee(employeeId: string): Promise<TravelExpense[]>;
+  createTravelExpense(data: Omit<TravelExpense, "id">): Promise<TravelExpense>;
+  updateTravelExpense(id: string, data: Partial<Omit<TravelExpense, "id">>): Promise<TravelExpense | undefined>;
+
+  // Location Logs
+  getLocationLogs(): Promise<LocationLog[]>;
+  getLocationLogsByEmployee(employeeId: string, startDate?: Date, endDate?: Date): Promise<LocationLog[]>;
+  getLatestLocationByEmployee(employeeId: string): Promise<LocationLog | undefined>;
+  createLocationLog(data: Omit<LocationLog, "id">): Promise<LocationLog>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -529,6 +541,47 @@ export class DatabaseStorage implements IStorage {
   async updatePayrollStatus(id: string, data: Partial<Omit<PayrollStatus, "id">>): Promise<PayrollStatus | undefined> {
     const [updated] = await db.update(payrollStatus).set(data).where(eq(payrollStatus.id, id)).returning();
     return updated;
+  }
+
+  // Travel Expenses
+  async getTravelExpenses(): Promise<TravelExpense[]> {
+    return db.select().from(travelExpenses).orderBy(desc(travelExpenses.createdAt));
+  }
+
+  async getTravelExpensesByEmployee(employeeId: string): Promise<TravelExpense[]> {
+    return db.select().from(travelExpenses).where(eq(travelExpenses.employeeId, employeeId)).orderBy(desc(travelExpenses.createdAt));
+  }
+
+  async createTravelExpense(data: Omit<TravelExpense, "id">): Promise<TravelExpense> {
+    const [created] = await db.insert(travelExpenses).values(data).returning();
+    return created;
+  }
+
+  async updateTravelExpense(id: string, data: Partial<Omit<TravelExpense, "id">>): Promise<TravelExpense | undefined> {
+    const [updated] = await db.update(travelExpenses).set(data).where(eq(travelExpenses.id, id)).returning();
+    return updated;
+  }
+
+  // Location Logs
+  async getLocationLogs(): Promise<LocationLog[]> {
+    return db.select().from(locationLogs).orderBy(desc(locationLogs.timestamp));
+  }
+
+  async getLocationLogsByEmployee(employeeId: string, startDate?: Date, endDate?: Date): Promise<LocationLog[]> {
+    if (startDate && endDate) {
+      return db.select().from(locationLogs).where(and(eq(locationLogs.employeeId, employeeId), gte(locationLogs.timestamp, startDate), lte(locationLogs.timestamp, endDate))).orderBy(locationLogs.timestamp);
+    }
+    return db.select().from(locationLogs).where(eq(locationLogs.employeeId, employeeId)).orderBy(desc(locationLogs.timestamp)).limit(100);
+  }
+
+  async getLatestLocationByEmployee(employeeId: string): Promise<LocationLog | undefined> {
+    const [log] = await db.select().from(locationLogs).where(eq(locationLogs.employeeId, employeeId)).orderBy(desc(locationLogs.timestamp)).limit(1);
+    return log;
+  }
+
+  async createLocationLog(data: Omit<LocationLog, "id">): Promise<LocationLog> {
+    const [created] = await db.insert(locationLogs).values(data).returning();
+    return created;
   }
 
   // Audit Logs

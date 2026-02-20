@@ -50,6 +50,17 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Employee table shows Monthly Salary and Daily Rate columns
 - Attendance table shows "Half Day" badge (amber) for late arrivals
 
+## Field Staff Travel Expense System
+- Located under Employee Management → Field Staff tab
+- Three sections: Live Location Tracking, Travel Expense Submission, Travel Expense History
+- **Travel Expense Form**: GPS "Get My Location" + Leaflet map destination picker, transport mode (Bus ₹10/km, Train ₹5/km, Bike ₹20/km), lunch ₹200 fixed, auto distance calc (Haversine × 1.3 road factor)
+- **Expense Status Flow**: Pending → Approved → Disbursed (3-step)
+- **Live Location Tracking**: Start/End Trip toggle, GPS updates every 5 minutes, admin map view with route polyline
+- Multiple trips per day allowed
+- Tables: travel_expenses, location_logs
+- API: /api/travel-expenses (CRUD + /approve + /disburse), /api/location-logs (CRUD + /employee/:id/latest)
+- Uses raw Leaflet (not react-leaflet) with OpenStreetMap tiles
+
 ## Authentication
 - Custom JWT-based (NOT Replit Auth)
 - Default admin: username=admin, password=admin123

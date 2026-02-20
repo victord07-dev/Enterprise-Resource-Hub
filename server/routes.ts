@@ -1053,6 +1053,141 @@ export async function registerRoutes(
     }
   });
 
+  // ======================== TRAVEL EXPENSES ========================
+  app.get("/api/travel-expenses", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getTravelExpenses();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch travel expenses" });
+    }
+  });
+
+  app.get("/api/travel-expenses/employee/:employeeId", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getTravelExpensesByEmployee(req.params.employeeId);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch travel expenses" });
+    }
+  });
+
+  app.post("/api/travel-expenses", authenticateToken, async (req: any, res) => {
+    try {
+      const { employeeId, originLat, originLng, destLat, destLng, originAddress, destAddress, transportMode, notes } = req.body;
+      const oLat = parseFloat(originLat); const oLng = parseFloat(originLng);
+      const dLat = parseFloat(destLat); const dLng = parseFloat(destLng);
+      if (!employeeId || isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
+        return res.status(400).json({ message: "Missing or invalid required fields" });
+      }
+      const allEmployees = await storage.getEmployees();
+      const empExists = allEmployees.find(e => e.id === employeeId);
+      if (!empExists) {
+        return res.status(400).json({ message: "Employee not found" });
+      }
+      const validModes = ["bus", "train", "bike"];
+      if (!validModes.includes(transportMode)) {
+        return res.status(400).json({ message: "Invalid transport mode" });
+      }
+      const rates: Record<string, number> = { bus: 10, train: 5, bike: 20 };
+      const R = 6371;
+      const dLatR = (dLat - oLat) * Math.PI / 180;
+      const dLonR = (dLng - oLng) * Math.PI / 180;
+      const a = Math.sin(dLatR / 2) ** 2 + Math.cos(oLat * Math.PI / 180) * Math.cos(dLat * Math.PI / 180) * Math.sin(dLonR / 2) ** 2;
+      const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3;
+      const computedTravelCost = Math.round(dist * rates[transportMode]);
+      const lunchMoney = 200;
+      const computedTotal = computedTravelCost + lunchMoney;
+      const created = await storage.createTravelExpense({
+        employeeId, date: new Date(), originLat: String(oLat), originLng: String(oLng),
+        destLat: String(dLat), destLng: String(dLng), originAddress: originAddress || null,
+        destAddress: destAddress || null, distance: String(dist.toFixed(2)), transportMode,
+        travelCost: String(computedTravelCost), lunchMoney: String(lunchMoney),
+        totalAmount: String(computedTotal), status: "pending", notes: notes || null,
+        approvedAt: null, disbursedAt: null, createdAt: new Date(),
+      });
+      await logAction(req.user.id, "create", "travel_expenses", `Travel expense created for employee ${employeeId}`);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("Travel expense error:", error);
+      res.status(500).json({ message: "Failed to create travel expense" });
+    }
+  });
+
+  app.patch("/api/travel-expenses/:id/approve", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateTravelExpense(req.params.id, { status: "approved", approvedAt: new Date() });
+      if (!updated) return res.status(404).json({ message: "Travel expense not found" });
+      await logAction(req.user.id, "approve", "travel_expenses", `Approved travel expense ${req.params.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to approve travel expense" });
+    }
+  });
+
+  app.patch("/api/travel-expenses/:id/disburse", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateTravelExpense(req.params.id, { status: "disbursed", disbursedAt: new Date() });
+      if (!updated) return res.status(404).json({ message: "Travel expense not found" });
+      await logAction(req.user.id, "disburse", "travel_expenses", `Disbursed travel expense ${req.params.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to disburse travel expense" });
+    }
+  });
+
+  // ======================== LOCATION LOGS ========================
+  app.get("/api/location-logs", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getLocationLogs();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch location logs" });
+    }
+  });
+
+  app.get("/api/location-logs/employee/:employeeId", authenticateToken, async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query as any;
+      const start = startDate ? new Date(startDate) : undefined;
+      const end = endDate ? new Date(endDate) : undefined;
+      const data = await storage.getLocationLogsByEmployee(req.params.employeeId, start, end);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch location logs" });
+    }
+  });
+
+  app.get("/api/location-logs/employee/:employeeId/latest", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getLatestLocationByEmployee(req.params.employeeId);
+      res.json(data || null);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch latest location" });
+    }
+  });
+
+  app.post("/api/location-logs", authenticateToken, async (req: any, res) => {
+    try {
+      const { employeeId, lat, lng, tripActive } = req.body;
+      const parsedLat = parseFloat(lat); const parsedLng = parseFloat(lng);
+      if (!employeeId || isNaN(parsedLat) || isNaN(parsedLng)) {
+        return res.status(400).json({ message: "Missing or invalid required fields" });
+      }
+      const allEmps = await storage.getEmployees();
+      if (!allEmps.find(e => e.id === employeeId)) {
+        return res.status(400).json({ message: "Employee not found" });
+      }
+      const created = await storage.createLocationLog({
+        employeeId, lat: String(parsedLat), lng: String(parsedLng),
+        timestamp: new Date(), tripActive: tripActive !== false,
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create location log" });
+    }
+  });
+
   app.post("/api/employees/:id/generate-qr", authenticateToken, async (req: any, res) => {
     try {
       const employee = (await storage.getEmployees()).find(e => e.id === req.params.id);

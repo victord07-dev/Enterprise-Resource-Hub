@@ -16,11 +16,12 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 3. Project Management - Project tracking, milestones
 4. Inventory - Products, warehouses, stock movements
 5. Supply Chain - Suppliers, purchase orders, deliveries
-6. Accounts - Invoices, payments, financial tracking
-7. Employee Management - Staff, attendance (with QR + selfie kiosk), field staff, payroll
-8. Reports - Business analytics with charts
-9. Audit Trail - System activity logs
-10. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)
+6. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
+7. Accounts - Invoices, payments, financial tracking
+8. Employee Management - Staff, attendance (with QR + selfie kiosk), payroll
+9. Reports - Business analytics with charts
+10. Audit Trail - System activity logs
+11. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)
 
 ## Kiosk Attendance System
 - Standalone page at `/kiosk` - no login required (designed for office tablet)
@@ -51,8 +52,8 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Attendance table shows "Half Day" badge (amber) for late arrivals
 
 ## Field Staff Travel Expense System
-- Located under Employee Management → Field Staff tab
-- Three sections: Live Location Tracking, Travel Expense Submission, Travel Expense History
+- Separate module at /field-staff with its own sidebar entry (after Supply Chain)
+- Three tabs: Live Tracking, Travel Expenses, Expense History
 - **Travel Expense Form**: GPS "Get My Location" + Leaflet map destination picker, transport mode (Bus ₹10/km, Train ₹5/km, Bike ₹20/km), lunch ₹200 fixed, auto distance calc (Haversine × 1.3 road factor)
 - **Expense Status Flow**: Pending → Approved → Disbursed (3-step)
 - **Live Location Tracking**: Start/End Trip toggle, GPS updates every 5 minutes, admin map view with route polyline

@@ -16,6 +16,7 @@ import Inventory from "@/pages/Inventory";
 import SupplyChain from "@/pages/SupplyChain";
 import Accounts from "@/pages/Accounts";
 import Employees from "@/pages/Employees";
+import FieldStaff from "@/pages/FieldStaff";
 import Reports from "@/pages/Reports";
 import AuditTrail from "@/pages/AuditTrail";
 import Kiosk from "@/pages/Kiosk";
@@ -30,6 +31,7 @@ function Router() {
       <Route path="/supply-chain" component={SupplyChain} />
       <Route path="/accounts" component={Accounts} />
       <Route path="/employees" component={Employees} />
+      <Route path="/field-staff" component={FieldStaff} />
       <Route path="/reports" component={Reports} />
       <Route path="/audit-trail" component={AuditTrail} />
       <Route component={NotFound} />

@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+.leaflet-container {
+  width: 100% !important;
+  font-family: inherit;
+}
+
+.leaflet-tile-pane img {
+  max-width: none !important;
+  max-height: none !important;
+  width: auto !important;
+  height: auto !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+}
+
+.leaflet-container img.leaflet-tile {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.leaflet-container img {
+  max-width: none !important;
+}
+
+.leaflet-control-attribution a {
+  color: #0078A8;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 8px;
+}
+
 /* LIGHT MODE */
 :root {
   --button-outline: rgba(0,0,0, .10);

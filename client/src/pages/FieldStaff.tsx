@@ -43,15 +43,51 @@ export default function FieldStaff() {
   const [expenseNotes, setExpenseNotes] = useState("");
   const [gettingLocation, setGettingLocation] = useState(false);
 
-  const adminMapRef = useRef<HTMLDivElement>(null);
   const adminMapInstance = useRef<L.Map | null>(null);
   const adminMarkersRef = useRef<L.Marker[]>([]);
   const adminPolylineRef = useRef<L.Polyline | null>(null);
 
-  const destMapRef = useRef<HTMLDivElement>(null);
   const destMapInstance = useRef<L.Map | null>(null);
   const destMarkerRef = useRef<L.Marker | null>(null);
   const originMarkerRef = useRef<L.Marker | null>(null);
+
+  const adminMapRef = useCallback((node: HTMLDivElement | null) => {
+    if (adminMapInstance.current) {
+      try { adminMapInstance.current.remove(); } catch {}
+      adminMapInstance.current = null;
+    }
+    adminMarkersRef.current = [];
+    adminPolylineRef.current = null;
+    if (!node) return;
+    const map = L.map(node).setView([20.5937, 78.9629], 5);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+    adminMapInstance.current = map;
+    setTimeout(() => map.invalidateSize(), 100);
+  }, []);
+
+  const destMapRef = useCallback((node: HTMLDivElement | null) => {
+    if (destMapInstance.current) {
+      try { destMapInstance.current.remove(); } catch {}
+      destMapInstance.current = null;
+    }
+    destMarkerRef.current = null;
+    originMarkerRef.current = null;
+    if (!node) return;
+    const map = L.map(node).setView([20.5937, 78.9629], 5);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+    map.on("click", (e: L.LeafletMouseEvent) => {
+      setDestLat(e.latlng.lat);
+      setDestLng(e.latlng.lng);
+      if (destMarkerRef.current) destMarkerRef.current.remove();
+      destMarkerRef.current = L.marker(e.latlng).addTo(map).bindPopup("Destination").openPopup();
+    });
+    destMapInstance.current = map;
+    setTimeout(() => map.invalidateSize(), 100);
+  }, []);
 
   const transportRates: Record<string, number> = { bus: 10, train: 5, bike: 20 };
   const LUNCH_MONEY = 200;
@@ -113,15 +149,6 @@ export default function FieldStaff() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!adminMapRef.current || adminMapInstance.current) return;
-    const map = L.map(adminMapRef.current).setView([20.5937, 78.9629], 5);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; OpenStreetMap contributors',
-    }).addTo(map);
-    adminMapInstance.current = map;
-    return () => { map.remove(); adminMapInstance.current = null; };
-  }, [activeTab]);
 
   useEffect(() => {
     if (!adminMapInstance.current || !locationLogs) return;
@@ -156,21 +183,6 @@ export default function FieldStaff() {
     }
   }, [locationLogs, selectedFieldEmployee, getEmployeeName]);
 
-  useEffect(() => {
-    if (!destMapRef.current || destMapInstance.current) return;
-    const map = L.map(destMapRef.current).setView([20.5937, 78.9629], 5);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; OpenStreetMap contributors',
-    }).addTo(map);
-    map.on("click", (e: L.LeafletMouseEvent) => {
-      setDestLat(e.latlng.lat);
-      setDestLng(e.latlng.lng);
-      if (destMarkerRef.current) destMarkerRef.current.remove();
-      destMarkerRef.current = L.marker(e.latlng).addTo(map).bindPopup("Destination").openPopup();
-    });
-    destMapInstance.current = map;
-    return () => { map.remove(); destMapInstance.current = null; };
-  }, [activeTab]);
 
   useEffect(() => {
     if (!destMapInstance.current) return;

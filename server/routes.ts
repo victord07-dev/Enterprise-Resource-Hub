@@ -1169,7 +1169,7 @@ export async function registerRoutes(
 
   app.post("/api/location-logs", authenticateToken, async (req: any, res) => {
     try {
-      const { employeeId, lat, lng, tripActive } = req.body;
+      const { employeeId, lat, lng, tripActive, tripId } = req.body;
       const parsedLat = parseFloat(lat); const parsedLng = parseFloat(lng);
       if (!employeeId || isNaN(parsedLat) || isNaN(parsedLng)) {
         return res.status(400).json({ message: "Missing or invalid required fields" });
@@ -1179,12 +1179,129 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Employee not found" });
       }
       const created = await storage.createLocationLog({
-        employeeId, lat: String(parsedLat), lng: String(parsedLng),
+        employeeId, tripId: tripId || null, lat: String(parsedLat), lng: String(parsedLng),
         timestamp: new Date(), tripActive: tripActive !== false,
       });
       res.status(201).json(created);
     } catch (error) {
       res.status(500).json({ message: "Failed to create location log" });
+    }
+  });
+
+  // Trips
+  app.get("/api/trips", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getTrips();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch trips" });
+    }
+  });
+
+  app.get("/api/trips/active", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getActiveTrips();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch active trips" });
+    }
+  });
+
+  app.get("/api/trips/employee/:employeeId", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getTripsByEmployee(req.params.employeeId);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch trips" });
+    }
+  });
+
+  app.get("/api/trips/:id/route", authenticateToken, async (req, res) => {
+    try {
+      const logs = await storage.getLocationLogsByTrip(req.params.id);
+      res.json(logs);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch trip route" });
+    }
+  });
+
+  app.post("/api/trips/start", authenticateToken, async (req: any, res) => {
+    try {
+      const { employeeId, lat, lng } = req.body;
+      if (!employeeId) return res.status(400).json({ message: "Employee ID required" });
+      const allEmps = await storage.getEmployees();
+      if (!allEmps.find(e => e.id === employeeId)) {
+        return res.status(400).json({ message: "Employee not found" });
+      }
+      const existingActive = await storage.getActiveTrips();
+      const alreadyActive = existingActive.find(t => t.employeeId === employeeId);
+      if (alreadyActive) {
+        return res.status(400).json({ message: "Employee already has an active trip" });
+      }
+      const parsedLat = lat ? parseFloat(lat) : null;
+      const parsedLng = lng ? parseFloat(lng) : null;
+      const trip = await storage.createTrip({
+        employeeId,
+        startTime: new Date(),
+        endTime: null,
+        startLat: parsedLat !== null ? String(parsedLat) : null,
+        startLng: parsedLng !== null ? String(parsedLng) : null,
+        endLat: null,
+        endLng: null,
+        status: "active",
+        date: new Date(),
+      });
+      if (parsedLat !== null && parsedLng !== null) {
+        await storage.createLocationLog({
+          employeeId, tripId: trip.id, lat: String(parsedLat), lng: String(parsedLng),
+          timestamp: new Date(), tripActive: true,
+        });
+      }
+      res.status(201).json(trip);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to start trip" });
+    }
+  });
+
+  app.post("/api/trips/:id/end", authenticateToken, async (req: any, res) => {
+    try {
+      const { lat, lng } = req.body;
+      const parsedLat = lat ? parseFloat(lat) : null;
+      const parsedLng = lng ? parseFloat(lng) : null;
+      const updated = await storage.updateTrip(req.params.id, {
+        endTime: new Date(),
+        endLat: parsedLat !== null ? String(parsedLat) : null,
+        endLng: parsedLng !== null ? String(parsedLng) : null,
+        status: "completed",
+      });
+      if (!updated) return res.status(404).json({ message: "Trip not found" });
+      if (parsedLat !== null && parsedLng !== null) {
+        await storage.createLocationLog({
+          employeeId: updated.employeeId, tripId: updated.id,
+          lat: String(parsedLat), lng: String(parsedLng),
+          timestamp: new Date(), tripActive: false,
+        });
+      }
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to end trip" });
+    }
+  });
+
+  app.post("/api/trips/:id/log", authenticateToken, async (req: any, res) => {
+    try {
+      const { lat, lng, employeeId } = req.body;
+      const parsedLat = parseFloat(lat); const parsedLng = parseFloat(lng);
+      if (isNaN(parsedLat) || isNaN(parsedLng) || !employeeId) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+      const created = await storage.createLocationLog({
+        employeeId, tripId: req.params.id, lat: String(parsedLat), lng: String(parsedLng),
+        timestamp: new Date(), tripActive: true,
+      });
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to log location" });
     }
   });
 

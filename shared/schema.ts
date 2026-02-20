@@ -207,9 +207,23 @@ export const travelExpenses = pgTable("travel_expenses", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const trips = pgTable("trips", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  startTime: timestamp("start_time").notNull().defaultNow(),
+  endTime: timestamp("end_time"),
+  startLat: decimal("start_lat", { precision: 10, scale: 7 }),
+  startLng: decimal("start_lng", { precision: 10, scale: 7 }),
+  endLat: decimal("end_lat", { precision: 10, scale: 7 }),
+  endLng: decimal("end_lng", { precision: 10, scale: 7 }),
+  status: text("status").notNull().default("active"),
+  date: timestamp("date").notNull().defaultNow(),
+});
+
 export const locationLogs = pgTable("location_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   employeeId: varchar("employee_id").notNull(),
+  tripId: varchar("trip_id"),
   lat: decimal("lat", { precision: 10, scale: 7 }).notNull(),
   lng: decimal("lng", { precision: 10, scale: 7 }).notNull(),
   timestamp: timestamp("timestamp").notNull().defaultNow(),
@@ -245,6 +259,7 @@ export const insertAttendanceSchema = createInsertSchema(attendanceRecords).omit
 export const insertFieldStaffActivitySchema = createInsertSchema(fieldStaffActivities).omit({ id: true });
 export const insertPayrollStatusSchema = createInsertSchema(payrollStatus).omit({ id: true });
 export const insertTravelExpenseSchema = createInsertSchema(travelExpenses).omit({ id: true });
+export const insertTripSchema = createInsertSchema(trips).omit({ id: true });
 export const insertLocationLogSchema = createInsertSchema(locationLogs).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
@@ -267,5 +282,6 @@ export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
 export type FieldStaffActivity = typeof fieldStaffActivities.$inferSelect;
 export type PayrollStatus = typeof payrollStatus.$inferSelect;
 export type TravelExpense = typeof travelExpenses.$inferSelect;
+export type Trip = typeof trips.$inferSelect;
 export type LocationLog = typeof locationLogs.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;

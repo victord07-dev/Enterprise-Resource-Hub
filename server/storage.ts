@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, locationLogs, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type LocationLog, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -129,9 +129,17 @@ export interface IStorage {
   createTravelExpense(data: Omit<TravelExpense, "id">): Promise<TravelExpense>;
   updateTravelExpense(id: string, data: Partial<Omit<TravelExpense, "id">>): Promise<TravelExpense | undefined>;
 
+  // Trips
+  getTrips(): Promise<Trip[]>;
+  getTripsByEmployee(employeeId: string): Promise<Trip[]>;
+  getActiveTrips(): Promise<Trip[]>;
+  createTrip(data: Omit<Trip, "id">): Promise<Trip>;
+  updateTrip(id: string, data: Partial<Omit<Trip, "id">>): Promise<Trip | undefined>;
+
   // Location Logs
   getLocationLogs(): Promise<LocationLog[]>;
   getLocationLogsByEmployee(employeeId: string, startDate?: Date, endDate?: Date): Promise<LocationLog[]>;
+  getLocationLogsByTrip(tripId: string): Promise<LocationLog[]>;
   getLatestLocationByEmployee(employeeId: string): Promise<LocationLog | undefined>;
   createLocationLog(data: Omit<LocationLog, "id">): Promise<LocationLog>;
 
@@ -582,6 +590,33 @@ export class DatabaseStorage implements IStorage {
   async createLocationLog(data: Omit<LocationLog, "id">): Promise<LocationLog> {
     const [created] = await db.insert(locationLogs).values(data).returning();
     return created;
+  }
+
+  // Trips
+  async getTrips(): Promise<Trip[]> {
+    return db.select().from(trips).orderBy(desc(trips.startTime));
+  }
+
+  async getTripsByEmployee(employeeId: string): Promise<Trip[]> {
+    return db.select().from(trips).where(eq(trips.employeeId, employeeId)).orderBy(desc(trips.startTime));
+  }
+
+  async getActiveTrips(): Promise<Trip[]> {
+    return db.select().from(trips).where(eq(trips.status, "active")).orderBy(desc(trips.startTime));
+  }
+
+  async createTrip(data: Omit<Trip, "id">): Promise<Trip> {
+    const [created] = await db.insert(trips).values(data).returning();
+    return created;
+  }
+
+  async updateTrip(id: string, data: Partial<Omit<Trip, "id">>): Promise<Trip | undefined> {
+    const [updated] = await db.update(trips).set(data).where(eq(trips.id, id)).returning();
+    return updated;
+  }
+
+  async getLocationLogsByTrip(tripId: string): Promise<LocationLog[]> {
+    return db.select().from(locationLogs).where(eq(locationLogs.tripId, tripId)).orderBy(locationLogs.timestamp);
   }
 
   // Audit Logs

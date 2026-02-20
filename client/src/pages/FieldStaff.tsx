@@ -8,11 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, Square, CheckCircle, Banknote, MapPin, Users } from "lucide-react";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Employee, TravelExpense, LocationLog } from "@shared/schema";
+import type { Employee, TravelExpense, LocationLog, Trip } from "@shared/schema";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -32,12 +32,14 @@ export default function FieldStaff() {
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({ queryKey: ["/api/travel-expenses"] });
   const { data: locationLogs } = useQuery<LocationLog[]>({ queryKey: ["/api/location-logs"] });
+  const { data: allTrips } = useQuery<Trip[]>({ queryKey: ["/api/trips"] });
+  const { data: activeTripsData } = useQuery<Trip[]>({ queryKey: ["/api/trips/active"], refetchInterval: 30000 });
 
   const [activeTab, setActiveTab] = useState("tracking");
 
-  const [activeTrips, setActiveTrips] = useState<Record<string, boolean>>({});
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
+  const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);
   const [selectedFieldEmployee, setSelectedFieldEmployee] = useState<string | null>(null);
-  const tripIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
 
   const [originLat, setOriginLat] = useState<number | null>(null);
   const [originLng, setOriginLng] = useState<number | null>(null);
@@ -116,77 +118,60 @@ export default function FieldStaff() {
   const travelCost = Math.round(calculatedDistance * (transportRates[transportMode] || 10));
   const totalExpense = travelCost + LUNCH_MONEY;
 
-  const sendLocationLog = useCallback(async (employeeId: string) => {
+  const viewTripRoute = useCallback(async (tripId: string) => {
     try {
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true })
-      );
-      await apiRequest("POST", "/api/location-logs", {
-        employeeId,
-        lat: String(pos.coords.latitude),
-        lng: String(pos.coords.longitude),
-        tripActive: true,
+      const res = await fetch(`/api/trips/${tripId}/route`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
+      const logs: LocationLog[] = await res.json();
+      setSelectedTripId(tripId);
+      setSelectedTripRoute(logs);
     } catch {
+      toast({ title: "Error", description: "Failed to load route", variant: "destructive" });
     }
-  }, []);
-
-  const toggleTrip = useCallback((employeeId: string) => {
-    setActiveTrips(prev => {
-      const isActive = !prev[employeeId];
-      if (isActive) {
-        sendLocationLog(employeeId);
-        tripIntervals.current[employeeId] = setInterval(() => sendLocationLog(employeeId), 5 * 60 * 1000);
-      } else {
-        if (tripIntervals.current[employeeId]) {
-          clearInterval(tripIntervals.current[employeeId]);
-          delete tripIntervals.current[employeeId];
-        }
-      }
-      return { ...prev, [employeeId]: isActive };
-    });
-  }, [sendLocationLog]);
+  }, [toast]);
 
   useEffect(() => {
-    return () => {
-      Object.values(tripIntervals.current).forEach(clearInterval);
-    };
-  }, []);
-
-
-  useEffect(() => {
-    if (!adminMapInstance.current || !locationLogs) return;
+    if (!adminMapInstance.current) return;
     adminMarkersRef.current.forEach(m => m.remove());
     adminMarkersRef.current = [];
     if (adminPolylineRef.current) { adminPolylineRef.current.remove(); adminPolylineRef.current = null; }
 
-    const latestByEmp: Record<string, LocationLog> = {};
-    locationLogs.forEach(log => {
-      if (!latestByEmp[log.employeeId] || new Date(log.timestamp) > new Date(latestByEmp[log.employeeId].timestamp)) {
-        latestByEmp[log.employeeId] = log;
-      }
-    });
+    if (selectedTripRoute && selectedTripRoute.length > 0) {
+      const sorted = [...selectedTripRoute].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      const latlngs: L.LatLngExpression[] = sorted.map(l => [Number(l.lat), Number(l.lng)]);
 
-    Object.values(latestByEmp).forEach(log => {
-      const marker = L.marker([Number(log.lat), Number(log.lng)], { icon: createMarkerIcon('staff') })
+      const startMarker = L.marker(latlngs[0] as L.LatLngExpression, { icon: createMarkerIcon('origin') })
         .addTo(adminMapInstance.current!)
-        .bindPopup(getEmployeeName(log.employeeId));
-      adminMarkersRef.current.push(marker);
-    });
+        .bindPopup(`Start: ${new Date(sorted[0].timestamp).toLocaleTimeString()}`);
+      adminMarkersRef.current.push(startMarker);
 
-    if (selectedFieldEmployee) {
-      const today = new Date().toDateString();
-      const empLogs = locationLogs
-        .filter(log => log.employeeId === selectedFieldEmployee && new Date(log.timestamp).toDateString() === today)
-        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      if (empLogs.length > 1) {
-        const latlngs: L.LatLngExpression[] = empLogs.map(l => [Number(l.lat), Number(l.lng)]);
-        adminPolylineRef.current = L.polyline(latlngs, { color: "#3b82f6", weight: 3 }).addTo(adminMapInstance.current!);
-        adminMapInstance.current!.fitBounds(adminPolylineRef.current.getBounds(), { padding: [30, 30] });
+      if (latlngs.length > 1) {
+        const endMarker = L.marker(latlngs[latlngs.length - 1] as L.LatLngExpression, { icon: createMarkerIcon('destination') })
+          .addTo(adminMapInstance.current!)
+          .bindPopup(`End: ${new Date(sorted[sorted.length - 1].timestamp).toLocaleTimeString()}`);
+        adminMarkersRef.current.push(endMarker);
+
+        adminPolylineRef.current = L.polyline(latlngs, { color: "#3b82f6", weight: 4, opacity: 0.8 }).addTo(adminMapInstance.current!);
+        adminMapInstance.current!.fitBounds(adminPolylineRef.current.getBounds(), { padding: [40, 40] });
+      } else {
+        adminMapInstance.current!.setView(latlngs[0] as L.LatLngExpression, 14);
       }
+    } else if (locationLogs && locationLogs.length > 0) {
+      const latestByEmp: Record<string, LocationLog> = {};
+      locationLogs.forEach(log => {
+        if (!latestByEmp[log.employeeId] || new Date(log.timestamp) > new Date(latestByEmp[log.employeeId].timestamp)) {
+          latestByEmp[log.employeeId] = log;
+        }
+      });
+      Object.values(latestByEmp).forEach(log => {
+        const marker = L.marker([Number(log.lat), Number(log.lng)], { icon: createMarkerIcon('staff') })
+          .addTo(adminMapInstance.current!)
+          .bindPopup(getEmployeeName(log.employeeId));
+        adminMarkersRef.current.push(marker);
+      });
     }
-  }, [locationLogs, selectedFieldEmployee, getEmployeeName]);
+  }, [locationLogs, selectedTripRoute, getEmployeeName]);
 
 
   useEffect(() => {
@@ -268,7 +253,8 @@ export default function FieldStaff() {
     },
   });
 
-  const activeTripsCount = Object.values(activeTrips).filter(Boolean).length;
+  const activeTripsCount = activeTripsData?.length ?? 0;
+  const completedTrips = allTrips?.filter(t => t.status === "completed") ?? [];
   const pendingExpenses = travelExpenses?.filter(te => te.status === "pending").length ?? 0;
   const totalExpensesAmount = travelExpenses?.reduce((sum, te) => sum + Number(te.totalAmount), 0) ?? 0;
 
@@ -335,64 +321,106 @@ export default function FieldStaff() {
 
         <TabsContent value="tracking" className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <Card className="lg:col-span-1">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Navigation className="w-4 h-4" />
-                  Field Staff
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {empLoading ? (
-                  Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
-                ) : employees && employees.length > 0 ? (
-                  employees.map(emp => (
-                    <div
-                      key={emp.id}
-                      className={`flex items-center justify-between gap-2 p-2 rounded-md cursor-pointer ${selectedFieldEmployee === emp.id ? "bg-muted" : ""}`}
-                      onClick={() => setSelectedFieldEmployee(selectedFieldEmployee === emp.id ? null : emp.id)}
-                      data-testid={`field-employee-${emp.id}`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Avatar className="w-7 h-7">
-                          <AvatarFallback className="text-xs">{emp.name.charAt(0).toUpperCase()}</AvatarFallback>
-                        </Avatar>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">{emp.name}</p>
-                          <p className="text-xs text-muted-foreground">{emp.department}</p>
-                        </div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant={activeTrips[emp.id] ? "destructive" : "default"}
-                        onClick={(e) => { e.stopPropagation(); toggleTrip(emp.id); }}
-                        data-testid={`button-toggle-trip-${emp.id}`}
+            <div className="lg:col-span-1 space-y-4">
+              {activeTripsCount > 0 && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <Play className="w-4 h-4 text-emerald-500" />
+                      Active Trips ({activeTripsCount})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {activeTripsData?.map(trip => (
+                      <div
+                        key={trip.id}
+                        className="flex items-center justify-between gap-2 p-2 rounded-md bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800"
+                        data-testid={`active-trip-${trip.id}`}
                       >
-                        {activeTrips[emp.id] ? <><Square className="w-3 h-3 mr-1" /> End</> : <><Play className="w-3 h-3 mr-1" /> Start</>}
-                      </Button>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-muted-foreground text-center py-4">No employees found</p>
-                )}
-              </CardContent>
-            </Card>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
+                            <p className="text-xs text-muted-foreground">Started {new Date(trip.startTime).toLocaleTimeString()}</p>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-emerald-600 border-emerald-300 no-default-hover-elevate no-default-active-elevate">Live</Badge>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Route className="w-4 h-4" />
+                    Recorded Routes
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {completedTrips.length > 0 ? (
+                    completedTrips.map(trip => (
+                      <div
+                        key={trip.id}
+                        className={`flex items-center justify-between gap-2 p-3 rounded-md cursor-pointer border transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "hover:bg-muted border-transparent"}`}
+                        onClick={() => viewTripRoute(trip.id)}
+                        data-testid={`trip-route-${trip.id}`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <Avatar className="w-8 h-8">
+                            <AvatarFallback className="text-xs">{getEmployeeName(trip.employeeId).charAt(0).toUpperCase()}</AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Calendar className="w-3 h-3" />
+                              {new Date(trip.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                              <span className="mx-1">|</span>
+                              <Clock className="w-3 h-3" />
+                              {new Date(trip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              {trip.endTime && <> - {new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>}
+                            </div>
+                          </div>
+                        </div>
+                        <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-view-route-${trip.id}`}>
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground text-center py-6">No recorded trips yet. Trips are started by field staff from their devices.</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
             <Card className="lg:col-span-2">
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <MapPinned className="w-4 h-4" />
-                  Live Location Map
-                  {selectedFieldEmployee && (
+                  {selectedTripId ? "Trip Route" : "Live Location Map"}
+                  {selectedTripId && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-auto"
+                      onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); }}
+                      data-testid="button-clear-route"
+                    >
+                      Clear Route
+                    </Button>
+                  )}
+                  {!selectedTripId && activeTripsCount > 0 && (
                     <Badge variant="outline" className="ml-auto no-default-hover-elevate no-default-active-elevate">
-                      <Route className="w-3 h-3 mr-1" />
-                      {getEmployeeName(selectedFieldEmployee)} - Today's Route
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse mr-1" />
+                      {activeTripsCount} active
                     </Badge>
                   )}
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div ref={adminMapRef} style={{ height: 400 }} className="rounded-md border" data-testid="map-admin-location" />
+                <div ref={adminMapRef} style={{ height: 450 }} className="rounded-md border" data-testid="map-admin-location" />
               </CardContent>
             </Card>
           </div>

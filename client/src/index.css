@@ -34,6 +34,85 @@
   border-radius: 8px;
 }
 
+.map-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-marker-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  position: relative;
+}
+
+.map-marker-dot.staff {
+  background: #3b82f6;
+}
+
+.map-marker-dot.origin {
+  background: #22c55e;
+}
+
+.map-marker-dot.destination {
+  background: #f97316;
+}
+
+.map-marker-dot::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+}
+
+.map-marker-dot.staff::after {
+  border-top: 6px solid #3b82f6;
+}
+
+.map-marker-dot.origin::after {
+  border-top: 6px solid #22c55e;
+}
+
+.map-marker-dot.destination::after {
+  border-top: 6px solid #f97316;
+}
+
+.map-marker-pulse {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  opacity: 0;
+  animation: marker-pulse 2s ease-out infinite;
+}
+
+.map-marker-pulse.staff {
+  background: rgba(59, 130, 246, 0.3);
+}
+
+.map-marker-pulse.origin {
+  background: rgba(34, 197, 94, 0.3);
+}
+
+@keyframes marker-pulse {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
 /* LIGHT MODE */
 :root {
   --button-outline: rgba(0,0,0, .10);

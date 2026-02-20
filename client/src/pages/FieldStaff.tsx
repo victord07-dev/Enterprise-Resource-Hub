@@ -16,11 +16,16 @@ import type { Employee, TravelExpense, LocationLog } from "@shared/schema";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-L.Icon.Default.mergeOptions({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
+const createMarkerIcon = (type: 'staff' | 'origin' | 'destination') => {
+  const hasPulse = type === 'staff' || type === 'origin';
+  return L.divIcon({
+    className: 'map-marker',
+    html: `${hasPulse ? `<div class="map-marker-pulse ${type}"></div>` : ''}<div class="map-marker-dot ${type}"></div>`,
+    iconSize: [24, 30],
+    iconAnchor: [12, 30],
+    popupAnchor: [0, -30],
+  });
+};
 
 export default function FieldStaff() {
   const { toast } = useToast();
@@ -83,7 +88,7 @@ export default function FieldStaff() {
       setDestLat(e.latlng.lat);
       setDestLng(e.latlng.lng);
       if (destMarkerRef.current) destMarkerRef.current.remove();
-      destMarkerRef.current = L.marker(e.latlng).addTo(map).bindPopup("Destination").openPopup();
+      destMarkerRef.current = L.marker(e.latlng, { icon: createMarkerIcon('destination') }).addTo(map).bindPopup("Destination").openPopup();
     });
     destMapInstance.current = map;
     setTimeout(() => map.invalidateSize(), 100);
@@ -164,7 +169,7 @@ export default function FieldStaff() {
     });
 
     Object.values(latestByEmp).forEach(log => {
-      const marker = L.marker([Number(log.lat), Number(log.lng)])
+      const marker = L.marker([Number(log.lat), Number(log.lng)], { icon: createMarkerIcon('staff') })
         .addTo(adminMapInstance.current!)
         .bindPopup(getEmployeeName(log.employeeId));
       adminMarkersRef.current.push(marker);
@@ -189,13 +194,7 @@ export default function FieldStaff() {
     if (originLat !== null && originLng !== null) {
       if (originMarkerRef.current) originMarkerRef.current.remove();
       originMarkerRef.current = L.marker([originLat, originLng], {
-        icon: L.icon({
-          iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-          shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-          iconSize: [25, 41],
-          iconAnchor: [12, 41],
-          className: "origin-marker-icon",
-        }),
+        icon: createMarkerIcon('origin'),
       }).addTo(destMapInstance.current).bindPopup("Your Location");
       destMapInstance.current.setView([originLat, originLng], 12);
     }

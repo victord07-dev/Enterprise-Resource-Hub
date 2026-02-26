@@ -3,12 +3,6 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
-const originalWarn = console.warn;
-console.warn = (...args: any[]) => {
-  const msg = typeof args[0] === "string" ? args[0] : "";
-  if (msg.includes("did not pass the `from` option")) return;
-  originalWarn.apply(console, args);
-};
 
 const app = express();
 const httpServer = createServer(app);

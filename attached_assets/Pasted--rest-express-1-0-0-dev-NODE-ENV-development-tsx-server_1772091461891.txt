@@ -1,0 +1,44 @@
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+7:35:45 AM [express] serving on port 5000
+7:35:50 AM [express] GET /api/travel-expenses 304 in 6ms
+7:35:50 AM [express] GET /api/employees 304 in 3ms
+7:35:50 AM [express] GET /api/trips 304 in 1ms
+7:35:50 AM [express] GET /api/location-logs 304 in 16ms
+7:35:50 AM [express] GET /api/trips/active 304 in 12ms
+7:35:53 AM [express] GET /api/sales-orders 304 in 2ms
+7:35:53 AM [express] GET /api/quotations 304 in 2ms
+7:35:53 AM [express] GET /api/customers 304 in 2ms
+7:35:54 AM [express] GET /api/warehouses 304 in 3ms
+7:35:54 AM [express] GET /api/products 304 in 2ms
+7:35:56 AM [express] GET /api/payroll-status/1/2026 304 in 2ms
+7:35:56 AM [express] GET /api/attendance 304 in 2ms
+7:35:57 AM [express] GET /api/invoices 304 in 3ms
+7:35:57 AM [express] GET /api/payments 304 in 3ms
+7:35:59 AM [express] GET /api/audit-logs 200 in 3ms
+7:36:13 AM [express] POST /api/auth/login 200 in 144ms
+7:36:13 AM [express] GET /api/payroll-status/0/2026 304 in 4ms
+7:36:13 AM [express] GET /api/dashboard/stats 200 in 16ms
+7:36:17 AM [express] GET /api/payroll-status/0/2026 304 in 4ms
+7:36:17 AM [express] GET /api/dashboard/stats 200 in 10ms
+7:36:18 AM [express] GET /api/customers 304 in 2ms
+7:36:18 AM [express] GET /api/quotations 304 in 3ms
+7:36:18 AM [express] GET /api/sales-orders 304 in 2ms
+7:36:19 AM [express] GET /api/projects 304 in 2ms
+7:36:20 AM [express] GET /api/purchase-orders 304 in 2ms
+7:36:20 AM [express] GET /api/suppliers 304 in 1ms
+7:36:20 AM [express] GET /api/invoices 304 in 2ms
+7:36:20 AM [express] GET /api/payments 304 in 2ms
+7:36:27 AM [express] GET /api/warehouses 304 in 2ms
+7:36:27 AM [express] GET /api/products 304 in 3ms
+7:36:29 AM [express] GET /api/audit-logs 200 in 3ms
+7:36:30 AM [express] GET /api/attendance 304 in 3ms
+7:36:30 AM [express] GET /api/employees 304 in 3ms
+7:36:30 AM [express] GET /api/payroll-status/1/2026 304 in 2ms
+7:36:40 AM [express] GET /api/customers 304 in 9ms
+7:36:40 AM [express] GET /api/quotations 304 in 11ms
+7:36:40 AM [express] GET /api/sales-orders 304 in 10ms
+7:36:42 AM [express] GET /api/warehouses 304 in 2ms
+7:36:42 AM [express] GET /api/products 304 in 2ms
+7:36:42 AM [express] GET /api/projects 304 in 1ms

@@ -2,11 +2,11 @@ import { db } from "./db";
 import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
-  salesOrders, salesOrderItems, quotations, projects, purchaseOrders,
+  salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
-  type Quotation, type Project, type PurchaseOrder, type Invoice, type Payment,
+  type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type AuditLog,
 } from "@shared/schema";
 
@@ -71,6 +71,11 @@ export interface IStorage {
   createQuotation(data: Omit<Quotation, "id">): Promise<Quotation>;
   updateQuotation(id: string, data: Partial<Omit<Quotation, "id">>): Promise<Quotation | undefined>;
   deleteQuotation(id: string): Promise<boolean>;
+
+  // Quotation Items
+  getQuotationItems(quotationId: string): Promise<QuotationItem[]>;
+  createQuotationItem(data: Omit<QuotationItem, "id">): Promise<QuotationItem>;
+  deleteQuotationItems(quotationId: string): Promise<boolean>;
 
   // Projects
   getProjects(): Promise<Project[]>;
@@ -373,7 +378,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteQuotation(id: string): Promise<boolean> {
+    await db.delete(quotationItems).where(eq(quotationItems.quotationId, id));
     await db.delete(quotations).where(eq(quotations.id, id));
+    return true;
+  }
+
+  // Quotation Items
+  async getQuotationItems(quotationId: string): Promise<QuotationItem[]> {
+    return db.select().from(quotationItems).where(eq(quotationItems.quotationId, quotationId));
+  }
+
+  async createQuotationItem(data: Omit<QuotationItem, "id">): Promise<QuotationItem> {
+    const [created] = await db.insert(quotationItems).values(data).returning();
+    return created;
+  }
+
+  async deleteQuotationItems(quotationId: string): Promise<boolean> {
+    await db.delete(quotationItems).where(eq(quotationItems.quotationId, quotationId));
     return true;
   }
 

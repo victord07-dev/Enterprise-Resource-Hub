@@ -45,6 +45,7 @@ export const products = pgTable("products", {
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
   unit: text("unit").notNull().default("pcs"),
   minStockLevel: integer("min_stock_level").notNull().default(10),
+  type: text("type").notNull().default("product"),
 });
 
 export const warehouses = pgTable("warehouses", {
@@ -74,7 +75,9 @@ export const salesOrders = pgTable("sales_orders", {
 export const salesOrderItems = pgTable("sales_order_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orderId: varchar("order_id").notNull(),
-  productId: varchar("product_id").notNull(),
+  productId: varchar("product_id"),
+  description: text("description"),
+  itemType: text("item_type").notNull().default("product"),
   quantity: integer("quantity").notNull(),
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 12, scale: 2 }).notNull(),
@@ -89,6 +92,17 @@ export const quotations = pgTable("quotations", {
   validUntil: timestamp("valid_until"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   notes: text("notes"),
+});
+
+export const quotationItems = pgTable("quotation_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quotationId: varchar("quotation_id").notNull(),
+  productId: varchar("product_id"),
+  description: text("description"),
+  itemType: text("item_type").notNull().default("product"),
+  quantity: integer("quantity").notNull(),
+  unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
+  totalPrice: decimal("total_price", { precision: 12, scale: 2 }).notNull(),
 });
 
 export const projects = pgTable("projects", {
@@ -250,6 +264,7 @@ export const insertInventoryStockSchema = createInsertSchema(inventoryStock).omi
 export const insertSalesOrderSchema = createInsertSchema(salesOrders).omit({ id: true });
 export const insertSalesOrderItemSchema = createInsertSchema(salesOrderItems).omit({ id: true });
 export const insertQuotationSchema = createInsertSchema(quotations).omit({ id: true });
+export const insertQuotationItemSchema = createInsertSchema(quotationItems).omit({ id: true });
 export const insertProjectSchema = createInsertSchema(projects).omit({ id: true });
 export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true });
@@ -273,6 +288,7 @@ export type InventoryStock = typeof inventoryStock.$inferSelect;
 export type SalesOrder = typeof salesOrders.$inferSelect;
 export type SalesOrderItem = typeof salesOrderItems.$inferSelect;
 export type Quotation = typeof quotations.$inferSelect;
+export type QuotationItem = typeof quotationItems.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type PurchaseOrder = typeof purchaseOrders.$inferSelect;
 export type Invoice = typeof invoices.$inferSelect;

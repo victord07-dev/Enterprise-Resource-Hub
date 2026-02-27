@@ -4,14 +4,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2 } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType } from "@shared/schema";
+
+const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
+const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
 
 export default function Inventory() {
   const { toast } = useToast();
@@ -20,13 +23,15 @@ export default function Inventory() {
 
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [productForm, setProductForm] = useState({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10" });
+  const [productForm, setProductForm] = useState({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10", type: "product" });
 
   const [warehouseDialogOpen, setWarehouseDialogOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState<WarehouseType | null>(null);
   const [warehouseForm, setWarehouseForm] = useState({ name: "", location: "", capacity: "" });
 
   const lowStockItems = products?.filter((p) => Number(p.minStockLevel) > 0) ?? [];
+  const productCount = products?.filter(p => p.type !== "service").length ?? 0;
+  const serviceCount = products?.filter(p => p.type === "service").length ?? 0;
 
   const productMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -38,7 +43,7 @@ export default function Inventory() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: editingProduct ? "Product updated" : "Product created" });
+      toast({ title: editingProduct ? "Item updated" : "Item created" });
       setProductDialogOpen(false);
       setEditingProduct(null);
     },
@@ -51,7 +56,7 @@ export default function Inventory() {
     mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/products/${id}`); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "Product deleted" });
+      toast({ title: "Item deleted" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -88,9 +93,17 @@ export default function Inventory() {
     },
   });
 
+  const isService = productForm.type === "service";
+
   const openNewProduct = () => {
     setEditingProduct(null);
-    setProductForm({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10" });
+    setProductForm({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10", type: "product" });
+    setProductDialogOpen(true);
+  };
+
+  const openNewService = () => {
+    setEditingProduct(null);
+    setProductForm({ name: "", sku: "", category: "Installation", description: "", unitPrice: "", unit: "service", minStockLevel: "0", type: "service" });
     setProductDialogOpen(true);
   };
 
@@ -104,6 +117,7 @@ export default function Inventory() {
       unitPrice: String(p.unitPrice),
       unit: p.unit,
       minStockLevel: String(p.minStockLevel),
+      type: p.type || "product",
     });
     setProductDialogOpen(true);
   };
@@ -124,28 +138,74 @@ export default function Inventory() {
     setWarehouseDialogOpen(true);
   };
 
+  const handleTypeChange = (type: string) => {
+    if (type === "service") {
+      setProductForm({
+        ...productForm,
+        type: "service",
+        category: "Installation",
+        unit: "service",
+        minStockLevel: "0",
+        sku: productForm.sku || `SVC-${Date.now().toString(36).toUpperCase()}`,
+      });
+    } else {
+      setProductForm({
+        ...productForm,
+        type: "product",
+        category: "Solar Panels",
+        unit: "pcs",
+        minStockLevel: "10",
+      });
+    }
+  };
+
+  const handleSubmitProduct = () => {
+    const data: any = { ...productForm, minStockLevel: Number(productForm.minStockLevel) };
+    if (isService && !data.sku) {
+      data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
+    }
+    productMutation.mutate(data);
+  };
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Inventory</h1>
-          <p className="text-muted-foreground text-sm mt-1">Manage products, stock, and warehouses</p>
+          <p className="text-muted-foreground text-sm mt-1">Manage products, services, stock, and warehouses</p>
         </div>
-        <Button data-testid="button-add-product" onClick={openNewProduct}>
-          <Plus className="w-4 h-4 mr-2" />
-          Add Product
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" data-testid="button-add-service" onClick={openNewService}>
+            <Wrench className="w-4 h-4 mr-2" />
+            Add Service
+          </Button>
+          <Button data-testid="button-add-product" onClick={openNewProduct}>
+            <Plus className="w-4 h-4 mr-2" />
+            Add Product
+          </Button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
               <Package className="w-5 h-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{products?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Total Products</p>
+              <p className="text-2xl font-bold">{productCount}</p>
+              <p className="text-xs text-muted-foreground">Products</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-md bg-orange-50 dark:bg-orange-950/30 flex items-center justify-center">
+              <Wrench className="w-5 h-5 text-orange-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold">{serviceCount}</p>
+              <p className="text-xs text-muted-foreground">Services</p>
             </div>
           </CardContent>
         </Card>
@@ -175,7 +235,7 @@ export default function Inventory() {
 
       <Tabs defaultValue="products" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="products" data-testid="tab-products">Products</TabsTrigger>
+          <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
         </TabsList>
@@ -184,7 +244,7 @@ export default function Inventory() {
           <div className="flex items-center gap-2">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="Search products..." className="pl-9" data-testid="input-search-products" />
+              <Input placeholder="Search products & services..." className="pl-9" data-testid="input-search-products" />
             </div>
           </div>
           <Card>
@@ -193,7 +253,8 @@ export default function Inventory() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
-                      <th className="text-left p-3 font-medium text-muted-foreground">Product Name</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Unit</th>
@@ -206,7 +267,7 @@ export default function Inventory() {
                     {productsLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 7 }).map((_, j) => (
+                          {Array.from({ length: 8 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -214,22 +275,33 @@ export default function Inventory() {
                     ) : products && products.length > 0 ? (
                       products.map((product) => (
                         <tr key={product.id} className="border-b last:border-0" data-testid={`row-product-${product.id}`}>
-                          <td className="p-3 font-medium">{product.name}</td>
-                          <td className="p-3 text-muted-foreground">{product.sku}</td>
                           <td className="p-3">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400">
+                            {product.type === "service" ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400">
+                                <Wrench className="w-3 h-3" /> Service
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
+                                <Package className="w-3 h-3" /> Product
+                              </span>
+                            )}
+                          </td>
+                          <td className="p-3 font-medium">{product.name}</td>
+                          <td className="p-3 text-muted-foreground">{product.type === "service" ? "—" : product.sku}</td>
+                          <td className="p-3">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
                               {product.category}
                             </span>
                           </td>
                           <td className="p-3 text-muted-foreground">{product.unit}</td>
                           <td className="p-3 text-right font-medium">₹{Number(product.unitPrice).toLocaleString()}</td>
-                          <td className="p-3 text-right text-muted-foreground">{product.minStockLevel}</td>
+                          <td className="p-3 text-right text-muted-foreground">{product.type === "service" ? "—" : product.minStockLevel}</td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1">
                               <Button size="icon" variant="ghost" data-testid={`button-edit-product-${product.id}`} onClick={() => openEditProduct(product)}>
                                 <Pencil className="w-4 h-4" />
                               </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-product-${product.id}`} onClick={() => { if (confirm("Delete this product?")) deleteProductMutation.mutate(product.id); }}>
+                              <Button size="icon" variant="ghost" data-testid={`button-delete-product-${product.id}`} onClick={() => { if (confirm("Delete this item?")) deleteProductMutation.mutate(product.id); }}>
                                 <Trash2 className="w-4 h-4" />
                               </Button>
                             </div>
@@ -238,8 +310,8 @@ export default function Inventory() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-muted-foreground">
-                          No products found. Add your first product.
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                          No products or services found. Add your first item.
                         </td>
                       </tr>
                     )}
@@ -309,17 +381,32 @@ export default function Inventory() {
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingProduct ? "Edit Product" : "Add Product"}</DialogTitle>
+            <DialogTitle>{editingProduct ? "Edit Item" : isService ? "Add Service" : "Add Product"}</DialogTitle>
+            <DialogDescription>{isService ? "Service items for installation, maintenance, etc." : "Physical product or material"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="prodName">Name</Label>
-              <Input id="prodName" data-testid="input-product-name" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} />
+              <Label>Type</Label>
+              <Select value={productForm.type} onValueChange={handleTypeChange}>
+                <SelectTrigger data-testid="select-product-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="product"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Product</span></SelectItem>
+                  <SelectItem value="service"><span className="flex items-center gap-1"><Wrench className="w-3 h-3" /> Service</span></SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="prodSku">SKU</Label>
-              <Input id="prodSku" data-testid="input-product-sku" value={productForm.sku} onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })} />
+              <Label htmlFor="prodName">Name</Label>
+              <Input id="prodName" data-testid="input-product-name" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} placeholder={isService ? "e.g. Solar Panel Installation" : "e.g. 400W Solar Panel"} />
             </div>
+            {!isService && (
+              <div className="space-y-2">
+                <Label htmlFor="prodSku">SKU</Label>
+                <Input id="prodSku" data-testid="input-product-sku" value={productForm.sku} onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })} />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="prodCategory">Category</Label>
               <Select value={productForm.category} onValueChange={(v) => setProductForm({ ...productForm, category: v })}>
@@ -327,7 +414,7 @@ export default function Inventory() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {["Solar Panels", "Electronics", "Commodities", "Accessories"].map((c) => (
+                  {(isService ? serviceCategories : productCategories).map((c) => (
                     <SelectItem key={c} value={c}>{c}</SelectItem>
                   ))}
                 </SelectContent>
@@ -337,30 +424,36 @@ export default function Inventory() {
               <Label htmlFor="prodDesc">Description</Label>
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="prodPrice">Unit Price</Label>
-              <Input id="prodPrice" type="number" data-testid="input-product-unit-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="prodPrice">Unit Price (₹)</Label>
+                <Input id="prodPrice" type="number" data-testid="input-product-unit-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
+              </div>
+              {!isService && (
+                <div className="space-y-2">
+                  <Label htmlFor="prodUnit">Unit</Label>
+                  <Select value={productForm.unit} onValueChange={(v) => setProductForm({ ...productForm, unit: v })}>
+                    <SelectTrigger data-testid="select-product-unit">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {["pcs", "kg", "ltr", "mtr", "box"].map((u) => (
+                        <SelectItem key={u} value={u}>{u}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="prodUnit">Unit</Label>
-              <Select value={productForm.unit} onValueChange={(v) => setProductForm({ ...productForm, unit: v })}>
-                <SelectTrigger data-testid="select-product-unit">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["pcs", "kg", "ltr", "mtr", "box"].map((u) => (
-                    <SelectItem key={u} value={u}>{u}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="prodMinStock">Min Stock Level</Label>
-              <Input id="prodMinStock" type="number" data-testid="input-product-min-stock" value={productForm.minStockLevel} onChange={(e) => setProductForm({ ...productForm, minStockLevel: e.target.value })} />
-            </div>
+            {!isService && (
+              <div className="space-y-2">
+                <Label htmlFor="prodMinStock">Min Stock Level</Label>
+                <Input id="prodMinStock" type="number" data-testid="input-product-min-stock" value={productForm.minStockLevel} onChange={(e) => setProductForm({ ...productForm, minStockLevel: e.target.value })} />
+              </div>
+            )}
           </div>
           <DialogFooter>
-            <Button data-testid="button-submit-product" disabled={productMutation.isPending} onClick={() => productMutation.mutate({ ...productForm, minStockLevel: Number(productForm.minStockLevel) })}>
+            <Button data-testid="button-submit-product" disabled={productMutation.isPending} onClick={handleSubmitProduct}>
               {productMutation.isPending ? "Saving..." : editingProduct ? "Update" : "Create"}
             </Button>
           </DialogFooter>
@@ -371,6 +464,7 @@ export default function Inventory() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editingWarehouse ? "Edit Warehouse" : "Add Warehouse"}</DialogTitle>
+            <DialogDescription>Warehouse location details</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">

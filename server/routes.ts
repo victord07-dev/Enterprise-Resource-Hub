@@ -6,8 +6,8 @@ import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
 import {
   loginSchema, insertCustomerSchema, insertSupplierSchema, insertProductSchema,
-  insertWarehouseSchema, insertSalesOrderSchema, insertQuotationSchema,
-  insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
+  insertWarehouseSchema, insertSalesOrderSchema, insertSalesOrderItemSchema, insertQuotationSchema,
+  insertQuotationItemSchema, insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
   insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema,
 } from "@shared/schema";
@@ -585,6 +585,101 @@ export async function registerRoutes(
       res.json({ message: "Quotation deleted" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete quotation" });
+    }
+  });
+
+  // ======================== SALES ORDER ITEMS ========================
+  app.get("/api/sales-orders/:id/items", authenticateToken, async (req, res) => {
+    try {
+      const items = await storage.getSalesOrderItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch order items" });
+    }
+  });
+
+  app.post("/api/sales-orders/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const items = req.body.items;
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
+      await storage.deleteSalesOrderItems(req.params.id);
+      const created = [];
+      for (const item of items) {
+        const parsed = insertSalesOrderItemSchema.parse({ ...item, orderId: req.params.id });
+        const c = await storage.createSalesOrderItem(parsed);
+        created.push(c);
+      }
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error?.name === "ZodError") return res.status(400).json({ message: "Invalid item data", errors: error.errors });
+      res.status(500).json({ message: "Failed to save order items" });
+    }
+  });
+
+  // ======================== QUOTATION ITEMS ========================
+  app.get("/api/quotations/:id/items", authenticateToken, async (req, res) => {
+    try {
+      const items = await storage.getQuotationItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch quotation items" });
+    }
+  });
+
+  app.post("/api/quotations/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const items = req.body.items;
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
+      await storage.deleteQuotationItems(req.params.id);
+      const created = [];
+      for (const item of items) {
+        const parsed = insertQuotationItemSchema.parse({ ...item, quotationId: req.params.id });
+        const c = await storage.createQuotationItem(parsed);
+        created.push(c);
+      }
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error?.name === "ZodError") return res.status(400).json({ message: "Invalid item data", errors: error.errors });
+      res.status(500).json({ message: "Failed to save quotation items" });
+    }
+  });
+
+  // ======================== CONVERT QUOTATION TO ORDER ========================
+  app.post("/api/quotations/:id/convert-to-order", authenticateToken, async (req: any, res) => {
+    try {
+      const quotation = await storage.getQuotation(req.params.id);
+      if (!quotation) return res.status(404).json({ message: "Quotation not found" });
+      if (quotation.status === "accepted") return res.status(400).json({ message: "Quotation already converted" });
+
+      const orderNumber = `SO-${Date.now().toString(36).toUpperCase()}`;
+      const order = await storage.createSalesOrder({
+        orderNumber,
+        customerId: quotation.customerId,
+        status: "pending",
+        totalAmount: quotation.totalAmount,
+        orderDate: new Date(),
+        notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
+      });
+
+      const quotationItems = await storage.getQuotationItems(req.params.id);
+      for (const qi of quotationItems) {
+        await storage.createSalesOrderItem({
+          orderId: order.id,
+          productId: qi.productId,
+          description: qi.description,
+          itemType: qi.itemType,
+          quantity: qi.quantity,
+          unitPrice: qi.unitPrice,
+          totalPrice: qi.totalPrice,
+        });
+      }
+
+      await storage.updateQuotation(req.params.id, { status: "accepted" });
+      await logAction(req.user.id, "create", "sales", `Converted quotation ${quotation.quoteNumber} to order ${orderNumber}`);
+
+      res.status(201).json(order);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to convert quotation to order" });
     }
   });
 

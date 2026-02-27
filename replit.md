@@ -12,9 +12,9 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Modules
 1. Dashboard - Metric cards, revenue chart, activity feed
-2. Sales - Orders, quotations, customers
+2. Sales - Orders with line items, quotations with line items, quotation-to-order conversion, customers
 3. Project Management - Project tracking, milestones
-4. Inventory - Products, warehouses, stock movements
+4. Inventory - Products & Services (with type badges), warehouses, stock movements
 5. Supply Chain - Suppliers, purchase orders, deliveries
 6. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
 7. Accounts - Invoices, payments, financial tracking
@@ -50,6 +50,18 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Late rule: Check-in after 9:35:00 AM (even 9:35:01) = half day (status: "half_day")
 - Employee table shows Monthly Salary and Daily Rate columns
 - Attendance table shows "Half Day" badge (amber) for late arrivals
+
+## Sales Module - Line Items & Services
+- Orders and quotations support mixed Product + Service line items
+- LineItemsEditor component: type toggle (Product/Service), product/service dropdown, description, qty, unit price, auto-calc total
+- Line items auto-calculate grand total; totalAmount stored on parent record
+- Quotation-to-order conversion: POST /api/quotations/:id/convert-to-order copies all items, marks quotation as "accepted"
+- Products table has `type` field: "product" (default) or "service"
+- Service categories: Installation, AMC, Site Survey, Repair, Maintenance, Custom
+- Services auto-generate SKU (SVC-xxx), hide stock-related fields in Inventory form
+- Tables: sales_order_items (orderId, productId nullable, itemType, description, qty, unitPrice, totalPrice), quotation_items (same structure with quotationId)
+- API: GET/POST /api/sales-orders/:id/items, GET/POST /api/quotations/:id/items
+- Zod validation on item creation routes using insertSalesOrderItemSchema/insertQuotationItemSchema
 
 ## Field Staff Travel Expense System
 - Separate module at /field-staff with its own sidebar entry (after Supply Chain)

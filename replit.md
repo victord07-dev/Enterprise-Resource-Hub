@@ -12,16 +12,17 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Modules
 1. Dashboard - Metric cards, revenue chart, activity feed
-2. Sales - Orders with line items, quotations with line items, quotation-to-order conversion, customers
-3. Project Management - Project tracking, milestones
-4. Inventory - Products & Services (with type badges), warehouses, stock movements
-5. Supply Chain - Suppliers, purchase orders, deliveries
-6. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
-7. Accounts - Invoices, payments, financial tracking
-8. Employee Management - Staff, attendance (with QR + selfie kiosk), payroll
-9. Reports - Business analytics with charts
-10. Audit Trail - System activity logs
-11. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)
+2. Leads (/leads) - CRM lead pipeline with conversion to quotation
+3. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation
+4. Project Management - Project tracking, milestones
+5. Inventory - Products & Services (with type badges), warehouses, stock movements
+6. Supply Chain - Suppliers, purchase orders, deliveries
+7. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
+8. Accounts - Invoices, payments, financial tracking
+9. Employee Management - Staff, attendance (with QR + selfie kiosk), payroll
+10. Reports - Business analytics with charts
+11. Audit Trail - System activity logs
+12. Kiosk Attendance (/kiosk) - Standalone QR scan + selfie attendance system (no auth required)
 
 ## Kiosk Attendance System
 - Standalone page at `/kiosk` - no login required (designed for office tablet)
@@ -50,6 +51,26 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Late rule: Check-in after 9:35:00 AM (even 9:35:01) = half day (status: "half_day")
 - Employee table shows Monthly Salary and Daily Rate columns
 - Attendance table shows "Half Day" badge (amber) for late arrivals
+
+## Leads Module (CRM)
+- Pipeline at `/leads` with sidebar entry between Dashboard and Sales (UserPlus icon)
+- Lead table: name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, createdAt
+- Sources: call, website, referral, walk_in, other (color-coded badges)
+- Statuses: new → contacted → qualified → quotation_sent → won/lost (pipeline-colored badges)
+- Convert to Quotation: POST /api/leads/:id/convert-to-quotation — auto-creates customer (if not existing) + draft quotation, updates lead status to "quotation_sent"
+- Stat cards: Total Leads, Qualified, Won, Lost
+- CRUD API: GET/POST/PATCH/DELETE /api/leads
+- Table: leads (id, name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, createdAt)
+
+## Sales Module - Discounts & Payments
+- Quotations and orders support discounts: discountType (percentage/fixed), discountValue
+- Discount display: Subtotal → Discount → Net Total; totalAmount = net total after discount
+- Quotation-to-order conversion carries over discountType and discountValue
+- Orders support payment tracking: paymentTerms (text), advanceAmount, paidAmount
+- Order statuses expanded: pending, awaiting_payment, confirmed, procurement, ready_to_ship, dispatched, delivered, installed, completed, cancelled
+- Record Payment: POST /api/sales-orders/:id/record-payment (amount, method: cash/cheque/upi/bank_transfer, reference)
+- Generate Invoice: POST /api/sales-orders/:id/generate-invoice (auto-generates from order, amount = remaining uninvoiced amount)
+- Expanded order row shows: payment summary (Total/Paid/Balance), Record Payment button, Generate Invoice button (visible on delivered+)
 
 ## Sales Module - Line Items & Services
 - Orders and quotations support mixed Product + Service line items

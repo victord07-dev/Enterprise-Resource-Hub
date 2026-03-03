@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Fragment } from "react";
+import { useState, useCallback, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product } from "@shared/schema";
 
@@ -22,21 +22,36 @@ interface LineItem {
   totalPrice: number;
 }
 
+const ORDER_STATUSES = [
+  "pending", "awaiting_payment", "confirmed", "procurement",
+  "ready_to_ship", "dispatched", "shipped", "delivered",
+  "installed", "completed", "cancelled"
+];
+
+const INVOICE_ELIGIBLE_STATUSES = ["delivered", "installed", "completed"];
+
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
     pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
+    awaiting_payment: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
     confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
-    shipped: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
-    delivered: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
+    procurement: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
+    ready_to_ship: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-400",
+    dispatched: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
+    shipped: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-400",
+    delivered: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
+    installed: "bg-teal-100 text-teal-800 dark:bg-teal-950/40 dark:text-teal-400",
+    completed: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     cancelled: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
     draft: "bg-gray-100 text-gray-800 dark:bg-gray-950/40 dark:text-gray-400",
     sent: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
     accepted: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     rejected: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
   };
+  const label = status.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${variants[status] || variants.pending}`}>
-      {status.charAt(0).toUpperCase() + status.slice(1)}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${variants[status] || variants.pending}`} data-testid={`badge-status-${status}`}>
+      {label}
     </span>
   );
 }
@@ -45,7 +60,27 @@ function emptyLineItem(): LineItem {
   return { itemType: "product", productId: "", description: "", quantity: 1, unitPrice: 0, totalPrice: 0 };
 }
 
-function LineItemsEditor({ items, onChange, products }: { items: LineItem[]; onChange: (items: LineItem[]) => void; products: Product[] }) {
+interface DiscountState {
+  discountType: string;
+  discountValue: number;
+}
+
+function calculateDiscount(subtotal: number, discount: DiscountState): number {
+  if (discount.discountType === "percentage") {
+    return subtotal * (discount.discountValue / 100);
+  } else if (discount.discountType === "fixed") {
+    return Math.min(discount.discountValue, subtotal);
+  }
+  return 0;
+}
+
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange }: {
+  items: LineItem[];
+  onChange: (items: LineItem[]) => void;
+  products: Product[];
+  discount?: DiscountState;
+  onDiscountChange?: (d: DiscountState) => void;
+}) {
   const productItems = products.filter(p => p.type === "product");
   const serviceItems = products.filter(p => p.type === "service");
 
@@ -80,7 +115,9 @@ function LineItemsEditor({ items, onChange, products }: { items: LineItem[]; onC
   const addItem = () => onChange([...items, emptyLineItem()]);
   const removeItem = (index: number) => onChange(items.filter((_, i) => i !== index));
 
-  const total = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
+  const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
+  const discountAmount = discount ? calculateDiscount(subtotal, discount) : 0;
+  const netTotal = subtotal - discountAmount;
 
   return (
     <div className="space-y-3">
@@ -123,7 +160,7 @@ function LineItemsEditor({ items, onChange, products }: { items: LineItem[]; onC
                 </Select>
               </div>
             </div>
-            <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 mt-4" onClick={() => removeItem(i)} data-testid={`button-remove-item-${i}`}>
+            <Button type="button" variant="ghost" size="icon" className="shrink-0 mt-4" onClick={() => removeItem(i)} data-testid={`button-remove-item-${i}`}>
               <X className="w-4 h-4" />
             </Button>
           </div>
@@ -147,9 +184,61 @@ function LineItemsEditor({ items, onChange, products }: { items: LineItem[]; onC
           </div>
         </div>
       ))}
+
+      {items.length > 0 && discount && onDiscountChange && (
+        <div className="border rounded-lg p-3 space-y-3 bg-muted/10">
+          <Label className="text-sm font-semibold">Discount</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs text-muted-foreground">Discount Type</Label>
+              <Select value={discount.discountType} onValueChange={(v) => onDiscountChange({ ...discount, discountType: v, discountValue: v === "none" ? 0 : discount.discountValue })}>
+                <SelectTrigger className="h-8 text-xs" data-testid="select-discount-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="percentage">Percentage</SelectItem>
+                  <SelectItem value="fixed">Fixed Amount</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {discount.discountType !== "none" && (
+              <div>
+                <Label className="text-xs text-muted-foreground">
+                  {discount.discountType === "percentage" ? "Discount (%)" : "Discount Amount (₹)"}
+                </Label>
+                <Input
+                  className="h-8 text-xs"
+                  type="number"
+                  min="0"
+                  step={discount.discountType === "percentage" ? "1" : "0.01"}
+                  max={discount.discountType === "percentage" ? "100" : undefined}
+                  value={discount.discountValue}
+                  onChange={(e) => onDiscountChange({ ...discount, discountValue: parseFloat(e.target.value) || 0 })}
+                  data-testid="input-discount-value"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {items.length > 0 && (
-        <div className="flex justify-end border-t pt-2">
-          <p className="text-sm font-semibold" data-testid="text-line-items-total">Grand Total: ₹{total.toLocaleString()}</p>
+        <div className="border-t pt-2 space-y-1">
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>Subtotal</span>
+            <span data-testid="text-subtotal">₹{subtotal.toLocaleString()}</span>
+          </div>
+          {discount && discountAmount > 0 && (
+            <div className="flex justify-between text-sm text-red-600 dark:text-red-400">
+              <span>Discount {discount.discountType === "percentage" ? `(${discount.discountValue}%)` : ""}</span>
+              <span data-testid="text-discount-amount">- ₹{discountAmount.toLocaleString()}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-sm font-semibold border-t pt-1">
+            <span>Net Total</span>
+            <span data-testid="text-line-items-total">₹{netTotal.toLocaleString()}</span>
+          </div>
         </div>
       )}
     </div>
@@ -165,13 +254,15 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
+  const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
   const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
+  const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -181,6 +272,10 @@ export default function Sales() {
   const [expandedQuoteId, setExpandedQuoteId] = useState<string | null>(null);
   const [expandedOrderItems, setExpandedOrderItems] = useState<SalesOrderItem[]>([]);
   const [expandedQuoteItems, setExpandedQuoteItems] = useState<QuotationItem[]>([]);
+
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
+  const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "" });
 
   const toggleOrderExpand = useCallback(async (orderId: string) => {
     if (expandedOrderId === orderId) {
@@ -212,10 +307,23 @@ export default function Sales() {
     } catch { setExpandedQuoteId(null); }
   }, [expandedQuoteId]);
 
+  const getNetTotal = (items: LineItem[], discount: DiscountState) => {
+    const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
+    const discountAmt = calculateDiscount(subtotal, discount);
+    return subtotal - discountAmt;
+  };
+
   const orderMutation = useMutation({
     mutationFn: async (data: any) => {
-      const totalAmount = String(orderItems.reduce((s, it) => s + (it.totalPrice || 0), 0));
-      const orderData = { ...data, totalAmount };
+      const totalAmount = String(getNetTotal(orderItems, orderDiscount));
+      const orderData = {
+        ...data,
+        totalAmount,
+        discountType: orderDiscount.discountType === "none" ? null : orderDiscount.discountType,
+        discountValue: orderDiscount.discountType === "none" ? null : String(orderDiscount.discountValue),
+        paymentTerms: data.paymentTerms || null,
+        advanceAmount: data.advanceAmount ? String(data.advanceAmount) : null,
+      };
       let orderId: string;
       if (editingOrder) {
         await apiRequest("PATCH", `/api/sales-orders/${editingOrder.id}`, orderData);
@@ -263,8 +371,14 @@ export default function Sales() {
 
   const quoteMutation = useMutation({
     mutationFn: async (data: any) => {
-      const totalAmount = String(quoteItems.reduce((s, it) => s + (it.totalPrice || 0), 0));
-      const quoteData = { ...data, totalAmount, validUntil: data.validUntil ? new Date(data.validUntil) : null };
+      const totalAmount = String(getNetTotal(quoteItems, quoteDiscount));
+      const quoteData = {
+        ...data,
+        totalAmount,
+        validUntil: data.validUntil ? new Date(data.validUntil) : null,
+        discountType: quoteDiscount.discountType === "none" ? null : quoteDiscount.discountType,
+        discountValue: quoteDiscount.discountType === "none" ? null : String(quoteDiscount.discountValue),
+      };
       let quoteId: string;
       if (editingQuote) {
         await apiRequest("PATCH", `/api/quotations/${editingQuote.id}`, quoteData);
@@ -325,6 +439,38 @@ export default function Sales() {
     },
   });
 
+  const recordPaymentMutation = useMutation({
+    mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
+      const res = await apiRequest("POST", `/api/sales-orders/${orderId}/record-payment`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      toast({ title: "Payment recorded" });
+      setPaymentDialogOpen(false);
+      setPaymentOrderId(null);
+      setPaymentForm({ amount: "", method: "cash", reference: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const generateInvoiceMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const res = await apiRequest("POST", `/api/sales-orders/${orderId}/generate-invoice`);
+      return res.json();
+    },
+    onSuccess: (invoice: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      toast({ title: "Invoice generated", description: `Invoice ${invoice.invoiceNumber} created` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const customerMutation = useMutation({
     mutationFn: async (data: any) => {
       if (editingCustomer) {
@@ -358,14 +504,26 @@ export default function Sales() {
   const openNewOrder = () => {
     setEditingOrder(null);
     const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "" });
+    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "" });
     setOrderItems([emptyLineItem()]);
+    setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderDialogOpen(true);
   };
 
   const openEditOrder = async (order: SalesOrder) => {
     setEditingOrder(order);
-    setOrderForm({ orderNumber: order.orderNumber, customerId: order.customerId, status: order.status, notes: order.notes || "" });
+    setOrderForm({
+      orderNumber: order.orderNumber,
+      customerId: order.customerId,
+      status: order.status,
+      notes: order.notes || "",
+      paymentTerms: order.paymentTerms || "",
+      advanceAmount: order.advanceAmount ? String(order.advanceAmount) : "",
+    });
+    setOrderDiscount({
+      discountType: order.discountType || "none",
+      discountValue: order.discountValue ? Number(order.discountValue) : 0,
+    });
     try {
       const res = await fetch(`/api/sales-orders/${order.id}/items`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
@@ -394,6 +552,7 @@ export default function Sales() {
     const num = `QT-${Date.now().toString(36).toUpperCase()}`;
     setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "" });
     setQuoteItems([emptyLineItem()]);
+    setQuoteDiscount({ discountType: "none", discountValue: 0 });
     setQuoteDialogOpen(true);
   };
 
@@ -405,6 +564,10 @@ export default function Sales() {
       status: q.status,
       validUntil: q.validUntil ? new Date(q.validUntil).toISOString().split("T")[0] : "",
       notes: q.notes || "",
+    });
+    setQuoteDiscount({
+      discountType: q.discountType || "none",
+      discountValue: q.discountValue ? Number(q.discountValue) : 0,
     });
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
@@ -439,6 +602,12 @@ export default function Sales() {
     setEditingCustomer(c);
     setCustomerForm({ name: c.name, email: c.email || "", phone: c.phone || "", address: c.address || "", gstNumber: c.gstNumber || "", contactPerson: c.contactPerson || "" });
     setCustomerDialogOpen(true);
+  };
+
+  const openRecordPayment = (orderId: string) => {
+    setPaymentOrderId(orderId);
+    setPaymentForm({ amount: "", method: "cash", reference: "" });
+    setPaymentDialogOpen(true);
   };
 
   const getCustomerName = (id: string) => customers?.find(c => c.id === id)?.name || "—";
@@ -518,6 +687,7 @@ export default function Sales() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Paid</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
@@ -530,6 +700,7 @@ export default function Sales() {
                           <td className="p-3"><Skeleton className="h-4 w-20" /></td>
                           <td className="p-3"><Skeleton className="h-4 w-20" /></td>
                           <td className="p-3"><Skeleton className="h-4 w-16" /></td>
+                          <td className="p-3"><Skeleton className="h-4 w-16 ml-auto" /></td>
                           <td className="p-3"><Skeleton className="h-4 w-16 ml-auto" /></td>
                           <td className="p-3"><Skeleton className="h-4 w-16 ml-auto" /></td>
                         </tr>
@@ -546,6 +717,7 @@ export default function Sales() {
                             <td className="p-3 text-muted-foreground">{new Date(order.orderDate).toLocaleDateString()}</td>
                             <td className="p-3"><StatusBadge status={order.status} /></td>
                             <td className="p-3 text-right font-medium">₹{Number(order.totalAmount).toLocaleString()}</td>
+                            <td className="p-3 text-right text-muted-foreground" data-testid={`text-paid-${order.id}`}>₹{Number(order.paidAmount || 0).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
                                 <Button size="icon" variant="ghost" data-testid={`button-edit-order-${order.id}`} onClick={() => openEditOrder(order)}>
@@ -559,8 +731,8 @@ export default function Sales() {
                           </tr>
                           {expandedOrderId === order.id && (
                             <tr key={`${order.id}-items`} className="border-b">
-                              <td colSpan={7} className="p-0">
-                                <div className="bg-muted/20 px-6 py-3">
+                              <td colSpan={8} className="p-0">
+                                <div className="bg-muted/20 px-6 py-3 space-y-3">
                                   {expandedOrderItems.length > 0 ? (
                                     <table className="w-full text-xs">
                                       <thead>
@@ -576,7 +748,7 @@ export default function Sales() {
                                         {expandedOrderItems.map((it) => (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
-                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"}`}>
+                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
                                                 {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : <Package className="w-3 h-3" />}
                                                 {it.itemType === "service" ? "Service" : "Product"}
                                               </span>
@@ -592,6 +764,42 @@ export default function Sales() {
                                   ) : (
                                     <p className="text-xs text-muted-foreground">No line items for this order.</p>
                                   )}
+
+                                  {order.discountType && order.discountValue && (
+                                    <div className="text-xs text-muted-foreground">
+                                      Discount: {order.discountType === "percentage" ? `${Number(order.discountValue)}%` : `₹${Number(order.discountValue).toLocaleString()}`}
+                                    </div>
+                                  )}
+
+                                  <div className="border-t pt-3 flex flex-wrap items-center gap-4">
+                                    <div className="flex items-center gap-4 text-xs">
+                                      <span className="font-semibold" data-testid={`text-order-total-${order.id}`}>Total: ₹{Number(order.totalAmount).toLocaleString()}</span>
+                                      <span className="text-green-600 dark:text-green-400 font-medium" data-testid={`text-order-paid-${order.id}`}>Paid: ₹{Number(order.paidAmount || 0).toLocaleString()}</span>
+                                      <span className="text-amber-600 dark:text-amber-400 font-medium" data-testid={`text-order-balance-${order.id}`}>Balance: ₹{(Number(order.totalAmount) - Number(order.paidAmount || 0)).toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 ml-auto" onClick={(e) => e.stopPropagation()}>
+                                      <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
+                                        <CreditCard className="w-3 h-3 mr-1" /> Record Payment
+                                      </Button>
+                                      {INVOICE_ELIGIBLE_STATUSES.includes(order.status) && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          data-testid={`button-generate-invoice-${order.id}`}
+                                          disabled={generateInvoiceMutation.isPending}
+                                          onClick={() => { if (confirm("Generate invoice for this order?")) generateInvoiceMutation.mutate(order.id); }}
+                                        >
+                                          <Receipt className="w-3 h-3 mr-1" /> Generate Invoice
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {order.paymentTerms && (
+                                    <div className="text-xs text-muted-foreground">
+                                      Payment Terms: {order.paymentTerms}
+                                    </div>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -600,7 +808,7 @@ export default function Sales() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">
                           No orders yet. Create your first order to get started.
                         </td>
                       </tr>
@@ -686,7 +894,7 @@ export default function Sales() {
                                         {expandedQuoteItems.map((it) => (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
-                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700" : "bg-blue-100 text-blue-700"}`}>
+                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
                                                 {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : <Package className="w-3 h-3" />}
                                                 {it.itemType === "service" ? "Service" : "Product"}
                                               </span>
@@ -701,6 +909,11 @@ export default function Sales() {
                                     </table>
                                   ) : (
                                     <p className="text-xs text-muted-foreground">No line items for this quotation.</p>
+                                  )}
+                                  {q.discountType && q.discountValue && (
+                                    <div className="text-xs text-muted-foreground mt-2">
+                                      Discount: {q.discountType === "percentage" ? `${Number(q.discountValue)}%` : `₹${Number(q.discountValue).toLocaleString()}`}
+                                    </div>
                                   )}
                                 </div>
                               </td>
@@ -809,8 +1022,8 @@ export default function Sales() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {["pending", "confirmed", "shipped", "delivered", "cancelled"].map((s) => (
-                      <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
+                    {ORDER_STATUSES.map((s) => (
+                      <SelectItem key={s} value={s}>{s.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -820,7 +1033,17 @@ export default function Sales() {
                 <Input id="orderNotes" data-testid="input-order-notes" value={orderForm.notes} onChange={(e) => setOrderForm({ ...orderForm, notes: e.target.value })} />
               </div>
             </div>
-            <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="orderPaymentTerms">Payment Terms</Label>
+                <Input id="orderPaymentTerms" data-testid="input-order-payment-terms" placeholder="e.g. 50% advance, 30% delivery, 20% installation" value={orderForm.paymentTerms} onChange={(e) => setOrderForm({ ...orderForm, paymentTerms: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="orderAdvanceAmount">Advance Amount (₹)</Label>
+                <Input id="orderAdvanceAmount" data-testid="input-order-advance-amount" type="number" min="0" step="0.01" value={orderForm.advanceAmount} onChange={(e) => setOrderForm({ ...orderForm, advanceAmount: e.target.value })} />
+              </div>
+            </div>
+            <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-order" disabled={orderMutation.isPending} onClick={() => orderMutation.mutate(orderForm)}>
@@ -879,11 +1102,60 @@ export default function Sales() {
                 <Input id="quoteNotes" data-testid="input-quote-notes" value={quoteForm.notes} onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })} />
               </div>
             </div>
-            <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} />
+            <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} discount={quoteDiscount} onDiscountChange={setQuoteDiscount} />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending} onClick={() => quoteMutation.mutate(quoteForm)}>
               {quoteMutation.isPending ? "Saving..." : editingQuote ? "Update Quotation" : "Create Quotation"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Record Payment</DialogTitle>
+            <DialogDescription>Enter payment details for this order</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="paymentAmount">Amount (₹)</Label>
+              <Input id="paymentAmount" data-testid="input-payment-amount" type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paymentMethod">Method</Label>
+              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v })}>
+                <SelectTrigger data-testid="select-payment-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="cheque">Cheque</SelectItem>
+                  <SelectItem value="upi">UPI</SelectItem>
+                  <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paymentReference">Reference</Label>
+              <Input id="paymentReference" data-testid="input-payment-reference" placeholder="Transaction ID, cheque no., etc." value={paymentForm.reference} onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="button-submit-payment"
+              disabled={recordPaymentMutation.isPending || !paymentForm.amount}
+              onClick={() => {
+                if (paymentOrderId) {
+                  recordPaymentMutation.mutate({
+                    orderId: paymentOrderId,
+                    data: { amount: paymentForm.amount, method: paymentForm.method, reference: paymentForm.reference },
+                  });
+                }
+              }}
+            >
+              {recordPaymentMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>

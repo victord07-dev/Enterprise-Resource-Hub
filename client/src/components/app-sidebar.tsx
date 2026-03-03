@@ -12,6 +12,7 @@ import {
   BarChart3,
   FileSearch,
   LogOut,
+  UserPlus,
 } from "lucide-react";
 import {
   Sidebar,
@@ -29,6 +30,7 @@ import { Shield } from "lucide-react";
 
 const menuItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
+  { title: "Leads", url: "/leads", icon: UserPlus },
   { title: "Sales", url: "/sales", icon: ShoppingCart },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Inventory", url: "/inventory", icon: Package },

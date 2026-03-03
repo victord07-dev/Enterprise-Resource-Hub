@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -147,6 +147,13 @@ export interface IStorage {
   getLocationLogsByTrip(tripId: string): Promise<LocationLog[]>;
   getLatestLocationByEmployee(employeeId: string): Promise<LocationLog | undefined>;
   createLocationLog(data: Omit<LocationLog, "id">): Promise<LocationLog>;
+
+  // Leads
+  getLeads(): Promise<Lead[]>;
+  getLead(id: string): Promise<Lead | undefined>;
+  createLead(data: Omit<Lead, "id">): Promise<Lead>;
+  updateLead(id: string, data: Partial<Omit<Lead, "id">>): Promise<Lead | undefined>;
+  deleteLead(id: string): Promise<boolean>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -638,6 +645,31 @@ export class DatabaseStorage implements IStorage {
 
   async getLocationLogsByTrip(tripId: string): Promise<LocationLog[]> {
     return db.select().from(locationLogs).where(eq(locationLogs.tripId, tripId)).orderBy(locationLogs.timestamp);
+  }
+
+  // Leads
+  async getLeads(): Promise<Lead[]> {
+    return db.select().from(leads).orderBy(desc(leads.createdAt));
+  }
+
+  async getLead(id: string): Promise<Lead | undefined> {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, id));
+    return lead;
+  }
+
+  async createLead(data: Omit<Lead, "id">): Promise<Lead> {
+    const [created] = await db.insert(leads).values(data).returning();
+    return created;
+  }
+
+  async updateLead(id: string, data: Partial<Omit<Lead, "id">>): Promise<Lead | undefined> {
+    const [updated] = await db.update(leads).set(data).where(eq(leads.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLead(id: string): Promise<boolean> {
+    await db.delete(leads).where(eq(leads.id, id));
+    return true;
   }
 
   // Audit Logs

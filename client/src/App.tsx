@@ -20,11 +20,13 @@ import FieldStaff from "@/pages/FieldStaff";
 import Reports from "@/pages/Reports";
 import AuditTrail from "@/pages/AuditTrail";
 import Kiosk from "@/pages/Kiosk";
+import Leads from "@/pages/Leads";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
+      <Route path="/leads" component={Leads} />
       <Route path="/sales" component={Sales} />
       <Route path="/projects" component={Projects} />
       <Route path="/inventory" component={Inventory} />

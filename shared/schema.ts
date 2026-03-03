@@ -70,6 +70,11 @@ export const salesOrders = pgTable("sales_orders", {
   totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   orderDate: timestamp("order_date").notNull().defaultNow(),
   notes: text("notes"),
+  discountType: text("discount_type"),
+  discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
+  paymentTerms: text("payment_terms"),
+  advanceAmount: decimal("advance_amount", { precision: 12, scale: 2 }),
+  paidAmount: decimal("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -92,6 +97,8 @@ export const quotations = pgTable("quotations", {
   validUntil: timestamp("valid_until"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   notes: text("notes"),
+  discountType: text("discount_type"),
+  discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
 });
 
 export const quotationItems = pgTable("quotation_items", {
@@ -244,6 +251,22 @@ export const locationLogs = pgTable("location_logs", {
   tripActive: boolean("trip_active").notNull().default(true),
 });
 
+export const leads = pgTable("leads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  email: text("email"),
+  phone: text("phone"),
+  company: text("company"),
+  requirement: text("requirement"),
+  source: text("source").notNull().default("call"),
+  status: text("status").notNull().default("new"),
+  assignedTo: varchar("assigned_to"),
+  estimatedValue: decimal("estimated_value", { precision: 12, scale: 2 }),
+  quotationId: varchar("quotation_id"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -276,9 +299,11 @@ export const insertPayrollStatusSchema = createInsertSchema(payrollStatus).omit(
 export const insertTravelExpenseSchema = createInsertSchema(travelExpenses).omit({ id: true });
 export const insertTripSchema = createInsertSchema(trips).omit({ id: true });
 export const insertLocationLogSchema = createInsertSchema(locationLogs).omit({ id: true });
+export const insertLeadSchema = createInsertSchema(leads).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type InsertLead = z.infer<typeof insertLeadSchema>;
 export type User = typeof users.$inferSelect;
 export type Customer = typeof customers.$inferSelect;
 export type Supplier = typeof suppliers.$inferSelect;
@@ -301,3 +326,4 @@ export type TravelExpense = typeof travelExpenses.$inferSelect;
 export type Trip = typeof trips.$inferSelect;
 export type LocationLog = typeof locationLogs.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
+export type Lead = typeof leads.$inferSelect;

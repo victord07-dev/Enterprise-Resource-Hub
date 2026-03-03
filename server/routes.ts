@@ -9,7 +9,7 @@ import {
   insertWarehouseSchema, insertSalesOrderSchema, insertSalesOrderItemSchema, insertQuotationSchema,
   insertQuotationItemSchema, insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
   insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
-  insertFieldStaffActivitySchema, insertUserSchema,
+  insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -659,6 +659,11 @@ export async function registerRoutes(
         totalAmount: quotation.totalAmount,
         orderDate: new Date(),
         notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
+        discountType: quotation.discountType,
+        discountValue: quotation.discountValue,
+        paymentTerms: null,
+        advanceAmount: null,
+        paidAmount: "0",
       });
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
@@ -680,6 +685,192 @@ export async function registerRoutes(
       res.status(201).json(order);
     } catch (error) {
       res.status(500).json({ message: "Failed to convert quotation to order" });
+    }
+  });
+
+  // ======================== LEADS ========================
+  app.get("/api/leads", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getLeads();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch leads" });
+    }
+  });
+
+  app.get("/api/leads/:id", authenticateToken, async (req, res) => {
+    try {
+      const data = await storage.getLead(req.params.id);
+      if (!data) return res.status(404).json({ message: "Lead not found" });
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch lead" });
+    }
+  });
+
+  app.post("/api/leads", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertLeadSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createLead(parsed.data as any);
+      await logAction(req.user.id, "create", "leads", `Created lead ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create lead" });
+    }
+  });
+
+  app.patch("/api/leads/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.updateLead(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Lead not found" });
+      await logAction(req.user.id, "update", "leads", `Updated lead ${updated.name}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update lead" });
+    }
+  });
+
+  app.delete("/api/leads/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteLead(req.params.id);
+      await logAction(req.user.id, "delete", "leads", `Deleted lead ${req.params.id}`);
+      res.json({ message: "Lead deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete lead" });
+    }
+  });
+
+  app.post("/api/leads/:id/convert-to-quotation", authenticateToken, async (req: any, res) => {
+    try {
+      const lead = await storage.getLead(req.params.id);
+      if (!lead) return res.status(404).json({ message: "Lead not found" });
+      if (lead.quotationId || lead.status === "quotation_sent" || lead.status === "won") {
+        return res.status(400).json({ message: "Lead already converted" });
+      }
+
+      let customer;
+      if (lead.company) {
+        const allCustomers = await storage.getCustomers();
+        customer = allCustomers.find(c => c.name.toLowerCase() === lead.company!.toLowerCase());
+        if (!customer) {
+          customer = await storage.createCustomer({
+            name: lead.company,
+            email: lead.email || null,
+            phone: lead.phone || null,
+            address: null,
+            gstNumber: null,
+            contactPerson: lead.name,
+          });
+        }
+      } else {
+        customer = await storage.createCustomer({
+          name: lead.name,
+          email: lead.email || null,
+          phone: lead.phone || null,
+          address: null,
+          gstNumber: null,
+          contactPerson: lead.name,
+        });
+      }
+
+      const quoteNumber = `QT-${Date.now().toString(36).toUpperCase()}`;
+      const quotation = await storage.createQuotation({
+        quoteNumber,
+        customerId: customer.id,
+        status: "draft",
+        totalAmount: lead.estimatedValue || "0",
+        validUntil: null,
+        createdAt: new Date(),
+        notes: lead.requirement || null,
+        discountType: null,
+        discountValue: null,
+      });
+
+      const updatedLead = await storage.updateLead(req.params.id, {
+        status: "quotation_sent",
+        quotationId: quotation.id,
+      });
+
+      await logAction(req.user.id, "create", "leads", `Converted lead ${lead.name} to quotation ${quoteNumber}`);
+
+      res.status(201).json({ lead: updatedLead, quotation, customer });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to convert lead to quotation" });
+    }
+  });
+
+  // ======================== ORDER PAYMENTS & INVOICES ========================
+  app.post("/api/sales-orders/:id/record-payment", authenticateToken, async (req: any, res) => {
+    try {
+      const order = await storage.getSalesOrder(req.params.id);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+
+      const { amount, method, reference } = req.body;
+      if (!amount || !method) return res.status(400).json({ message: "Amount and method are required" });
+
+      const paymentAmount = parseFloat(amount);
+      if (isNaN(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ message: "Invalid amount" });
+
+      const currentPaid = parseFloat(order.paidAmount || "0");
+      const orderTotal = parseFloat(order.totalAmount);
+      if (currentPaid + paymentAmount > orderTotal) {
+        return res.status(400).json({ message: `Payment exceeds balance. Remaining: ₹${(orderTotal - currentPaid).toFixed(2)}` });
+      }
+      const newPaidAmount = (currentPaid + paymentAmount).toFixed(2);
+
+      const payment = await storage.createPayment({
+        invoiceId: null,
+        amount: paymentAmount.toFixed(2),
+        method,
+        status: "completed",
+        paymentDate: new Date(),
+        reference: reference || `Order ${order.orderNumber}`,
+      });
+
+      const updatedOrder = await storage.updateSalesOrder(req.params.id, {
+        paidAmount: newPaidAmount,
+      });
+
+      await logAction(req.user.id, "create", "sales", `Recorded payment ₹${paymentAmount} for order ${order.orderNumber}`);
+
+      res.status(201).json({ order: updatedOrder, payment });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to record payment" });
+    }
+  });
+
+  app.post("/api/sales-orders/:id/generate-invoice", authenticateToken, async (req: any, res) => {
+    try {
+      const order = await storage.getSalesOrder(req.params.id);
+      if (!order) return res.status(404).json({ message: "Order not found" });
+
+      const allInvoices = await storage.getInvoices();
+      const existingInvoices = allInvoices.filter(inv => inv.orderId === order.id);
+      const invoicedTotal = existingInvoices.reduce((sum, inv) => sum + parseFloat(inv.amount), 0);
+      const orderTotal = parseFloat(order.totalAmount);
+      const remainingAmount = orderTotal - invoicedTotal;
+
+      if (remainingAmount <= 0) {
+        return res.status(400).json({ message: "Order already fully invoiced" });
+      }
+
+      const invoiceNumber = `INV-${Date.now().toString(36).toUpperCase()}`;
+      const invoice = await storage.createInvoice({
+        invoiceNumber,
+        orderId: order.id,
+        customerId: order.customerId,
+        amount: remainingAmount.toFixed(2),
+        status: "unpaid",
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        issuedDate: new Date(),
+      });
+
+      await logAction(req.user.id, "create", "accounts", `Generated invoice ${invoiceNumber} from order ${order.orderNumber}`);
+
+      res.status(201).json(invoice);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to generate invoice" });
     }
   });
 

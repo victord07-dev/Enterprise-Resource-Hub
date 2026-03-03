@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download } from "lucide-react";
+import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product } from "@shared/schema";
 
@@ -610,6 +611,21 @@ export default function Sales() {
     setPaymentDialogOpen(true);
   };
 
+  const downloadQuotePDF = async (q: Quotation) => {
+    try {
+      const res = await fetch(`/api/quotations/${q.id}/items`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch items");
+      const qItems: QuotationItem[] = await res.json();
+      const customer = customers?.find(c => c.id === q.customerId);
+      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer);
+      toast({ title: "PDF downloaded", description: q.quoteNumber });
+    } catch {
+      toast({ title: "Failed to generate PDF", variant: "destructive" });
+    }
+  };
+
   const getCustomerName = (id: string) => customers?.find(c => c.id === id)?.name || "—";
 
   return (
@@ -866,6 +882,9 @@ export default function Sales() {
                                     <ArrowRightLeft className="w-4 h-4" />
                                   </Button>
                                 )}
+                                <Button size="icon" variant="ghost" title="Download PDF" data-testid={`button-download-quote-${q.id}`} onClick={() => downloadQuotePDF(q)}>
+                                  <Download className="w-4 h-4" />
+                                </Button>
                                 <Button size="icon" variant="ghost" data-testid={`button-edit-quote-${q.id}`} onClick={() => openEditQuote(q)}>
                                   <Pencil className="w-4 h-4" />
                                 </Button>

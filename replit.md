@@ -72,6 +72,13 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Generate Invoice: POST /api/sales-orders/:id/generate-invoice (auto-generates from order, amount = remaining uninvoiced amount)
 - Expanded order row shows: payment summary (Total/Paid/Balance), Record Payment button, Generate Invoice button (visible on delivered+)
 
+## Sales Module - Quotation PDF
+- Quotations have a downloadable PDF button (Download icon) in the actions column
+- PDF generated client-side using jsPDF with company letterhead (ITFI Group branding)
+- PDF includes: company header, quote details (number, date, valid until, status), customer info (name, phone, email, GST, address), line items table (type, description, qty, unit price, total), discount summary, notes, terms & conditions
+- Utility: `client/src/lib/quotation-pdf.ts` — `generateQuotationPDF(quotation, items, customer)`
+- File saved as `{quoteNumber}.pdf`
+
 ## Sales Module - Line Items & Services
 - Orders and quotations support mixed Product + Service line items
 - LineItemsEditor component: type toggle (Product/Service), product/service dropdown, description, qty, unit price, auto-calc total

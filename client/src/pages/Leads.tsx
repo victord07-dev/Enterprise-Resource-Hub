@@ -98,8 +98,10 @@ export default function Leads() {
       const payload: any = {
         name: data.name,
         email: data.email || null,
-        phone: data.phone || null,
+        phone: data.phone,
         company: data.company || null,
+        address: data.address,
+        gstNumber: data.gstNumber,
         requirement: data.requirement || null,
         source: data.source,
         status: data.status,
@@ -409,7 +411,7 @@ export default function Leads() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="lead-phone">Phone</Label>
+                <Label htmlFor="lead-phone">Phone *</Label>
                 <Input
                   id="lead-phone"
                   value={form.phone}
@@ -421,7 +423,7 @@ export default function Leads() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label htmlFor="lead-address">Address</Label>
+                <Label htmlFor="lead-address">Address *</Label>
                 <Input
                   id="lead-address"
                   value={form.address}
@@ -431,7 +433,7 @@ export default function Leads() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="lead-gst">GST Number</Label>
+                <Label htmlFor="lead-gst">GST Number *</Label>
                 <Input
                   id="lead-gst"
                   value={form.gstNumber}
@@ -453,7 +455,7 @@ export default function Leads() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>Source</Label>
+                <Label>Source *</Label>
                 <Select value={form.source} onValueChange={(v) => setForm({ ...form, source: v })}>
                   <SelectTrigger data-testid="select-lead-source">
                     <SelectValue />
@@ -482,7 +484,7 @@ export default function Leads() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>Assign To</Label>
+                <Label>Assign To *</Label>
                 <Select value={form.assignedTo} onValueChange={(v) => setForm({ ...form, assignedTo: v === "__none__" ? "" : v })}>
                   <SelectTrigger data-testid="select-lead-assigned-to">
                     <SelectValue placeholder="Select employee..." />
@@ -531,7 +533,7 @@ export default function Leads() {
             </Button>
             <Button
               onClick={() => leadMutation.mutate(form)}
-              disabled={!form.name || leadMutation.isPending}
+              disabled={!form.name || !form.phone || !form.address || !form.gstNumber || !form.source || !form.assignedTo || leadMutation.isPending}
               data-testid="button-save-lead"
             >
               {leadMutation.isPending ? "Saving..." : editingLead ? "Update" : "Create"}

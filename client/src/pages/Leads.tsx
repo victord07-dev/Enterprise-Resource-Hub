@@ -561,6 +561,7 @@ export default function Leads() {
                 ) : (
                   sortedLeads.map((lead) => {
                     const nextFollowup = getNextFollowup(lead.id);
+                    const leadClosed = ["quotation_sent", "won", "lost"].includes(lead.status);
                     return (
                       <Fragment key={lead.id}>
                         <tr
@@ -670,18 +671,20 @@ export default function Leads() {
                                   <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-2 flex-wrap">
                                       <h3 className="text-sm font-semibold">Activity Log</h3>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => setShowActivityForm(!showActivityForm)}
-                                        data-testid="button-log-activity"
-                                      >
-                                        <Plus className="w-3 h-3 mr-1" />
-                                        Log Activity
-                                      </Button>
+                                      {!leadClosed && (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => setShowActivityForm(!showActivityForm)}
+                                          data-testid="button-log-activity"
+                                        >
+                                          <Plus className="w-3 h-3 mr-1" />
+                                          Log Activity
+                                        </Button>
+                                      )}
                                     </div>
 
-                                    {showActivityForm && (
+                                    {showActivityForm && !leadClosed && (
                                       <div className="border rounded-md p-3 space-y-2 bg-background">
                                         <div className="grid grid-cols-2 gap-2">
                                           <div className="space-y-1">
@@ -769,18 +772,20 @@ export default function Leads() {
                                   <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-2 flex-wrap">
                                       <h3 className="text-sm font-semibold">Follow-ups</h3>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => setShowFollowupForm(!showFollowupForm)}
-                                        data-testid="button-schedule-followup"
-                                      >
-                                        <Plus className="w-3 h-3 mr-1" />
-                                        Schedule Follow-up
-                                      </Button>
+                                      {!leadClosed && (
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => setShowFollowupForm(!showFollowupForm)}
+                                          data-testid="button-schedule-followup"
+                                        >
+                                          <Plus className="w-3 h-3 mr-1" />
+                                          Schedule Follow-up
+                                        </Button>
+                                      )}
                                     </div>
 
-                                    {showFollowupForm && (
+                                    {showFollowupForm && !leadClosed && (
                                       <div className="border rounded-md p-3 space-y-2 bg-background">
                                         <div className="space-y-1">
                                           <Label className="text-xs">Title</Label>
@@ -887,7 +892,7 @@ export default function Leads() {
                                                   {followup.completedAt && ` · Completed: ${new Date(followup.completedAt).toLocaleDateString()}`}
                                                 </p>
                                               </div>
-                                              {followup.status === "pending" && (
+                                              {followup.status === "pending" && !leadClosed && (
                                                 <Button
                                                   variant="ghost"
                                                   size="icon"

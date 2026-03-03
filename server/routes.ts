@@ -569,11 +569,16 @@ export async function registerRoutes(
 
   app.patch("/api/quotations/:id", authenticateToken, async (req: any, res) => {
     try {
-      const updated = await storage.updateQuotation(req.params.id, req.body);
+      const body = { ...req.body };
+      if (body.validUntil !== undefined) {
+        body.validUntil = body.validUntil ? new Date(body.validUntil) : null;
+      }
+      const updated = await storage.updateQuotation(req.params.id, body);
       if (!updated) return res.status(404).json({ message: "Quotation not found" });
       await logAction(req.user.id, "update", "sales", `Updated quotation ${updated.quoteNumber}`);
       res.json(updated);
-    } catch (error) {
+    } catch (error: any) {
+      console.error("Failed to update quotation:", error?.message || error);
       res.status(500).json({ message: "Failed to update quotation" });
     }
   });

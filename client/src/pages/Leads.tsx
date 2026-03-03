@@ -40,6 +40,8 @@ interface LeadForm {
   email: string;
   phone: string;
   company: string;
+  address: string;
+  gstNumber: string;
   requirement: string;
   source: string;
   status: string;
@@ -53,6 +55,8 @@ const emptyForm = (): LeadForm => ({
   email: "",
   phone: "",
   company: "",
+  address: "",
+  gstNumber: "",
   requirement: "",
   source: "call",
   status: "new",
@@ -167,6 +171,8 @@ export default function Leads() {
       email: lead.email || "",
       phone: lead.phone || "",
       company: lead.company || "",
+      address: lead.address || "",
+      gstNumber: lead.gstNumber || "",
       requirement: lead.requirement || "",
       source: lead.source,
       status: lead.status,
@@ -410,6 +416,28 @@ export default function Leads() {
                   onChange={(e) => setForm({ ...form, phone: e.target.value })}
                   placeholder="+91..."
                   data-testid="input-lead-phone"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="lead-address">Address</Label>
+                <Input
+                  id="lead-address"
+                  value={form.address}
+                  onChange={(e) => setForm({ ...form, address: e.target.value })}
+                  placeholder="Full address"
+                  data-testid="input-lead-address"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="lead-gst">GST Number</Label>
+                <Input
+                  id="lead-gst"
+                  value={form.gstNumber}
+                  onChange={(e) => setForm({ ...form, gstNumber: e.target.value })}
+                  placeholder="e.g. 29ABCDE1234F1Z5"
+                  data-testid="input-lead-gst"
                 />
               </div>
             </div>

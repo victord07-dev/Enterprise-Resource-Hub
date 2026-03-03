@@ -758,8 +758,8 @@ export async function registerRoutes(
             name: lead.company,
             email: lead.email || null,
             phone: lead.phone || null,
-            address: null,
-            gstNumber: null,
+            address: lead.address || null,
+            gstNumber: lead.gstNumber || null,
             contactPerson: lead.name,
           });
         }
@@ -768,8 +768,8 @@ export async function registerRoutes(
           name: lead.name,
           email: lead.email || null,
           phone: lead.phone || null,
-          address: null,
-          gstNumber: null,
+          address: lead.address || null,
+          gstNumber: lead.gstNumber || null,
           contactPerson: lead.name,
         });
       }

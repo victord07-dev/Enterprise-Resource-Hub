@@ -10,6 +10,7 @@ import {
   insertQuotationItemSchema, insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
   insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
+  insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -802,6 +803,172 @@ export async function registerRoutes(
       res.status(201).json({ lead: updatedLead, quotation, customer });
     } catch (error) {
       res.status(500).json({ message: "Failed to convert lead to quotation" });
+    }
+  });
+
+  // ======================== LEAD ACTIVITIES & FOLLOW-UPS ========================
+  app.get("/api/leads/:id/activities", authenticateToken, async (req, res) => {
+    try {
+      const activities = await storage.getLeadActivities(req.params.id);
+      res.json(activities);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch lead activities" });
+    }
+  });
+
+  app.post("/api/leads/:id/activities", authenticateToken, async (req: any, res) => {
+    try {
+      const data = { ...req.body, leadId: req.params.id, createdBy: req.user.id };
+      const activity = await storage.createLeadActivity(data);
+      await logAction(req.user.id, "create", "leads", `Logged ${data.activityType} activity on lead`);
+      res.status(201).json(activity);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create lead activity" });
+    }
+  });
+
+  app.get("/api/leads/:id/followups", authenticateToken, async (req, res) => {
+    try {
+      const followups = await storage.getLeadFollowups(req.params.id);
+      res.json(followups);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch lead follow-ups" });
+    }
+  });
+
+  app.post("/api/leads/:id/followups", authenticateToken, async (req: any, res) => {
+    try {
+      const data = { ...req.body, leadId: req.params.id, createdBy: req.user.id, dueDate: new Date(req.body.dueDate) };
+      const followup = await storage.createLeadFollowup(data);
+      await logAction(req.user.id, "create", "leads", `Scheduled follow-up: ${data.title}`);
+      res.status(201).json(followup);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create lead follow-up" });
+    }
+  });
+
+  app.patch("/api/lead-followups/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const body = { ...req.body };
+      if (body.dueDate) body.dueDate = new Date(body.dueDate);
+      const updated = await storage.updateLeadFollowup(req.params.id, body);
+      if (!updated) return res.status(404).json({ message: "Follow-up not found" });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update follow-up" });
+    }
+  });
+
+  app.post("/api/lead-followups/:id/complete", authenticateToken, async (req: any, res) => {
+    try {
+      const completed = await storage.completeLeadFollowup(req.params.id);
+      if (!completed) return res.status(404).json({ message: "Follow-up not found" });
+      await logAction(req.user.id, "update", "leads", `Completed follow-up: ${completed.title}`);
+      res.json(completed);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to complete follow-up" });
+    }
+  });
+
+  // ======================== QUOTATION ACTIVITIES & FOLLOW-UPS ========================
+  app.get("/api/quotations/:id/activities", authenticateToken, async (req, res) => {
+    try {
+      const activities = await storage.getQuotationActivities(req.params.id);
+      res.json(activities);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch quotation activities" });
+    }
+  });
+
+  app.post("/api/quotations/:id/activities", authenticateToken, async (req: any, res) => {
+    try {
+      const data = { ...req.body, quotationId: req.params.id, createdBy: req.user.id };
+      const activity = await storage.createQuotationActivity(data);
+      await logAction(req.user.id, "create", "sales", `Logged ${data.activityType} activity on quotation`);
+      res.status(201).json(activity);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create quotation activity" });
+    }
+  });
+
+  app.get("/api/quotations/:id/followups", authenticateToken, async (req, res) => {
+    try {
+      const followups = await storage.getQuotationFollowups(req.params.id);
+      res.json(followups);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch quotation follow-ups" });
+    }
+  });
+
+  app.post("/api/quotations/:id/followups", authenticateToken, async (req: any, res) => {
+    try {
+      const data = { ...req.body, quotationId: req.params.id, createdBy: req.user.id, dueDate: new Date(req.body.dueDate) };
+      const followup = await storage.createQuotationFollowup(data);
+      await logAction(req.user.id, "create", "sales", `Scheduled follow-up: ${data.title}`);
+      res.status(201).json(followup);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create quotation follow-up" });
+    }
+  });
+
+  app.patch("/api/quotation-followups/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const body = { ...req.body };
+      if (body.dueDate) body.dueDate = new Date(body.dueDate);
+      const updated = await storage.updateQuotationFollowup(req.params.id, body);
+      if (!updated) return res.status(404).json({ message: "Follow-up not found" });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update follow-up" });
+    }
+  });
+
+  app.post("/api/quotation-followups/:id/complete", authenticateToken, async (req: any, res) => {
+    try {
+      const completed = await storage.completeQuotationFollowup(req.params.id);
+      if (!completed) return res.status(404).json({ message: "Follow-up not found" });
+      await logAction(req.user.id, "update", "sales", `Completed follow-up: ${completed.title}`);
+      res.json(completed);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to complete follow-up" });
+    }
+  });
+
+  // ======================== COMBINED FOLLOW-UPS ========================
+  app.get("/api/followups/summary", authenticateToken, async (_req, res) => {
+    try {
+      const summary = await storage.getFollowupsSummary();
+      res.json(summary);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch follow-ups summary" });
+    }
+  });
+
+  app.get("/api/followups/today", authenticateToken, async (_req, res) => {
+    try {
+      const all = await storage.getAllPendingFollowups();
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const today = all.filter(f => {
+        const d = new Date(f.dueDate);
+        return d >= todayStart && d < todayEnd;
+      });
+      res.json(today);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch today's follow-ups" });
+    }
+  });
+
+  app.get("/api/followups/overdue", authenticateToken, async (_req, res) => {
+    try {
+      const all = await storage.getAllPendingFollowups();
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const overdue = all.filter(f => new Date(f.dueDate) < todayStart);
+      res.json(overdue);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch overdue follow-ups" });
     }
   });
 

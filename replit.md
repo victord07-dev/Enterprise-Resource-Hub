@@ -54,13 +54,30 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Leads Module (CRM)
 - Pipeline at `/leads` with sidebar entry between Dashboard and Sales (UserPlus icon)
-- Lead table: name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, createdAt
+- Lead table: name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, lossReason, createdAt
 - Sources: call, website, referral, walk_in, other (color-coded badges)
-- Statuses: new → contacted → qualified → quotation_sent → won/lost (pipeline-colored badges)
+- Statuses: new → contacted → qualified → quotation_sent → won/lost/dormant (pipeline-colored badges)
+- "Dormant" status for "not now, maybe later" leads
+- Loss reason tracking: when marking lead as "Lost", requires reason (competitor/budget/timing/no_response/other)
 - Convert to Quotation: POST /api/leads/:id/convert-to-quotation — auto-creates customer (if not existing) + draft quotation, updates lead status to "quotation_sent"
-- Stat cards: Total Leads, Qualified, Won, Lost
+- Stat cards: Total Leads, Qualified, Won, Lost, Overdue Follow-ups, Today's Follow-ups
+- Expandable lead rows with Activity Log + Follow-ups tabs
+- Sort by next follow-up date toggle
+- Auto-prompt to schedule follow-up when status changed to "Contacted"
 - CRUD API: GET/POST/PATCH/DELETE /api/leads
-- Table: leads (id, name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, createdAt)
+- Table: leads (id, name, email, phone, company, requirement, source, status, assignedTo, estimatedValue, quotationId, notes, lossReason, createdAt)
+
+## Follow-Up & Activity System
+- Activity logging on both Leads and Quotations: call, email, meeting, site_visit, whatsapp, note
+- Follow-up scheduling with title, due date, priority (high/medium/low), completion tracking
+- Overdue follow-ups highlighted in red, today's in amber
+- Combined dashboard widget: "Today's Follow-ups" shows both lead + quotation follow-ups
+- Tables: lead_activities, lead_followups, quotation_activities, quotation_followups
+- Lead activity API: GET/POST /api/leads/:id/activities, GET/POST /api/leads/:id/followups
+- Lead follow-up management: PATCH /api/lead-followups/:id, POST /api/lead-followups/:id/complete
+- Quotation activity API: GET/POST /api/quotations/:id/activities, GET/POST /api/quotations/:id/followups
+- Quotation follow-up management: PATCH /api/quotation-followups/:id, POST /api/quotation-followups/:id/complete
+- Combined endpoints: GET /api/followups/summary, GET /api/followups/today, GET /api/followups/overdue
 
 ## Sales Module - Discounts & Payments
 - Quotations and orders support discounts: discountType (percentage/fixed), discountValue
@@ -96,9 +113,11 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Three tabs: Live Tracking, Travel Expenses, Expense History
 - **Travel Expense Form**: GPS "Get My Location" + Leaflet map destination picker, transport mode (Bus ₹10/km, Train ₹5/km, Bike ₹20/km), lunch ₹200 fixed, auto distance calc (Haversine × 1.3 road factor)
 - **Expense Status Flow**: Pending → Approved → Disbursed (3-step)
-- **Live Location Tracking**: Start/End Trip toggle, GPS updates every 5 minutes, admin map view with route polyline
+- **Live Location Tracking**: Read-only admin map view with live employee markers and route polyline; trips started/ended by field staff from their devices via API
+- **Recorded Routes Panel**: Completed trips grouped by date with sticky date headers, employee filter dropdown, from/to coordinates display, click-to-view route on map
 - Multiple trips per day allowed
-- Tables: travel_expenses, location_logs
+- Tables: travel_expenses, location_logs, trips
+- Trip API: POST /api/trips/start (field staff), POST /api/trips/:id/end, POST /api/trips/:id/log, GET /api/trips, GET /api/trips/active, GET /api/trips/:id/route
 - API: /api/travel-expenses (CRUD + /approve + /disburse), /api/location-logs (CRUD + /employee/:id/latest)
 - Uses raw Leaflet (not react-leaflet) with OpenStreetMap tiles
 

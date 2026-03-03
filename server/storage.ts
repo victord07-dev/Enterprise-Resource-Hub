@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -154,6 +154,30 @@ export interface IStorage {
   createLead(data: Omit<Lead, "id">): Promise<Lead>;
   updateLead(id: string, data: Partial<Omit<Lead, "id">>): Promise<Lead | undefined>;
   deleteLead(id: string): Promise<boolean>;
+
+  // Lead Activities
+  getLeadActivities(leadId: string): Promise<LeadActivity[]>;
+  createLeadActivity(data: Omit<LeadActivity, "id" | "createdAt">): Promise<LeadActivity>;
+
+  // Lead Follow-ups
+  getLeadFollowups(leadId: string): Promise<LeadFollowup[]>;
+  createLeadFollowup(data: Omit<LeadFollowup, "id" | "createdAt">): Promise<LeadFollowup>;
+  updateLeadFollowup(id: string, data: Partial<Omit<LeadFollowup, "id" | "createdAt">>): Promise<LeadFollowup | undefined>;
+  completeLeadFollowup(id: string): Promise<LeadFollowup | undefined>;
+
+  // Quotation Activities
+  getQuotationActivities(quotationId: string): Promise<QuotationActivity[]>;
+  createQuotationActivity(data: Omit<QuotationActivity, "id" | "createdAt">): Promise<QuotationActivity>;
+
+  // Quotation Follow-ups
+  getQuotationFollowups(quotationId: string): Promise<QuotationFollowup[]>;
+  createQuotationFollowup(data: Omit<QuotationFollowup, "id" | "createdAt">): Promise<QuotationFollowup>;
+  updateQuotationFollowup(id: string, data: Partial<Omit<QuotationFollowup, "id" | "createdAt">>): Promise<QuotationFollowup | undefined>;
+  completeQuotationFollowup(id: string): Promise<QuotationFollowup | undefined>;
+
+  // Combined follow-ups
+  getAllPendingFollowups(): Promise<{ type: string; id: string; parentId: string; parentName: string; title: string; dueDate: Date; priority: string; createdBy: string }[]>;
+  getFollowupsSummary(): Promise<{ today: number; overdue: number; totalPending: number }>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -670,6 +694,111 @@ export class DatabaseStorage implements IStorage {
   async deleteLead(id: string): Promise<boolean> {
     await db.delete(leads).where(eq(leads.id, id));
     return true;
+  }
+
+  // Lead Activities
+  async getLeadActivities(leadId: string): Promise<LeadActivity[]> {
+    return db.select().from(leadActivities).where(eq(leadActivities.leadId, leadId)).orderBy(desc(leadActivities.createdAt));
+  }
+
+  async createLeadActivity(data: Omit<LeadActivity, "id" | "createdAt">): Promise<LeadActivity> {
+    const [created] = await db.insert(leadActivities).values(data).returning();
+    return created;
+  }
+
+  // Lead Follow-ups
+  async getLeadFollowups(leadId: string): Promise<LeadFollowup[]> {
+    return db.select().from(leadFollowups).where(eq(leadFollowups.leadId, leadId)).orderBy(leadFollowups.dueDate);
+  }
+
+  async createLeadFollowup(data: Omit<LeadFollowup, "id" | "createdAt">): Promise<LeadFollowup> {
+    const [created] = await db.insert(leadFollowups).values(data).returning();
+    return created;
+  }
+
+  async updateLeadFollowup(id: string, data: Partial<Omit<LeadFollowup, "id" | "createdAt">>): Promise<LeadFollowup | undefined> {
+    const [updated] = await db.update(leadFollowups).set(data).where(eq(leadFollowups.id, id)).returning();
+    return updated;
+  }
+
+  async completeLeadFollowup(id: string): Promise<LeadFollowup | undefined> {
+    const [updated] = await db.update(leadFollowups).set({ status: "completed", completedAt: new Date() }).where(eq(leadFollowups.id, id)).returning();
+    return updated;
+  }
+
+  // Quotation Activities
+  async getQuotationActivities(quotationId: string): Promise<QuotationActivity[]> {
+    return db.select().from(quotationActivities).where(eq(quotationActivities.quotationId, quotationId)).orderBy(desc(quotationActivities.createdAt));
+  }
+
+  async createQuotationActivity(data: Omit<QuotationActivity, "id" | "createdAt">): Promise<QuotationActivity> {
+    const [created] = await db.insert(quotationActivities).values(data).returning();
+    return created;
+  }
+
+  // Quotation Follow-ups
+  async getQuotationFollowups(quotationId: string): Promise<QuotationFollowup[]> {
+    return db.select().from(quotationFollowups).where(eq(quotationFollowups.quotationId, quotationId)).orderBy(quotationFollowups.dueDate);
+  }
+
+  async createQuotationFollowup(data: Omit<QuotationFollowup, "id" | "createdAt">): Promise<QuotationFollowup> {
+    const [created] = await db.insert(quotationFollowups).values(data).returning();
+    return created;
+  }
+
+  async updateQuotationFollowup(id: string, data: Partial<Omit<QuotationFollowup, "id" | "createdAt">>): Promise<QuotationFollowup | undefined> {
+    const [updated] = await db.update(quotationFollowups).set(data).where(eq(quotationFollowups.id, id)).returning();
+    return updated;
+  }
+
+  async completeQuotationFollowup(id: string): Promise<QuotationFollowup | undefined> {
+    const [updated] = await db.update(quotationFollowups).set({ status: "completed", completedAt: new Date() }).where(eq(quotationFollowups.id, id)).returning();
+    return updated;
+  }
+
+  // Combined follow-ups
+  async getAllPendingFollowups(): Promise<{ type: string; id: string; parentId: string; parentName: string; title: string; dueDate: Date; priority: string; createdBy: string }[]> {
+    const leadFups = await db.select({
+      id: leadFollowups.id,
+      parentId: leadFollowups.leadId,
+      title: leadFollowups.title,
+      dueDate: leadFollowups.dueDate,
+      priority: leadFollowups.priority,
+      createdBy: leadFollowups.createdBy,
+      parentName: leads.name,
+    }).from(leadFollowups).leftJoin(leads, eq(leadFollowups.leadId, leads.id)).where(eq(leadFollowups.status, "pending"));
+
+    const quoteFups = await db.select({
+      id: quotationFollowups.id,
+      parentId: quotationFollowups.quotationId,
+      title: quotationFollowups.title,
+      dueDate: quotationFollowups.dueDate,
+      priority: quotationFollowups.priority,
+      createdBy: quotationFollowups.createdBy,
+      parentName: quotations.quoteNumber,
+    }).from(quotationFollowups).leftJoin(quotations, eq(quotationFollowups.quotationId, quotations.id)).where(eq(quotationFollowups.status, "pending"));
+
+    const combined = [
+      ...leadFups.map(f => ({ ...f, type: "lead", parentName: f.parentName || "Unknown" })),
+      ...quoteFups.map(f => ({ ...f, type: "quotation", parentName: f.parentName || "Unknown" })),
+    ];
+    combined.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+    return combined;
+  }
+
+  async getFollowupsSummary(): Promise<{ today: number; overdue: number; totalPending: number }> {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+    const allPending = await this.getAllPendingFollowups();
+    const today = allPending.filter(f => {
+      const d = new Date(f.dueDate);
+      return d >= todayStart && d < todayEnd;
+    }).length;
+    const overdue = allPending.filter(f => new Date(f.dueDate) < todayStart).length;
+
+    return { today, overdue, totalPending: allPending.length };
   }
 
   // Audit Logs

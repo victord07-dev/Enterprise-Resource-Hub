@@ -1,18 +1,20 @@
-import { useState, useCallback, Fragment } from "react";
+import { useState, useCallback, useEffect, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product } from "@shared/schema";
+import { Badge } from "@/components/ui/badge";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup } from "@shared/schema";
 
 interface LineItem {
   itemType: string;
@@ -273,6 +275,15 @@ export default function Sales() {
   const [expandedQuoteId, setExpandedQuoteId] = useState<string | null>(null);
   const [expandedOrderItems, setExpandedOrderItems] = useState<SalesOrderItem[]>([]);
   const [expandedQuoteItems, setExpandedQuoteItems] = useState<QuotationItem[]>([]);
+  const [expandedQuoteActivities, setExpandedQuoteActivities] = useState<QuotationActivity[]>([]);
+  const [expandedQuoteFollowups, setExpandedQuoteFollowups] = useState<QuotationFollowup[]>([]);
+
+  const [showQuoteActivityForm, setShowQuoteActivityForm] = useState(false);
+  const [quoteActivityForm, setQuoteActivityForm] = useState({ activityType: "call", notes: "" });
+  const [showQuoteFollowupForm, setShowQuoteFollowupForm] = useState(false);
+  const [quoteFollowupForm, setQuoteFollowupForm] = useState({ title: "", dueDate: "", priority: "medium" });
+
+  const [quoteFollowupsMap, setQuoteFollowupsMap] = useState<Record<string, QuotationFollowup[]>>({});
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
@@ -296,15 +307,28 @@ export default function Sales() {
   const toggleQuoteExpand = useCallback(async (quoteId: string) => {
     if (expandedQuoteId === quoteId) {
       setExpandedQuoteId(null);
+      setShowQuoteActivityForm(false);
+      setShowQuoteFollowupForm(false);
       return;
     }
     try {
-      const res = await fetch(`/api/quotations/${quoteId}/items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-      });
-      const data = await res.json();
-      setExpandedQuoteItems(data);
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const [itemsRes, activitiesRes, followupsRes] = await Promise.all([
+        fetch(`/api/quotations/${quoteId}/items`, { headers }),
+        fetch(`/api/quotations/${quoteId}/activities`, { headers }),
+        fetch(`/api/quotations/${quoteId}/followups`, { headers }),
+      ]);
+      const [items, activities, followups] = await Promise.all([
+        itemsRes.json(),
+        activitiesRes.json(),
+        followupsRes.json(),
+      ]);
+      setExpandedQuoteItems(items);
+      setExpandedQuoteActivities(activities);
+      setExpandedQuoteFollowups(followups);
       setExpandedQuoteId(quoteId);
+      setShowQuoteActivityForm(false);
+      setShowQuoteFollowupForm(false);
     } catch { setExpandedQuoteId(null); }
   }, [expandedQuoteId]);
 
@@ -501,6 +525,135 @@ export default function Sales() {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  const quoteActivityMutation = useMutation({
+    mutationFn: async ({ quoteId, data }: { quoteId: string; data: { activityType: string; notes: string } }) => {
+      await apiRequest("POST", `/api/quotations/${quoteId}/activities`, data);
+      return quoteId;
+    },
+    onSuccess: async (quoteId: string) => {
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const res = await fetch(`/api/quotations/${quoteId}/activities`, { headers });
+      const data = await res.json();
+      setExpandedQuoteActivities(data);
+      setQuoteActivityForm({ activityType: "call", notes: "" });
+      setShowQuoteActivityForm(false);
+      toast({ title: "Activity logged" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const quoteFollowupMutation = useMutation({
+    mutationFn: async ({ quoteId, data }: { quoteId: string; data: { title: string; dueDate: string; priority: string } }) => {
+      await apiRequest("POST", `/api/quotations/${quoteId}/followups`, {
+        ...data,
+        dueDate: new Date(data.dueDate),
+      });
+      return quoteId;
+    },
+    onSuccess: async (quoteId: string) => {
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
+      const data = await res.json();
+      setExpandedQuoteFollowups(data);
+      setQuoteFollowupsMap(prev => ({ ...prev, [quoteId]: data }));
+      setQuoteFollowupForm({ title: "", dueDate: "", priority: "medium" });
+      setShowQuoteFollowupForm(false);
+      toast({ title: "Follow-up scheduled" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const completeQuoteFollowupMutation = useMutation({
+    mutationFn: async ({ followupId, quoteId }: { followupId: string; quoteId: string }) => {
+      await apiRequest("POST", `/api/quotation-followups/${followupId}/complete`);
+      return quoteId;
+    },
+    onSuccess: async (quoteId: string) => {
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
+      const data = await res.json();
+      setExpandedQuoteFollowups(data);
+      setQuoteFollowupsMap(prev => ({ ...prev, [quoteId]: data }));
+      toast({ title: "Follow-up completed" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const ACTIVITY_ICONS: Record<string, any> = {
+    call: Phone,
+    email: Mail,
+    meeting: UsersIcon,
+    site_visit: MapPin,
+    whatsapp: MessageCircle,
+    note: StickyNote,
+  };
+
+  const PRIORITY_COLORS: Record<string, string> = {
+    high: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
+    medium: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
+    low: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
+  };
+
+  const isOverdue = (dueDate: string | Date) => {
+    const due = new Date(dueDate);
+    due.setHours(23, 59, 59, 999);
+    return due < new Date();
+  };
+
+  const isToday = (dueDate: string | Date) => {
+    const due = new Date(dueDate);
+    const now = new Date();
+    return due.toDateString() === now.toDateString();
+  };
+
+  const getRelativeTime = (date: string | Date) => {
+    const d = new Date(date);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return `${days}d ago`;
+    return d.toLocaleDateString();
+  };
+
+  const getNextFollowup = (quoteId: string): QuotationFollowup | null => {
+    const followups = quoteFollowupsMap[quoteId];
+    if (!followups || followups.length === 0) return null;
+    const pending = followups.filter(f => f.status === "pending").sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+    return pending[0] || null;
+  };
+
+  const fetchAllQuoteFollowups = useCallback(async () => {
+    if (!quotations || quotations.length === 0) return;
+    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const map: Record<string, QuotationFollowup[]> = {};
+    await Promise.all(
+      quotations.map(async (q) => {
+        try {
+          const res = await fetch(`/api/quotations/${q.id}/followups`, { headers });
+          map[q.id] = await res.json();
+        } catch {
+          map[q.id] = [];
+        }
+      })
+    );
+    setQuoteFollowupsMap(map);
+  }, [quotations]);
+
+  useEffect(() => {
+    fetchAllQuoteFollowups();
+  }, [fetchAllQuoteFollowups]);
 
   const openNewOrder = () => {
     setEditingOrder(null);
@@ -854,15 +1007,20 @@ export default function Sales() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Customer</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Valid Until</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Next Follow-up</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {quotationsLoading ? (
-                      <tr><td colSpan={7} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={8} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : quotations && quotations.length > 0 ? (
-                      quotations.map((q) => (
+                      quotations.map((q) => {
+                        const nextFu = getNextFollowup(q.id);
+                        const nextFuOverdue = nextFu ? isOverdue(nextFu.dueDate) : false;
+                        const nextFuToday = nextFu ? isToday(nextFu.dueDate) : false;
+                        return (
                         <Fragment key={q.id}>
                           <tr className="border-b last:border-0 hover:bg-muted/30 cursor-pointer" data-testid={`row-quote-${q.id}`} onClick={() => toggleQuoteExpand(q.id)}>
                             <td className="p-3">
@@ -872,6 +1030,15 @@ export default function Sales() {
                             <td className="p-3 text-muted-foreground">{getCustomerName(q.customerId)}</td>
                             <td className="p-3"><StatusBadge status={q.status} /></td>
                             <td className="p-3 text-muted-foreground">{q.validUntil ? new Date(q.validUntil).toLocaleDateString() : "—"}</td>
+                            <td className="p-3" data-testid={`text-quote-next-followup-${q.id}`}>
+                              {nextFu ? (
+                                <span className={`text-xs font-medium ${nextFuOverdue ? "text-red-600 dark:text-red-400" : nextFuToday ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                                  {new Date(nextFu.dueDate).toLocaleDateString()}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground text-xs">—</span>
+                              )}
+                            </td>
                             <td className="p-3 text-right font-medium">₹{Number(q.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
@@ -896,8 +1063,8 @@ export default function Sales() {
                           </tr>
                           {expandedQuoteId === q.id && (
                             <tr key={`${q.id}-items`} className="border-b">
-                              <td colSpan={7} className="p-0">
-                                <div className="bg-muted/20 px-6 py-3">
+                              <td colSpan={8} className="p-0">
+                                <div className="bg-muted/20 px-6 py-3 space-y-4">
                                   {expandedQuoteItems.length > 0 ? (
                                     <table className="w-full text-xs">
                                       <thead>
@@ -930,19 +1097,211 @@ export default function Sales() {
                                     <p className="text-xs text-muted-foreground">No line items for this quotation.</p>
                                   )}
                                   {q.discountType && q.discountValue && (
-                                    <div className="text-xs text-muted-foreground mt-2">
+                                    <div className="text-xs text-muted-foreground">
                                       Discount: {q.discountType === "percentage" ? `${Number(q.discountValue)}%` : `₹${Number(q.discountValue).toLocaleString()}`}
                                     </div>
                                   )}
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t pt-4">
+                                    <div className="space-y-3">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <h4 className="text-xs font-semibold">Activity Log</h4>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={(e) => { e.stopPropagation(); setShowQuoteActivityForm(!showQuoteActivityForm); }}
+                                          data-testid={`button-log-quote-activity-${q.id}`}
+                                        >
+                                          <Plus className="w-3 h-3 mr-1" /> Log Activity
+                                        </Button>
+                                      </div>
+
+                                      {showQuoteActivityForm && (
+                                        <div className="border rounded-md p-3 space-y-2 bg-background" onClick={(e) => e.stopPropagation()}>
+                                          <div>
+                                            <Label className="text-xs">Type</Label>
+                                            <Select value={quoteActivityForm.activityType} onValueChange={(v) => setQuoteActivityForm({ ...quoteActivityForm, activityType: v })}>
+                                              <SelectTrigger className="h-8 text-xs" data-testid={`select-quote-activity-type-${q.id}`}>
+                                                <SelectValue />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                <SelectItem value="call">Call</SelectItem>
+                                                <SelectItem value="email">Email</SelectItem>
+                                                <SelectItem value="meeting">Meeting</SelectItem>
+                                                <SelectItem value="site_visit">Site Visit</SelectItem>
+                                                <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                                                <SelectItem value="note">Note</SelectItem>
+                                              </SelectContent>
+                                            </Select>
+                                          </div>
+                                          <div>
+                                            <Label className="text-xs">Notes</Label>
+                                            <Textarea
+                                              className="text-xs resize-none"
+                                              rows={2}
+                                              value={quoteActivityForm.notes}
+                                              onChange={(e) => setQuoteActivityForm({ ...quoteActivityForm, notes: e.target.value })}
+                                              placeholder="Activity notes..."
+                                              data-testid={`input-quote-activity-notes-${q.id}`}
+                                            />
+                                          </div>
+                                          <div className="flex items-center gap-2 justify-end">
+                                            <Button size="sm" variant="ghost" onClick={() => setShowQuoteActivityForm(false)} data-testid={`button-cancel-quote-activity-${q.id}`}>Cancel</Button>
+                                            <Button
+                                              size="sm"
+                                              disabled={!quoteActivityForm.notes || quoteActivityMutation.isPending}
+                                              onClick={() => quoteActivityMutation.mutate({ quoteId: q.id, data: quoteActivityForm })}
+                                              data-testid={`button-save-quote-activity-${q.id}`}
+                                            >
+                                              {quoteActivityMutation.isPending ? "Saving..." : "Save"}
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {expandedQuoteActivities.length === 0 ? (
+                                          <p className="text-xs text-muted-foreground">No activities logged yet.</p>
+                                        ) : (
+                                          expandedQuoteActivities.map((act) => {
+                                            const IconComp = ACTIVITY_ICONS[act.activityType] || StickyNote;
+                                            return (
+                                              <div key={act.id} className="flex items-start gap-2 text-xs" data-testid={`quote-activity-${act.id}`}>
+                                                <div className="w-6 h-6 rounded-md bg-muted flex items-center justify-center shrink-0 mt-0.5">
+                                                  <IconComp className="w-3 h-3 text-muted-foreground" />
+                                                </div>
+                                                <div className="flex-1 min-w-0">
+                                                  <p className="font-medium capitalize">{act.activityType.replace("_", " ")}</p>
+                                                  <p className="text-muted-foreground">{act.notes}</p>
+                                                  <p className="text-muted-foreground text-[10px]">{getRelativeTime(act.createdAt)}</p>
+                                                </div>
+                                              </div>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-3">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <h4 className="text-xs font-semibold">Follow-ups</h4>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={(e) => { e.stopPropagation(); setShowQuoteFollowupForm(!showQuoteFollowupForm); }}
+                                          data-testid={`button-schedule-quote-followup-${q.id}`}
+                                        >
+                                          <CalendarDays className="w-3 h-3 mr-1" /> Schedule
+                                        </Button>
+                                      </div>
+
+                                      {showQuoteFollowupForm && (
+                                        <div className="border rounded-md p-3 space-y-2 bg-background" onClick={(e) => e.stopPropagation()}>
+                                          <div>
+                                            <Label className="text-xs">Title</Label>
+                                            <Input
+                                              className="h-8 text-xs"
+                                              value={quoteFollowupForm.title}
+                                              onChange={(e) => setQuoteFollowupForm({ ...quoteFollowupForm, title: e.target.value })}
+                                              placeholder="Follow-up title..."
+                                              data-testid={`input-quote-followup-title-${q.id}`}
+                                            />
+                                          </div>
+                                          <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                              <Label className="text-xs">Due Date</Label>
+                                              <Input
+                                                className="h-8 text-xs"
+                                                type="date"
+                                                value={quoteFollowupForm.dueDate}
+                                                onChange={(e) => setQuoteFollowupForm({ ...quoteFollowupForm, dueDate: e.target.value })}
+                                                data-testid={`input-quote-followup-date-${q.id}`}
+                                              />
+                                            </div>
+                                            <div>
+                                              <Label className="text-xs">Priority</Label>
+                                              <Select value={quoteFollowupForm.priority} onValueChange={(v) => setQuoteFollowupForm({ ...quoteFollowupForm, priority: v })}>
+                                                <SelectTrigger className="h-8 text-xs" data-testid={`select-quote-followup-priority-${q.id}`}>
+                                                  <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  <SelectItem value="high">High</SelectItem>
+                                                  <SelectItem value="medium">Medium</SelectItem>
+                                                  <SelectItem value="low">Low</SelectItem>
+                                                </SelectContent>
+                                              </Select>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-2 justify-end">
+                                            <Button size="sm" variant="ghost" onClick={() => setShowQuoteFollowupForm(false)} data-testid={`button-cancel-quote-followup-${q.id}`}>Cancel</Button>
+                                            <Button
+                                              size="sm"
+                                              disabled={!quoteFollowupForm.title || !quoteFollowupForm.dueDate || quoteFollowupMutation.isPending}
+                                              onClick={() => quoteFollowupMutation.mutate({ quoteId: q.id, data: quoteFollowupForm })}
+                                              data-testid={`button-save-quote-followup-${q.id}`}
+                                            >
+                                              {quoteFollowupMutation.isPending ? "Saving..." : "Save"}
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {expandedQuoteFollowups.length === 0 ? (
+                                          <p className="text-xs text-muted-foreground">No follow-ups scheduled.</p>
+                                        ) : (
+                                          expandedQuoteFollowups.map((fu) => {
+                                            const fuOverdue = fu.status === "pending" && isOverdue(fu.dueDate);
+                                            const fuToday = fu.status === "pending" && isToday(fu.dueDate);
+                                            return (
+                                              <div
+                                                key={fu.id}
+                                                className={`flex items-center gap-2 text-xs border rounded-md p-2 ${fuOverdue ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/20" : ""}`}
+                                                data-testid={`quote-followup-${fu.id}`}
+                                              >
+                                                <div className="flex-1 min-w-0">
+                                                  <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className={`font-medium ${fu.status === "completed" ? "line-through text-muted-foreground" : ""}`}>{fu.title}</span>
+                                                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${PRIORITY_COLORS[fu.priority] || PRIORITY_COLORS.medium}`}>
+                                                      {fu.priority.charAt(0).toUpperCase() + fu.priority.slice(1)}
+                                                    </span>
+                                                    {fu.status === "completed" && (
+                                                      <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Completed</Badge>
+                                                    )}
+                                                  </div>
+                                                  <p className={`text-[10px] mt-0.5 ${fuOverdue ? "text-red-600 dark:text-red-400 font-medium" : fuToday ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                                                    {fuOverdue ? "OVERDUE — " : fuToday ? "TODAY — " : ""}{new Date(fu.dueDate).toLocaleDateString()}
+                                                  </p>
+                                                </div>
+                                                {fu.status === "pending" && (
+                                                  <Button
+                                                    size="icon"
+                                                    variant="ghost"
+                                                    className="shrink-0"
+                                                    onClick={(e) => { e.stopPropagation(); completeQuoteFollowupMutation.mutate({ followupId: fu.id, quoteId: q.id }); }}
+                                                    disabled={completeQuoteFollowupMutation.isPending}
+                                                    data-testid={`button-complete-quote-followup-${fu.id}`}
+                                                  >
+                                                    <Check className="w-4 h-4 text-green-600" />
+                                                  </Button>
+                                                )}
+                                              </div>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
                                 </div>
                               </td>
                             </tr>
                           )}
                         </Fragment>
-                      ))
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={7} className="p-8 text-center text-muted-foreground">No quotations found.</td>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No quotations found.</td>
                       </tr>
                     )}
                   </tbody>

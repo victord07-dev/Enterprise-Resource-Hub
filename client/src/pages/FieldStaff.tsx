@@ -40,6 +40,7 @@ export default function FieldStaff() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);
   const [selectedFieldEmployee, setSelectedFieldEmployee] = useState<string | null>(null);
+  const [routeFilterEmployee, setRouteFilterEmployee] = useState<string>("all");
 
   const [originLat, setOriginLat] = useState<number | null>(null);
   const [originLng, setOriginLng] = useState<number | null>(null);
@@ -258,6 +259,23 @@ export default function FieldStaff() {
   const pendingExpenses = travelExpenses?.filter(te => te.status === "pending").length ?? 0;
   const totalExpensesAmount = travelExpenses?.reduce((sum, te) => sum + Number(te.totalAmount), 0) ?? 0;
 
+  const filteredCompletedTrips = routeFilterEmployee === "all"
+    ? completedTrips
+    : completedTrips.filter(t => t.employeeId === routeFilterEmployee);
+
+  const groupedTrips = filteredCompletedTrips.reduce<Record<string, Trip[]>>((acc, trip) => {
+    const dateKey = new Date(trip.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    if (!acc[dateKey]) acc[dateKey] = [];
+    acc[dateKey].push(trip);
+    return acc;
+  }, {});
+
+  const sortedDateKeys = Object.keys(groupedTrips).sort((a, b) => {
+    const dateA = new Date(groupedTrips[a][0].date).getTime();
+    const dateB = new Date(groupedTrips[b][0].date).getTime();
+    return dateB - dateA;
+  });
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div>
@@ -356,36 +374,62 @@ export default function FieldStaff() {
                   <CardTitle className="text-base flex items-center gap-2">
                     <Route className="w-4 h-4" />
                     Recorded Routes
+                    <Badge variant="secondary" className="ml-auto no-default-hover-elevate no-default-active-elevate" data-testid="badge-route-count">{filteredCompletedTrips.length}</Badge>
                   </CardTitle>
+                  <div className="pt-2">
+                    <Select value={routeFilterEmployee} onValueChange={setRouteFilterEmployee}>
+                      <SelectTrigger className="h-8 text-xs" data-testid="select-route-filter-employee">
+                        <SelectValue placeholder="Filter by employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Employees</SelectItem>
+                        {employees?.map(emp => (
+                          <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </CardHeader>
-                <CardContent className="space-y-2 max-h-[400px] overflow-y-auto">
-                  {completedTrips.length > 0 ? (
-                    completedTrips.map(trip => (
-                      <div
-                        key={trip.id}
-                        className={`flex items-center justify-between gap-2 p-3 rounded-md cursor-pointer border transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "hover:bg-muted border-transparent"}`}
-                        onClick={() => viewTripRoute(trip.id)}
-                        data-testid={`trip-route-${trip.id}`}
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <Avatar className="w-8 h-8">
-                            <AvatarFallback className="text-xs">{getEmployeeName(trip.employeeId).charAt(0).toUpperCase()}</AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Calendar className="w-3 h-3" />
-                              {new Date(trip.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                              <span className="mx-1">|</span>
-                              <Clock className="w-3 h-3" />
-                              {new Date(trip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                              {trip.endTime && <> - {new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>}
-                            </div>
-                          </div>
+                <CardContent className="space-y-1 max-h-[400px] overflow-y-auto">
+                  {sortedDateKeys.length > 0 ? (
+                    sortedDateKeys.map(dateKey => (
+                      <div key={dateKey} className="space-y-1">
+                        <div className="flex items-center gap-2 py-1.5 sticky top-0 bg-card z-10" data-testid={`date-group-${dateKey}`}>
+                          <Calendar className="w-3 h-3 text-muted-foreground" />
+                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{dateKey}</span>
+                          <div className="flex-1 border-t border-muted" />
                         </div>
-                        <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-view-route-${trip.id}`}>
-                          <Eye className="w-4 h-4" />
-                        </Button>
+                        {groupedTrips[dateKey].map(trip => (
+                          <div
+                            key={trip.id}
+                            className={`flex items-center justify-between gap-2 p-2.5 rounded-md cursor-pointer border transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "hover:bg-muted border-transparent"}`}
+                            onClick={() => viewTripRoute(trip.id)}
+                            data-testid={`trip-route-${trip.id}`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Avatar className="w-7 h-7">
+                                <AvatarFallback className="text-[10px]">{getEmployeeName(trip.employeeId).charAt(0).toUpperCase()}</AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
+                                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                  <Clock className="w-3 h-3 shrink-0" />
+                                  {new Date(trip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                  {trip.endTime && <> → {new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>}
+                                </div>
+                                <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5" data-testid={`text-trip-coords-${trip.id}`}>
+                                    <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                    {trip.startLat ? `${Number(trip.startLat).toFixed(2)},${Number(trip.startLng).toFixed(2)}` : "—"}
+                                    {" → "}
+                                    {trip.endLat ? `${Number(trip.endLat).toFixed(2)},${Number(trip.endLng).toFixed(2)}` : "—"}
+                                  </div>
+                              </div>
+                            </div>
+                            <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-view-route-${trip.id}`}>
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        ))}
                       </div>
                     ))
                   ) : (

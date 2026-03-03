@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getUser } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
-import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight } from "lucide-react";
+import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Phone, Mail, MapPin, MessageCircle } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
@@ -46,6 +46,14 @@ export default function Dashboard() {
   });
 
   const showPayrollAlert = today.getDate() >= 2 && payrollStatusData !== undefined && payrollStatusData !== null && payrollStatusData.status !== "disbursed";
+
+  const { data: followupSummary } = useQuery<{ today: number; overdue: number; totalPending: number }>({
+    queryKey: ["/api/followups/summary"],
+  });
+
+  const { data: todayFollowups, isLoading: followupsLoading } = useQuery<{ type: string; id: string; parentId: string; parentName: string; title: string; dueDate: string; priority: string; createdBy: string }[]>({
+    queryKey: ["/api/followups/today"],
+  });
 
   const { data: stats, isLoading } = useQuery<{
     totalRevenue: number;
@@ -228,6 +236,67 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <Card data-testid="card-todays-followups">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+          <div className="flex items-center gap-2">
+            <CalendarClock className="w-4 h-4 text-amber-500" />
+            <CardTitle className="text-base font-semibold">Today's Follow-ups</CardTitle>
+          </div>
+          {(followupSummary?.overdue ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400" data-testid="badge-overdue-count">
+              <AlertTriangle className="w-3 h-3" />
+              {followupSummary!.overdue} overdue
+            </span>
+          )}
+        </CardHeader>
+        <CardContent>
+          {followupsLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <Skeleton className="w-8 h-8 rounded-full flex-shrink-0" />
+                  <div className="flex-1 space-y-1">
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : todayFollowups && todayFollowups.length > 0 ? (
+            <div className="space-y-3">
+              {todayFollowups.map((f) => (
+                <div
+                  key={f.id}
+                  className="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 cursor-pointer transition-colors"
+                  data-testid={`followup-today-${f.id}`}
+                  onClick={() => setLocation(f.type === "lead" ? "/leads" : "/sales")}
+                >
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${f.type === "lead" ? "bg-purple-50 dark:bg-purple-950/30" : "bg-blue-50 dark:bg-blue-950/30"}`}>
+                    {f.type === "lead" ? <Users className="w-3.5 h-3.5 text-purple-500" /> : <ShoppingCart className="w-3.5 h-3.5 text-blue-500" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{f.title}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      <span className={`inline-flex items-center px-1.5 py-0 rounded text-[10px] font-medium mr-1.5 ${f.type === "lead" ? "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
+                        {f.type === "lead" ? "Lead" : "Quote"}
+                      </span>
+                      {f.parentName}
+                    </p>
+                  </div>
+                  <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${f.priority === "high" ? "bg-red-500" : f.priority === "medium" ? "bg-amber-500" : "bg-green-500"}`} title={`${f.priority} priority`} />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-6 text-center" data-testid="followups-empty">
+              <CheckCircle2 className="w-10 h-10 text-green-400 mb-2" />
+              <p className="text-sm font-medium text-muted-foreground">All clear for today!</p>
+              <p className="text-xs text-muted-foreground mt-0.5">No follow-ups scheduled for today.</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

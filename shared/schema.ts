@@ -266,6 +266,49 @@ export const leads = pgTable("leads", {
   estimatedValue: decimal("estimated_value", { precision: 12, scale: 2 }),
   quotationId: varchar("quotation_id"),
   notes: text("notes"),
+  lossReason: text("loss_reason"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const leadActivities = pgTable("lead_activities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull(),
+  activityType: text("activity_type").notNull(),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const leadFollowups = pgTable("lead_followups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  leadId: varchar("lead_id").notNull(),
+  title: text("title").notNull(),
+  dueDate: timestamp("due_date").notNull(),
+  priority: text("priority").notNull().default("medium"),
+  status: text("status").notNull().default("pending"),
+  completedAt: timestamp("completed_at"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const quotationActivities = pgTable("quotation_activities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quotationId: varchar("quotation_id").notNull(),
+  activityType: text("activity_type").notNull(),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const quotationFollowups = pgTable("quotation_followups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  quotationId: varchar("quotation_id").notNull(),
+  title: text("title").notNull(),
+  dueDate: timestamp("due_date").notNull(),
+  priority: text("priority").notNull().default("medium"),
+  status: text("status").notNull().default("pending"),
+  completedAt: timestamp("completed_at"),
+  createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -302,6 +345,10 @@ export const insertTravelExpenseSchema = createInsertSchema(travelExpenses).omit
 export const insertTripSchema = createInsertSchema(trips).omit({ id: true });
 export const insertLocationLogSchema = createInsertSchema(locationLogs).omit({ id: true });
 export const insertLeadSchema = createInsertSchema(leads).omit({ id: true });
+export const insertLeadActivitySchema = createInsertSchema(leadActivities).omit({ id: true, createdAt: true });
+export const insertLeadFollowupSchema = createInsertSchema(leadFollowups).omit({ id: true, createdAt: true });
+export const insertQuotationActivitySchema = createInsertSchema(quotationActivities).omit({ id: true, createdAt: true });
+export const insertQuotationFollowupSchema = createInsertSchema(quotationFollowups).omit({ id: true, createdAt: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -329,3 +376,7 @@ export type Trip = typeof trips.$inferSelect;
 export type LocationLog = typeof locationLogs.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type Lead = typeof leads.$inferSelect;
+export type LeadActivity = typeof leadActivities.$inferSelect;
+export type LeadFollowup = typeof leadFollowups.$inferSelect;
+export type QuotationActivity = typeof quotationActivities.$inferSelect;
+export type QuotationFollowup = typeof quotationFollowups.$inferSelect;

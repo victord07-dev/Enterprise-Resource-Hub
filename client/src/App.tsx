@@ -21,11 +21,13 @@ import Reports from "@/pages/Reports";
 import AuditTrail from "@/pages/AuditTrail";
 import Kiosk from "@/pages/Kiosk";
 import Leads from "@/pages/Leads";
+import Products from "@/pages/Products";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
+      <Route path="/products" component={Products} />
       <Route path="/leads" component={Leads} />
       <Route path="/sales" component={Sales} />
       <Route path="/projects" component={Projects} />

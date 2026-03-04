@@ -1,6 +1,8 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
@@ -11,6 +13,7 @@ import {
   insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
   insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
+  insertSupplierProductSchema, insertPurchaseOrderItemSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -369,6 +372,33 @@ export async function registerRoutes(
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch products" });
+    }
+  });
+
+  app.get("/api/products/last-sold-prices", authenticateToken, async (_req, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT DISTINCT ON (product_id) product_id, unit_price as last_price, created_at
+        FROM (
+          SELECT soi.product_id, soi.unit_price, so.order_date as created_at
+          FROM sales_order_items soi
+          JOIN sales_orders so ON soi.order_id = so.id
+          WHERE soi.product_id IS NOT NULL
+          UNION ALL
+          SELECT qi.product_id, qi.unit_price, q.created_at
+          FROM quotation_items qi
+          JOIN quotations q ON qi.quotation_id = q.id
+          WHERE qi.product_id IS NOT NULL
+        ) combined
+        ORDER BY product_id, created_at DESC
+      `);
+      const priceMap: Record<string, string> = {};
+      for (const row of result.rows as any[]) {
+        priceMap[row.product_id] = row.last_price;
+      }
+      res.json(priceMap);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch last sold prices" });
     }
   });
 
@@ -1140,6 +1170,100 @@ export async function registerRoutes(
       res.json({ message: "Purchase order deleted" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete purchase order" });
+    }
+  });
+
+  // ======================== PURCHASE ORDER ITEMS ========================
+  app.get("/api/purchase-orders/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const items = await storage.getPurchaseOrderItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch PO items" });
+    }
+  });
+
+  app.post("/api/purchase-orders/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const { items } = req.body;
+      if (!Array.isArray(items)) return res.status(400).json({ message: "Items must be an array" });
+      const validItems = items.filter((item: any) => item.quantity > 0 && Number(item.unitCost) > 0 && (item.productId || item.description));
+      if (validItems.length === 0) return res.status(400).json({ message: "At least one valid line item is required" });
+      await storage.deletePurchaseOrderItems(req.params.id);
+      const created = [];
+      let total = 0;
+      for (const item of validItems) {
+        const parsed = insertPurchaseOrderItemSchema.safeParse({
+          ...item,
+          purchaseOrderId: req.params.id,
+          totalCost: String(Number(item.quantity) * Number(item.unitCost)),
+        });
+        if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+        const c = await storage.createPurchaseOrderItem(parsed.data as any);
+        created.push(c);
+        total += Number(c.totalCost);
+      }
+      await storage.updatePurchaseOrder(req.params.id, { totalAmount: String(total) } as any);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to save PO items" });
+    }
+  });
+
+  // ======================== SUPPLIER PRODUCTS ========================
+  app.get("/api/suppliers/:id/products", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getSupplierProducts(req.params.id);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch supplier products" });
+    }
+  });
+
+  app.post("/api/suppliers/:id/products", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertSupplierProductSchema.safeParse({
+        ...req.body,
+        supplierId: req.params.id,
+      });
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createSupplierProduct(parsed.data as any);
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to add supplier product" });
+    }
+  });
+
+  app.patch("/api/supplier-products/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const allowed = ["supplierPrice", "supplierSku", "leadTimeDays", "isPreferred", "notes"];
+      const filtered: Record<string, any> = {};
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) filtered[key] = req.body[key];
+      }
+      const updated = await storage.updateSupplierProduct(req.params.id, filtered);
+      if (!updated) return res.status(404).json({ message: "Supplier product not found" });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update supplier product" });
+    }
+  });
+
+  app.delete("/api/supplier-products/:id", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deleteSupplierProduct(req.params.id);
+      res.json({ message: "Supplier product removed" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete supplier product" });
+    }
+  });
+
+  app.get("/api/products/:id/suppliers", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getProductSuppliers(req.params.id);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch product suppliers" });
     }
   });
 

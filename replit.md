@@ -12,11 +12,12 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Modules
 1. Dashboard - Metric cards, revenue chart, activity feed
-2. Leads (/leads) - CRM lead pipeline with conversion to quotation
-3. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation
-4. Project Management - Project tracking, milestones
-5. Inventory - Products & Services (with type badges), warehouses, stock movements
-6. Supply Chain - Suppliers, purchase orders, deliveries
+2. Products (/products) - Product Master for sales/management: selling price, cost price, last sold price, brand, supplier list per product
+3. Leads (/leads) - CRM lead pipeline with conversion to quotation
+4. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation
+5. Project Management - Project tracking, milestones
+6. Inventory - Products & Services (cost price only, no selling price visible), warehouses, stock movements
+7. Supply Chain - Suppliers with product catalogs, purchase orders with line items, supplier-product pricing
 7. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
 8. Accounts - Invoices, payments, financial tracking
 9. Employee Management - Staff, attendance (with QR + selfie kiosk), payroll
@@ -107,6 +108,20 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Tables: sales_order_items (orderId, productId nullable, itemType, description, qty, unitPrice, totalPrice), quotation_items (same structure with quotationId)
 - API: GET/POST /api/sales-orders/:id/items, GET/POST /api/quotations/:id/items
 - Zod validation on item creation routes using insertSalesOrderItemSchema/insertQuotationItemSchema
+
+## Product Master & Supplier Pricing
+- Products have `unitPrice` (selling price), `costPrice` (buying/procurement cost), `brand` (manufacturer)
+- Product Master page at /products shows: selling price, cost price, last sold price, brand, supplier count
+- Last sold price pulled from most recent quotation/order line item for each product (API: GET /api/products/last-sold-prices)
+- Expandable product rows show supplier list with prices, lead times, preferred badge
+- Cheapest supplier highlighted in green
+- `supplier_products` table: supplierId, productId, supplierPrice, supplierSku, leadTimeDays, isPreferred, notes
+- API: GET/POST /api/suppliers/:id/products, PATCH/DELETE /api/supplier-products/:id, GET /api/products/:id/suppliers
+- Inventory module shows cost price only (no selling price visible to procurement team)
+- Purchase orders have line items: `purchase_order_items` table (purchaseOrderId, productId, description, quantity, unitCost, totalCost)
+- PO line items editor auto-fills supplier pricing from supplier_products catalog
+- PO totalAmount auto-calculated from line items
+- API: GET/POST /api/purchase-orders/:id/items
 
 ## Field Staff Travel Expense System
 - Separate module at /field-staff with its own sidebar entry (after Supply Chain)

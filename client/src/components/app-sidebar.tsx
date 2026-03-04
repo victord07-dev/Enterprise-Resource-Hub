@@ -13,6 +13,7 @@ import {
   FileSearch,
   LogOut,
   UserPlus,
+  Box,
 } from "lucide-react";
 import {
   Sidebar,
@@ -30,6 +31,7 @@ import { Shield } from "lucide-react";
 
 const menuItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
+  { title: "Products", url: "/products", icon: Box },
   { title: "Leads", url: "/leads", icon: UserPlus },
   { title: "Sales", url: "/sales", icon: ShoppingCart },
   { title: "Projects", url: "/projects", icon: FolderKanban },

@@ -43,6 +43,8 @@ export const products = pgTable("products", {
   category: text("category").notNull(),
   description: text("description"),
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
+  costPrice: decimal("cost_price", { precision: 12, scale: 2 }),
+  brand: text("brand"),
   unit: text("unit").notNull().default("pcs"),
   minStockLevel: integer("min_stock_level").notNull().default(10),
   type: text("type").notNull().default("product"),
@@ -312,6 +314,27 @@ export const quotationFollowups = pgTable("quotation_followups", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const supplierProducts = pgTable("supplier_products", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  supplierId: varchar("supplier_id").notNull(),
+  productId: varchar("product_id").notNull(),
+  supplierPrice: decimal("supplier_price", { precision: 12, scale: 2 }).notNull(),
+  supplierSku: text("supplier_sku"),
+  leadTimeDays: integer("lead_time_days"),
+  isPreferred: boolean("is_preferred").notNull().default(false),
+  notes: text("notes"),
+});
+
+export const purchaseOrderItems = pgTable("purchase_order_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  purchaseOrderId: varchar("purchase_order_id").notNull(),
+  productId: varchar("product_id"),
+  description: text("description"),
+  quantity: integer("quantity").notNull(),
+  unitCost: decimal("unit_cost", { precision: 12, scale: 2 }).notNull(),
+  totalCost: decimal("total_cost", { precision: 12, scale: 2 }).notNull(),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -349,6 +372,8 @@ export const insertLeadActivitySchema = createInsertSchema(leadActivities).omit(
 export const insertLeadFollowupSchema = createInsertSchema(leadFollowups).omit({ id: true, createdAt: true });
 export const insertQuotationActivitySchema = createInsertSchema(quotationActivities).omit({ id: true, createdAt: true });
 export const insertQuotationFollowupSchema = createInsertSchema(quotationFollowups).omit({ id: true, createdAt: true });
+export const insertSupplierProductSchema = createInsertSchema(supplierProducts).omit({ id: true });
+export const insertPurchaseOrderItemSchema = createInsertSchema(purchaseOrderItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -380,3 +405,5 @@ export type LeadActivity = typeof leadActivities.$inferSelect;
 export type LeadFollowup = typeof leadFollowups.$inferSelect;
 export type QuotationActivity = typeof quotationActivities.$inferSelect;
 export type QuotationFollowup = typeof quotationFollowups.$inferSelect;
+export type SupplierProduct = typeof supplierProducts.$inferSelect;
+export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;

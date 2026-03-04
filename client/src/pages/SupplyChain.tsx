@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,9 +9,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Truck, Users, ClipboardList, Package, Pencil, Trash2 } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Supplier, PurchaseOrder } from "@shared/schema";
+import { Badge } from "@/components/ui/badge";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem } from "@shared/schema";
+
+interface POLineItem {
+  productId: string;
+  description: string;
+  quantity: number;
+  unitCost: number;
+  totalCost: number;
+}
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -28,25 +37,508 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function emptyLineItem(): POLineItem {
+  return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0 };
+}
+
+function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
+  items: POLineItem[];
+  onChange: (items: POLineItem[]) => void;
+  products: Product[];
+  supplierProducts: SupplierProduct[];
+}) {
+  const spMap = new Map<string, SupplierProduct>();
+  for (const sp of supplierProducts) {
+    spMap.set(sp.productId, sp);
+  }
+
+  const updateItem = (index: number, field: string, value: any) => {
+    const updated = [...items];
+    const item = { ...updated[index], [field]: value };
+
+    if (field === "productId" && value) {
+      const prod = products.find(p => p.id === value);
+      if (prod) {
+        item.description = prod.name;
+        const sp = spMap.get(value);
+        if (sp) {
+          item.unitCost = Number(sp.supplierPrice);
+        } else {
+          item.unitCost = prod.costPrice ? Number(prod.costPrice) : Number(prod.unitPrice);
+        }
+        item.totalCost = item.quantity * item.unitCost;
+      }
+    }
+
+    if (field === "quantity" || field === "unitCost") {
+      const qty = field === "quantity" ? Number(value) : item.quantity;
+      const cost = field === "unitCost" ? Number(value) : item.unitCost;
+      item.totalCost = qty * cost;
+    }
+
+    updated[index] = item;
+    onChange(updated);
+  };
+
+  const addItem = () => onChange([...items, emptyLineItem()]);
+  const removeItem = (index: number) => {
+    const updated = items.filter((_, i) => i !== index);
+    onChange(updated.length === 0 ? [emptyLineItem()] : updated);
+  };
+
+  const grandTotal = items.reduce((sum, item) => sum + item.totalCost, 0);
+
+  const supplierProductIds = new Set(supplierProducts.map(sp => sp.productId));
+  const supplierCatalogProducts = products.filter(p => supplierProductIds.has(p.id));
+  const otherProducts = products.filter(p => !supplierProductIds.has(p.id));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <Label className="text-sm font-medium">Line Items</Label>
+        <Button type="button" size="sm" variant="outline" onClick={addItem} data-testid="button-add-po-line-item">
+          <Plus className="w-3 h-3 mr-1" /> Add Item
+        </Button>
+      </div>
+
+      <div className="space-y-2">
+        {items.map((item, index) => (
+          <div key={index} className="grid grid-cols-12 gap-2 items-end">
+            <div className="col-span-4">
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Product</Label>}
+              <Select value={item.productId} onValueChange={(v) => updateItem(index, "productId", v)}>
+                <SelectTrigger data-testid={`select-po-item-product-${index}`}>
+                  <SelectValue placeholder="Select product" />
+                </SelectTrigger>
+                <SelectContent>
+                  {supplierCatalogProducts.length > 0 && (
+                    <>
+                      <div className="px-2 py-1 text-xs text-muted-foreground font-medium">Supplier Catalog</div>
+                      {supplierCatalogProducts.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
+                      ))}
+                    </>
+                  )}
+                  {otherProducts.length > 0 && (
+                    <>
+                      <div className="px-2 py-1 text-xs text-muted-foreground font-medium">All Products</div>
+                      {otherProducts.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
+                      ))}
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="col-span-3">
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Description</Label>}
+              <Input
+                value={item.description}
+                onChange={(e) => updateItem(index, "description", e.target.value)}
+                placeholder="Description"
+                data-testid={`input-po-item-desc-${index}`}
+              />
+            </div>
+            <div className="col-span-1">
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Qty</Label>}
+              <Input
+                type="number"
+                min={1}
+                value={item.quantity}
+                onChange={(e) => updateItem(index, "quantity", parseInt(e.target.value) || 1)}
+                data-testid={`input-po-item-qty-${index}`}
+              />
+            </div>
+            <div className="col-span-2">
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Unit Cost</Label>}
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={item.unitCost}
+                onChange={(e) => updateItem(index, "unitCost", parseFloat(e.target.value) || 0)}
+                data-testid={`input-po-item-cost-${index}`}
+              />
+            </div>
+            <div className="col-span-1 flex items-center gap-1">
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block invisible">Total</Label>}
+              <span className="text-sm font-medium whitespace-nowrap" data-testid={`text-po-item-total-${index}`}>
+                {item.totalCost.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
+              </span>
+              <Button type="button" size="icon" variant="ghost" onClick={() => removeItem(index)} data-testid={`button-remove-po-item-${index}`}>
+                <X className="w-3 h-3" />
+              </Button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-end pt-2 border-t">
+        <div className="text-sm font-semibold" data-testid="text-po-grand-total">
+          Grand Total: ₹{grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string; suppliers: Supplier[] }) {
+  const { toast } = useToast();
+  const { data: supplierProds, isLoading } = useQuery<SupplierProduct[]>({
+    queryKey: ["/api/suppliers", supplierId, "products"],
+    queryFn: () => apiRequest("GET", `/api/suppliers/${supplierId}/products`).then(r => r.json()),
+  });
+  const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [editingSp, setEditingSp] = useState<SupplierProduct | null>(null);
+  const [spForm, setSpForm] = useState({ productId: "", supplierPrice: "", supplierSku: "", leadTimeDays: "", isPreferred: false, notes: "" });
+
+  const addMutation = useMutation({
+    mutationFn: async (data: any) => {
+      await apiRequest("POST", `/api/suppliers/${supplierId}/products`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/suppliers", supplierId, "products"] });
+      toast({ title: "Product added to supplier catalog" });
+      setAddDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const editMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: any }) => {
+      await apiRequest("PATCH", `/api/supplier-products/${id}`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/suppliers", supplierId, "products"] });
+      toast({ title: "Supplier product updated" });
+      setEditingSp(null);
+      setAddDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("DELETE", `/api/supplier-products/${id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/suppliers", supplierId, "products"] });
+      toast({ title: "Product removed from supplier catalog" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openAdd = () => {
+    setEditingSp(null);
+    setSpForm({ productId: "", supplierPrice: "", supplierSku: "", leadTimeDays: "", isPreferred: false, notes: "" });
+    setAddDialogOpen(true);
+  };
+
+  const openEdit = (sp: SupplierProduct) => {
+    setEditingSp(sp);
+    setSpForm({
+      productId: sp.productId,
+      supplierPrice: String(sp.supplierPrice),
+      supplierSku: sp.supplierSku || "",
+      leadTimeDays: sp.leadTimeDays ? String(sp.leadTimeDays) : "",
+      isPreferred: sp.isPreferred,
+      notes: sp.notes || "",
+    });
+    setAddDialogOpen(true);
+  };
+
+  const handleSubmit = () => {
+    const payload = {
+      productId: spForm.productId,
+      supplierPrice: spForm.supplierPrice,
+      supplierSku: spForm.supplierSku || null,
+      leadTimeDays: spForm.leadTimeDays ? parseInt(spForm.leadTimeDays) : null,
+      isPreferred: spForm.isPreferred,
+      notes: spForm.notes || null,
+    };
+    if (editingSp) {
+      editMutation.mutate({ id: editingSp.id, data: payload });
+    } else {
+      addMutation.mutate(payload);
+    }
+  };
+
+  const productMap = new Map<string, Product>();
+  allProducts?.forEach(p => productMap.set(p.id, p));
+
+  const existingProductIds = new Set(supplierProds?.map(sp => sp.productId) || []);
+  const availableProducts = allProducts?.filter(p => !existingProductIds.has(p.id)) || [];
+
+  const lowestPrice = supplierProds && supplierProds.length > 0
+    ? Math.min(...supplierProds.map(sp => Number(sp.supplierPrice)))
+    : 0;
+
+  if (isLoading) {
+    return <div className="p-4"><Skeleton className="h-16 w-full" /></div>;
+  }
+
+  return (
+    <div className="p-4 space-y-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="text-sm font-medium text-muted-foreground">Product Catalog</span>
+        <Button size="sm" variant="outline" onClick={openAdd} data-testid={`button-add-supplier-product-${supplierId}`}>
+          <Plus className="w-3 h-3 mr-1" /> Add Product
+        </Button>
+      </div>
+
+      {supplierProds && supplierProds.length > 0 ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="text-left p-2 font-medium text-muted-foreground text-xs">Product</th>
+                <th className="text-left p-2 font-medium text-muted-foreground text-xs">SKU</th>
+                <th className="text-left p-2 font-medium text-muted-foreground text-xs">Supplier SKU</th>
+                <th className="text-right p-2 font-medium text-muted-foreground text-xs">Price</th>
+                <th className="text-center p-2 font-medium text-muted-foreground text-xs">Lead Time</th>
+                <th className="text-center p-2 font-medium text-muted-foreground text-xs">Preferred</th>
+                <th className="text-right p-2 font-medium text-muted-foreground text-xs">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {supplierProds.map((sp) => {
+                const prod = productMap.get(sp.productId);
+                const isCheapest = Number(sp.supplierPrice) === lowestPrice && supplierProds.length > 1;
+                return (
+                  <tr key={sp.id} className="border-b last:border-0" data-testid={`row-supplier-product-${sp.id}`}>
+                    <td className="p-2 font-medium">{prod?.name || "Unknown"}</td>
+                    <td className="p-2 text-muted-foreground">{prod?.sku || "—"}</td>
+                    <td className="p-2 text-muted-foreground">{sp.supplierSku || "—"}</td>
+                    <td className={`p-2 text-right font-medium ${isCheapest ? "text-green-600 dark:text-green-400" : ""}`}>
+                      ₹{Number(sp.supplierPrice).toLocaleString()}
+                      {isCheapest && <Badge variant="secondary" className="ml-1 text-[10px]">Lowest</Badge>}
+                    </td>
+                    <td className="p-2 text-center text-muted-foreground">{sp.leadTimeDays ? `${sp.leadTimeDays} days` : "—"}</td>
+                    <td className="p-2 text-center">
+                      {sp.isPreferred && <Star className="w-4 h-4 text-yellow-500 inline" />}
+                    </td>
+                    <td className="p-2 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button size="icon" variant="ghost" onClick={() => openEdit(sp)} data-testid={`button-edit-sp-${sp.id}`}>
+                          <Pencil className="w-3 h-3" />
+                        </Button>
+                        <Button size="icon" variant="ghost" onClick={() => { if (confirm("Remove this product from supplier catalog?")) deleteMutation.mutate(sp.id); }} data-testid={`button-delete-sp-${sp.id}`}>
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground text-center py-4">No products in this supplier's catalog.</p>
+      )}
+
+      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{editingSp ? "Edit Supplier Product" : "Add Product to Catalog"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Product</Label>
+              {editingSp ? (
+                <Input value={productMap.get(editingSp.productId)?.name || ""} disabled />
+              ) : (
+                <Select value={spForm.productId} onValueChange={(v) => setSpForm({ ...spForm, productId: v })}>
+                  <SelectTrigger data-testid="select-sp-product">
+                    <SelectValue placeholder="Select product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableProducts.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label>Supplier Price (₹)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={spForm.supplierPrice}
+                onChange={(e) => setSpForm({ ...spForm, supplierPrice: e.target.value })}
+                data-testid="input-sp-price"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Supplier SKU</Label>
+              <Input
+                value={spForm.supplierSku}
+                onChange={(e) => setSpForm({ ...spForm, supplierSku: e.target.value })}
+                data-testid="input-sp-sku"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Lead Time (days)</Label>
+              <Input
+                type="number"
+                value={spForm.leadTimeDays}
+                onChange={(e) => setSpForm({ ...spForm, leadTimeDays: e.target.value })}
+                data-testid="input-sp-lead-time"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={spForm.isPreferred}
+                onChange={(e) => setSpForm({ ...spForm, isPreferred: e.target.checked })}
+                id="spPreferred"
+                data-testid="checkbox-sp-preferred"
+              />
+              <Label htmlFor="spPreferred">Preferred Supplier</Label>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Input
+                value={spForm.notes}
+                onChange={(e) => setSpForm({ ...spForm, notes: e.target.value })}
+                data-testid="input-sp-notes"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              disabled={addMutation.isPending || editMutation.isPending}
+              onClick={handleSubmit}
+              data-testid="button-submit-sp"
+            >
+              {(addMutation.isPending || editMutation.isPending) ? "Saving..." : editingSp ? "Update" : "Add"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function POExpandedItems({ poId }: { poId: string }) {
+  const { data: items, isLoading } = useQuery<PurchaseOrderItem[]>({
+    queryKey: ["/api/purchase-orders", poId, "items"],
+    queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
+  });
+  const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+
+  const productMap = new Map<string, Product>();
+  allProducts?.forEach(p => productMap.set(p.id, p));
+
+  if (isLoading) {
+    return <div className="p-4"><Skeleton className="h-12 w-full" /></div>;
+  }
+
+  if (!items || items.length === 0) {
+    return <div className="p-4 text-sm text-muted-foreground text-center">No line items for this PO.</div>;
+  }
+
+  return (
+    <div className="p-4">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2 font-medium text-muted-foreground text-xs">Product</th>
+              <th className="text-left p-2 font-medium text-muted-foreground text-xs">Description</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Qty</th>
+              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
+              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => {
+              const prod = item.productId ? productMap.get(item.productId) : null;
+              return (
+                <tr key={item.id} className="border-b last:border-0" data-testid={`row-po-item-${item.id}`}>
+                  <td className="p-2 font-medium">{prod?.name || "—"}</td>
+                  <td className="p-2 text-muted-foreground">{item.description || "—"}</td>
+                  <td className="p-2 text-center">{item.quantity}</td>
+                  <td className="p-2 text-right">₹{Number(item.unitCost).toLocaleString()}</td>
+                  <td className="p-2 text-right font-medium">₹{Number(item.totalCost).toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
+              <td className="p-2 text-right font-semibold" data-testid={`text-po-items-total-${poId}`}>
+                ₹{items.reduce((sum, i) => sum + Number(i.totalCost), 0).toLocaleString()}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function SupplyChain() {
   const { toast } = useToast();
   const { data: suppliers, isLoading: suppliersLoading } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders, isLoading: poLoading } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
+  const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
-  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", totalAmount: "", expectedDelivery: "", notes: "" });
+  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
+  const [poLineItems, setPoLineItems] = useState<POLineItem[]>([emptyLineItem()]);
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [supplierForm, setSupplierForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", category: "Solar Panels" });
 
+  const [expandedPoId, setExpandedPoId] = useState<string | null>(null);
+  const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
+  const [poSearch, setPoSearch] = useState("");
+
+  const selectedSupplierId = poForm.supplierId;
+  const { data: supplierCatalog } = useQuery<SupplierProduct[]>({
+    queryKey: ["/api/suppliers", selectedSupplierId, "products"],
+    queryFn: () => apiRequest("GET", `/api/suppliers/${selectedSupplierId}/products`).then(r => r.json()),
+    enabled: !!selectedSupplierId,
+  });
+
   const poMutation = useMutation({
     mutationFn: async (data: any) => {
+      const { lineItems, ...poData } = data;
+      const grandTotal = lineItems.reduce((sum: number, item: POLineItem) => sum + item.totalCost, 0);
+      const payload = { ...poData, totalAmount: String(grandTotal) };
+
+      let po: any;
       if (editingPo) {
-        await apiRequest("PATCH", `/api/purchase-orders/${editingPo.id}`, data);
+        const resp = await apiRequest("PATCH", `/api/purchase-orders/${editingPo.id}`, payload);
+        po = await resp.json();
       } else {
-        await apiRequest("POST", "/api/purchase-orders", data);
+        const resp = await apiRequest("POST", "/api/purchase-orders", payload);
+        po = await resp.json();
+      }
+
+      const validItems = lineItems.filter((item: POLineItem) => item.productId || item.description);
+      if (validItems.length > 0) {
+        await apiRequest("POST", `/api/purchase-orders/${po.id}/items`, {
+          items: validItems.map((item: POLineItem) => ({
+            productId: item.productId || null,
+            description: item.description,
+            quantity: item.quantity,
+            unitCost: String(item.unitCost),
+          })),
+        });
       }
     },
     onSuccess: () => {
@@ -103,20 +595,37 @@ export default function SupplyChain() {
 
   const openNewPo = () => {
     setEditingPo(null);
-    setPoForm({ poNumber: "", supplierId: "", status: "pending", totalAmount: "", expectedDelivery: "", notes: "" });
+    setPoForm({ poNumber: "", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
+    setPoLineItems([emptyLineItem()]);
     setPoDialogOpen(true);
   };
 
-  const openEditPo = (po: PurchaseOrder) => {
+  const openEditPo = async (po: PurchaseOrder) => {
     setEditingPo(po);
     setPoForm({
       poNumber: po.poNumber,
       supplierId: po.supplierId,
       status: po.status,
-      totalAmount: String(po.totalAmount),
       expectedDelivery: po.expectedDelivery ? new Date(po.expectedDelivery).toISOString().split("T")[0] : "",
       notes: po.notes || "",
     });
+    try {
+      const resp = await apiRequest("GET", `/api/purchase-orders/${po.id}/items`);
+      const existingItems: PurchaseOrderItem[] = await resp.json();
+      if (existingItems.length > 0) {
+        setPoLineItems(existingItems.map(item => ({
+          productId: item.productId || "",
+          description: item.description || "",
+          quantity: item.quantity,
+          unitCost: Number(item.unitCost),
+          totalCost: Number(item.totalCost),
+        })));
+      } else {
+        setPoLineItems([emptyLineItem()]);
+      }
+    } catch {
+      setPoLineItems([emptyLineItem()]);
+    }
     setPoDialogOpen(true);
   };
 
@@ -140,6 +649,17 @@ export default function SupplyChain() {
     setSupplierDialogOpen(true);
   };
 
+  const supplierMap = new Map<string, Supplier>();
+  suppliers?.forEach(s => supplierMap.set(s.id, s));
+
+  const filteredPOs = purchaseOrders?.filter(po => {
+    if (!poSearch) return true;
+    const term = poSearch.toLowerCase();
+    const supplier = supplierMap.get(po.supplierId);
+    return po.poNumber.toLowerCase().includes(term) ||
+      (supplier?.name || "").toLowerCase().includes(term);
+  });
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -160,7 +680,7 @@ export default function SupplyChain() {
               <Users className="w-5 h-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{suppliers?.length ?? 0}</p>
+              <p className="text-2xl font-bold" data-testid="text-stat-suppliers">{suppliers?.length ?? 0}</p>
               <p className="text-xs text-muted-foreground">Total Suppliers</p>
             </div>
           </CardContent>
@@ -171,7 +691,7 @@ export default function SupplyChain() {
               <ClipboardList className="w-5 h-5 text-emerald-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{purchaseOrders?.length ?? 0}</p>
+              <p className="text-2xl font-bold" data-testid="text-stat-pos">{purchaseOrders?.length ?? 0}</p>
               <p className="text-xs text-muted-foreground">Purchase Orders</p>
             </div>
           </CardContent>
@@ -182,7 +702,7 @@ export default function SupplyChain() {
               <Truck className="w-5 h-5 text-violet-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{purchaseOrders?.filter((po) => po.status === "shipped").length ?? 0}</p>
+              <p className="text-2xl font-bold" data-testid="text-stat-in-transit">{purchaseOrders?.filter((po) => po.status === "shipped").length ?? 0}</p>
               <p className="text-xs text-muted-foreground">In Transit</p>
             </div>
           </CardContent>
@@ -199,7 +719,13 @@ export default function SupplyChain() {
           <div className="flex items-center gap-2">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="Search purchase orders..." className="pl-9" data-testid="input-search-po" />
+              <Input
+                placeholder="Search purchase orders..."
+                className="pl-9"
+                value={poSearch}
+                onChange={(e) => setPoSearch(e.target.value)}
+                data-testid="input-search-po"
+              />
             </div>
           </div>
           <Card>
@@ -208,7 +734,9 @@ export default function SupplyChain() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
+                      <th className="w-8 p-3"></th>
                       <th className="text-left p-3 font-medium text-muted-foreground">PO Number</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Expected Delivery</th>
@@ -220,36 +748,57 @@ export default function SupplyChain() {
                     {poLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 6 }).map((_, j) => (
+                          {Array.from({ length: 8 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
                       ))
-                    ) : purchaseOrders && purchaseOrders.length > 0 ? (
-                      purchaseOrders.map((po) => (
-                        <tr key={po.id} className="border-b last:border-0" data-testid={`row-po-${po.id}`}>
-                          <td className="p-3 font-medium">{po.poNumber}</td>
-                          <td className="p-3 text-muted-foreground">{new Date(po.orderDate).toLocaleDateString()}</td>
-                          <td className="p-3"><StatusBadge status={po.status} /></td>
-                          <td className="p-3 text-muted-foreground">
-                            {po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString() : "—"}
-                          </td>
-                          <td className="p-3 text-right font-medium">₹{Number(po.totalAmount).toLocaleString()}</td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-po-${po.id}`} onClick={() => { if (confirm("Delete this purchase order?")) deletePoMutation.mutate(po.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                    ) : filteredPOs && filteredPOs.length > 0 ? (
+                      filteredPOs.map((po) => {
+                        const isExpanded = expandedPoId === po.id;
+                        const supplier = supplierMap.get(po.supplierId);
+                        return (
+                          <Fragment key={po.id}>
+                            <tr
+                              className="border-b last:border-0 cursor-pointer"
+                              data-testid={`row-po-${po.id}`}
+                              onClick={() => setExpandedPoId(isExpanded ? null : po.id)}
+                            >
+                              <td className="p-3">
+                                {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                              </td>
+                              <td className="p-3 font-medium" data-testid={`text-po-number-${po.id}`}>{po.poNumber}</td>
+                              <td className="p-3 text-muted-foreground">{supplier?.name || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{new Date(po.orderDate).toLocaleDateString()}</td>
+                              <td className="p-3"><StatusBadge status={po.status} /></td>
+                              <td className="p-3 text-muted-foreground">
+                                {po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString() : "—"}
+                              </td>
+                              <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
+                              <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-po-${po.id}`} onClick={() => { if (confirm("Delete this purchase order?")) deletePoMutation.mutate(po.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr>
+                                <td colSpan={8} className="bg-muted/30 border-b">
+                                  <POExpandedItems poId={po.id} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-muted-foreground">No purchase orders found.</td>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No purchase orders found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -270,6 +819,7 @@ export default function SupplyChain() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
+                      <th className="w-8 p-3"></th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Contact</th>
@@ -280,30 +830,49 @@ export default function SupplyChain() {
                   </thead>
                   <tbody>
                     {suppliersLoading ? (
-                      <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={7} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : suppliers && suppliers.length > 0 ? (
-                      suppliers.map((s) => (
-                        <tr key={s.id} className="border-b last:border-0" data-testid={`row-supplier-${s.id}`}>
-                          <td className="p-3 font-medium">{s.name}</td>
-                          <td className="p-3 text-muted-foreground">{s.category || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{s.contactPerson || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{s.phone || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{s.gstNumber || "—"}</td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-supplier-${s.id}`} onClick={() => openEditSupplier(s)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-${s.id}`} onClick={() => { if (confirm("Delete this supplier?")) deleteSupplierMutation.mutate(s.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                      suppliers.map((s) => {
+                        const isExpanded = expandedSupplierId === s.id;
+                        return (
+                          <Fragment key={s.id}>
+                            <tr
+                              className="border-b last:border-0 cursor-pointer"
+                              data-testid={`row-supplier-${s.id}`}
+                              onClick={() => setExpandedSupplierId(isExpanded ? null : s.id)}
+                            >
+                              <td className="p-3">
+                                {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                              </td>
+                              <td className="p-3 font-medium">{s.name}</td>
+                              <td className="p-3 text-muted-foreground">{s.category || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{s.contactPerson || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{s.phone || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{s.gstNumber || "—"}</td>
+                              <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button size="icon" variant="ghost" data-testid={`button-edit-supplier-${s.id}`} onClick={() => openEditSupplier(s)}>
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-${s.id}`} onClick={() => { if (confirm("Delete this supplier?")) deleteSupplierMutation.mutate(s.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr>
+                                <td colSpan={7} className="bg-muted/30 border-b">
+                                  <SupplierProductCatalog supplierId={s.id} suppliers={suppliers || []} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-muted-foreground">No suppliers found.</td>
+                        <td colSpan={7} className="p-8 text-center text-muted-foreground">No suppliers found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -315,56 +884,67 @@ export default function SupplyChain() {
       </Tabs>
 
       <Dialog open={poDialogOpen} onOpenChange={setPoDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingPo ? "Edit Purchase Order" : "New Purchase Order"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="poNumber">PO Number</Label>
-              <Input id="poNumber" data-testid="input-po-number" value={poForm.poNumber} onChange={(e) => setPoForm({ ...poForm, poNumber: e.target.value })} />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="poNumber">PO Number</Label>
+                <Input id="poNumber" data-testid="input-po-number" value={poForm.poNumber} onChange={(e) => setPoForm({ ...poForm, poNumber: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="poSupplier">Supplier</Label>
+                <Select value={poForm.supplierId} onValueChange={(v) => setPoForm({ ...poForm, supplierId: v })}>
+                  <SelectTrigger data-testid="select-po-supplier">
+                    <SelectValue placeholder="Select supplier" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {suppliers?.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="poSupplier">Supplier</Label>
-              <Select value={poForm.supplierId} onValueChange={(v) => setPoForm({ ...poForm, supplierId: v })}>
-                <SelectTrigger data-testid="select-po-supplier">
-                  <SelectValue placeholder="Select supplier" />
-                </SelectTrigger>
-                <SelectContent>
-                  {suppliers?.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="poStatus">Status</Label>
+                <Select value={poForm.status} onValueChange={(v) => setPoForm({ ...poForm, status: v })}>
+                  <SelectTrigger data-testid="select-po-status">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["pending", "approved", "shipped", "received", "cancelled"].map((s) => (
+                      <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="poDelivery">Expected Delivery</Label>
+                <Input id="poDelivery" type="date" data-testid="input-po-expected-delivery" value={poForm.expectedDelivery} onChange={(e) => setPoForm({ ...poForm, expectedDelivery: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="poNotes">Notes</Label>
+                <Input id="poNotes" data-testid="input-po-notes" value={poForm.notes} onChange={(e) => setPoForm({ ...poForm, notes: e.target.value })} />
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="poStatus">Status</Label>
-              <Select value={poForm.status} onValueChange={(v) => setPoForm({ ...poForm, status: v })}>
-                <SelectTrigger data-testid="select-po-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["pending", "approved", "shipped", "received", "cancelled"].map((s) => (
-                    <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="poAmount">Total Amount</Label>
-              <Input id="poAmount" type="number" data-testid="input-po-amount" value={poForm.totalAmount} onChange={(e) => setPoForm({ ...poForm, totalAmount: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="poDelivery">Expected Delivery</Label>
-              <Input id="poDelivery" type="date" data-testid="input-po-expected-delivery" value={poForm.expectedDelivery} onChange={(e) => setPoForm({ ...poForm, expectedDelivery: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="poNotes">Notes</Label>
-              <Input id="poNotes" data-testid="input-po-notes" value={poForm.notes} onChange={(e) => setPoForm({ ...poForm, notes: e.target.value })} />
-            </div>
+
+            <POLineItemsEditor
+              items={poLineItems}
+              onChange={setPoLineItems}
+              products={allProducts || []}
+              supplierProducts={supplierCatalog || []}
+            />
           </div>
           <DialogFooter>
-            <Button data-testid="button-submit-po" disabled={poMutation.isPending} onClick={() => poMutation.mutate(poForm)}>
+            <Button
+              data-testid="button-submit-po"
+              disabled={poMutation.isPending}
+              onClick={() => poMutation.mutate({ ...poForm, lineItems: poLineItems })}
+            >
               {poMutation.isPending ? "Saving..." : editingPo ? "Update" : "Create"}
             </Button>
           </DialogFooter>

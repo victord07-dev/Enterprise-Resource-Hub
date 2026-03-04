@@ -23,7 +23,7 @@ export default function Inventory() {
 
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [productForm, setProductForm] = useState({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10", type: "product" });
+  const [productForm, setProductForm] = useState({ name: "", sku: "", category: "Solar Panels", description: "", costPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product" });
 
   const [warehouseDialogOpen, setWarehouseDialogOpen] = useState(false);
   const [editingWarehouse, setEditingWarehouse] = useState<WarehouseType | null>(null);
@@ -97,13 +97,13 @@ export default function Inventory() {
 
   const openNewProduct = () => {
     setEditingProduct(null);
-    setProductForm({ name: "", sku: "", category: "Solar Panels", description: "", unitPrice: "", unit: "pcs", minStockLevel: "10", type: "product" });
+    setProductForm({ name: "", sku: "", category: "Solar Panels", description: "", costPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product" });
     setProductDialogOpen(true);
   };
 
   const openNewService = () => {
     setEditingProduct(null);
-    setProductForm({ name: "", sku: "", category: "Installation", description: "", unitPrice: "", unit: "service", minStockLevel: "0", type: "service" });
+    setProductForm({ name: "", sku: "", category: "Installation", description: "", costPrice: "", brand: "", unit: "service", minStockLevel: "0", type: "service" });
     setProductDialogOpen(true);
   };
 
@@ -114,7 +114,8 @@ export default function Inventory() {
       sku: p.sku,
       category: p.category,
       description: p.description || "",
-      unitPrice: String(p.unitPrice),
+      costPrice: p.costPrice ? String(p.costPrice) : "",
+      brand: p.brand || "",
       unit: p.unit,
       minStockLevel: String(p.minStockLevel),
       type: p.type || "product",
@@ -163,6 +164,13 @@ export default function Inventory() {
     const data: any = { ...productForm, minStockLevel: Number(productForm.minStockLevel) };
     if (isService && !data.sku) {
       data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
+    }
+    if (!editingProduct) {
+      data.unitPrice = data.costPrice || "0";
+    } else {
+      if (!data.unitPrice) {
+        data.unitPrice = editingProduct.unitPrice || data.costPrice || "0";
+      }
     }
     productMutation.mutate(data);
   };
@@ -256,9 +264,10 @@ export default function Inventory() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Brand</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Unit</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Unit Price</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Cost Price</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Min Stock</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -267,7 +276,7 @@ export default function Inventory() {
                     {productsLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 8 }).map((_, j) => (
+                          {Array.from({ length: 9 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -288,13 +297,14 @@ export default function Inventory() {
                           </td>
                           <td className="p-3 font-medium">{product.name}</td>
                           <td className="p-3 text-muted-foreground">{product.type === "service" ? "—" : product.sku}</td>
+                          <td className="p-3 text-muted-foreground" data-testid={`text-product-brand-${product.id}`}>{product.brand || "—"}</td>
                           <td className="p-3">
                             <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
                               {product.category}
                             </span>
                           </td>
                           <td className="p-3 text-muted-foreground">{product.unit}</td>
-                          <td className="p-3 text-right font-medium">₹{Number(product.unitPrice).toLocaleString()}</td>
+                          <td className="p-3 text-right font-medium" data-testid={`text-product-cost-price-${product.id}`}>{product.costPrice ? `₹${Number(product.costPrice).toLocaleString()}` : "—"}</td>
                           <td className="p-3 text-right text-muted-foreground">{product.type === "service" ? "—" : product.minStockLevel}</td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1">
@@ -310,7 +320,7 @@ export default function Inventory() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={9} className="p-8 text-center text-muted-foreground">
                           No products or services found. Add your first item.
                         </td>
                       </tr>
@@ -424,10 +434,14 @@ export default function Inventory() {
               <Label htmlFor="prodDesc">Description</Label>
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="prodBrand">Brand / Company</Label>
+              <Input id="prodBrand" data-testid="input-product-brand" value={productForm.brand} onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })} placeholder="e.g. Havells, Luminous" />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="prodPrice">Unit Price (₹)</Label>
-                <Input id="prodPrice" type="number" data-testid="input-product-unit-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
+                <Label htmlFor="prodCostPrice">Cost Price (₹)</Label>
+                <Input id="prodCostPrice" type="number" data-testid="input-product-cost-price" value={productForm.costPrice} onChange={(e) => setProductForm({ ...productForm, costPrice: e.target.value })} />
               </div>
               {!isService && (
                 <div className="space-y-2">

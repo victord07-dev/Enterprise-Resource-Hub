@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -178,6 +178,18 @@ export interface IStorage {
   // Combined follow-ups
   getAllPendingFollowups(): Promise<{ type: string; id: string; parentId: string; parentName: string; title: string; dueDate: Date; priority: string; createdBy: string }[]>;
   getFollowupsSummary(): Promise<{ today: number; overdue: number; totalPending: number }>;
+
+  // Supplier Products
+  getSupplierProducts(supplierId: string): Promise<SupplierProduct[]>;
+  getProductSuppliers(productId: string): Promise<SupplierProduct[]>;
+  createSupplierProduct(data: Omit<SupplierProduct, "id">): Promise<SupplierProduct>;
+  updateSupplierProduct(id: string, data: Partial<Omit<SupplierProduct, "id">>): Promise<SupplierProduct | undefined>;
+  deleteSupplierProduct(id: string): Promise<boolean>;
+
+  // Purchase Order Items
+  getPurchaseOrderItems(purchaseOrderId: string): Promise<PurchaseOrderItem[]>;
+  createPurchaseOrderItem(data: Omit<PurchaseOrderItem, "id">): Promise<PurchaseOrderItem>;
+  deletePurchaseOrderItems(purchaseOrderId: string): Promise<boolean>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -809,6 +821,45 @@ export class DatabaseStorage implements IStorage {
   async createAuditLog(log: { userId: string; action: string; module: string; details?: string; ipAddress?: string }): Promise<AuditLog> {
     const [created] = await db.insert(auditLogs).values(log).returning();
     return created;
+  }
+
+  // Supplier Products
+  async getSupplierProducts(supplierId: string): Promise<SupplierProduct[]> {
+    return await db.select().from(supplierProducts).where(eq(supplierProducts.supplierId, supplierId));
+  }
+
+  async getProductSuppliers(productId: string): Promise<SupplierProduct[]> {
+    return await db.select().from(supplierProducts).where(eq(supplierProducts.productId, productId));
+  }
+
+  async createSupplierProduct(data: Omit<SupplierProduct, "id">): Promise<SupplierProduct> {
+    const [created] = await db.insert(supplierProducts).values(data).returning();
+    return created;
+  }
+
+  async updateSupplierProduct(id: string, data: Partial<Omit<SupplierProduct, "id">>): Promise<SupplierProduct | undefined> {
+    const [updated] = await db.update(supplierProducts).set(data).where(eq(supplierProducts.id, id)).returning();
+    return updated;
+  }
+
+  async deleteSupplierProduct(id: string): Promise<boolean> {
+    const result = await db.delete(supplierProducts).where(eq(supplierProducts.id, id)).returning();
+    return result.length > 0;
+  }
+
+  // Purchase Order Items
+  async getPurchaseOrderItems(purchaseOrderId: string): Promise<PurchaseOrderItem[]> {
+    return await db.select().from(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
+  }
+
+  async createPurchaseOrderItem(data: Omit<PurchaseOrderItem, "id">): Promise<PurchaseOrderItem> {
+    const [created] = await db.insert(purchaseOrderItems).values(data).returning();
+    return created;
+  }
+
+  async deletePurchaseOrderItems(purchaseOrderId: string): Promise<boolean> {
+    await db.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
+    return true;
   }
 
   // Dashboard

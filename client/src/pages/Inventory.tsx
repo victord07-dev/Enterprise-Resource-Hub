@@ -1,4 +1,4 @@
-import { useState, Fragment } from "react";
+import { useState, Fragment, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,9 +11,9 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock } from "@shared/schema";
+import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier } from "@shared/schema";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -165,6 +165,155 @@ export default function Inventory() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/warehouses"] });
       toast({ title: "Warehouse deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const { data: deliveryChallans, isLoading: challansLoading } = useQuery<DeliveryChallan[]>({ queryKey: ["/api/delivery-challans"] });
+  const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
+  const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
+
+  const [challanDialogOpen, setChallanDialogOpen] = useState(false);
+  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+  const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
+  const [challanStockAvailability, setChallanStockAvailability] = useState<Record<string, InventoryStock[]>>({});
+  const [challanFilterStatus, setChallanFilterStatus] = useState("all");
+  const [challanFilterSourceType, setChallanFilterSourceType] = useState("all");
+  const [expandedChallanIds, setExpandedChallanIds] = useState<Set<string>>(new Set());
+  const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
+
+  const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
+
+  const eligibleSalesOrders = (salesOrders ?? []).filter(o => CHALLAN_ELIGIBLE_STATUSES.includes(o.status));
+
+  const filteredChallans = (deliveryChallans ?? []).filter((c) => {
+    if (challanFilterStatus !== "all" && c.status !== challanFilterStatus) return false;
+    if (challanFilterSourceType !== "all" && c.sourceType !== challanFilterSourceType) return false;
+    return true;
+  }).sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+
+  const getOrderNumber = (orderId: string) => {
+    const order = salesOrders?.find(o => o.id === orderId);
+    return order?.orderNumber || orderId.slice(0, 8);
+  };
+
+  const getSourceName = (sourceType: string, sourceId: string) => {
+    if (sourceType === "warehouse") {
+      return warehouses?.find(w => w.id === sourceId)?.name || sourceId.slice(0, 8);
+    }
+    return suppliers?.find(s => s.id === sourceId)?.name || sourceId.slice(0, 8);
+  };
+
+  const getChallanStockForProduct = (productId: string, warehouseId: string): number => {
+    const stocks = challanStockAvailability[productId] || [];
+    const match = stocks.find(s => s.warehouseId === warehouseId);
+    return match ? match.quantity : 0;
+  };
+
+  const toggleChallanExpanded = useCallback(async (challanId: string) => {
+    setExpandedChallanIds(prev => {
+      const next = new Set(prev);
+      if (next.has(challanId)) {
+        next.delete(challanId);
+      } else {
+        next.add(challanId);
+      }
+      return next;
+    });
+    if (!challanItemsMap[challanId]) {
+      try {
+        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const res = await fetch(`/api/delivery-challans/${challanId}/items`, { headers });
+        const items = await res.json();
+        setChallanItemsMap(prev => ({ ...prev, [challanId]: Array.isArray(items) ? items : [] }));
+      } catch {
+        setChallanItemsMap(prev => ({ ...prev, [challanId]: [] }));
+      }
+    }
+  }, [challanItemsMap]);
+
+  const openCreateChallan = () => {
+    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+    setChallanItems([]);
+    setChallanStockAvailability({});
+    setChallanDialogOpen(true);
+  };
+
+  const loadOrderItems = async (orderId: string) => {
+    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    try {
+      const [itemsRes, remainingRes] = await Promise.all([
+        fetch(`/api/sales-orders/${orderId}/items`, { headers }),
+        fetch(`/api/sales-orders/${orderId}/remaining-quantities`, { headers }),
+      ]);
+      const items: SalesOrderItem[] = await itemsRes.json();
+      const remaining: Record<string, number> = await remainingRes.json();
+      const productItems = items.filter(it => it.itemType === "product" && it.productId);
+      const stockMap: Record<string, InventoryStock[]> = {};
+      await Promise.all(productItems.map(async (it) => {
+        if (it.productId) {
+          try {
+            const stockRes = await fetch(`/api/inventory-stock/by-product/${it.productId}`, { headers });
+            stockMap[it.productId] = await stockRes.json();
+          } catch { stockMap[it.productId!] = []; }
+        }
+      }));
+      setChallanStockAvailability(stockMap);
+      setChallanItems(productItems.map(it => ({
+        productId: it.productId || "",
+        description: it.description || products?.find(p => p.id === it.productId)?.name || "",
+        quantity: Math.min(it.quantity, remaining[it.productId || ""] ?? it.quantity),
+        unitPrice: Number(it.unitPrice),
+        maxQty: remaining[it.productId || ""] ?? it.quantity,
+      })).filter(it => it.maxQty > 0));
+    } catch {
+      setChallanItems([]);
+    }
+  };
+
+  const createChallanMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const res = await apiRequest("POST", "/api/delivery-challans", data);
+      return res.json();
+    },
+    onSuccess: (challan: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
+      toast({ title: "Challan created", description: `Challan ${challan.challanNumber} created` });
+      setChallanDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const dispatchChallanMutation = useMutation({
+    mutationFn: async (challanId: string) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/dispatch`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
+      toast({ title: "Challan dispatched" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deliverChallanMutation = useMutation({
+    mutationFn: async (challanId: string) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/deliver`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      toast({ title: "Challan delivered" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -324,6 +473,7 @@ export default function Inventory() {
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
+          <TabsTrigger value="challans" data-testid="tab-challans">Challans</TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -662,7 +812,343 @@ export default function Inventory() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="challans" className="space-y-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Select value={challanFilterStatus} onValueChange={setChallanFilterStatus}>
+                <SelectTrigger className="w-[160px]" data-testid="select-challan-filter-status">
+                  <SelectValue placeholder="All Statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="dispatched">Dispatched</SelectItem>
+                  <SelectItem value="delivered">Delivered</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={challanFilterSourceType} onValueChange={setChallanFilterSourceType}>
+                <SelectTrigger className="w-[180px]" data-testid="select-challan-filter-source-type">
+                  <SelectValue placeholder="All Sources" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Sources</SelectItem>
+                  <SelectItem value="warehouse">Warehouse</SelectItem>
+                  <SelectItem value="supplier">Supplier</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button data-testid="button-create-challan" onClick={openCreateChallan}>
+              <Plus className="w-4 h-4 mr-2" />
+              Create Challan
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="w-8 p-3"></th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Challan #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Order #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Source Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Source Name</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Dispatch Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Delivery Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Vehicle</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Driver</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Created At</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {challansLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 12 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : filteredChallans.length > 0 ? (
+                      filteredChallans.map((challan) => {
+                        const isExpanded = expandedChallanIds.has(challan.id);
+                        const items = challanItemsMap[challan.id] || [];
+                        return (
+                          <Fragment key={challan.id}>
+                            <tr className="border-b last:border-0" data-testid={`row-challan-${challan.id}`}>
+                              <td className="p-3">
+                                <button
+                                  onClick={() => toggleChallanExpanded(challan.id)}
+                                  className="text-muted-foreground"
+                                  data-testid={`button-expand-challan-${challan.id}`}
+                                >
+                                  {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                </button>
+                              </td>
+                              <td className="p-3 font-medium" data-testid={`text-challan-number-${challan.id}`}>{challan.challanNumber}</td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-challan-order-${challan.id}`}>{getOrderNumber(challan.orderId)}</td>
+                              <td className="p-3">
+                                <Badge variant="outline" className="text-xs" data-testid={`badge-challan-source-type-${challan.id}`}>
+                                  {challan.sourceType === "warehouse" ? "Warehouse" : "Supplier"}
+                                </Badge>
+                              </td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-challan-source-${challan.id}`}>{getSourceName(challan.sourceType, challan.sourceId)}</td>
+                              <td className="p-3" data-testid={`badge-challan-status-${challan.id}`}>
+                                {challan.status === "draft" && (
+                                  <Badge variant="outline" className="bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">Draft</Badge>
+                                )}
+                                {challan.status === "dispatched" && (
+                                  <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800">Dispatched</Badge>
+                                )}
+                                {challan.status === "delivered" && (
+                                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Delivered</Badge>
+                                )}
+                                {challan.status === "cancelled" && (
+                                  <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800">Cancelled</Badge>
+                                )}
+                              </td>
+                              <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.dispatchDate ? new Date(challan.dispatchDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                              <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.deliveryDate ? new Date(challan.deliveryDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                              <td className="p-3 text-muted-foreground">{challan.vehicleNumber || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{challan.driverName || "—"}</td>
+                              <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.createdAt ? new Date(challan.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                              <td className="p-3 text-right">
+                                <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                                  {challan.status === "draft" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-dispatch-challan-${challan.id}`}
+                                      disabled={dispatchChallanMutation.isPending}
+                                      onClick={() => { if (confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) dispatchChallanMutation.mutate(challan.id); }}
+                                    >
+                                      <Send className="w-3 h-3 mr-1" /> Dispatch
+                                    </Button>
+                                  )}
+                                  {challan.status === "dispatched" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-deliver-challan-${challan.id}`}
+                                      disabled={deliverChallanMutation.isPending}
+                                      onClick={() => deliverChallanMutation.mutate(challan.id)}
+                                    >
+                                      <CheckCircle className="w-3 h-3 mr-1" /> Mark Delivered
+                                    </Button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr key={`${challan.id}-items`} className="border-b last:border-0">
+                                <td colSpan={12} className="p-0">
+                                  <div className="bg-muted/30 px-6 py-3 ml-8">
+                                    <p className="text-xs font-medium text-muted-foreground mb-2">Line Items</p>
+                                    {items.length > 0 ? (
+                                      <div className="space-y-1">
+                                        {items.map((item) => {
+                                          const product = products?.find(p => p.id === item.productId);
+                                          return (
+                                            <div key={item.id} className="flex items-center justify-between gap-4 text-sm" data-testid={`text-challan-item-${item.id}`}>
+                                              <span className="flex items-center gap-2">
+                                                <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                                                <span className="font-medium">{product?.name || item.productId}</span>
+                                                {item.description && <span className="text-muted-foreground text-xs">({item.description})</span>}
+                                              </span>
+                                              <span className="flex items-center gap-4 text-muted-foreground">
+                                                <span>Qty: {item.quantity}</span>
+                                                {item.unitPrice && <span>@ ₹{Number(item.unitPrice).toLocaleString()}</span>}
+                                              </span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    ) : (
+                                      <p className="text-sm text-muted-foreground">Loading items...</p>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={12} className="p-8 text-center text-muted-foreground">
+                          <Truck className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
+                          <p className="font-medium">No delivery challans found</p>
+                          <p className="text-sm mt-1">Create a challan to dispatch items for a sales order.</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      <Dialog open={challanDialogOpen} onOpenChange={setChallanDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create Delivery Challan</DialogTitle>
+            <DialogDescription>Create a delivery challan linked to a sales order</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Sales Order</Label>
+              <Select
+                value={challanForm.orderId}
+                onValueChange={(v) => {
+                  setChallanForm({ ...challanForm, orderId: v });
+                  loadOrderItems(v);
+                }}
+              >
+                <SelectTrigger data-testid="select-challan-order">
+                  <SelectValue placeholder="Select sales order..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {eligibleSalesOrders.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>{o.orderNumber} — ₹{Number(o.totalAmount).toLocaleString()} ({o.status})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Source Type</Label>
+                <Select value={challanForm.sourceType} onValueChange={(v) => setChallanForm({ ...challanForm, sourceType: v, sourceId: "" })}>
+                  <SelectTrigger data-testid="select-challan-source-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="warehouse">Warehouse</SelectItem>
+                    <SelectItem value="supplier">Supplier (Direct Delivery)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>{challanForm.sourceType === "warehouse" ? "Warehouse" : "Supplier"}</Label>
+                <Select value={challanForm.sourceId} onValueChange={(v) => setChallanForm({ ...challanForm, sourceId: v })}>
+                  <SelectTrigger data-testid="select-challan-source">
+                    <SelectValue placeholder={`Select ${challanForm.sourceType}...`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {challanForm.sourceType === "warehouse"
+                      ? (warehouses || []).map((w) => (
+                        <SelectItem key={w.id} value={w.id}>{w.name}{w.location ? ` — ${w.location}` : ""}</SelectItem>
+                      ))
+                      : (suppliers || []).map((s) => (
+                        <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                      ))
+                    }
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Vehicle Number</Label>
+                <Input data-testid="input-challan-vehicle" placeholder="e.g. KA-01-AB-1234" value={challanForm.vehicleNumber} onChange={(e) => setChallanForm({ ...challanForm, vehicleNumber: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label>Driver Name</Label>
+                <Input data-testid="input-challan-driver" placeholder="Driver name" value={challanForm.driverName} onChange={(e) => setChallanForm({ ...challanForm, driverName: e.target.value })} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea data-testid="input-challan-notes" className="resize-none text-sm" rows={2} placeholder="Delivery notes..." value={challanForm.notes} onChange={(e) => setChallanForm({ ...challanForm, notes: e.target.value })} />
+            </div>
+
+            <div className="space-y-3">
+              <Label className="text-sm font-semibold">Items</Label>
+              {!challanForm.orderId ? (
+                <p className="text-sm text-muted-foreground text-center py-4">Select a sales order to load items.</p>
+              ) : challanItems.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No remaining product items for this order.</p>
+              ) : (
+                <div className="space-y-2">
+                  {challanItems.map((item, i) => {
+                    const stockQty = challanForm.sourceType === "warehouse" && challanForm.sourceId
+                      ? getChallanStockForProduct(item.productId, challanForm.sourceId)
+                      : null;
+                    return (
+                      <div key={i} className="border rounded-md p-3 space-y-1 bg-muted/30" data-testid={`challan-item-${i}`}>
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-xs font-medium">{item.description || products?.find(p => p.id === item.productId)?.name}</span>
+                          {stockQty !== null && (
+                            <span className={`text-[10px] font-medium ${stockQty > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid={`text-stock-available-${i}`}>
+                              Stock: {stockQty}
+                            </span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <Label className="text-[10px] text-muted-foreground">Qty (remaining {item.maxQty})</Label>
+                            <Input
+                              className="h-8 text-xs"
+                              type="number"
+                              min="1"
+                              max={item.maxQty}
+                              value={item.quantity}
+                              onChange={(e) => {
+                                const updated = [...challanItems];
+                                updated[i] = { ...updated[i], quantity: Math.min(parseInt(e.target.value) || 1, item.maxQty) };
+                                setChallanItems(updated);
+                              }}
+                              data-testid={`input-challan-item-qty-${i}`}
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-[10px] text-muted-foreground">Unit Price</Label>
+                            <Input className="h-8 text-xs bg-muted" readOnly value={`₹${item.unitPrice.toLocaleString()}`} />
+                          </div>
+                          <div>
+                            <Label className="text-[10px] text-muted-foreground">Total</Label>
+                            <Input className="h-8 text-xs bg-muted" readOnly value={`₹${(item.quantity * item.unitPrice).toLocaleString()}`} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="button-submit-challan"
+              disabled={createChallanMutation.isPending || !challanForm.orderId || !challanForm.sourceId || challanItems.length === 0}
+              onClick={() => {
+                createChallanMutation.mutate({
+                  orderId: challanForm.orderId,
+                  sourceType: challanForm.sourceType,
+                  sourceId: challanForm.sourceId,
+                  vehicleNumber: challanForm.vehicleNumber || null,
+                  driverName: challanForm.driverName || null,
+                  notes: challanForm.notes || null,
+                  items: challanItems.filter(it => it.quantity > 0).map(it => ({
+                    productId: it.productId,
+                    description: it.description,
+                    quantity: it.quantity,
+                    unitPrice: String(it.unitPrice),
+                  })),
+                });
+              }}
+            >
+              {createChallanMutation.isPending ? "Creating..." : "Create Challan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>
         <DialogContent>

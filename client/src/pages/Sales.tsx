@@ -10,11 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Send, CheckCircle } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, DeliveryChallanItem, InventoryStock } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
 
 interface LineItem {
   itemType: string;
@@ -291,12 +291,7 @@ export default function Sales() {
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
   const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "" });
 
-  const [challanDialogOpen, setChallanDialogOpen] = useState(false);
-  const [challanOrderId, setChallanOrderId] = useState<string | null>(null);
-  const [challanForm, setChallanForm] = useState({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
-  const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
-  const [stockAvailability, setStockAvailability] = useState<Record<string, InventoryStock[]>>({});
 
   const toggleOrderExpand = useCallback(async (orderId: string) => {
     if (expandedOrderId === orderId) {
@@ -502,63 +497,6 @@ export default function Sales() {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       toast({ title: "Invoice generated", description: `Invoice ${invoice.invoiceNumber} created` });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const createChallanMutation = useMutation({
-    mutationFn: async (data: any) => {
-      const res = await apiRequest("POST", "/api/delivery-challans", data);
-      return res.json();
-    },
-    onSuccess: async (challan: any) => {
-      if (challanOrderId) {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
-        const res = await fetch(`/api/delivery-challans/by-order/${challanOrderId}`, { headers });
-        const challansData = await res.json();
-        setOrderChallansMap(prev => ({ ...prev, [challanOrderId!]: Array.isArray(challansData) ? challansData : [] }));
-      }
-      toast({ title: "Challan created", description: `Challan ${challan.challanNumber} created` });
-      setChallanDialogOpen(false);
-      setChallanOrderId(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const dispatchChallanMutation = useMutation({
-    mutationFn: async ({ challanId, orderId }: { challanId: string; orderId: string }) => {
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/dispatch`);
-      return { data: await res.json(), orderId };
-    },
-    onSuccess: async ({ orderId }) => {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
-      const res = await fetch(`/api/delivery-challans/by-order/${orderId}`, { headers });
-      const challansData = await res.json();
-      setOrderChallansMap(prev => ({ ...prev, [orderId]: Array.isArray(challansData) ? challansData : [] }));
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
-      toast({ title: "Challan dispatched" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const deliverChallanMutation = useMutation({
-    mutationFn: async ({ challanId, orderId }: { challanId: string; orderId: string }) => {
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/deliver`);
-      return { data: await res.json(), orderId };
-    },
-    onSuccess: async ({ orderId }) => {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
-      const res = await fetch(`/api/delivery-challans/by-order/${orderId}`, { headers });
-      const challansData = await res.json();
-      setOrderChallansMap(prev => ({ ...prev, [orderId]: Array.isArray(challansData) ? challansData : [] }));
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
-      toast({ title: "Challan delivered" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -833,43 +771,6 @@ export default function Sales() {
     setPaymentDialogOpen(true);
   };
 
-  const openGenerateChallan = async (orderId: string) => {
-    setChallanOrderId(orderId);
-    setChallanForm({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
-    try {
-      const res = await fetch(`/api/sales-orders/${orderId}/items`, { headers });
-      const items: SalesOrderItem[] = await res.json();
-      const productItems = items.filter(it => it.itemType === "product" && it.productId);
-      const stockMap: Record<string, InventoryStock[]> = {};
-      await Promise.all(productItems.map(async (it) => {
-        if (it.productId) {
-          try {
-            const stockRes = await fetch(`/api/inventory-stock/by-product/${it.productId}`, { headers });
-            stockMap[it.productId] = await stockRes.json();
-          } catch { stockMap[it.productId!] = []; }
-        }
-      }));
-      setStockAvailability(stockMap);
-      setChallanItems(productItems.map(it => ({
-        productId: it.productId || "",
-        description: it.description || "",
-        quantity: it.quantity,
-        unitPrice: Number(it.unitPrice),
-        maxQty: it.quantity,
-      })));
-    } catch {
-      setChallanItems([]);
-    }
-    setChallanDialogOpen(true);
-  };
-
-  const getStockForProduct = (productId: string, warehouseId: string): number => {
-    const stocks = stockAvailability[productId] || [];
-    const match = stocks.find(s => s.warehouseId === warehouseId);
-    return match ? match.quantity : 0;
-  };
-
   const getSourceName = (sourceType: string, sourceId: string): string => {
     if (sourceType === "warehouse") {
       return warehouses?.find(w => w.id === sourceId)?.name || sourceId;
@@ -877,7 +778,7 @@ export default function Sales() {
     return suppliers?.find(s => s.id === sourceId)?.name || sourceId;
   };
 
-  const CHALLAN_STATUS_ELIGIBLE = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
+  const CHALLAN_VIEW_ELIGIBLE = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
   const downloadQuotePDF = async (q: Quotation) => {
     try {
@@ -1062,10 +963,18 @@ export default function Sales() {
                                       <span className="text-amber-600 dark:text-amber-400 font-medium" data-testid={`text-order-balance-${order.id}`}>Balance: ₹{(Number(order.totalAmount) - Number(order.paidAmount || 0)).toLocaleString()}</span>
                                     </div>
                                     <div className="flex items-center gap-2 ml-auto" onClick={(e) => e.stopPropagation()}>
-                                      {CHALLAN_STATUS_ELIGIBLE.includes(order.status) && (
-                                        <Button size="sm" variant="outline" data-testid={`button-generate-challan-${order.id}`} onClick={() => openGenerateChallan(order.id)}>
-                                          <Truck className="w-3 h-3 mr-1" /> Generate Challan
-                                        </Button>
+                                      {CHALLAN_VIEW_ELIGIBLE.includes(order.status) && (
+                                        (orderChallansMap[order.id] || []).length > 0 ? (
+                                          <Button size="sm" variant="outline" data-testid={`button-view-challan-${order.id}`} onClick={() => {}}>
+                                            <Eye className="w-3 h-3 mr-1" /> View Challan
+                                          </Button>
+                                        ) : (
+                                          <Button size="sm" variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 dark:border-amber-600" data-testid={`button-request-challan-${order.id}`} onClick={() => {
+                                            toast({ title: "Challan Requested", description: "The disbursement team has been notified. Create the challan from the Inventory module." });
+                                          }}>
+                                            <Bell className="w-3 h-3 mr-1" /> Request Challan
+                                          </Button>
+                                        )
                                       )}
                                       <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
                                         <CreditCard className="w-3 h-3 mr-1" /> Record Payment
@@ -1098,38 +1007,12 @@ export default function Sales() {
                                       <div className="space-y-2">
                                         {(orderChallansMap[order.id] || []).map((challan: DeliveryChallan) => (
                                           <div key={challan.id} className="border rounded-md p-3 space-y-2 bg-background" data-testid={`challan-${challan.id}`}>
-                                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                                              <div className="flex items-center gap-2 flex-wrap">
-                                                <span className="text-xs font-medium" data-testid={`text-challan-number-${challan.id}`}>{challan.challanNumber}</span>
-                                                <StatusBadge status={challan.status} />
-                                                <span className="text-xs text-muted-foreground">
-                                                  {challan.sourceType === "warehouse" ? "Warehouse" : "Supplier"}: {getSourceName(challan.sourceType, challan.sourceId)}
-                                                </span>
-                                              </div>
-                                              <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                                                {challan.status === "draft" && (
-                                                  <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    data-testid={`button-dispatch-challan-${challan.id}`}
-                                                    disabled={dispatchChallanMutation.isPending}
-                                                    onClick={() => { if (confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) dispatchChallanMutation.mutate({ challanId: challan.id, orderId: order.id }); }}
-                                                  >
-                                                    <Send className="w-3 h-3 mr-1" /> Dispatch
-                                                  </Button>
-                                                )}
-                                                {challan.status === "dispatched" && (
-                                                  <Button
-                                                    size="sm"
-                                                    variant="outline"
-                                                    data-testid={`button-deliver-challan-${challan.id}`}
-                                                    disabled={deliverChallanMutation.isPending}
-                                                    onClick={() => deliverChallanMutation.mutate({ challanId: challan.id, orderId: order.id })}
-                                                  >
-                                                    <CheckCircle className="w-3 h-3 mr-1" /> Mark Delivered
-                                                  </Button>
-                                                )}
-                                              </div>
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                              <span className="text-xs font-medium" data-testid={`text-challan-number-${challan.id}`}>{challan.challanNumber}</span>
+                                              <StatusBadge status={challan.status} />
+                                              <span className="text-xs text-muted-foreground">
+                                                {challan.sourceType === "warehouse" ? "Warehouse" : "Supplier"}: {getSourceName(challan.sourceType, challan.sourceId)}
+                                              </span>
                                             </div>
                                             <div className="flex items-center gap-4 text-[10px] text-muted-foreground flex-wrap">
                                               {challan.dispatchDate && <span>Dispatched: {new Date(challan.dispatchDate).toLocaleDateString()}</span>}
@@ -1707,142 +1590,6 @@ export default function Sales() {
               }}
             >
               {recordPaymentMutation.isPending ? "Recording..." : "Record Payment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={challanDialogOpen} onOpenChange={setChallanDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Generate Delivery Challan</DialogTitle>
-            <DialogDescription>Create a delivery challan for this sales order</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Source Type</Label>
-                <Select value={challanForm.sourceType} onValueChange={(v) => setChallanForm({ ...challanForm, sourceType: v, sourceId: "" })}>
-                  <SelectTrigger data-testid="select-challan-source-type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="warehouse">Warehouse</SelectItem>
-                    <SelectItem value="supplier">Supplier (Direct Delivery)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>{challanForm.sourceType === "warehouse" ? "Warehouse" : "Supplier"}</Label>
-                <Select value={challanForm.sourceId} onValueChange={(v) => setChallanForm({ ...challanForm, sourceId: v })}>
-                  <SelectTrigger data-testid="select-challan-source">
-                    <SelectValue placeholder={`Select ${challanForm.sourceType}...`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {challanForm.sourceType === "warehouse"
-                      ? (warehouses || []).map((w) => (
-                        <SelectItem key={w.id} value={w.id}>{w.name}{w.location ? ` — ${w.location}` : ""}</SelectItem>
-                      ))
-                      : (suppliers || []).map((s) => (
-                        <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                      ))
-                    }
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Vehicle Number</Label>
-                <Input data-testid="input-challan-vehicle" placeholder="e.g. KA-01-AB-1234" value={challanForm.vehicleNumber} onChange={(e) => setChallanForm({ ...challanForm, vehicleNumber: e.target.value })} />
-              </div>
-              <div className="space-y-2">
-                <Label>Driver Name</Label>
-                <Input data-testid="input-challan-driver" placeholder="Driver name" value={challanForm.driverName} onChange={(e) => setChallanForm({ ...challanForm, driverName: e.target.value })} />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Notes</Label>
-              <Textarea data-testid="input-challan-notes" className="resize-none text-sm" rows={2} placeholder="Delivery notes..." value={challanForm.notes} onChange={(e) => setChallanForm({ ...challanForm, notes: e.target.value })} />
-            </div>
-
-            <div className="space-y-3">
-              <Label className="text-sm font-semibold">Items</Label>
-              {challanItems.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No product items in this order.</p>
-              ) : (
-                <div className="space-y-2">
-                  {challanItems.map((item, i) => {
-                    const stockQty = challanForm.sourceType === "warehouse" && challanForm.sourceId
-                      ? getStockForProduct(item.productId, challanForm.sourceId)
-                      : null;
-                    return (
-                      <div key={i} className="border rounded-md p-3 space-y-1 bg-muted/30" data-testid={`challan-item-${i}`}>
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
-                          <span className="text-xs font-medium">{item.description}</span>
-                          {stockQty !== null && (
-                            <span className={`text-[10px] font-medium ${stockQty > 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid={`text-stock-available-${i}`}>
-                              Stock: {stockQty}
-                            </span>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          <div>
-                            <Label className="text-[10px] text-muted-foreground">Qty (max {item.maxQty})</Label>
-                            <Input
-                              className="h-8 text-xs"
-                              type="number"
-                              min="1"
-                              max={item.maxQty}
-                              value={item.quantity}
-                              onChange={(e) => {
-                                const updated = [...challanItems];
-                                updated[i] = { ...updated[i], quantity: Math.min(parseInt(e.target.value) || 1, item.maxQty) };
-                                setChallanItems(updated);
-                              }}
-                              data-testid={`input-challan-item-qty-${i}`}
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-[10px] text-muted-foreground">Unit Price</Label>
-                            <Input className="h-8 text-xs bg-muted" readOnly value={`₹${item.unitPrice.toLocaleString()}`} />
-                          </div>
-                          <div>
-                            <Label className="text-[10px] text-muted-foreground">Total</Label>
-                            <Input className="h-8 text-xs bg-muted" readOnly value={`₹${(item.quantity * item.unitPrice).toLocaleString()}`} />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              data-testid="button-submit-challan"
-              disabled={createChallanMutation.isPending || !challanForm.sourceId || challanItems.length === 0}
-              onClick={() => {
-                if (challanOrderId) {
-                  createChallanMutation.mutate({
-                    orderId: challanOrderId,
-                    sourceType: challanForm.sourceType,
-                    sourceId: challanForm.sourceId,
-                    vehicleNumber: challanForm.vehicleNumber || null,
-                    driverName: challanForm.driverName || null,
-                    notes: challanForm.notes || null,
-                    items: challanItems.filter(it => it.quantity > 0).map(it => ({
-                      productId: it.productId,
-                      description: it.description,
-                      quantity: it.quantity,
-                      unitPrice: String(it.unitPrice),
-                    })),
-                  });
-                }
-              }}
-            >
-              {createChallanMutation.isPending ? "Creating..." : "Create Challan"}
             </Button>
           </DialogFooter>
         </DialogContent>

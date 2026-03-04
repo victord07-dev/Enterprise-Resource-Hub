@@ -90,14 +90,15 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Generate Invoice: POST /api/sales-orders/:id/generate-invoice (auto-generates from order, amount = remaining uninvoiced amount)
 - Expanded order row shows: payment summary (Total/Paid/Balance), Record Payment button, Generate Invoice button (visible on delivered+)
 
-## Sales Module - Delivery Challans
-- Delivery challans must be generated before any goods movement (from warehouse or supplier)
+## Delivery Challans (Managed in Inventory Module)
+- Delivery challans are created and managed by the disbursement team from the Inventory module → Challans tab
 - challanNumber format: DC-YYYY-XXXX; auto-generated
 - sourceType: "warehouse" (deducts inventory on dispatch) or "supplier" (drop-ship, no inventory impact)
 - Status flow: draft → dispatched → delivered (or cancelled)
 - Partial delivery support: challan items can have less quantity than order items
-- Generate Challan button visible on orders with status "confirmed" or later
+- Create Challan: select a sales order (confirmed+), source type/warehouse/supplier, line items auto-populated with remaining quantities
 - Dispatch action: creates stock_movement OUT records for warehouse source, updates inventory_stock
+- Sales module shows read-only challan info: "View Challan" (if exists) or "Request Challan" (amber indicator if none exists)
 - Tables: delivery_challans (challanNumber, orderId, sourceType, sourceId, status, dispatchDate, deliveryDate, vehicleNumber, driverName), delivery_challan_items (challanId, productId, description, quantity, unitPrice)
 - API: GET/POST /api/delivery-challans, GET /api/delivery-challans/:id, POST /api/delivery-challans/:id/dispatch, POST /api/delivery-challans/:id/deliver, GET /api/delivery-challans/by-order/:orderId
 

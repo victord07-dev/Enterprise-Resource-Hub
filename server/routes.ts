@@ -571,20 +571,24 @@ export async function registerRoutes(
           if (activePRs.length === 0) {
             const orderItems = await storage.getSalesOrderItems(updated.id);
             const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
-            const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number }> = [];
+            const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number; costPrice: string | null }> = [];
 
             const allStock = await storage.getInventoryStock();
+            const allProds = await storage.getProducts();
+            const prodMap = new Map(allProds.map(p => [p.id, p]));
             for (const item of productItems) {
               const totalStock = allStock
                 .filter(s => s.productId === item.productId)
                 .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
               if (totalStock < item.quantity) {
+                const prod = item.productId ? prodMap.get(item.productId) : null;
                 shortfallItems.push({
                   productId: item.productId!,
-                  description: item.description || "",
+                  description: item.description || prod?.name || "",
                   required: item.quantity,
                   available: totalStock,
                   shortfall: item.quantity - totalStock,
+                  costPrice: prod?.costPrice || null,
                 });
               }
             }
@@ -619,7 +623,7 @@ export async function registerRoutes(
                   requiredQuantity: item.required,
                   availableStock: item.available,
                   shortfallQuantity: item.shortfall,
-                  unitCost: null,
+                  unitCost: item.costPrice,
                   notes: null,
                 });
               }
@@ -2017,20 +2021,32 @@ export async function registerRoutes(
       const year = new Date().getFullYear();
       const allPOs = await storage.getPurchaseOrders();
       const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
-      const nextNum = yearPOs.length + 1;
-      const poNumber = `PO-${year}-${String(nextNum).padStart(4, "0")}`;
+      const maxPoNum = yearPOs.reduce((max: number, po: any) => {
+        const num = parseInt(po.poNumber.split("-").pop() || "0", 10);
+        return num > max ? num : max;
+      }, 0);
+      const poNumber = `PO-${year}-${String(maxPoNum + 1).padStart(4, "0")}`;
 
-      const supplierProducts = await storage.getSupplierProducts(pr.supplierId);
+      const supplierProds = await storage.getSupplierProducts(pr.supplierId);
+      const allProducts = await storage.getProducts();
+      const productMap = new Map(allProducts.map(p => [p.id, p]));
 
       let totalAmount = 0;
       const poItemsData = prItems.map(item => {
-        const sp = supplierProducts.find((sp: any) => sp.productId === item.productId);
-        const unitCost = item.unitCost ? parseFloat(item.unitCost) : (sp?.supplierPrice ? parseFloat(sp.supplierPrice) : 0);
+        const sp = supplierProds.find((sp: any) => sp.productId === item.productId);
+        const product = productMap.get(item.productId);
+        const unitCost = item.unitCost && parseFloat(item.unitCost) > 0
+          ? parseFloat(item.unitCost)
+          : sp?.supplierPrice && parseFloat(sp.supplierPrice) > 0
+            ? parseFloat(sp.supplierPrice)
+            : product?.costPrice && parseFloat(product.costPrice) > 0
+              ? parseFloat(product.costPrice)
+              : 0;
         const itemTotal = unitCost * item.shortfallQuantity;
         totalAmount += itemTotal;
         return {
           productId: item.productId,
-          description: item.description || "",
+          description: item.description || product?.name || "",
           quantity: item.shortfallQuantity,
           unitCost: unitCost.toFixed(2),
           totalCost: itemTotal.toFixed(2),

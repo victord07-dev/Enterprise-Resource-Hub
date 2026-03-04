@@ -15,7 +15,8 @@ import {
   insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
   insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
-  inventoryStock, deliveryChallans as deliveryChallansTable,
+  insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
+  inventoryStock, deliveryChallans as deliveryChallansTable, purchaseRequests as purchaseRequestsTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -558,9 +559,77 @@ export async function registerRoutes(
 
   app.patch("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
     try {
+      const previousOrder = await storage.getSalesOrder(req.params.id);
       const updated = await storage.updateSalesOrder(req.params.id, req.body);
       if (!updated) return res.status(404).json({ message: "Sales order not found" });
       await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
+
+      if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
+        try {
+          const existingPRs = await storage.getPurchaseRequestsBySalesOrder(updated.id);
+          const activePRs = existingPRs.filter(pr => pr.status === "pending" || pr.status === "approved");
+          if (activePRs.length === 0) {
+            const orderItems = await storage.getSalesOrderItems(updated.id);
+            const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+            const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number }> = [];
+
+            const allStock = await storage.getInventoryStock();
+            for (const item of productItems) {
+              const totalStock = allStock
+                .filter(s => s.productId === item.productId)
+                .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
+              if (totalStock < item.quantity) {
+                shortfallItems.push({
+                  productId: item.productId!,
+                  description: item.description || "",
+                  required: item.quantity,
+                  available: totalStock,
+                  shortfall: item.quantity - totalStock,
+                });
+              }
+            }
+
+            if (shortfallItems.length > 0) {
+              const year = new Date().getFullYear();
+              const allPRs = await storage.getPurchaseRequests();
+              const yearPRs = allPRs.filter(pr => pr.requestNumber.startsWith(`PR-${year}`));
+              const maxNum = yearPRs.reduce((max, pr) => {
+                const num = parseInt(pr.requestNumber.split("-").pop() || "0", 10);
+                return num > max ? num : max;
+              }, 0);
+              const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+              const hasAdvance = Number(updated.advanceAmount || 0) > 0;
+              const pr = await storage.createPurchaseRequest({
+                requestNumber,
+                salesOrderId: updated.id,
+                supplierId: null,
+                status: "pending",
+                priority: hasAdvance ? "high" : "medium",
+                notes: `Auto-generated from confirmed order ${updated.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.`,
+                purchaseOrderId: null,
+                createdBy: req.user.id,
+              });
+
+              for (const item of shortfallItems) {
+                await storage.createPurchaseRequestItem({
+                  requestId: pr.id,
+                  productId: item.productId,
+                  description: item.description,
+                  requiredQuantity: item.required,
+                  availableStock: item.available,
+                  shortfallQuantity: item.shortfall,
+                  unitCost: null,
+                  notes: null,
+                });
+              }
+            }
+          }
+        } catch (prError) {
+          console.error("Failed to auto-generate purchase request:", prError);
+        }
+      }
+
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update sales order" });
@@ -1790,6 +1859,210 @@ export async function registerRoutes(
       res.json(productStock);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch product stock" });
+    }
+  });
+
+  // ======================== PURCHASE REQUESTS ========================
+  app.get("/api/purchase-requests", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getPurchaseRequests();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch purchase requests" });
+    }
+  });
+
+  app.get("/api/purchase-requests/:id", authenticateToken, async (req, res) => {
+    try {
+      const pr = await storage.getPurchaseRequest(req.params.id);
+      if (!pr) return res.status(404).json({ message: "Purchase request not found" });
+      const items = await storage.getPurchaseRequestItems(pr.id);
+      res.json({ ...pr, items });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch purchase request" });
+    }
+  });
+
+  app.post("/api/purchase-requests", authenticateToken, async (req: any, res) => {
+    try {
+      const validPriorities = ["low", "medium", "high", "urgent"];
+      const priority = validPriorities.includes(req.body.priority) ? req.body.priority : "medium";
+
+      const year = new Date().getFullYear();
+      const allPRs = await storage.getPurchaseRequests();
+      const yearPRs = allPRs.filter(pr => pr.requestNumber.startsWith(`PR-${year}`));
+      const maxNum = yearPRs.reduce((max, pr) => {
+        const num = parseInt(pr.requestNumber.split("-").pop() || "0", 10);
+        return num > max ? num : max;
+      }, 0);
+      const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+      const pr = await storage.createPurchaseRequest({
+        requestNumber,
+        salesOrderId: req.body.salesOrderId || null,
+        supplierId: req.body.supplierId || null,
+        status: "pending",
+        priority,
+        notes: req.body.notes || null,
+        purchaseOrderId: null,
+        createdBy: req.user.id,
+      });
+
+      if (req.body.items && Array.isArray(req.body.items)) {
+        for (const item of req.body.items) {
+          if (!item.productId || !item.requiredQuantity || !item.shortfallQuantity) continue;
+          await storage.createPurchaseRequestItem({
+            requestId: pr.id,
+            productId: item.productId,
+            description: item.description || null,
+            requiredQuantity: Number(item.requiredQuantity) || 0,
+            availableStock: Number(item.availableStock) || 0,
+            shortfallQuantity: Number(item.shortfallQuantity) || 0,
+            unitCost: item.unitCost ? String(item.unitCost) : null,
+            notes: item.notes || null,
+          });
+        }
+      }
+
+      await logAction(req.user.id, "create", "supply_chain", `Created purchase request ${requestNumber}`);
+      res.status(201).json(pr);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create purchase request" });
+    }
+  });
+
+  app.patch("/api/purchase-requests/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedFields: Record<string, boolean> = { supplierId: true, priority: true, notes: true, status: true };
+      const updateData: any = {};
+      for (const key of Object.keys(req.body)) {
+        if (allowedFields[key]) updateData[key] = req.body[key];
+      }
+      const validStatuses = ["pending", "approved", "converted", "cancelled"];
+      if (updateData.status && !validStatuses.includes(updateData.status)) {
+        return res.status(400).json({ message: "Invalid status" });
+      }
+      const validPriorities = ["low", "medium", "high", "urgent"];
+      if (updateData.priority && !validPriorities.includes(updateData.priority)) {
+        return res.status(400).json({ message: "Invalid priority" });
+      }
+
+      const updated = await storage.updatePurchaseRequest(req.params.id, updateData);
+      if (!updated) return res.status(404).json({ message: "Purchase request not found" });
+      await logAction(req.user.id, "update", "supply_chain", `Updated purchase request ${updated.requestNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update purchase request" });
+    }
+  });
+
+  app.delete("/api/purchase-requests/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const pr = await storage.getPurchaseRequest(req.params.id);
+      if (!pr) return res.status(404).json({ message: "Purchase request not found" });
+      if (pr.status !== "pending") return res.status(400).json({ message: "Can only delete pending purchase requests" });
+      await storage.deletePurchaseRequest(req.params.id);
+      await logAction(req.user.id, "delete", "supply_chain", `Deleted purchase request ${pr.requestNumber}`);
+      res.json({ message: "Purchase request deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete purchase request" });
+    }
+  });
+
+  app.get("/api/purchase-requests/:id/items", authenticateToken, async (req, res) => {
+    try {
+      const items = await storage.getPurchaseRequestItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch purchase request items" });
+    }
+  });
+
+  app.post("/api/purchase-requests/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.deletePurchaseRequestItems(req.params.id);
+      const items = req.body.items || [];
+      const created = [];
+      for (const item of items) {
+        const newItem = await storage.createPurchaseRequestItem({
+          requestId: req.params.id,
+          productId: item.productId,
+          description: item.description || null,
+          requiredQuantity: item.requiredQuantity,
+          availableStock: item.availableStock || 0,
+          shortfallQuantity: item.shortfallQuantity,
+          unitCost: item.unitCost || null,
+          notes: item.notes || null,
+        });
+        created.push(newItem);
+      }
+      res.json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to save purchase request items" });
+    }
+  });
+
+  app.post("/api/purchase-requests/:id/convert-to-po", authenticateToken, async (req: any, res) => {
+    try {
+      const pr = await storage.getPurchaseRequest(req.params.id);
+      if (!pr) return res.status(404).json({ message: "Purchase request not found" });
+      if (!pr.supplierId) return res.status(400).json({ message: "Assign a supplier before converting to PO" });
+      if (pr.status !== "pending" && pr.status !== "approved") {
+        return res.status(400).json({ message: "Can only convert pending or approved requests" });
+      }
+
+      const prItems = await storage.getPurchaseRequestItems(pr.id);
+      if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
+
+      const year = new Date().getFullYear();
+      const allPOs = await storage.getPurchaseOrders();
+      const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
+      const nextNum = yearPOs.length + 1;
+      const poNumber = `PO-${year}-${String(nextNum).padStart(4, "0")}`;
+
+      const supplierProducts = await storage.getSupplierProducts(pr.supplierId);
+
+      let totalAmount = 0;
+      const poItemsData = prItems.map(item => {
+        const sp = supplierProducts.find((sp: any) => sp.productId === item.productId);
+        const unitCost = item.unitCost ? parseFloat(item.unitCost) : (sp?.supplierPrice ? parseFloat(sp.supplierPrice) : 0);
+        const itemTotal = unitCost * item.shortfallQuantity;
+        totalAmount += itemTotal;
+        return {
+          productId: item.productId,
+          description: item.description || "",
+          quantity: item.shortfallQuantity,
+          unitCost: unitCost.toFixed(2),
+          totalCost: itemTotal.toFixed(2),
+        };
+      });
+
+      const po = await storage.createPurchaseOrder({
+        poNumber,
+        supplierId: pr.supplierId,
+        status: "pending",
+        totalAmount: totalAmount.toFixed(2),
+        expectedDate: null,
+        notes: `Generated from purchase request ${pr.requestNumber}`,
+      });
+
+      for (const poItem of poItemsData) {
+        await storage.createPurchaseOrderItem({
+          purchaseOrderId: po.id,
+          ...poItem,
+        });
+      }
+
+      await storage.updatePurchaseRequest(pr.id, {
+        status: "converted",
+        purchaseOrderId: po.id,
+      });
+
+      await logAction(req.user.id, "create", "supply_chain", `Converted purchase request ${pr.requestNumber} to PO ${poNumber}`);
+      res.json({ purchaseOrder: po, requestUpdated: true });
+    } catch (error) {
+      console.error("Failed to convert purchase request to PO:", error);
+      res.status(500).json({ message: "Failed to convert to purchase order" });
     }
   });
 

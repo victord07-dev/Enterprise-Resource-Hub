@@ -9,10 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, PackageCheck } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, PackageCheck, FileText, Check, ArrowRightCircle, AlertTriangle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse } from "@shared/schema";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
 
 interface POLineItem {
   productId: string;
@@ -488,11 +489,71 @@ function POExpandedItems({ poId }: { poId: string }) {
   );
 }
 
+function PRExpandedItems({ prId }: { prId: string }) {
+  const { data: items, isLoading } = useQuery<PurchaseRequestItem[]>({
+    queryKey: ["/api/purchase-requests", prId, "items"],
+    queryFn: () => apiRequest("GET", `/api/purchase-requests/${prId}/items`).then(r => r.json()),
+  });
+  const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+
+  const productMap = new Map<string, Product>();
+  allProducts?.forEach(p => productMap.set(p.id, p));
+
+  if (isLoading) {
+    return <div className="p-4"><Skeleton className="h-12 w-full" /></div>;
+  }
+
+  if (!items || items.length === 0) {
+    return <div className="p-4 text-sm text-muted-foreground text-center">No items in this purchase request.</div>;
+  }
+
+  return (
+    <div className="p-4">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2 font-medium text-muted-foreground text-xs">Product</th>
+              <th className="text-left p-2 font-medium text-muted-foreground text-xs">Description</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Required Qty</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Available Stock</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Shortfall</th>
+              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => {
+              const prod = productMap.get(item.productId);
+              return (
+                <tr key={item.id} className="border-b last:border-0" data-testid={`row-pr-item-${item.id}`}>
+                  <td className="p-2 font-medium">{prod?.name || "—"}</td>
+                  <td className="p-2 text-muted-foreground">{item.description || "—"}</td>
+                  <td className="p-2 text-center">{item.requiredQuantity}</td>
+                  <td className="p-2 text-center">{item.availableStock}</td>
+                  <td className="p-2 text-center">
+                    <span className="inline-flex items-center gap-1 text-red-600 font-medium">
+                      <AlertTriangle className="w-3 h-3" />
+                      {item.shortfallQuantity}
+                    </span>
+                  </td>
+                  <td className="p-2 text-right">{item.unitCost ? `₹${Number(item.unitCost).toLocaleString()}` : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function SupplyChain() {
   const { toast } = useToast();
   const { data: suppliers, isLoading: suppliersLoading } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders, isLoading: poLoading } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  const { data: purchaseRequests, isLoading: prLoading } = useQuery<PurchaseRequest[]>({ queryKey: ["/api/purchase-requests"] });
+  const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
@@ -505,7 +566,14 @@ export default function SupplyChain() {
 
   const [expandedPoId, setExpandedPoId] = useState<string | null>(null);
   const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
+  const [expandedPrId, setExpandedPrId] = useState<string | null>(null);
   const [poSearch, setPoSearch] = useState("");
+
+  const [prDialogOpen, setPrDialogOpen] = useState(false);
+  const [editingPr, setEditingPr] = useState<PurchaseRequest | null>(null);
+  const [prForm, setPrForm] = useState({ supplierId: "", priority: "medium", notes: "" });
+  const [prStatusFilter, setPrStatusFilter] = useState("all");
+  const [prPriorityFilter, setPrPriorityFilter] = useState("all");
 
   const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
   const [receivingPo, setReceivingPo] = useState<PurchaseOrder | null>(null);
@@ -586,6 +654,57 @@ export default function SupplyChain() {
       toast({ title: "Error receiving goods", description: error.message, variant: "destructive" });
     },
   });
+
+  const updatePrMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: any }) => {
+      await apiRequest("PATCH", `/api/purchase-requests/${id}`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
+      toast({ title: "Purchase request updated" });
+      setPrDialogOpen(false);
+      setEditingPr(null);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deletePrMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/purchase-requests/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
+      toast({ title: "Purchase request deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const convertPrMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const resp = await apiRequest("POST", `/api/purchase-requests/${id}/convert-to-po`);
+      return resp.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "Purchase order created", description: `PO ${data.purchaseOrder?.poNumber || ""} created successfully.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openEditPr = (pr: PurchaseRequest) => {
+    setEditingPr(pr);
+    setPrForm({
+      supplierId: pr.supplierId || "",
+      priority: pr.priority,
+      notes: pr.notes || "",
+    });
+    setPrDialogOpen(true);
+  };
 
   const openReceiveDialog = (po: PurchaseOrder) => {
     setReceivingPo(po);
@@ -682,6 +801,17 @@ export default function SupplyChain() {
   const supplierMap = new Map<string, Supplier>();
   suppliers?.forEach(s => supplierMap.set(s.id, s));
 
+  const salesOrderMap = new Map<string, SalesOrder>();
+  salesOrders?.forEach(so => salesOrderMap.set(so.id, so));
+
+  const pendingPrCount = purchaseRequests?.filter(pr => pr.status === "pending").length ?? 0;
+
+  const filteredPRs = purchaseRequests?.filter(pr => {
+    if (prStatusFilter !== "all" && pr.status !== prStatusFilter) return false;
+    if (prPriorityFilter !== "all" && pr.priority !== prPriorityFilter) return false;
+    return true;
+  });
+
   const filteredPOs = purchaseOrders?.filter(po => {
     if (!poSearch) return true;
     const term = poSearch.toLowerCase();
@@ -703,7 +833,18 @@ export default function SupplyChain() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-md bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
+              <FileText className="w-5 h-5 text-amber-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold" data-testid="text-stat-pr-pending">{pendingPrCount}</p>
+              <p className="text-xs text-muted-foreground">Pending Requests</p>
+            </div>
+          </CardContent>
+        </Card>
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
@@ -739,11 +880,181 @@ export default function SupplyChain() {
         </Card>
       </div>
 
-      <Tabs defaultValue="purchase-orders" className="space-y-4">
+      <Tabs defaultValue="purchase-requests" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="purchase-requests" data-testid="tab-pr">
+            Purchase Requests
+            {pendingPrCount > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold rounded-full bg-amber-500 text-white">{pendingPrCount}</span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="purchase-orders" data-testid="tab-po">Purchase Orders</TabsTrigger>
           <TabsTrigger value="suppliers" data-testid="tab-suppliers">Suppliers</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="purchase-requests" className="space-y-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Select value={prStatusFilter} onValueChange={setPrStatusFilter}>
+              <SelectTrigger className="w-[140px]" data-testid="select-pr-status-filter">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="approved">Approved</SelectItem>
+                <SelectItem value="converted">Converted</SelectItem>
+                <SelectItem value="cancelled">Cancelled</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={prPriorityFilter} onValueChange={setPrPriorityFilter}>
+              <SelectTrigger className="w-[140px]" data-testid="select-pr-priority-filter">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Priorities</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="urgent">Urgent</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="w-8 p-3"></th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Request #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Order #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Priority</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Created</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {prLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 8 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : filteredPRs && filteredPRs.length > 0 ? (
+                      filteredPRs.map((pr) => {
+                        const isExpanded = expandedPrId === pr.id;
+                        const supplier = pr.supplierId ? supplierMap.get(pr.supplierId) : null;
+                        const so = pr.salesOrderId ? salesOrderMap.get(pr.salesOrderId) : null;
+                        const priorityColors: Record<string, string> = {
+                          low: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+                          medium: "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400",
+                          high: "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400",
+                          urgent: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400",
+                        };
+                        const statusColors: Record<string, string> = {
+                          pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
+                          approved: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
+                          converted: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
+                          cancelled: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
+                        };
+                        return (
+                          <Fragment key={pr.id}>
+                            <tr
+                              className="border-b last:border-0 cursor-pointer"
+                              data-testid={`row-pr-${pr.id}`}
+                              onClick={() => setExpandedPrId(isExpanded ? null : pr.id)}
+                            >
+                              <td className="p-3">
+                                {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
+                              </td>
+                              <td className="p-3 font-medium" data-testid={`text-pr-number-${pr.id}`}>{pr.requestNumber}</td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-pr-order-${pr.id}`}>{so?.orderNumber || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{supplier?.name || <span className="text-amber-500 text-xs font-medium">Not assigned</span>}</td>
+                              <td className="p-3">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${priorityColors[pr.priority] || priorityColors.medium}`}>
+                                  {pr.priority.charAt(0).toUpperCase() + pr.priority.slice(1)}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${statusColors[pr.status] || statusColors.pending}`}>
+                                  {pr.status.charAt(0).toUpperCase() + pr.status.slice(1)}
+                                </span>
+                              </td>
+                              <td className="p-3 text-muted-foreground">{new Date(pr.createdAt).toLocaleDateString()}</td>
+                              <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1">
+                                  {(pr.status === "pending" || pr.status === "approved") && pr.supplierId && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-convert-pr-${pr.id}`}
+                                      disabled={convertPrMutation.isPending}
+                                      onClick={() => { if (confirm("Convert this purchase request to a purchase order?")) convertPrMutation.mutate(pr.id); }}
+                                    >
+                                      <ArrowRightCircle className="w-4 h-4 mr-1" />
+                                      Convert to PO
+                                    </Button>
+                                  )}
+                                  {pr.status === "pending" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-approve-pr-${pr.id}`}
+                                      onClick={() => updatePrMutation.mutate({ id: pr.id, data: { status: "approved" } })}
+                                    >
+                                      <Check className="w-4 h-4 mr-1" />
+                                      Approve
+                                    </Button>
+                                  )}
+                                  {(pr.status === "pending" || pr.status === "approved") && (
+                                    <Button size="icon" variant="ghost" data-testid={`button-edit-pr-${pr.id}`} onClick={() => openEditPr(pr)}>
+                                      <Pencil className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                  {pr.status === "pending" && (
+                                    <Button size="icon" variant="ghost" data-testid={`button-delete-pr-${pr.id}`} onClick={() => { if (confirm("Delete this purchase request?")) deletePrMutation.mutate(pr.id); }}>
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                  {(pr.status === "pending" || pr.status === "approved") && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="text-red-500 hover:text-red-700"
+                                      data-testid={`button-cancel-pr-${pr.id}`}
+                                      onClick={() => { if (confirm("Cancel this purchase request?")) updatePrMutation.mutate({ id: pr.id, data: { status: "cancelled" } }); }}
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr>
+                                <td colSpan={8} className="bg-muted/30 border-b">
+                                  <PRExpandedItems prId={pr.id} />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No purchase requests found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="purchase-orders" className="space-y-4">
           <div className="flex items-center gap-2">
@@ -1034,6 +1345,67 @@ export default function SupplyChain() {
           <DialogFooter>
             <Button data-testid="button-submit-supplier" disabled={supplierMutation.isPending} onClick={() => supplierMutation.mutate(supplierForm)}>
               {supplierMutation.isPending ? "Saving..." : editingSupplier ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={prDialogOpen} onOpenChange={setPrDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Purchase Request {editingPr?.requestNumber}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Assign Supplier</Label>
+              <Select value={prForm.supplierId} onValueChange={(v) => setPrForm({ ...prForm, supplierId: v })}>
+                <SelectTrigger data-testid="select-pr-supplier">
+                  <SelectValue placeholder="Select supplier" />
+                </SelectTrigger>
+                <SelectContent>
+                  {suppliers?.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Priority</Label>
+              <Select value={prForm.priority} onValueChange={(v) => setPrForm({ ...prForm, priority: v })}>
+                <SelectTrigger data-testid="select-pr-priority">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["low", "medium", "high", "urgent"].map((p) => (
+                    <SelectItem key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={prForm.notes}
+                onChange={(e) => setPrForm({ ...prForm, notes: e.target.value })}
+                rows={3}
+                data-testid="input-pr-notes"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="button-submit-pr"
+              disabled={updatePrMutation.isPending}
+              onClick={() => editingPr && updatePrMutation.mutate({
+                id: editingPr.id,
+                data: {
+                  supplierId: prForm.supplierId || null,
+                  priority: prForm.priority,
+                  notes: prForm.notes || null,
+                },
+              })}
+            >
+              {updatePrMutation.isPending ? "Saving..." : "Update"}
             </Button>
           </DialogFooter>
         </DialogContent>

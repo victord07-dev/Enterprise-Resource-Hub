@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -207,6 +207,19 @@ export interface IStorage {
   getDeliveryChallanItems(challanId: string): Promise<DeliveryChallanItem[]>;
   createDeliveryChallanItem(data: Omit<DeliveryChallanItem, "id">): Promise<DeliveryChallanItem>;
   deleteDeliveryChallanItems(challanId: string): Promise<boolean>;
+
+  // Purchase Requests
+  getPurchaseRequests(): Promise<PurchaseRequest[]>;
+  getPurchaseRequest(id: string): Promise<PurchaseRequest | undefined>;
+  getPurchaseRequestsBySalesOrder(salesOrderId: string): Promise<PurchaseRequest[]>;
+  createPurchaseRequest(data: Omit<PurchaseRequest, "id" | "createdAt">): Promise<PurchaseRequest>;
+  updatePurchaseRequest(id: string, data: Partial<Omit<PurchaseRequest, "id" | "createdAt">>): Promise<PurchaseRequest | undefined>;
+  deletePurchaseRequest(id: string): Promise<boolean>;
+
+  // Purchase Request Items
+  getPurchaseRequestItems(requestId: string): Promise<PurchaseRequestItem[]>;
+  createPurchaseRequestItem(data: Omit<PurchaseRequestItem, "id">): Promise<PurchaseRequestItem>;
+  deletePurchaseRequestItems(requestId: string): Promise<boolean>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -929,6 +942,51 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDeliveryChallanItems(challanId: string): Promise<boolean> {
     await db.delete(deliveryChallanItems).where(eq(deliveryChallanItems.challanId, challanId));
+    return true;
+  }
+
+  // Purchase Requests
+  async getPurchaseRequests(): Promise<PurchaseRequest[]> {
+    return await db.select().from(purchaseRequests).orderBy(desc(purchaseRequests.createdAt));
+  }
+
+  async getPurchaseRequest(id: string): Promise<PurchaseRequest | undefined> {
+    const [found] = await db.select().from(purchaseRequests).where(eq(purchaseRequests.id, id));
+    return found;
+  }
+
+  async getPurchaseRequestsBySalesOrder(salesOrderId: string): Promise<PurchaseRequest[]> {
+    return await db.select().from(purchaseRequests).where(eq(purchaseRequests.salesOrderId, salesOrderId));
+  }
+
+  async createPurchaseRequest(data: Omit<PurchaseRequest, "id" | "createdAt">): Promise<PurchaseRequest> {
+    const [created] = await db.insert(purchaseRequests).values(data).returning();
+    return created;
+  }
+
+  async updatePurchaseRequest(id: string, data: Partial<Omit<PurchaseRequest, "id" | "createdAt">>): Promise<PurchaseRequest | undefined> {
+    const [updated] = await db.update(purchaseRequests).set(data).where(eq(purchaseRequests.id, id)).returning();
+    return updated;
+  }
+
+  async deletePurchaseRequest(id: string): Promise<boolean> {
+    await db.delete(purchaseRequestItems).where(eq(purchaseRequestItems.requestId, id));
+    await db.delete(purchaseRequests).where(eq(purchaseRequests.id, id));
+    return true;
+  }
+
+  // Purchase Request Items
+  async getPurchaseRequestItems(requestId: string): Promise<PurchaseRequestItem[]> {
+    return await db.select().from(purchaseRequestItems).where(eq(purchaseRequestItems.requestId, requestId));
+  }
+
+  async createPurchaseRequestItem(data: Omit<PurchaseRequestItem, "id">): Promise<PurchaseRequestItem> {
+    const [created] = await db.insert(purchaseRequestItems).values(data).returning();
+    return created;
+  }
+
+  async deletePurchaseRequestItems(requestId: string): Promise<boolean> {
+    await db.delete(purchaseRequestItems).where(eq(purchaseRequestItems.requestId, requestId));
     return true;
   }
 

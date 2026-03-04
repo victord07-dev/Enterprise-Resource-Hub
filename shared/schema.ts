@@ -373,6 +373,31 @@ export const deliveryChallanItems = pgTable("delivery_challan_items", {
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }),
 });
 
+export const purchaseRequests = pgTable("purchase_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestNumber: text("request_number").notNull().unique(),
+  salesOrderId: varchar("sales_order_id"),
+  supplierId: varchar("supplier_id"),
+  status: text("status").notNull().default("pending"),
+  priority: text("priority").notNull().default("medium"),
+  notes: text("notes"),
+  purchaseOrderId: varchar("purchase_order_id"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const purchaseRequestItems = pgTable("purchase_request_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestId: varchar("request_id").notNull(),
+  productId: varchar("product_id").notNull(),
+  description: text("description"),
+  requiredQuantity: integer("required_quantity").notNull(),
+  availableStock: integer("available_stock").notNull().default(0),
+  shortfallQuantity: integer("shortfall_quantity").notNull(),
+  unitCost: decimal("unit_cost", { precision: 12, scale: 2 }),
+  notes: text("notes"),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -415,6 +440,8 @@ export const insertPurchaseOrderItemSchema = createInsertSchema(purchaseOrderIte
 export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
 export const insertDeliveryChallanSchema = createInsertSchema(deliveryChallans).omit({ id: true, createdAt: true });
 export const insertDeliveryChallanItemSchema = createInsertSchema(deliveryChallanItems).omit({ id: true });
+export const insertPurchaseRequestSchema = createInsertSchema(purchaseRequests).omit({ id: true, createdAt: true });
+export const insertPurchaseRequestItemSchema = createInsertSchema(purchaseRequestItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -451,3 +478,5 @@ export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;
 export type StockMovement = typeof stockMovements.$inferSelect;
 export type DeliveryChallan = typeof deliveryChallans.$inferSelect;
 export type DeliveryChallanItem = typeof deliveryChallanItems.$inferSelect;
+export type PurchaseRequest = typeof purchaseRequests.$inferSelect;
+export type PurchaseRequestItem = typeof purchaseRequestItems.$inferSelect;

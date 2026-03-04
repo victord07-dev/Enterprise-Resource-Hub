@@ -696,6 +696,23 @@ export default function SupplyChain() {
     },
   });
 
+  interface MatchingSupplier {
+    supplierId: string;
+    supplierName: string;
+    matchedItemCount: number;
+    totalItemCount: number;
+    totalCost: string;
+    items: Array<{ productId: string; productName: string; shortfallQuantity: number; supplierPrice: string | null; lineTotal: string | null; isPreferred: boolean }>;
+  }
+
+  const { data: matchingSuppliers, isLoading: matchingSuppliersLoading } = useQuery<MatchingSupplier[]>({
+    queryKey: ["/api/purchase-requests", editingPr?.id, "matching-suppliers"],
+    queryFn: () => editingPr ? apiRequest("GET", `/api/purchase-requests/${editingPr.id}/matching-suppliers`).then(r => r.json()) : Promise.resolve([]),
+    enabled: !!editingPr && prDialogOpen,
+  });
+
+  const selectedMatchingSupplier = matchingSuppliers?.find(ms => ms.supplierId === prForm.supplierId);
+
   const openEditPr = (pr: PurchaseRequest) => {
     setEditingPr(pr);
     setPrForm({
@@ -1358,16 +1375,70 @@ export default function SupplyChain() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Assign Supplier</Label>
-              <Select value={prForm.supplierId} onValueChange={(v) => setPrForm({ ...prForm, supplierId: v })}>
-                <SelectTrigger data-testid="select-pr-supplier">
-                  <SelectValue placeholder="Select supplier" />
-                </SelectTrigger>
-                <SelectContent>
-                  {suppliers?.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {matchingSuppliersLoading ? (
+                <Skeleton className="h-10 w-full" />
+              ) : matchingSuppliers && matchingSuppliers.length > 0 ? (
+                <Select value={prForm.supplierId} onValueChange={(v) => setPrForm({ ...prForm, supplierId: v })}>
+                  <SelectTrigger data-testid="select-pr-supplier">
+                    <SelectValue placeholder="Select supplier" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {matchingSuppliers.map((ms, idx) => (
+                      <SelectItem key={ms.supplierId} value={ms.supplierId}>
+                        <span className="flex items-center gap-2">
+                          {ms.supplierName}
+                          <span className="text-xs text-muted-foreground">
+                            — ₹{Number(ms.totalCost).toLocaleString("en-IN")}
+                          </span>
+                          {idx === 0 && <span className="text-[10px] font-semibold bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 px-1.5 py-0.5 rounded">Best Price</span>}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="flex items-center gap-2 p-3 border rounded-md bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 text-sm">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  No supplier carries all items in this request.
+                </div>
+              )}
+
+              {selectedMatchingSupplier && (
+                <div className="mt-2 border rounded-md overflow-hidden">
+                  <div className="px-3 py-2 bg-muted/50 text-xs font-medium text-muted-foreground">
+                    {selectedMatchingSupplier.supplierName} — Price Breakdown
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
+                        <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Qty</th>
+                        <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Unit Price</th>
+                        <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedMatchingSupplier.items.map(item => (
+                        <tr key={item.productId} className="border-b last:border-0">
+                          <td className="px-3 py-1.5">
+                            {item.productName}
+                            {item.isPreferred && <Star className="inline w-3 h-3 ml-1 text-amber-500 fill-amber-500" />}
+                          </td>
+                          <td className="px-3 py-1.5 text-center">{item.shortfallQuantity}</td>
+                          <td className="px-3 py-1.5 text-right">₹{Number(item.supplierPrice).toLocaleString("en-IN")}</td>
+                          <td className="px-3 py-1.5 text-right font-medium">₹{Number(item.lineTotal).toLocaleString("en-IN")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td colSpan={3} className="px-3 py-1.5 text-right font-semibold">Total:</td>
+                        <td className="px-3 py-1.5 text-right font-semibold" data-testid="text-pr-supplier-total">₹{Number(selectedMatchingSupplier.totalCost).toLocaleString("en-IN")}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Priority</Label>

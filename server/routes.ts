@@ -2006,6 +2006,54 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/purchase-requests/:id/matching-suppliers", authenticateToken, async (req, res) => {
+    try {
+      const prItems = await storage.getPurchaseRequestItems(req.params.id);
+      if (prItems.length === 0) return res.json([]);
+
+      const prProductIds = prItems.map(i => i.productId);
+      const allSuppliers = await storage.getSuppliers();
+      const allProducts = await storage.getProducts();
+      const productMap = new Map(allProducts.map(p => [p.id, p]));
+
+      const results = [];
+      for (const supplier of allSuppliers) {
+        const catalog = await storage.getSupplierProducts(supplier.id);
+        const catalogProductIds = new Set(catalog.map(sp => sp.productId));
+        const matchedItems = prItems.filter(i => catalogProductIds.has(i.productId));
+
+        if (matchedItems.length === prProductIds.length) {
+          const items = matchedItems.map(i => {
+            const sp = catalog.find(c => c.productId === i.productId);
+            const product = productMap.get(i.productId);
+            return {
+              productId: i.productId,
+              productName: product?.name || i.description || "—",
+              shortfallQuantity: i.shortfallQuantity,
+              supplierPrice: sp?.supplierPrice || null,
+              lineTotal: sp?.supplierPrice ? (parseFloat(sp.supplierPrice) * i.shortfallQuantity).toFixed(2) : null,
+              isPreferred: sp?.isPreferred || false,
+            };
+          });
+          const totalCost = items.reduce((sum, it) => sum + (it.lineTotal ? parseFloat(it.lineTotal) : 0), 0);
+          results.push({
+            supplierId: supplier.id,
+            supplierName: supplier.name,
+            matchedItemCount: matchedItems.length,
+            totalItemCount: prProductIds.length,
+            totalCost: totalCost.toFixed(2),
+            items,
+          });
+        }
+      }
+
+      results.sort((a, b) => parseFloat(a.totalCost) - parseFloat(b.totalCost));
+      res.json(results);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch matching suppliers" });
+    }
+  });
+
   app.post("/api/purchase-requests/:id/convert-to-po", authenticateToken, async (req: any, res) => {
     try {
       const pr = await storage.getPurchaseRequest(req.params.id);

@@ -12,7 +12,7 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Modules
 1. Dashboard - Metric cards, revenue chart, activity feed
-2. Products (/products) - Product Master for sales/management: selling price, cost price, last sold price, brand, supplier list per product
+2. Products (/products) - Product Master for sales/management: selling price, last sold price, brand, supplier list per product
 3. Leads (/leads) - CRM lead pipeline with conversion to quotation
 4. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation
 5. Project Management - Project tracking, milestones
@@ -111,10 +111,9 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 
 ## Product Master & Supplier Pricing
 - Products have `unitPrice` (selling price), `costPrice` (buying/procurement cost), `brand` (manufacturer)
-- Product Master page at /products shows: selling price, cost price, last sold price, brand, supplier count
+- Product Master page at /products (sales team view): shows selling price, last sold price, brand — NO cost price or supplier info visible
 - Last sold price pulled from most recent quotation/order line item for each product (API: GET /api/products/last-sold-prices)
-- Expandable product rows show supplier list with prices, lead times, preferred badge
-- Cheapest supplier highlighted in green
+- Cost price and supplier details are only visible in Inventory and Supply Chain modules (procurement team)
 - `supplier_products` table: supplierId, productId, supplierPrice, supplierSku, leadTimeDays, isPreferred, notes
 - API: GET/POST /api/suppliers/:id/products, PATCH/DELETE /api/supplier-products/:id, GET /api/products/:id/suppliers
 - Inventory module shows cost price only (no selling price visible to procurement team)

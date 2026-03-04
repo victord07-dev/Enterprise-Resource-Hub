@@ -335,6 +335,44 @@ export const purchaseOrderItems = pgTable("purchase_order_items", {
   totalCost: decimal("total_cost", { precision: 12, scale: 2 }).notNull(),
 });
 
+export const stockMovements = pgTable("stock_movements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productId: varchar("product_id").notNull(),
+  warehouseId: varchar("warehouse_id"),
+  movementType: text("movement_type").notNull(),
+  quantity: integer("quantity").notNull(),
+  referenceType: text("reference_type"),
+  referenceId: varchar("reference_id"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const deliveryChallans = pgTable("delivery_challans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  challanNumber: text("challan_number").notNull().unique(),
+  orderId: varchar("order_id").notNull(),
+  sourceType: text("source_type").notNull(),
+  sourceId: varchar("source_id").notNull(),
+  status: text("status").notNull().default("draft"),
+  dispatchDate: timestamp("dispatch_date"),
+  deliveryDate: timestamp("delivery_date"),
+  vehicleNumber: text("vehicle_number"),
+  driverName: text("driver_name"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const deliveryChallanItems = pgTable("delivery_challan_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  challanId: varchar("challan_id").notNull(),
+  productId: varchar("product_id").notNull(),
+  description: text("description"),
+  quantity: integer("quantity").notNull(),
+  unitPrice: decimal("unit_price", { precision: 12, scale: 2 }),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -374,6 +412,9 @@ export const insertQuotationActivitySchema = createInsertSchema(quotationActivit
 export const insertQuotationFollowupSchema = createInsertSchema(quotationFollowups).omit({ id: true, createdAt: true });
 export const insertSupplierProductSchema = createInsertSchema(supplierProducts).omit({ id: true });
 export const insertPurchaseOrderItemSchema = createInsertSchema(purchaseOrderItems).omit({ id: true });
+export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
+export const insertDeliveryChallanSchema = createInsertSchema(deliveryChallans).omit({ id: true, createdAt: true });
+export const insertDeliveryChallanItemSchema = createInsertSchema(deliveryChallanItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -407,3 +448,6 @@ export type QuotationActivity = typeof quotationActivities.$inferSelect;
 export type QuotationFollowup = typeof quotationFollowups.$inferSelect;
 export type SupplierProduct = typeof supplierProducts.$inferSelect;
 export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;
+export type StockMovement = typeof stockMovements.$inferSelect;
+export type DeliveryChallan = typeof deliveryChallans.$inferSelect;
+export type DeliveryChallanItem = typeof deliveryChallanItems.$inferSelect;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,9 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, Warehouse as WarehouseType } from "@shared/schema";
+import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock } from "@shared/schema";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -29,7 +31,83 @@ export default function Inventory() {
   const [editingWarehouse, setEditingWarehouse] = useState<WarehouseType | null>(null);
   const [warehouseForm, setWarehouseForm] = useState({ name: "", location: "", capacity: "" });
 
-  const lowStockItems = products?.filter((p) => Number(p.minStockLevel) > 0) ?? [];
+  const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
+  const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
+  const [movementFilterProduct, setMovementFilterProduct] = useState("all");
+  const [movementFilterWarehouse, setMovementFilterWarehouse] = useState("all");
+  const [movementFilterType, setMovementFilterType] = useState("all");
+  const [movementFilterDateFrom, setMovementFilterDateFrom] = useState("");
+  const [movementFilterDateTo, setMovementFilterDateTo] = useState("");
+
+  const { data: stockMovements, isLoading: movementsLoading } = useQuery<StockMovement[]>({ queryKey: ["/api/stock-movements"] });
+  const { data: inventoryStockData } = useQuery<InventoryStock[]>({ queryKey: ["/api/inventory-stock"] });
+
+  const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
+
+  const toggleProductExpanded = (id: string) => {
+    setExpandedProductIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const getProductTotalStock = (productId: string) => {
+    if (!inventoryStockData) return 0;
+    return inventoryStockData
+      .filter(s => s.productId === productId)
+      .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
+  };
+
+  const getProductStockByWarehouse = (productId: string) => {
+    if (!inventoryStockData || !warehouses) return [];
+    const stockEntries = inventoryStockData.filter(s => s.productId === productId && s.quantity > 0);
+    return stockEntries.map(s => {
+      const wh = warehouses.find(w => w.id === s.warehouseId);
+      return { warehouseId: s.warehouseId, warehouseName: wh?.name || "Unknown", quantity: s.quantity };
+    });
+  };
+
+  const lowStockProducts = products?.filter(p => {
+    if (p.type === "service") return false;
+    const totalStock = getProductTotalStock(p.id);
+    return totalStock < (p.minStockLevel ?? 0);
+  }) ?? [];
+
+  const adjustmentMutation = useMutation({
+    mutationFn: async (data: any) => {
+      await apiRequest("POST", "/api/stock-movements", data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      toast({ title: "Stock adjustment recorded" });
+      setAdjustmentDialogOpen(false);
+      setAdjustmentForm({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const filteredMovements = (stockMovements ?? []).filter((m) => {
+    if (movementFilterProduct !== "all" && m.productId !== movementFilterProduct) return false;
+    if (movementFilterWarehouse !== "all" && m.warehouseId !== movementFilterWarehouse) return false;
+    if (movementFilterType !== "all" && m.movementType !== movementFilterType) return false;
+    if (movementFilterDateFrom && m.createdAt && new Date(m.createdAt) < new Date(movementFilterDateFrom)) return false;
+    if (movementFilterDateTo && m.createdAt && new Date(m.createdAt) > new Date(movementFilterDateTo + "T23:59:59")) return false;
+    return true;
+  }).sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+
+  const runningBalance = movementFilterProduct !== "all"
+    ? filteredMovements.reduceRight((acc, m) => {
+        const qty = m.movementType === "out" ? -Math.abs(m.quantity) : m.quantity;
+        acc.push((acc.length > 0 ? acc[acc.length - 1] : 0) + qty);
+        return acc;
+      }, [] as number[]).reverse()
+    : null;
+
   const productCount = products?.filter(p => p.type !== "service").length ?? 0;
   const serviceCount = products?.filter(p => p.type === "service").length ?? 0;
 
@@ -234,7 +312,7 @@ export default function Inventory() {
               <AlertTriangle className="w-5 h-5 text-red-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">0</p>
+              <p className="text-2xl font-bold" data-testid="text-low-stock-count">{lowStockProducts.length}</p>
               <p className="text-xs text-muted-foreground">Low Stock Alerts</p>
             </div>
           </CardContent>
@@ -261,6 +339,7 @@ export default function Inventory() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
+                      <th className="w-8 p-3"></th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>
@@ -268,6 +347,7 @@ export default function Inventory() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Unit</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Cost Price</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Stock</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Min Stock</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -276,51 +356,106 @@ export default function Inventory() {
                     {productsLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 9 }).map((_, j) => (
+                          {Array.from({ length: 11 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
                       ))
                     ) : products && products.length > 0 ? (
-                      products.map((product) => (
-                        <tr key={product.id} className="border-b last:border-0" data-testid={`row-product-${product.id}`}>
-                          <td className="p-3">
-                            {product.type === "service" ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400">
-                                <Wrench className="w-3 h-3" /> Service
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
-                                <Package className="w-3 h-3" /> Product
-                              </span>
+                      products.map((product) => {
+                        const isProduct = product.type !== "service";
+                        const totalStock = isProduct ? getProductTotalStock(product.id) : null;
+                        const isLowStock = isProduct && totalStock !== null && totalStock < (product.minStockLevel ?? 0);
+                        const isExpanded = expandedProductIds.has(product.id);
+                        const warehouseBreakdown = isExpanded && isProduct ? getProductStockByWarehouse(product.id) : [];
+
+                        return (
+                          <Fragment key={product.id}>
+                            <tr className={`border-b last:border-0 ${isLowStock ? "bg-red-50/50 dark:bg-red-950/10" : ""}`} data-testid={`row-product-${product.id}`}>
+                              <td className="p-3">
+                                {isProduct ? (
+                                  <button
+                                    onClick={() => toggleProductExpanded(product.id)}
+                                    className="text-muted-foreground"
+                                    data-testid={`button-expand-product-${product.id}`}
+                                  >
+                                    {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                  </button>
+                                ) : null}
+                              </td>
+                              <td className="p-3">
+                                {product.type === "service" ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400">
+                                    <Wrench className="w-3 h-3" /> Service
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
+                                    <Package className="w-3 h-3" /> Product
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 font-medium">{product.name}</td>
+                              <td className="p-3 text-muted-foreground">{product.type === "service" ? "—" : product.sku}</td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-product-brand-${product.id}`}>{product.brand || "—"}</td>
+                              <td className="p-3">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
+                                  {product.category}
+                                </span>
+                              </td>
+                              <td className="p-3 text-muted-foreground">{product.unit}</td>
+                              <td className="p-3 text-right font-medium" data-testid={`text-product-cost-price-${product.id}`}>{product.costPrice ? `₹${Number(product.costPrice).toLocaleString()}` : "—"}</td>
+                              <td className="p-3 text-right" data-testid={`text-product-stock-${product.id}`}>
+                                {isProduct ? (
+                                  <span className={`font-medium ${isLowStock ? "text-red-600 dark:text-red-400" : ""}`}>
+                                    {totalStock}
+                                    {isLowStock && (
+                                      <AlertTriangle className="w-3.5 h-3.5 inline-block ml-1 text-red-500" />
+                                    )}
+                                  </span>
+                                ) : "—"}
+                              </td>
+                              <td className="p-3 text-right text-muted-foreground">{product.type === "service" ? "—" : product.minStockLevel}</td>
+                              <td className="p-3 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button size="icon" variant="ghost" data-testid={`button-edit-product-${product.id}`} onClick={() => openEditProduct(product)}>
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-product-${product.id}`} onClick={() => { if (confirm("Delete this item?")) deleteProductMutation.mutate(product.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && isProduct && (
+                              <tr key={`${product.id}-stock`} className="border-b last:border-0">
+                                <td colSpan={11} className="p-0">
+                                  <div className="bg-muted/30 px-6 py-3 ml-8">
+                                    <p className="text-xs font-medium text-muted-foreground mb-2">Stock by Warehouse</p>
+                                    {warehouseBreakdown.length > 0 ? (
+                                      <div className="space-y-1">
+                                        {warehouseBreakdown.map((entry) => (
+                                          <div key={entry.warehouseId} className="flex items-center justify-between gap-4 text-sm" data-testid={`text-stock-warehouse-${product.id}-${entry.warehouseId}`}>
+                                            <span className="flex items-center gap-2">
+                                              <Warehouse className="w-3.5 h-3.5 text-muted-foreground" />
+                                              {entry.warehouseName}
+                                            </span>
+                                            <span className="font-medium">{entry.quantity} {product.unit}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="text-sm text-muted-foreground">No stock in any warehouse</p>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                          <td className="p-3 font-medium">{product.name}</td>
-                          <td className="p-3 text-muted-foreground">{product.type === "service" ? "—" : product.sku}</td>
-                          <td className="p-3 text-muted-foreground" data-testid={`text-product-brand-${product.id}`}>{product.brand || "—"}</td>
-                          <td className="p-3">
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300">
-                              {product.category}
-                            </span>
-                          </td>
-                          <td className="p-3 text-muted-foreground">{product.unit}</td>
-                          <td className="p-3 text-right font-medium" data-testid={`text-product-cost-price-${product.id}`}>{product.costPrice ? `₹${Number(product.costPrice).toLocaleString()}` : "—"}</td>
-                          <td className="p-3 text-right text-muted-foreground">{product.type === "service" ? "—" : product.minStockLevel}</td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-product-${product.id}`} onClick={() => openEditProduct(product)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-product-${product.id}`} onClick={() => { if (confirm("Delete this item?")) deleteProductMutation.mutate(product.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                          </Fragment>
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={9} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
                           No products or services found. Add your first item.
                         </td>
                       </tr>
@@ -377,12 +512,153 @@ export default function Inventory() {
           </div>
         </TabsContent>
 
-        <TabsContent value="movements">
+        <TabsContent value="movements" className="space-y-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Select value={movementFilterProduct} onValueChange={setMovementFilterProduct}>
+                <SelectTrigger className="w-[180px]" data-testid="select-filter-product">
+                  <SelectValue placeholder="All Products" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Products</SelectItem>
+                  {(products ?? []).filter(p => p.type !== "service").map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={movementFilterWarehouse} onValueChange={setMovementFilterWarehouse}>
+                <SelectTrigger className="w-[180px]" data-testid="select-filter-warehouse">
+                  <SelectValue placeholder="All Warehouses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Warehouses</SelectItem>
+                  {(warehouses ?? []).map((w) => (
+                    <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={movementFilterType} onValueChange={setMovementFilterType}>
+                <SelectTrigger className="w-[160px]" data-testid="select-filter-type">
+                  <SelectValue placeholder="All Types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  <SelectItem value="in">Stock In</SelectItem>
+                  <SelectItem value="out">Stock Out</SelectItem>
+                  <SelectItem value="adjustment">Adjustment</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-1">
+                <Input type="date" className="w-[140px]" value={movementFilterDateFrom} onChange={(e) => setMovementFilterDateFrom(e.target.value)} data-testid="input-filter-date-from" />
+                <span className="text-muted-foreground text-xs">to</span>
+                <Input type="date" className="w-[140px]" value={movementFilterDateTo} onChange={(e) => setMovementFilterDateTo(e.target.value)} data-testid="input-filter-date-to" />
+              </div>
+            </div>
+            <Button data-testid="button-manual-adjustment" onClick={() => setAdjustmentDialogOpen(true)}>
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Manual Adjustment
+            </Button>
+          </div>
+
+          {movementFilterProduct !== "all" && runningBalance && (
+            <Card>
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
+                  <Package className="w-5 h-5 text-blue-500" />
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Running Balance for {products?.find(p => p.id === movementFilterProduct)?.name}</p>
+                  <p className="text-2xl font-bold" data-testid="text-running-balance">{runningBalance[0] ?? 0} units</p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
-            <CardContent className="p-8 text-center text-muted-foreground">
-              <ArrowUpDown className="w-12 h-12 mx-auto mb-3 text-muted-foreground/40" />
-              <p className="font-medium">Stock Movements</p>
-              <p className="text-sm mt-1">Track incoming and outgoing stock movements across warehouses.</p>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Warehouse</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Quantity</th>
+                      {runningBalance && <th className="text-right p-3 font-medium text-muted-foreground">Balance</th>}
+                      <th className="text-left p-3 font-medium text-muted-foreground">Reference</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Notes</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Created By</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {movementsLoading ? (
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: runningBalance ? 9 : 8 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : filteredMovements.length > 0 ? (
+                      filteredMovements.map((m, idx) => {
+                        const product = products?.find(p => p.id === m.productId);
+                        const warehouse = warehouses?.find(w => w.id === m.warehouseId);
+                        const displayQty = m.movementType === "out" ? -Math.abs(m.quantity) : m.quantity;
+                        const refLabel = m.referenceType === "purchase_order" ? `PO` :
+                                         m.referenceType === "sales_order" ? `SO` :
+                                         m.referenceType === "challan" ? `DC` : "Manual";
+
+                        return (
+                          <tr key={m.id} className="border-b last:border-0" data-testid={`row-movement-${m.id}`}>
+                            <td className="p-3 text-muted-foreground whitespace-nowrap">
+                              {m.createdAt ? new Date(m.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                            <td className="p-3 font-medium" data-testid={`text-movement-product-${m.id}`}>{product?.name ?? m.productId}</td>
+                            <td className="p-3 text-muted-foreground" data-testid={`text-movement-warehouse-${m.id}`}>{warehouse?.name ?? (m.warehouseId ? m.warehouseId : "—")}</td>
+                            <td className="p-3">
+                              {m.movementType === "in" && (
+                                <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800" data-testid={`badge-type-${m.id}`}>
+                                  <ArrowDownCircle className="w-3 h-3 mr-1" /> IN
+                                </Badge>
+                              )}
+                              {m.movementType === "out" && (
+                                <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800" data-testid={`badge-type-${m.id}`}>
+                                  <ArrowUpCircle className="w-3 h-3 mr-1" /> OUT
+                                </Badge>
+                              )}
+                              {m.movementType === "adjustment" && (
+                                <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800" data-testid={`badge-type-${m.id}`}>
+                                  <RefreshCw className="w-3 h-3 mr-1" /> ADJ
+                                </Badge>
+                              )}
+                            </td>
+                            <td className={`p-3 text-right font-medium ${m.movementType === "in" ? "text-emerald-600 dark:text-emerald-400" : m.movementType === "out" ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`} data-testid={`text-movement-qty-${m.id}`}>
+                              {displayQty > 0 ? `+${displayQty}` : displayQty}
+                            </td>
+                            {runningBalance && (
+                              <td className="p-3 text-right font-medium" data-testid={`text-movement-balance-${m.id}`}>{runningBalance[idx]}</td>
+                            )}
+                            <td className="p-3 text-muted-foreground" data-testid={`text-movement-ref-${m.id}`}>
+                              {m.referenceId ? `${refLabel} #${m.referenceId.slice(0, 8)}` : refLabel}
+                            </td>
+                            <td className="p-3 text-muted-foreground max-w-[200px] truncate" data-testid={`text-movement-notes-${m.id}`}>{m.notes || "—"}</td>
+                            <td className="p-3 text-muted-foreground" data-testid={`text-movement-creator-${m.id}`}>{m.createdBy?.slice(0, 8) || "—"}</td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={runningBalance ? 9 : 8} className="p-8 text-center text-muted-foreground">
+                          <ArrowUpDown className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
+                          <p className="font-medium">No stock movements found</p>
+                          <p className="text-sm mt-1">Stock movements will appear here when inventory is received or dispatched.</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
@@ -497,6 +773,80 @@ export default function Inventory() {
           <DialogFooter>
             <Button data-testid="button-submit-warehouse" disabled={warehouseMutation.isPending} onClick={() => warehouseMutation.mutate({ ...warehouseForm, capacity: warehouseForm.capacity ? Number(warehouseForm.capacity) : null })}>
               {warehouseMutation.isPending ? "Saving..." : editingWarehouse ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Manual Stock Adjustment</DialogTitle>
+            <DialogDescription>Record a manual stock in, out, or adjustment</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Product</Label>
+              <Select value={adjustmentForm.productId} onValueChange={(v) => setAdjustmentForm({ ...adjustmentForm, productId: v })}>
+                <SelectTrigger data-testid="select-adjustment-product">
+                  <SelectValue placeholder="Select product" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(products ?? []).filter(p => p.type !== "service").map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Warehouse</Label>
+              <Select value={adjustmentForm.warehouseId} onValueChange={(v) => setAdjustmentForm({ ...adjustmentForm, warehouseId: v })}>
+                <SelectTrigger data-testid="select-adjustment-warehouse">
+                  <SelectValue placeholder="Select warehouse" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(warehouses ?? []).map((w) => (
+                    <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Movement Type</Label>
+              <Select value={adjustmentForm.movementType} onValueChange={(v) => setAdjustmentForm({ ...adjustmentForm, movementType: v })}>
+                <SelectTrigger data-testid="select-adjustment-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in">Stock In</SelectItem>
+                  <SelectItem value="out">Stock Out</SelectItem>
+                  <SelectItem value="adjustment">Adjustment</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjQty">Quantity</Label>
+              <Input id="adjQty" type="number" min="1" data-testid="input-adjustment-quantity" value={adjustmentForm.quantity} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, quantity: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjNotes">Reason / Notes</Label>
+              <Textarea id="adjNotes" data-testid="input-adjustment-notes" value={adjustmentForm.notes} onChange={(e) => setAdjustmentForm({ ...adjustmentForm, notes: e.target.value })} placeholder="Reason for adjustment..." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              data-testid="button-submit-adjustment"
+              disabled={adjustmentMutation.isPending || !adjustmentForm.productId || !adjustmentForm.warehouseId || !adjustmentForm.quantity}
+              onClick={() => adjustmentMutation.mutate({
+                productId: adjustmentForm.productId,
+                warehouseId: adjustmentForm.warehouseId,
+                movementType: adjustmentForm.movementType,
+                quantity: Number(adjustmentForm.quantity),
+                referenceType: "manual",
+                notes: adjustmentForm.notes || undefined,
+              })}
+            >
+              {adjustmentMutation.isPending ? "Recording..." : "Record Adjustment"}
             </Button>
           </DialogFooter>
         </DialogContent>

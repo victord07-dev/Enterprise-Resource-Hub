@@ -14,6 +14,8 @@ import {
   insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
   insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
+  insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
+  inventoryStock, deliveryChallans as deliveryChallansTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -1499,6 +1501,295 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update payroll status" });
+    }
+  });
+
+  // ======================== STOCK HELPER ========================
+  async function updateInventoryStockForMovement(productId: string, warehouseId: string, quantityDelta: number) {
+    const allStock = await storage.getInventoryStock();
+    const existing = allStock.find((s: any) => s.productId === productId && s.warehouseId === warehouseId);
+    if (existing) {
+      await storage.updateInventoryStock(existing.id, { quantity: (existing.quantity || 0) + quantityDelta });
+    } else {
+      await storage.createInventoryStock({ productId, warehouseId, quantity: Math.max(0, quantityDelta) } as any);
+    }
+  }
+
+  async function getAvailableStock(productId: string, warehouseId: string): Promise<number> {
+    const allStock = await storage.getInventoryStock();
+    const existing = allStock.find((s: any) => s.productId === productId && s.warehouseId === warehouseId);
+    return existing ? (existing.quantity || 0) : 0;
+  }
+
+  async function getRemainingOrderItemQuantities(orderId: string): Promise<Record<string, number>> {
+    const orderItems = await storage.getSalesOrderItems(orderId);
+    const challans = await storage.getDeliveryChallansByOrder(orderId);
+    const challanItemsMap: Record<string, number> = {};
+
+    for (const challan of challans) {
+      if (challan.status === "cancelled") continue;
+      const cItems = await storage.getDeliveryChallanItems(challan.id);
+      for (const ci of cItems) {
+        challanItemsMap[ci.productId] = (challanItemsMap[ci.productId] || 0) + ci.quantity;
+      }
+    }
+
+    const remaining: Record<string, number> = {};
+    for (const item of orderItems) {
+      if (!item.productId) continue;
+      const alreadyAssigned = challanItemsMap[item.productId] || 0;
+      remaining[item.productId] = Math.max(0, item.quantity - alreadyAssigned);
+    }
+    return remaining;
+  }
+
+  // ======================== STOCK MOVEMENTS ========================
+  app.get("/api/stock-movements", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getStockMovements();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch stock movements" });
+    }
+  });
+
+  app.get("/api/stock-movements/by-product/:productId", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getStockMovementsByProduct(req.params.productId);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch stock movements" });
+    }
+  });
+
+  app.post("/api/stock-movements", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertStockMovementSchema.safeParse({
+        ...req.body,
+        createdBy: req.user.id,
+      });
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      if (parsed.data.movementType === "out" && parsed.data.warehouseId) {
+        const available = await getAvailableStock(parsed.data.productId, parsed.data.warehouseId);
+        if (Math.abs(parsed.data.quantity) > available) {
+          return res.status(400).json({ message: `Insufficient stock. Available: ${available}, Requested: ${Math.abs(parsed.data.quantity)}` });
+        }
+      }
+
+      const movement = await storage.createStockMovement(parsed.data as any);
+
+      if (movement.warehouseId) {
+        const qty = movement.movementType === "out" ? -Math.abs(movement.quantity) : movement.quantity;
+        await updateInventoryStockForMovement(movement.productId, movement.warehouseId, qty);
+      }
+
+      res.status(201).json(movement);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create stock movement" });
+    }
+  });
+
+  // ======================== DELIVERY CHALLANS ========================
+  app.get("/api/delivery-challans", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getDeliveryChallans();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch delivery challans" });
+    }
+  });
+
+  app.get("/api/delivery-challans/by-order/:orderId", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getDeliveryChallansByOrder(req.params.orderId);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch challans for order" });
+    }
+  });
+
+  app.get("/api/delivery-challans/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      const items = await storage.getDeliveryChallanItems(challan.id);
+      res.json({ ...challan, items });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch challan" });
+    }
+  });
+
+  app.post("/api/delivery-challans", authenticateToken, async (req: any, res) => {
+    try {
+      const { items, ...challanData } = req.body;
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ message: "At least one item is required" });
+      }
+
+      const remaining = await getRemainingOrderItemQuantities(challanData.orderId);
+      for (const item of items) {
+        if (item.productId && item.quantity > (remaining[item.productId] || 0)) {
+          return res.status(400).json({ message: `Quantity for product exceeds remaining order quantity. Remaining: ${remaining[item.productId] || 0}` });
+        }
+      }
+
+      const year = new Date().getFullYear();
+      const allChallans = await storage.getDeliveryChallans();
+      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
+      const nextNum = yearChallans.length + 1;
+      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+
+      const parsed = insertDeliveryChallanSchema.safeParse({
+        ...challanData,
+        challanNumber,
+        status: "draft",
+        createdBy: req.user.id,
+      });
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      const challan = await storage.createDeliveryChallan(parsed.data as any);
+
+      const createdItems = [];
+      for (const item of items) {
+        const itemParsed = insertDeliveryChallanItemSchema.safeParse({
+          ...item,
+          challanId: challan.id,
+        });
+        if (!itemParsed.success) continue;
+        const ci = await storage.createDeliveryChallanItem(itemParsed.data as any);
+        createdItems.push(ci);
+      }
+
+      res.status(201).json({ ...challan, items: createdItems });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create delivery challan" });
+    }
+  });
+
+  app.post("/api/delivery-challans/:id/dispatch", authenticateToken, async (req: any, res) => {
+    try {
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be dispatched" });
+
+      const items = await storage.getDeliveryChallanItems(challan.id);
+
+      if (challan.sourceType === "warehouse") {
+        for (const item of items) {
+          const available = await getAvailableStock(item.productId, challan.sourceId);
+          if (item.quantity > available) {
+            return res.status(400).json({ message: `Insufficient stock for product. Available: ${available}, Required: ${item.quantity}` });
+          }
+        }
+
+        for (const item of items) {
+          await storage.createStockMovement({
+            productId: item.productId,
+            warehouseId: challan.sourceId,
+            movementType: "out",
+            quantity: item.quantity,
+            referenceType: "challan",
+            referenceId: challan.id,
+            notes: `Dispatched via challan ${challan.challanNumber}`,
+            createdBy: req.user.id,
+          });
+
+          await updateInventoryStockForMovement(item.productId, challan.sourceId, -item.quantity);
+        }
+      }
+
+      const updated = await storage.updateDeliveryChallan(challan.id, {
+        status: "dispatched",
+        dispatchDate: new Date(),
+      });
+
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to dispatch challan" });
+    }
+  });
+
+  app.post("/api/delivery-challans/:id/deliver", authenticateToken, async (req: any, res) => {
+    try {
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (challan.status !== "dispatched") return res.status(400).json({ message: "Only dispatched challans can be delivered" });
+
+      const updated = await storage.updateDeliveryChallan(challan.id, {
+        status: "delivered",
+        deliveryDate: new Date(),
+      });
+
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to mark challan as delivered" });
+    }
+  });
+
+  app.get("/api/delivery-challans/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const items = await storage.getDeliveryChallanItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch challan items" });
+    }
+  });
+
+  // ======================== PO RECEIVING ========================
+  app.post("/api/purchase-orders/:id/receive", authenticateToken, async (req: any, res) => {
+    try {
+      const { warehouseId } = req.body;
+      if (!warehouseId) return res.status(400).json({ message: "Warehouse is required" });
+
+      const po = await storage.getPurchaseOrder(req.params.id);
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+
+      const items = await storage.getPurchaseOrderItems(po.id);
+      if (items.length === 0) return res.status(400).json({ message: "PO has no line items to receive" });
+
+      for (const item of items) {
+        if (!item.productId) continue;
+
+        await storage.createStockMovement({
+          productId: item.productId,
+          warehouseId,
+          movementType: "in",
+          quantity: item.quantity,
+          referenceType: "purchase_order",
+          referenceId: po.id,
+          notes: `Received from PO ${po.poNumber || po.id}`,
+          createdBy: req.user.id,
+        });
+
+        await updateInventoryStockForMovement(item.productId, warehouseId, item.quantity);
+      }
+
+      const updated = await storage.updatePurchaseOrder(po.id, { status: "received" } as any);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to receive purchase order" });
+    }
+  });
+
+  // ======================== ORDER REMAINING QUANTITIES ========================
+  app.get("/api/sales-orders/:id/remaining-quantities", authenticateToken, async (req: any, res) => {
+    try {
+      const remaining = await getRemainingOrderItemQuantities(req.params.id);
+      res.json(remaining);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to get remaining quantities" });
+    }
+  });
+
+  // ======================== INVENTORY STOCK BY PRODUCT ========================
+  app.get("/api/inventory-stock/by-product/:productId", authenticateToken, async (req: any, res) => {
+    try {
+      const allStock = await storage.getInventoryStock();
+      const productStock = allStock.filter((s: any) => s.productId === req.params.productId);
+      res.json(productStock);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch product stock" });
     }
   });
 

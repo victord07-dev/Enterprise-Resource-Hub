@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -190,6 +190,23 @@ export interface IStorage {
   getPurchaseOrderItems(purchaseOrderId: string): Promise<PurchaseOrderItem[]>;
   createPurchaseOrderItem(data: Omit<PurchaseOrderItem, "id">): Promise<PurchaseOrderItem>;
   deletePurchaseOrderItems(purchaseOrderId: string): Promise<boolean>;
+
+  // Stock Movements
+  getStockMovements(): Promise<StockMovement[]>;
+  getStockMovementsByProduct(productId: string): Promise<StockMovement[]>;
+  createStockMovement(data: Omit<StockMovement, "id" | "createdAt">): Promise<StockMovement>;
+
+  // Delivery Challans
+  getDeliveryChallans(): Promise<DeliveryChallan[]>;
+  getDeliveryChallan(id: string): Promise<DeliveryChallan | undefined>;
+  getDeliveryChallansByOrder(orderId: string): Promise<DeliveryChallan[]>;
+  createDeliveryChallan(data: Omit<DeliveryChallan, "id" | "createdAt">): Promise<DeliveryChallan>;
+  updateDeliveryChallan(id: string, data: Partial<Omit<DeliveryChallan, "id" | "createdAt">>): Promise<DeliveryChallan | undefined>;
+
+  // Delivery Challan Items
+  getDeliveryChallanItems(challanId: string): Promise<DeliveryChallanItem[]>;
+  createDeliveryChallanItem(data: Omit<DeliveryChallanItem, "id">): Promise<DeliveryChallanItem>;
+  deleteDeliveryChallanItems(challanId: string): Promise<boolean>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -859,6 +876,59 @@ export class DatabaseStorage implements IStorage {
 
   async deletePurchaseOrderItems(purchaseOrderId: string): Promise<boolean> {
     await db.delete(purchaseOrderItems).where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
+    return true;
+  }
+
+  // Stock Movements
+  async getStockMovements(): Promise<StockMovement[]> {
+    return await db.select().from(stockMovements).orderBy(desc(stockMovements.createdAt));
+  }
+
+  async getStockMovementsByProduct(productId: string): Promise<StockMovement[]> {
+    return await db.select().from(stockMovements).where(eq(stockMovements.productId, productId)).orderBy(desc(stockMovements.createdAt));
+  }
+
+  async createStockMovement(data: Omit<StockMovement, "id" | "createdAt">): Promise<StockMovement> {
+    const [created] = await db.insert(stockMovements).values(data).returning();
+    return created;
+  }
+
+  // Delivery Challans
+  async getDeliveryChallans(): Promise<DeliveryChallan[]> {
+    return await db.select().from(deliveryChallans).orderBy(desc(deliveryChallans.createdAt));
+  }
+
+  async getDeliveryChallan(id: string): Promise<DeliveryChallan | undefined> {
+    const [found] = await db.select().from(deliveryChallans).where(eq(deliveryChallans.id, id));
+    return found;
+  }
+
+  async getDeliveryChallansByOrder(orderId: string): Promise<DeliveryChallan[]> {
+    return await db.select().from(deliveryChallans).where(eq(deliveryChallans.orderId, orderId)).orderBy(desc(deliveryChallans.createdAt));
+  }
+
+  async createDeliveryChallan(data: Omit<DeliveryChallan, "id" | "createdAt">): Promise<DeliveryChallan> {
+    const [created] = await db.insert(deliveryChallans).values(data).returning();
+    return created;
+  }
+
+  async updateDeliveryChallan(id: string, data: Partial<Omit<DeliveryChallan, "id" | "createdAt">>): Promise<DeliveryChallan | undefined> {
+    const [updated] = await db.update(deliveryChallans).set(data).where(eq(deliveryChallans.id, id)).returning();
+    return updated;
+  }
+
+  // Delivery Challan Items
+  async getDeliveryChallanItems(challanId: string): Promise<DeliveryChallanItem[]> {
+    return await db.select().from(deliveryChallanItems).where(eq(deliveryChallanItems.challanId, challanId));
+  }
+
+  async createDeliveryChallanItem(data: Omit<DeliveryChallanItem, "id">): Promise<DeliveryChallanItem> {
+    const [created] = await db.insert(deliveryChallanItems).values(data).returning();
+    return created;
+  }
+
+  async deleteDeliveryChallanItems(challanId: string): Promise<boolean> {
+    await db.delete(deliveryChallanItems).where(eq(deliveryChallanItems.challanId, challanId));
     return true;
   }
 

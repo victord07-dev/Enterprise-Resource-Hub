@@ -14,10 +14,10 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 1. Dashboard - Metric cards, revenue chart, activity feed
 2. Products (/products) - Product Master for sales/management: selling price, last sold price, brand, supplier list per product
 3. Leads (/leads) - CRM lead pipeline with conversion to quotation
-4. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation
+4. Sales - Orders with line items, quotations with line items, discounts, quotation-to-order conversion, customers, payment recording, invoice generation, delivery challans
 5. Project Management - Project tracking, milestones
-6. Inventory - Products & Services (cost price only, no selling price visible), warehouses, stock movements
-7. Supply Chain - Suppliers with product catalogs, purchase orders with line items, supplier-product pricing
+6. Inventory - Products & Services (cost price only, no selling price visible), warehouses, stock movements (auto-logged), real stock levels per warehouse
+7. Supply Chain - Suppliers with product catalogs, purchase orders with line items, supplier-product pricing, PO receiving into warehouse
 7. Field Staff (/field-staff) - Live location tracking, travel expense submission & approval, expense history
 8. Accounts - Invoices, payments, financial tracking
 9. Employee Management - Staff, attendance (with QR + selfie kiosk), payroll
@@ -89,6 +89,26 @@ A comprehensive custom ERP system for solar panel, electronics, and commodities 
 - Record Payment: POST /api/sales-orders/:id/record-payment (amount, method: cash/cheque/upi/bank_transfer, reference)
 - Generate Invoice: POST /api/sales-orders/:id/generate-invoice (auto-generates from order, amount = remaining uninvoiced amount)
 - Expanded order row shows: payment summary (Total/Paid/Balance), Record Payment button, Generate Invoice button (visible on delivered+)
+
+## Sales Module - Delivery Challans
+- Delivery challans must be generated before any goods movement (from warehouse or supplier)
+- challanNumber format: DC-YYYY-XXXX; auto-generated
+- sourceType: "warehouse" (deducts inventory on dispatch) or "supplier" (drop-ship, no inventory impact)
+- Status flow: draft → dispatched → delivered (or cancelled)
+- Partial delivery support: challan items can have less quantity than order items
+- Generate Challan button visible on orders with status "confirmed" or later
+- Dispatch action: creates stock_movement OUT records for warehouse source, updates inventory_stock
+- Tables: delivery_challans (challanNumber, orderId, sourceType, sourceId, status, dispatchDate, deliveryDate, vehicleNumber, driverName), delivery_challan_items (challanId, productId, description, quantity, unitPrice)
+- API: GET/POST /api/delivery-challans, GET /api/delivery-challans/:id, POST /api/delivery-challans/:id/dispatch, POST /api/delivery-challans/:id/deliver, GET /api/delivery-challans/by-order/:orderId
+
+## Stock Movements & PO Receiving
+- stock_movements table: auto-logged IN/OUT/adjustment records with referenceType (purchase_order, challan, manual) and referenceId
+- PO receiving: POST /api/purchase-orders/:id/receive (warehouseId) — creates stock_movement IN records, updates inventory_stock, sets PO status to "received"
+- Manual stock adjustments: POST /api/stock-movements (in/out/adjustment with product, warehouse, quantity, notes)
+- Inventory Products tab shows real stock levels per product across all warehouses, expandable per-warehouse breakdown
+- Low stock alerts: products below minStockLevel highlighted in red
+- Stock Movements tab: filterable by product, warehouse, type, date range; color-coded badges (green IN, red OUT, amber adjustment)
+- API: GET /api/stock-movements, POST /api/stock-movements, GET /api/stock-movements/by-product/:productId, GET /api/inventory-stock/by-product/:productId
 
 ## Sales Module - Quotation PDF
 - Quotations have a downloadable PDF button (Download icon) in the actions column

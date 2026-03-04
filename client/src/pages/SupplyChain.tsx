@@ -9,10 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, PackageCheck } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem } from "@shared/schema";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse } from "@shared/schema";
 
 interface POLineItem {
   productId: string;
@@ -507,6 +507,12 @@ export default function SupplyChain() {
   const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
   const [poSearch, setPoSearch] = useState("");
 
+  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
+  const [receivingPo, setReceivingPo] = useState<PurchaseOrder | null>(null);
+  const [receiveWarehouseId, setReceiveWarehouseId] = useState("");
+
+  const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
+
   const selectedSupplierId = poForm.supplierId;
   const { data: supplierCatalog } = useQuery<SupplierProduct[]>({
     queryKey: ["/api/suppliers", selectedSupplierId, "products"],
@@ -562,6 +568,30 @@ export default function SupplyChain() {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  const receiveMutation = useMutation({
+    mutationFn: async ({ poId, warehouseId }: { poId: string; warehouseId: string }) => {
+      await apiRequest("POST", `/api/purchase-orders/${poId}/receive`, { warehouseId });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      toast({ title: "Goods received", description: "PO marked as received and inventory updated." });
+      setReceiveDialogOpen(false);
+      setReceivingPo(null);
+      setReceiveWarehouseId("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error receiving goods", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const openReceiveDialog = (po: PurchaseOrder) => {
+    setReceivingPo(po);
+    setReceiveWarehouseId("");
+    setReceiveDialogOpen(true);
+  };
 
   const supplierMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -777,6 +807,12 @@ export default function SupplyChain() {
                               <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
                               <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center justify-end gap-1">
+                                  {(po.status === "approved" || po.status === "shipped") && (
+                                    <Button size="sm" variant="outline" data-testid={`button-receive-po-${po.id}`} onClick={() => openReceiveDialog(po)}>
+                                      <PackageCheck className="w-4 h-4 mr-1" />
+                                      Receive
+                                    </Button>
+                                  )}
                                   <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
                                     <Pencil className="w-4 h-4" />
                                   </Button>
@@ -998,6 +1034,56 @@ export default function SupplyChain() {
           <DialogFooter>
             <Button data-testid="button-submit-supplier" disabled={supplierMutation.isPending} onClick={() => supplierMutation.mutate(supplierForm)}>
               {supplierMutation.isPending ? "Saving..." : editingSupplier ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={receiveDialogOpen} onOpenChange={setReceiveDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Receive Goods</DialogTitle>
+          </DialogHeader>
+          {receivingPo && (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Purchase Order</p>
+                <p className="font-medium" data-testid="text-receive-po-number">{receivingPo.poNumber}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Supplier</p>
+                <p className="font-medium" data-testid="text-receive-supplier">{supplierMap.get(receivingPo.supplierId)?.name || "—"}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Total Amount</p>
+                <p className="font-medium" data-testid="text-receive-amount">₹{Number(receivingPo.totalAmount).toLocaleString()}</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Receive Into Warehouse</Label>
+                <Select value={receiveWarehouseId} onValueChange={setReceiveWarehouseId}>
+                  <SelectTrigger data-testid="select-receive-warehouse">
+                    <SelectValue placeholder="Select warehouse" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {warehouses?.map((w) => (
+                      <SelectItem key={w.id} value={w.id}>{w.name}{w.location ? ` (${w.location})` : ""}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <POExpandedItems poId={receivingPo.id} />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReceiveDialogOpen(false)} data-testid="button-cancel-receive">
+              Cancel
+            </Button>
+            <Button
+              disabled={!receiveWarehouseId || receiveMutation.isPending}
+              onClick={() => receivingPo && receiveMutation.mutate({ poId: receivingPo.id, warehouseId: receiveWarehouseId })}
+              data-testid="button-confirm-receive"
+            >
+              {receiveMutation.isPending ? "Receiving..." : "Confirm Receipt"}
             </Button>
           </DialogFooter>
         </DialogContent>

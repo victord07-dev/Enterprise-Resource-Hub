@@ -39,7 +39,9 @@ The ERP system is built with a modern web stack, prioritizing a responsive and i
 - **Stock Movement & PO Receiving:** Automated logging of stock movements (IN/OUT/adjustment) linked to purchase orders and delivery challans. Comprehensive inventory visibility with per-warehouse breakdowns.
 - **Quotation PDF Generation:** Client-side PDF generation for quotations using `jsPDF`, including company branding, customer details, line items, and terms.
 - **Mixed Line Items:** Support for both product and service line items in quotations and orders, with dynamic pricing and calculations.
-- **Purchase Requests (Auto-Procurement):** Automated generation of purchase requests for stock shortfalls detected upon sales order confirmation, with priority levels and conversion to purchase orders.
+- **Purchase Requests (Auto-Procurement):** Automated generation of purchase requests for stock shortfalls detected upon sales order confirmation, with priority levels and conversion to purchase orders. PR edit dialog filters suppliers to only those whose catalog covers all requested products, with pricing breakdown.
+- **PO Number Auto-Generation:** Purchase Order numbers (PO-YYYY-XXXX) are auto-generated server-side using max-based increment, removing manual entry.
+- **Manual Stock Adjustment:** Available from both the Products & Services tab ("Add Stock" button) and the Stock Movements tab ("Manual Adjustment" button) in Inventory. Supports Stock In, Stock Out, and Adjustment types with warehouse selection.
 - **Field Staff Travel Expense:** System for field staff to submit travel expenses with GPS-based distance calculation, transport mode selection, and approval workflow. Includes live location tracking for administrators.
 
 ## External Dependencies

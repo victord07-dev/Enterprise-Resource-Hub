@@ -599,7 +599,8 @@ export default function SupplyChain() {
         const resp = await apiRequest("PATCH", `/api/purchase-orders/${editingPo.id}`, payload);
         po = await resp.json();
       } else {
-        const resp = await apiRequest("POST", "/api/purchase-orders", payload);
+        const { poNumber, ...createPayload } = payload;
+        const resp = await apiRequest("POST", "/api/purchase-orders", createPayload);
         po = await resp.json();
       }
 
@@ -761,7 +762,7 @@ export default function SupplyChain() {
 
   const openNewPo = () => {
     setEditingPo(null);
-    setPoForm({ poNumber: "", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
+    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
     setPoLineItems([emptyLineItem()]);
     setPoDialogOpen(true);
   };
@@ -1256,7 +1257,7 @@ export default function SupplyChain() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="poNumber">PO Number</Label>
-                <Input id="poNumber" data-testid="input-po-number" value={poForm.poNumber} onChange={(e) => setPoForm({ ...poForm, poNumber: e.target.value })} />
+                <Input id="poNumber" data-testid="input-po-number" value={poForm.poNumber} onChange={(e) => setPoForm({ ...poForm, poNumber: e.target.value })} readOnly className="bg-muted" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="poSupplier">Supplier</Label>

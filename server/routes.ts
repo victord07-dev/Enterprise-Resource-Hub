@@ -1216,10 +1216,28 @@ export async function registerRoutes(
 
   app.post("/api/purchase-orders", authenticateToken, async (req: any, res) => {
     try {
-      const parsed = insertPurchaseOrderSchema.safeParse(req.body);
+      let poNumber = req.body.poNumber;
+      if (!poNumber || poNumber.trim() === "") {
+        const allPOs = await storage.getPurchaseOrders();
+        const year = new Date().getFullYear();
+        const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
+        const maxNum = yearPOs.reduce((max: number, po: any) => {
+          const num = parseInt(po.poNumber.split("-").pop() || "0", 10);
+          return num > max ? num : max;
+        }, 0);
+        poNumber = `PO-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+      }
+
+      const payload = {
+        ...req.body,
+        poNumber,
+        expectedDelivery: req.body.expectedDelivery && req.body.expectedDelivery !== "" ? new Date(req.body.expectedDelivery) : null,
+      };
+
+      const parsed = insertPurchaseOrderSchema.safeParse(payload);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createPurchaseOrder(parsed.data as any);
-      await logAction(req.user.id, "create", "supply_chain", `Created PO ${parsed.data.poNumber}`);
+      await logAction(req.user.id, "create", "supply_chain", `Created PO ${poNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
       if (error.code === "23505") return res.status(409).json({ message: "PO number already exists" });
@@ -1229,7 +1247,13 @@ export async function registerRoutes(
 
   app.patch("/api/purchase-orders/:id", authenticateToken, async (req: any, res) => {
     try {
-      const updated = await storage.updatePurchaseOrder(req.params.id, req.body);
+      const { lineItems, ...updateData } = req.body;
+      if (updateData.expectedDelivery === "") {
+        updateData.expectedDelivery = null;
+      } else if (updateData.expectedDelivery) {
+        updateData.expectedDelivery = new Date(updateData.expectedDelivery);
+      }
+      const updated = await storage.updatePurchaseOrder(req.params.id, updateData);
       if (!updated) return res.status(404).json({ message: "Purchase order not found" });
       await logAction(req.user.id, "update", "supply_chain", `Updated PO ${updated.poNumber}`);
       res.json(updated);

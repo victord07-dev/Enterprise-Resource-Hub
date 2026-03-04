@@ -11,7 +11,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier } from "@shared/schema";
 
@@ -482,6 +482,10 @@ export default function Inventory() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Search products & services..." className="pl-9" data-testid="input-search-products" />
             </div>
+            <Button variant="outline" data-testid="button-add-stock" onClick={() => { setAdjustmentForm({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" }); setAdjustmentDialogOpen(true); }}>
+              <PackagePlus className="w-4 h-4 mr-2" />
+              Add Stock
+            </Button>
           </div>
           <Card>
             <CardContent className="p-0">

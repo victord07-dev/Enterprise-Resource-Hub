@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -18,9 +19,10 @@ const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Main
 
 export default function Products() {
   const { toast } = useToast();
-  const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: lastSoldPrices } = useQuery<Record<string, string>>({ queryKey: ["/api/products/last-sold-prices"] });
 
+  const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -29,7 +31,12 @@ export default function Products() {
     unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
   });
 
-  const filteredProducts = products?.filter((p) => {
+  const productsOnly = allProducts?.filter(p => p.type !== "service") ?? [];
+  const servicesOnly = allProducts?.filter(p => p.type === "service") ?? [];
+
+  const currentList = activeTab === "products" ? productsOnly : servicesOnly;
+
+  const filteredItems = currentList.filter((p) => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -40,9 +47,8 @@ export default function Products() {
     );
   });
 
-  const productCount = products?.filter(p => p.type !== "service").length ?? 0;
-  const serviceCount = products?.filter(p => p.type === "service").length ?? 0;
-  const noSellingPriceCount = products?.filter(p => !p.unitPrice || p.unitPrice === "0").length ?? 0;
+  const noSellingPriceProducts = productsOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
+  const noSellingPriceServices = servicesOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
 
   const productMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -54,7 +60,7 @@ export default function Products() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: editingProduct ? "Product updated" : "Product created" });
+      toast({ title: editingProduct ? (activeTab === "services" ? "Service updated" : "Product updated") : (activeTab === "services" ? "Service created" : "Product created") });
       setProductDialogOpen(false);
       setEditingProduct(null);
     },
@@ -67,7 +73,7 @@ export default function Products() {
     mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/products/${id}`); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "Product deleted" });
+      toast({ title: activeTab === "services" ? "Service deleted" : "Product deleted" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -76,12 +82,19 @@ export default function Products() {
 
   const isService = productForm.type === "service";
 
-  const openNewProduct = () => {
+  const openNewItem = () => {
     setEditingProduct(null);
-    setProductForm({
-      name: "", sku: "", category: "Solar Panels", description: "",
-      unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
-    });
+    if (activeTab === "services") {
+      setProductForm({
+        name: "", sku: `SVC-${Date.now().toString(36).toUpperCase()}`, category: "Installation", description: "",
+        unitPrice: "", brand: "", unit: "service", minStockLevel: "0", type: "service",
+      });
+    } else {
+      setProductForm({
+        name: "", sku: "", category: "Solar Panels", description: "",
+        unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
+      });
+    }
     setProductDialogOpen(true);
   };
 
@@ -128,162 +141,206 @@ export default function Products() {
       minStockLevel: Number(productForm.minStockLevel),
       brand: productForm.brand || null,
     };
-    if (isService && !data.sku) {
+    if (data.type === "service" && !data.sku) {
       data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
     }
     productMutation.mutate(data);
   };
 
+  const renderTable = (items: Product[], isServiceTab: boolean) => (
+    <Card>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
+                {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>}
+                <th className="text-left p-3 font-medium text-muted-foreground">Brand</th>
+                <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
+                <th className="text-right p-3 font-medium text-muted-foreground">{isServiceTab ? "Service Charge (₹)" : "Selling Price (₹)"}</th>
+                <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
+                <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {productsLoading ? (
+                Array.from({ length: 4 }).map((_, i) => (
+                  <tr key={i} className="border-b">
+                    {Array.from({ length: isServiceTab ? 6 : 7 }).map((_, j) => (
+                      <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
+                    ))}
+                  </tr>
+                ))
+              ) : items.length > 0 ? (
+                items.map((item) => (
+                  <tr
+                    key={item.id}
+                    className="border-b last:border-0"
+                    data-testid={`row-${isServiceTab ? "service" : "product"}-${item.id}`}
+                  >
+                    <td className="p-3 font-medium" data-testid={`text-item-name-${item.id}`}>{item.name}</td>
+                    {!isServiceTab && <td className="p-3 text-muted-foreground" data-testid={`text-item-sku-${item.id}`}>{item.sku}</td>}
+                    <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>{item.brand || "—"}</td>
+                    <td className="p-3">
+                      <Badge variant="secondary" className="no-default-active-elevate" data-testid={`badge-item-category-${item.id}`}>
+                        {item.category}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-right font-medium" data-testid={`text-item-price-${item.id}`}>
+                      ₹{Number(item.unitPrice).toLocaleString()}
+                    </td>
+                    <td className="p-3 text-right" data-testid={`text-item-last-sold-${item.id}`}>
+                      {lastSoldPrices && lastSoldPrices[item.id]
+                        ? `₹${Number(lastSoldPrices[item.id]).toLocaleString()}`
+                        : "—"}
+                    </td>
+                    <td className="p-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Button size="icon" variant="ghost" data-testid={`button-edit-item-${item.id}`} onClick={() => openEditProduct(item)}>
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button size="icon" variant="ghost" data-testid={`button-delete-item-${item.id}`} onClick={() => { if (confirm(`Delete this ${isServiceTab ? "service" : "product"}?`)) deleteProductMutation.mutate(item.id); }}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={isServiceTab ? 6 : 7} className="p-8 text-center text-muted-foreground">
+                    {searchQuery
+                      ? `No ${isServiceTab ? "services" : "products"} match your search.`
+                      : `No ${isServiceTab ? "services" : "products"} found. Add your first ${isServiceTab ? "service" : "product"}.`}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold" data-testid="text-page-title">Product Master</h1>
-          <p className="text-muted-foreground text-sm mt-1">Manage products, services, and pricing</p>
+          <h1 className="text-2xl font-bold" data-testid="text-page-title">Products & Services</h1>
+          <p className="text-muted-foreground text-sm mt-1">Manage your product catalog and service offerings</p>
         </div>
-        <Button data-testid="button-add-product" onClick={openNewProduct}>
+        <Button data-testid="button-add-item" onClick={openNewItem}>
           <Plus className="w-4 h-4 mr-2" />
-          Add Product
+          {activeTab === "services" ? "Add Service" : "Add Product"}
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
-              <Package className="w-5 h-5 text-blue-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" data-testid="text-stat-products">{productCount}</p>
-              <p className="text-xs text-muted-foreground">Total Products</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-md bg-orange-50 dark:bg-orange-950/30 flex items-center justify-center">
-              <Wrench className="w-5 h-5 text-orange-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" data-testid="text-stat-services">{serviceCount}</p>
-              <p className="text-xs text-muted-foreground">Total Services</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
-              <AlertCircle className="w-5 h-5 text-red-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" data-testid="text-stat-no-selling">{noSellingPriceCount}</p>
-              <p className="text-xs text-muted-foreground">Without Selling Price</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSearchQuery(""); }}>
+        <TabsList data-testid="tabs-products-services">
+          <TabsTrigger value="products" data-testid="tab-products" className="gap-1.5">
+            <Package className="w-4 h-4" />
+            Products ({productsOnly.length})
+          </TabsTrigger>
+          <TabsTrigger value="services" data-testid="tab-services" className="gap-1.5">
+            <Wrench className="w-4 h-4" />
+            Services ({servicesOnly.length})
+          </TabsTrigger>
+        </TabsList>
 
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            placeholder="Search by name, SKU, brand, category..."
-            className="pl-9"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            data-testid="input-search-products"
-          />
-        </div>
-      </div>
-
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
-                  <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>
-                  <th className="text-left p-3 font-medium text-muted-foreground">Brand</th>
-                  <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
-                  <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
-                  <th className="text-right p-3 font-medium text-muted-foreground">Selling Price (₹)</th>
-                  <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
-                  <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {productsLoading ? (
-                  Array.from({ length: 4 }).map((_, i) => (
-                    <tr key={i} className="border-b">
-                      {Array.from({ length: 8 }).map((_, j) => (
-                        <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
-                      ))}
-                    </tr>
-                  ))
-                ) : filteredProducts && filteredProducts.length > 0 ? (
-                  filteredProducts.map((product) => (
-                    <tr
-                      key={product.id}
-                      className="border-b last:border-0"
-                      data-testid={`row-product-${product.id}`}
-                    >
-                      <td className="p-3 font-medium" data-testid={`text-product-name-${product.id}`}>{product.name}</td>
-                      <td className="p-3 text-muted-foreground" data-testid={`text-product-sku-${product.id}`}>{product.type === "service" ? "—" : product.sku}</td>
-                      <td className="p-3 text-muted-foreground" data-testid={`text-product-brand-${product.id}`}>{product.brand || "—"}</td>
-                      <td className="p-3">
-                        <Badge variant="secondary" className="no-default-active-elevate" data-testid={`badge-product-category-${product.id}`}>
-                          {product.category}
-                        </Badge>
-                      </td>
-                      <td className="p-3">
-                        {product.type === "service" ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400">
-                            <Wrench className="w-3 h-3" /> Service
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
-                            <Package className="w-3 h-3" /> Product
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-3 text-right font-medium" data-testid={`text-product-selling-price-${product.id}`}>
-                        ₹{Number(product.unitPrice).toLocaleString()}
-                      </td>
-                      <td className="p-3 text-right" data-testid={`text-product-last-sold-${product.id}`}>
-                        {lastSoldPrices && lastSoldPrices[product.id]
-                          ? `₹${Number(lastSoldPrices[product.id]).toLocaleString()}`
-                          : "—"}
-                      </td>
-                      <td className="p-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <Button size="icon" variant="ghost" data-testid={`button-edit-product-${product.id}`} onClick={() => openEditProduct(product)}>
-                            <Pencil className="w-4 h-4" />
-                          </Button>
-                          <Button size="icon" variant="ghost" data-testid={`button-delete-product-${product.id}`} onClick={() => { if (confirm("Delete this product?")) deleteProductMutation.mutate(product.id); }}>
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={8} className="p-8 text-center text-muted-foreground">
-                      {searchQuery ? "No products match your search." : "No products found. Add your first product."}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+        <TabsContent value="products" className="space-y-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Card>
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center">
+                  <Package className="w-5 h-5 text-blue-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold" data-testid="text-stat-products">{productsOnly.length}</p>
+                  <p className="text-xs text-muted-foreground">Total Products</p>
+                </div>
+              </CardContent>
+            </Card>
+            {noSellingPriceProducts > 0 && (
+              <Card>
+                <CardContent className="p-5 flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
+                    <AlertCircle className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold" data-testid="text-stat-no-price-products">{noSellingPriceProducts}</p>
+                    <p className="text-xs text-muted-foreground">Without Selling Price</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
-        </CardContent>
-      </Card>
+
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, SKU, brand, category..."
+                className="pl-9"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                data-testid="input-search-products"
+              />
+            </div>
+          </div>
+
+          {renderTable(filteredItems, false)}
+        </TabsContent>
+
+        <TabsContent value="services" className="space-y-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Card>
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-orange-50 dark:bg-orange-950/30 flex items-center justify-center">
+                  <Wrench className="w-5 h-5 text-orange-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold" data-testid="text-stat-services">{servicesOnly.length}</p>
+                  <p className="text-xs text-muted-foreground">Total Services</p>
+                </div>
+              </CardContent>
+            </Card>
+            {noSellingPriceServices > 0 && (
+              <Card>
+                <CardContent className="p-5 flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
+                    <AlertCircle className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold" data-testid="text-stat-no-price-services">{noSellingPriceServices}</p>
+                    <p className="text-xs text-muted-foreground">Without Service Charge</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, brand, category..."
+                className="pl-9"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                data-testid="input-search-services"
+              />
+            </div>
+          </div>
+
+          {renderTable(filteredItems, true)}
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingProduct ? "Edit Product" : "Add Product"}</DialogTitle>
+            <DialogTitle>{editingProduct ? (isService ? "Edit Service" : "Edit Product") : (isService ? "Add Service" : "Add Product")}</DialogTitle>
             <DialogDescription>
               {isService ? "Service items for installation, maintenance, etc." : "Physical product or material"}
             </DialogDescription>
@@ -333,7 +390,7 @@ export default function Products() {
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="prodSellingPrice">Selling Price (₹)</Label>
+              <Label htmlFor="prodSellingPrice">{isService ? "Service Charge (₹)" : "Selling Price (₹)"}</Label>
               <Input id="prodSellingPrice" type="number" data-testid="input-product-selling-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
             </div>
             {!isService && (

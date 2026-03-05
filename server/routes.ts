@@ -2528,13 +2528,21 @@ export async function registerRoutes(
 
       const deliveryType = req.body?.deliveryType === "direct_delivery" ? "direct_delivery" : "warehouse";
 
+      let expectedDelivery: Date | null = null;
+      if (pr.salesOrderId) {
+        const linkedOrder = await storage.getSalesOrder(pr.salesOrderId);
+        if (linkedOrder && (linkedOrder as any).expectedDeliveryDate) {
+          expectedDelivery = new Date((linkedOrder as any).expectedDeliveryDate);
+        }
+      }
+
       const po = await storage.createPurchaseOrder({
         poNumber,
         supplierId: pr.supplierId,
         status: "pending",
         deliveryType,
         totalAmount: totalAmount.toFixed(2),
-        expectedDelivery: null,
+        expectedDelivery,
         notes: `Generated from purchase request ${pr.requestNumber}`,
       } as any);
 

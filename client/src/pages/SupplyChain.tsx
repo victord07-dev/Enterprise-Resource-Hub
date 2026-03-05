@@ -10,7 +10,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
@@ -430,7 +430,7 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
   );
 }
 
-function POExpandedItems({ poId }: { poId: string }) {
+function POExpandedItems({ poId, linkedSalesOrder, deliveryType }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string }) {
   const { data: items, isLoading } = useQuery<PurchaseOrderItem[]>({
     queryKey: ["/api/purchase-orders", poId, "items"],
     queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
@@ -450,6 +450,18 @@ function POExpandedItems({ poId }: { poId: string }) {
 
   return (
     <div className="p-4">
+      {linkedSalesOrder && (
+        <div className="mb-3 flex items-center gap-2" data-testid={`text-po-linked-so-${poId}`}>
+          <span className="text-xs font-medium text-muted-foreground">Linked Sales Order:</span>
+          <Badge variant={deliveryType === "direct_delivery" ? "default" : "secondary"} className="text-xs">
+            <ShoppingCart className="w-3 h-3 mr-1" />
+            {linkedSalesOrder.orderNumber}
+          </Badge>
+          {deliveryType === "direct_delivery" && (
+            <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Direct to Customer</span>
+          )}
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -1151,13 +1163,21 @@ export default function SupplyChain() {
                                 </div>
                               </td>
                             </tr>
-                            {isExpanded && (
-                              <tr>
-                                <td colSpan={9} className="bg-muted/30 border-b">
-                                  <POExpandedItems poId={po.id} />
-                                </td>
-                              </tr>
-                            )}
+                            {isExpanded && (() => {
+                              const linkedPR = purchaseRequests?.find(pr => pr.purchaseOrderId === po.id);
+                              const linkedSO = linkedPR?.salesOrderId ? salesOrders?.find(so => so.id === linkedPR.salesOrderId) : null;
+                              return (
+                                <tr>
+                                  <td colSpan={9} className="bg-muted/30 border-b">
+                                    <POExpandedItems
+                                      poId={po.id}
+                                      linkedSalesOrder={linkedSO ? { orderNumber: linkedSO.orderNumber, id: linkedSO.id } : null}
+                                      deliveryType={po.deliveryType}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })()}
                           </Fragment>
                         );
                       })

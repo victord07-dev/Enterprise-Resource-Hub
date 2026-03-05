@@ -77,6 +77,7 @@ export const salesOrders = pgTable("sales_orders", {
   paymentTerms: text("payment_terms"),
   advanceAmount: decimal("advance_amount", { precision: 12, scale: 2 }),
   paidAmount: decimal("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  expectedDeliveryDate: timestamp("expected_delivery_date"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {

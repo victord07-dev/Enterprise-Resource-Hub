@@ -259,7 +259,7 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
@@ -355,6 +355,7 @@ export default function Sales() {
         discountValue: orderDiscount.discountType === "none" ? null : String(orderDiscount.discountValue),
         paymentTerms: data.paymentTerms || null,
         advanceAmount: data.advanceAmount ? String(data.advanceAmount) : null,
+        expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
       };
       let orderId: string;
       if (editingOrder) {
@@ -382,6 +383,7 @@ export default function Sales() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       toast({ title: editingOrder ? "Order updated" : "Order created" });
       setOrderDialogOpen(false);
       setEditingOrder(null);
@@ -668,7 +670,7 @@ export default function Sales() {
   const openNewOrder = () => {
     setEditingOrder(null);
     const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "" });
+    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderDialogOpen(true);
@@ -683,6 +685,7 @@ export default function Sales() {
       notes: order.notes || "",
       paymentTerms: order.paymentTerms || "",
       advanceAmount: order.advanceAmount ? String(order.advanceAmount) : "",
+      expectedDeliveryDate: (order as any).expectedDeliveryDate ? new Date((order as any).expectedDeliveryDate).toISOString().split("T")[0] : "",
     });
     setOrderDiscount({
       discountType: order.discountType || "none",
@@ -1478,6 +1481,10 @@ export default function Sales() {
               <div className="space-y-2">
                 <Label htmlFor="orderAdvanceAmount">Advance Amount (₹)</Label>
                 <Input id="orderAdvanceAmount" data-testid="input-order-advance-amount" type="number" min="0" step="0.01" value={orderForm.advanceAmount} onChange={(e) => setOrderForm({ ...orderForm, advanceAmount: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="orderExpectedDeliveryDate">Expected Delivery Date</Label>
+                <Input id="orderExpectedDeliveryDate" data-testid="input-order-expected-delivery" type="date" value={orderForm.expectedDeliveryDate} onChange={(e) => setOrderForm({ ...orderForm, expectedDeliveryDate: e.target.value })} />
               </div>
             </div>
             <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} />

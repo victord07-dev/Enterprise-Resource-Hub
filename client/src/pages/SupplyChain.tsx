@@ -575,6 +575,10 @@ export default function SupplyChain() {
   const [prStatusFilter, setPrStatusFilter] = useState("all");
   const [prPriorityFilter, setPrPriorityFilter] = useState("all");
 
+  const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+  const [convertPrId, setConvertPrId] = useState<string | null>(null);
+  const [convertDeliveryType, setConvertDeliveryType] = useState<"warehouse" | "direct_delivery">("warehouse");
+
   const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
 
   const selectedSupplierId = poForm.supplierId;
@@ -614,6 +618,7 @@ export default function SupplyChain() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       toast({ title: editingPo ? "Purchase order updated" : "Purchase order created" });
       setPoDialogOpen(false);
       setEditingPo(null);
@@ -662,14 +667,17 @@ export default function SupplyChain() {
   });
 
   const convertPrMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const resp = await apiRequest("POST", `/api/purchase-requests/${id}/convert-to-po`);
+    mutationFn: async ({ id, deliveryType }: { id: string; deliveryType: string }) => {
+      const resp = await apiRequest("POST", `/api/purchase-requests/${id}/convert-to-po`, { deliveryType });
       return resp.json();
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       toast({ title: "Purchase order created", description: `PO ${data.purchaseOrder?.poNumber || ""} created successfully.` });
+      setConvertDialogOpen(false);
+      setConvertPrId(null);
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -985,7 +993,7 @@ export default function SupplyChain() {
                                       variant="outline"
                                       data-testid={`button-convert-pr-${pr.id}`}
                                       disabled={convertPrMutation.isPending}
-                                      onClick={() => { if (confirm("Convert this purchase request to a purchase order?")) convertPrMutation.mutate(pr.id); }}
+                                      onClick={() => { setConvertPrId(pr.id); setConvertDeliveryType("warehouse"); setConvertDialogOpen(true); }}
                                     >
                                       <ArrowRightCircle className="w-4 h-4 mr-1" />
                                       Convert to PO
@@ -1494,6 +1502,75 @@ export default function SupplyChain() {
               })}
             >
               {updatePrMutation.isPending ? "Saving..." : "Update"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={convertDialogOpen} onOpenChange={(open) => { setConvertDialogOpen(open); if (!open) setConvertPrId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Convert to Purchase Order</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">Select the fulfillment type for this purchase order:</p>
+            <div className="space-y-3">
+              <label
+                className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer ${convertDeliveryType === "warehouse" ? "border-primary bg-primary/5" : ""}`}
+                data-testid="radio-delivery-warehouse"
+              >
+                <input
+                  type="radio"
+                  name="deliveryType"
+                  value="warehouse"
+                  checked={convertDeliveryType === "warehouse"}
+                  onChange={() => setConvertDeliveryType("warehouse")}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium flex items-center gap-2 flex-wrap">
+                    <Warehouse className="w-4 h-4" />
+                    Warehouse Replenishment
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Supplier delivers goods to your warehouse. Stock is received via GRN and then dispatched to the customer.
+                  </p>
+                </div>
+              </label>
+              <label
+                className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer ${convertDeliveryType === "direct_delivery" ? "border-primary bg-primary/5" : ""}`}
+                data-testid="radio-delivery-direct"
+              >
+                <input
+                  type="radio"
+                  name="deliveryType"
+                  value="direct_delivery"
+                  checked={convertDeliveryType === "direct_delivery"}
+                  onChange={() => setConvertDeliveryType("direct_delivery")}
+                  className="mt-1"
+                />
+                <div>
+                  <div className="font-medium flex items-center gap-2 flex-wrap">
+                    <Truck className="w-4 h-4" />
+                    Direct Supplier Delivery (Drop Shipment)
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Supplier ships directly to the customer site. No warehouse stock movement required.
+                  </p>
+                </div>
+              </label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setConvertDialogOpen(false); setConvertPrId(null); }} data-testid="button-cancel-convert">
+              Cancel
+            </Button>
+            <Button
+              disabled={convertPrMutation.isPending || !convertPrId}
+              onClick={() => { if (convertPrId) convertPrMutation.mutate({ id: convertPrId, deliveryType: convertDeliveryType }); }}
+              data-testid="button-confirm-convert"
+            >
+              {convertPrMutation.isPending ? "Converting..." : "Convert to PO"}
             </Button>
           </DialogFooter>
         </DialogContent>

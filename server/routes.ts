@@ -52,6 +52,39 @@ async function logAction(userId: string, action: string, module: string, details
   }
 }
 
+async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
+  const reservedStatuses = ["confirmed", "procurement", "ready_to_ship"];
+  const allOrders = await storage.getSalesOrders();
+  const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status) && o.id !== excludeOrderId);
+
+  const reserved: Record<string, number> = {};
+  for (const order of activeOrders) {
+    const orderItems = await storage.getSalesOrderItems(order.id);
+    const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+    if (productItems.length === 0) continue;
+
+    const challans = await storage.getDeliveryChallansByOrder(order.id);
+    const challanItemsMap: Record<string, number> = {};
+    for (const challan of challans) {
+      if (!["dispatched", "delivered"].includes(challan.status)) continue;
+      const cItems = await storage.getDeliveryChallanItems(challan.id);
+      for (const ci of cItems) {
+        challanItemsMap[ci.productId] = (challanItemsMap[ci.productId] || 0) + ci.quantity;
+      }
+    }
+
+    for (const item of productItems) {
+      const pid = item.productId!;
+      const dispatched = challanItemsMap[pid] || 0;
+      const res = Math.max(0, item.quantity - dispatched);
+      if (res > 0) {
+        reserved[pid] = (reserved[pid] || 0) + res;
+      }
+    }
+  }
+  return reserved;
+}
+
 async function checkAndCreatePurchaseRequests(orderId: string, userId: string, storage: IStorage) {
   const order = await storage.getSalesOrder(orderId);
   if (!order) return;
@@ -67,18 +100,22 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
   const allStock = await storage.getInventoryStock();
   const allProds = await storage.getProducts();
   const prodMap = new Map(allProds.map(p => [p.id, p]));
+  const otherReserved = await calculateReservedStockForOtherOrders(orderId, storage);
+
   for (const item of productItems) {
     const totalStock = allStock
       .filter(s => s.productId === item.productId)
       .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
-    if (totalStock < item.quantity) {
+    const reservedByOthers = otherReserved[item.productId!] || 0;
+    const availableStock = Math.max(0, totalStock - reservedByOthers);
+    if (availableStock < item.quantity) {
       const prod = item.productId ? prodMap.get(item.productId) : null;
       shortfallItems.push({
         productId: item.productId!,
         description: item.description || prod?.name || "",
         required: item.quantity,
-        available: totalStock,
-        shortfall: item.quantity - totalStock,
+        available: availableStock,
+        shortfall: item.quantity - availableStock,
         costPrice: prod?.costPrice || null,
       });
     }
@@ -1667,7 +1704,7 @@ export async function registerRoutes(
       const allOrders = await storage.getSalesOrders();
       const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status));
 
-      const result: Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number }> }> = {};
+      const result: Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string }> }> = {};
 
       for (const order of activeOrders) {
         const orderItems = await storage.getSalesOrderItems(order.id);
@@ -1692,7 +1729,13 @@ export async function registerRoutes(
 
           if (!result[pid]) result[pid] = { total: 0, orders: [] };
           result[pid].total += reserved;
-          result[pid].orders.push({ orderId: order.id, orderNumber: order.orderNumber, quantity: reserved });
+          result[pid].orders.push({
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            quantity: reserved,
+            expectedDeliveryDate: (order as any).expectedDeliveryDate ? new Date((order as any).expectedDeliveryDate).toISOString() : null,
+            reservationStatus: order.status,
+          });
         }
       }
 
@@ -1700,6 +1743,53 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Reserved stock error:", error);
       res.status(500).json({ message: "Failed to calculate reserved stock" });
+    }
+  });
+
+  // ======================== INCOMING STOCK ========================
+  app.get("/api/inventory/incoming-stock", authenticateToken, async (_req, res) => {
+    try {
+      const allPOs = await storage.getPurchaseOrders();
+      const openWarehousePOs = allPOs.filter(
+        (po: any) => po.deliveryType === "warehouse" && ["pending", "approved", "shipped"].includes(po.status)
+      );
+
+      const result: Record<string, { total: number; orders: Array<{ poId: string; poNumber: string; quantity: number; expectedDate: string | null }> }> = {};
+
+      for (const po of openWarehousePOs) {
+        const poItems = await storage.getPurchaseOrderItems(po.id);
+        const grns = await storage.getGRNsByPO(po.id);
+        const confirmedGrns = grns.filter(g => g.status === "confirmed");
+
+        const receivedMap: Record<string, number> = {};
+        for (const grn of confirmedGrns) {
+          const grnItems = await storage.getGRNItems(grn.id);
+          for (const gi of grnItems) {
+            receivedMap[gi.productId] = (receivedMap[gi.productId] || 0) + gi.receivedQuantity;
+          }
+        }
+
+        for (const item of poItems) {
+          if (!item.productId) continue;
+          const received = receivedMap[item.productId] || 0;
+          const incoming = Math.max(0, item.quantity - received);
+          if (incoming <= 0) continue;
+
+          if (!result[item.productId]) result[item.productId] = { total: 0, orders: [] };
+          result[item.productId].total += incoming;
+          result[item.productId].orders.push({
+            poId: po.id,
+            poNumber: po.poNumber,
+            quantity: incoming,
+            expectedDate: po.expectedDelivery ? new Date(po.expectedDelivery).toISOString() : null,
+          });
+        }
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Incoming stock error:", error);
+      res.status(500).json({ message: "Failed to calculate incoming stock" });
     }
   });
 
@@ -2052,6 +2142,8 @@ export async function registerRoutes(
       const items = await storage.getGRNItems(grn.id);
       if (items.length === 0) return res.status(400).json({ message: "GRN has no items to confirm" });
 
+      const allStock = await storage.getInventoryStock();
+
       for (const item of items) {
         await storage.createStockMovement({
           productId: item.productId,
@@ -2065,6 +2157,33 @@ export async function registerRoutes(
         });
 
         await updateInventoryStockForMovement(item.productId, grn.warehouseId, item.receivedQuantity);
+      }
+
+      const costAggregates: Record<string, { totalQty: number; totalCost: number }> = {};
+      for (const item of items) {
+        if (item.buyingPrice && parseFloat(item.buyingPrice) > 0) {
+          if (!costAggregates[item.productId]) {
+            costAggregates[item.productId] = { totalQty: 0, totalCost: 0 };
+          }
+          costAggregates[item.productId].totalQty += item.receivedQuantity;
+          costAggregates[item.productId].totalCost += item.receivedQuantity * parseFloat(item.buyingPrice);
+        }
+      }
+
+      for (const [productId, agg] of Object.entries(costAggregates)) {
+        const existingStock = allStock
+          .filter((s: any) => s.productId === productId)
+          .reduce((sum: number, s: any) => sum + (s.quantity ?? 0), 0);
+        const product = await storage.getProduct(productId);
+        if (product) {
+          const existingCost = product.costPrice ? parseFloat(product.costPrice) : 0;
+          const avgBuyingPrice = agg.totalQty > 0 ? agg.totalCost / agg.totalQty : 0;
+          const totalQty = existingStock + agg.totalQty;
+          const newCost = totalQty > 0
+            ? ((existingStock * existingCost) + (agg.totalQty * avgBuyingPrice)) / totalQty
+            : avgBuyingPrice;
+          await storage.updateProduct(product.id, { costPrice: newCost.toFixed(2) });
+        }
       }
 
       await storage.updateGRN(grn.id, { status: "confirmed" });
@@ -2364,15 +2483,17 @@ export async function registerRoutes(
         };
       });
 
+      const deliveryType = req.body?.deliveryType === "direct_delivery" ? "direct_delivery" : "warehouse";
+
       const po = await storage.createPurchaseOrder({
         poNumber,
         supplierId: pr.supplierId,
         status: "pending",
-        deliveryType: "warehouse",
+        deliveryType,
         totalAmount: totalAmount.toFixed(2),
-        expectedDate: null,
+        expectedDelivery: null,
         notes: `Generated from purchase request ${pr.requestNumber}`,
-      });
+      } as any);
 
       for (const poItem of poItemsData) {
         await storage.createPurchaseOrderItem({

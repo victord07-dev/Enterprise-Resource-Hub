@@ -41,13 +41,24 @@ export default function Inventory() {
 
   const { data: stockMovements, isLoading: movementsLoading } = useQuery<StockMovement[]>({ queryKey: ["/api/stock-movements"] });
   const { data: inventoryStockData } = useQuery<InventoryStock[]>({ queryKey: ["/api/inventory-stock"] });
-  const { data: reservedStockData } = useQuery<Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number }> }>>({ queryKey: ["/api/inventory/reserved-stock"] });
+  const { data: reservedStockData } = useQuery<Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string }> }>>({ queryKey: ["/api/inventory/reserved-stock"] });
+  const { data: incomingStockData } = useQuery<Record<string, { total: number; orders: Array<{ poId: string; poNumber: string; quantity: number; expectedDate: string | null }> }>>({ queryKey: ["/api/inventory/incoming-stock"] });
 
   const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());
   const [expandedReservedIds, setExpandedReservedIds] = useState<Set<string>>(new Set());
+  const [expandedIncomingIds, setExpandedIncomingIds] = useState<Set<string>>(new Set());
 
   const toggleReservedExpanded = (id: string) => {
     setExpandedReservedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleIncomingExpanded = (id: string) => {
+    setExpandedIncomingIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -94,6 +105,7 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       toast({ title: "Stock adjustment recorded" });
       setAdjustmentDialogOpen(false);
       setAdjustmentForm({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
@@ -312,6 +324,7 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       toast({ title: "Challan dispatched" });
     },
     onError: (error: Error) => {
@@ -445,6 +458,8 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
     },
     onError: (error: Error) => {
@@ -646,6 +661,7 @@ export default function Inventory() {
                       <th className="text-right p-3 font-medium text-muted-foreground">Total Stock</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Reserved</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Available</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Incoming</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Min Stock</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -654,7 +670,7 @@ export default function Inventory() {
                     {productsLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 13 }).map((_, j) => (
+                          {Array.from({ length: 14 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -666,9 +682,12 @@ export default function Inventory() {
                         const reservedInfo = isProduct ? reservedStockData?.[product.id] : null;
                         const reservedStock = reservedInfo?.total ?? 0;
                         const availableStock = isProduct && totalStock !== null ? totalStock - reservedStock : null;
+                        const incomingInfo = isProduct ? incomingStockData?.[product.id] : null;
+                        const incomingStock = incomingInfo?.total ?? 0;
                         const isLowStock = isProduct && availableStock !== null && availableStock < (product.minStockLevel ?? 0);
                         const isExpanded = expandedProductIds.has(product.id);
                         const isReservedExpanded = expandedReservedIds.has(product.id);
+                        const isIncomingExpanded = expandedIncomingIds.has(product.id);
                         const warehouseBreakdown = isExpanded && isProduct ? getProductStockByWarehouse(product.id) : [];
 
                         return (
@@ -737,6 +756,22 @@ export default function Inventory() {
                                   </span>
                                 ) : "—"}
                               </td>
+                              <td className="p-3 text-right" data-testid={`text-product-incoming-${product.id}`}>
+                                {isProduct ? (
+                                  incomingStock > 0 ? (
+                                    <button
+                                      onClick={() => toggleIncomingExpanded(product.id)}
+                                      className="inline-flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                                      data-testid={`button-expand-incoming-${product.id}`}
+                                    >
+                                      {incomingStock}
+                                      {isIncomingExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                                    </button>
+                                  ) : (
+                                    <span className="text-muted-foreground">0</span>
+                                  )
+                                ) : "—"}
+                              </td>
                               <td className="p-3 text-right text-muted-foreground">{product.type === "service" ? "—" : product.minStockLevel}</td>
                               <td className="p-3 text-right">
                                 <div className="flex items-center justify-end gap-1">
@@ -751,7 +786,7 @@ export default function Inventory() {
                             </tr>
                             {isExpanded && isProduct && (
                               <tr key={`${product.id}-stock`} className="border-b last:border-0">
-                                <td colSpan={13} className="p-0">
+                                <td colSpan={14} className="p-0">
                                   <div className="bg-muted/30 px-6 py-3 ml-8">
                                     <p className="text-xs font-medium text-muted-foreground mb-2">Stock by Warehouse</p>
                                     {warehouseBreakdown.length > 0 ? (
@@ -775,17 +810,46 @@ export default function Inventory() {
                             )}
                             {isReservedExpanded && isProduct && reservedInfo && reservedInfo.orders.length > 0 && (
                               <tr key={`${product.id}-reserved`} className="border-b last:border-0">
-                                <td colSpan={13} className="p-0">
+                                <td colSpan={14} className="p-0">
                                   <div className="bg-amber-50/50 dark:bg-amber-950/10 px-6 py-3 ml-8">
                                     <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-2">Reserved for Sales Orders</p>
                                     <div className="space-y-1">
                                       {reservedInfo.orders.map((entry) => (
-                                        <div key={entry.orderId} className="flex items-center justify-between gap-4 text-sm" data-testid={`text-reserved-order-${product.id}-${entry.orderId}`}>
-                                          <span className="flex items-center gap-2">
+                                        <div key={entry.orderId} className="flex items-center gap-4 text-sm" data-testid={`text-reserved-order-${product.id}-${entry.orderId}`}>
+                                          <span className="flex items-center gap-2 min-w-[140px]">
                                             <ShoppingCart className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                                             <span className="font-medium">{entry.orderNumber}</span>
                                           </span>
-                                          <span className="font-medium text-amber-700 dark:text-amber-400">{entry.quantity} {product.unit}</span>
+                                          <span className="font-medium text-amber-700 dark:text-amber-400 min-w-[80px]">{entry.quantity} {product.unit}</span>
+                                          <span className="text-muted-foreground text-xs min-w-[120px]">
+                                            {entry.expectedDeliveryDate ? `Delivery: ${new Date(entry.expectedDeliveryDate).toLocaleDateString()}` : "No delivery date"}
+                                          </span>
+                                          <Badge variant="outline" className="text-xs capitalize">
+                                            {entry.reservationStatus.replace(/_/g, " ")}
+                                          </Badge>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                            {isIncomingExpanded && isProduct && incomingInfo && incomingInfo.orders.length > 0 && (
+                              <tr key={`${product.id}-incoming`} className="border-b last:border-0">
+                                <td colSpan={14} className="p-0">
+                                  <div className="bg-blue-50/50 dark:bg-blue-950/10 px-6 py-3 ml-8">
+                                    <p className="text-xs font-medium text-blue-700 dark:text-blue-400 mb-2">Incoming from Purchase Orders</p>
+                                    <div className="space-y-1">
+                                      {incomingInfo.orders.map((entry) => (
+                                        <div key={entry.poId} className="flex items-center gap-4 text-sm" data-testid={`text-incoming-po-${product.id}-${entry.poId}`}>
+                                          <span className="flex items-center gap-2 min-w-[140px]">
+                                            <Truck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                                            <span className="font-medium">{entry.poNumber}</span>
+                                          </span>
+                                          <span className="font-medium text-blue-700 dark:text-blue-400 min-w-[80px]">{entry.quantity} {product.unit}</span>
+                                          <span className="text-muted-foreground text-xs">
+                                            {entry.expectedDate ? `Expected: ${new Date(entry.expectedDate).toLocaleDateString()}` : "No ETA"}
+                                          </span>
                                         </div>
                                       ))}
                                     </div>
@@ -798,7 +862,7 @@ export default function Inventory() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={13} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={14} className="p-8 text-center text-muted-foreground">
                           No products or services found. Add your first item.
                         </td>
                       </tr>

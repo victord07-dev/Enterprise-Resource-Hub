@@ -1351,6 +1351,45 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/purchase-orders/:id/request-cancellation", authenticateToken, async (req: any, res) => {
+    try {
+      const po = await storage.getPurchaseOrder(req.params.id);
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+      if (!["approved", "shipped"].includes(po.status)) {
+        return res.status(400).json({ message: "Only approved or shipped POs can be cancelled" });
+      }
+      const { reason } = req.body;
+      if (!reason || !reason.trim()) {
+        return res.status(400).json({ message: "Cancellation reason is required" });
+      }
+      const updated = await storage.updatePurchaseOrder(po.id, {
+        status: "cancellation_requested",
+        cancellationReason: reason.trim(),
+        cancellationRequestedBy: req.user.id,
+        cancellationRequestedAt: new Date(),
+      } as any);
+      await logAction(req.user.id, "update", "supply_chain", `Requested cancellation for PO ${po.poNumber}: ${reason.trim()}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to request cancellation" });
+    }
+  });
+
+  app.post("/api/purchase-orders/:id/approve-cancellation", authenticateToken, async (req: any, res) => {
+    try {
+      const po = await storage.getPurchaseOrder(req.params.id);
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+      if (po.status !== "cancellation_requested") {
+        return res.status(400).json({ message: "PO is not pending cancellation approval" });
+      }
+      const updated = await storage.updatePurchaseOrder(po.id, { status: "cancelled" } as any);
+      await logAction(req.user.id, "update", "supply_chain", `Approved cancellation of PO ${po.poNumber}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to approve cancellation" });
+    }
+  });
+
   // ======================== PURCHASE ORDER ITEMS ========================
   app.get("/api/purchase-orders/:id/items", authenticateToken, async (req: any, res) => {
     try {
@@ -1389,6 +1428,20 @@ export async function registerRoutes(
   });
 
   // ======================== SUPPLIER PRODUCTS ========================
+  app.get("/api/supplier-products", authenticateToken, async (_req, res) => {
+    try {
+      const allSuppliers = await storage.getSuppliers();
+      const allMappings: any[] = [];
+      for (const supplier of allSuppliers) {
+        const products = await storage.getSupplierProducts(supplier.id);
+        allMappings.push(...products);
+      }
+      res.json(allMappings);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch all supplier products" });
+    }
+  });
+
   app.get("/api/suppliers/:id/products", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getSupplierProducts(req.params.id);

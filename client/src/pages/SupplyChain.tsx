@@ -1,4 +1,4 @@
-import { useState, Fragment } from "react";
+import { useState, Fragment, useEffect, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle } from "lucide-react";
+import { generatePurchaseOrderPDF } from "@/lib/purchase-order-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
@@ -30,11 +31,60 @@ function StatusBadge({ status }: { status: string }) {
     shipped: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
     received: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     cancelled: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
+    cancellation_requested: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
+    converted: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
+  };
+  const labels: Record<string, string> = {
+    cancellation_requested: "Cancel Requested",
   };
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${variants[status] || variants.pending}`}>
-      {status.charAt(0).toUpperCase() + status.slice(1)}
+      {labels[status] || status.charAt(0).toUpperCase() + status.slice(1)}
     </span>
+  );
+}
+
+function SupplierDropdown({ poLineItems, allSupplierProducts, suppliers, value, onChange }: {
+  poLineItems: POLineItem[];
+  allSupplierProducts: SupplierProduct[];
+  suppliers: Supplier[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const selectedProductIds = useMemo(() => poLineItems.filter(it => it.productId).map(it => it.productId), [poLineItems]);
+  const { toast } = useToast();
+
+  const filteredSuppliers = useMemo(() => {
+    if (selectedProductIds.length === 0 || !allSupplierProducts.length) return suppliers;
+    return suppliers.filter(s => {
+      const supplierProductIds = new Set(allSupplierProducts.filter(sp => sp.supplierId === s.id).map(sp => sp.productId));
+      return selectedProductIds.every(pid => supplierProductIds.has(pid));
+    });
+  }, [selectedProductIds, allSupplierProducts, suppliers]);
+
+  useEffect(() => {
+    if (value && filteredSuppliers.length > 0 && !filteredSuppliers.find(s => s.id === value)) {
+      onChange("");
+      toast({ title: "Supplier cleared", description: "The selected supplier does not carry all chosen products." });
+    }
+  }, [filteredSuppliers, value]);
+
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger data-testid="select-po-supplier">
+        <SelectValue placeholder="Select supplier" />
+      </SelectTrigger>
+      <SelectContent>
+        {filteredSuppliers.length > 0 ? filteredSuppliers.map((s) => (
+          <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+        )) : (
+          <div className="px-2 py-3 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+            <AlertTriangle className="w-3.5 h-3.5" />
+            No supplier carries all selected products
+          </div>
+        )}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -600,7 +650,12 @@ export default function SupplyChain() {
   const [convertPrId, setConvertPrId] = useState<string | null>(null);
   const [convertDeliveryType, setConvertDeliveryType] = useState<"warehouse" | "direct_delivery">("warehouse");
 
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelPoId, setCancelPoId] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+
   const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
+  const { data: allSupplierProducts } = useQuery<SupplierProduct[]>({ queryKey: ["/api/supplier-products"] });
 
   const selectedSupplierId = poForm.supplierId;
   const { data: supplierCatalog } = useQuery<SupplierProduct[]>({
@@ -660,6 +715,50 @@ export default function SupplyChain() {
     },
   });
 
+  const requestCancelMutation = useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
+      await apiRequest("POST", `/api/purchase-orders/${id}/request-cancellation`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "Cancellation requested", description: "Awaiting approval to finalize cancellation." });
+      setCancelDialogOpen(false);
+      setCancelPoId(null);
+      setCancelReason("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const approveCancelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      await apiRequest("POST", `/api/purchase-orders/${id}/approve-cancellation`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "Cancellation approved", description: "Purchase order has been cancelled." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const [downloadingPoId, setDownloadingPoId] = useState<string | null>(null);
+  const downloadPoPdf = async (po: PurchaseOrder) => {
+    setDownloadingPoId(po.id);
+    try {
+      const itemsRes = await apiRequest("GET", `/api/purchase-orders/${po.id}/items`);
+      if (!itemsRes.ok) throw new Error("Failed to fetch PO items");
+      const items = await itemsRes.json();
+      const supplier = suppliers?.find(s => s.id === po.supplierId);
+      generatePurchaseOrderPDF(po, items, supplier);
+    } catch (err) {
+      toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to generate PDF", variant: "destructive" });
+    } finally {
+      setDownloadingPoId(null);
+    }
+  };
 
   const updatePrMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: any }) => {
@@ -1163,12 +1262,31 @@ export default function SupplyChain() {
                                       Create Challan in Inventory
                                     </span>
                                   )}
-                                  <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
-                                    <Pencil className="w-4 h-4" />
-                                  </Button>
-                                  <Button size="icon" variant="ghost" data-testid={`button-delete-po-${po.id}`} onClick={() => { if (confirm("Delete this purchase order?")) deletePoMutation.mutate(po.id); }}>
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
+                                  {po.status === "pending" && (
+                                    <>
+                                      <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
+                                        <Pencil className="w-4 h-4" />
+                                      </Button>
+                                      <Button size="icon" variant="ghost" data-testid={`button-delete-po-${po.id}`} onClick={() => { if (confirm("Delete this purchase order?")) deletePoMutation.mutate(po.id); }}>
+                                        <Trash2 className="w-4 h-4" />
+                                      </Button>
+                                    </>
+                                  )}
+                                  {(po.status === "approved" || po.status === "shipped") && (
+                                    <Button size="sm" variant="outline" className="text-red-600 border-red-300 dark:text-red-400 dark:border-red-700" data-testid={`button-request-cancel-po-${po.id}`} onClick={() => { setCancelPoId(po.id); setCancelReason(""); setCancelDialogOpen(true); }}>
+                                      <Ban className="w-3 h-3 mr-1" /> Request Cancel
+                                    </Button>
+                                  )}
+                                  {po.status === "cancellation_requested" && (
+                                    <Button size="sm" variant="outline" className="text-amber-600 border-amber-300 dark:text-amber-400 dark:border-amber-700" data-testid={`button-approve-cancel-po-${po.id}`} onClick={() => { if (confirm("Approve this cancellation?")) approveCancelMutation.mutate(po.id); }}>
+                                      <CheckCircle className="w-3 h-3 mr-1" /> Approve Cancel
+                                    </Button>
+                                  )}
+                                  {["approved", "shipped", "received", "cancellation_requested"].includes(po.status) && (
+                                    <Button size="icon" variant="ghost" data-testid={`button-download-po-${po.id}`} onClick={() => downloadPoPdf(po)} title="Download PDF" disabled={downloadingPoId === po.id}>
+                                      <Download className={`w-4 h-4 ${downloadingPoId === po.id ? "animate-pulse" : ""}`} />
+                                    </Button>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -1178,11 +1296,23 @@ export default function SupplyChain() {
                               return (
                                 <tr>
                                   <td colSpan={9} className="bg-muted/30 border-b">
+                                    {(po.status === "cancellation_requested" || po.status === "cancelled") && po.cancellationReason && (
+                                      <div className={`mx-4 mt-3 p-3 rounded-md border ${po.status === "cancelled" ? "bg-red-50 border-red-200 dark:bg-red-950/30 dark:border-red-800" : "bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800"}`}>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <Ban className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                                          <span className="text-sm font-medium">{po.status === "cancelled" ? "Cancellation Reason" : "Cancellation Requested"}</span>
+                                        </div>
+                                        <p className="text-sm text-muted-foreground" data-testid={`text-cancel-reason-${po.id}`}>{po.cancellationReason}</p>
+                                        {po.cancellationRequestedBy && (
+                                          <p className="text-xs text-muted-foreground mt-1">Requested by: {po.cancellationRequestedBy} {po.cancellationRequestedAt ? `on ${new Date(po.cancellationRequestedAt).toLocaleDateString()}` : ""}</p>
+                                        )}
+                                      </div>
+                                    )}
                                     <POExpandedItems
                                       poId={po.id}
                                       linkedSalesOrder={linkedSO ? { orderNumber: linkedSO.orderNumber, id: linkedSO.id } : null}
                                       deliveryType={po.deliveryType}
-                                      deliveryAddress={(po as any).deliveryAddress}
+                                      deliveryAddress={po.deliveryAddress}
                                     />
                                   </td>
                                 </tr>
@@ -1291,16 +1421,13 @@ export default function SupplyChain() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="poSupplier">Supplier</Label>
-                <Select value={poForm.supplierId} onValueChange={(v) => setPoForm({ ...poForm, supplierId: v })}>
-                  <SelectTrigger data-testid="select-po-supplier">
-                    <SelectValue placeholder="Select supplier" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {suppliers?.map((s) => (
-                      <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SupplierDropdown
+                  poLineItems={poLineItems}
+                  allSupplierProducts={allSupplierProducts || []}
+                  suppliers={suppliers || []}
+                  value={poForm.supplierId}
+                  onChange={(v) => setPoForm({ ...poForm, supplierId: v })}
+                />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -1601,6 +1728,41 @@ export default function SupplyChain() {
               data-testid="button-confirm-convert"
             >
               {convertPrMutation.isPending ? "Converting..." : "Convert to PO"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Request Cancellation</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">Please provide a reason for cancelling this purchase order. The cancellation will need to be approved before it takes effect.</p>
+            <div className="space-y-2">
+              <Label htmlFor="cancelReason">Reason</Label>
+              <Textarea
+                id="cancelReason"
+                data-testid="input-cancel-reason"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Enter the reason for cancellation..."
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCancelDialogOpen(false); setCancelPoId(null); setCancelReason(""); }} data-testid="button-cancel-cancel-dialog">
+              Go Back
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!cancelReason.trim() || requestCancelMutation.isPending}
+              onClick={() => { if (cancelPoId) requestCancelMutation.mutate({ id: cancelPoId, reason: cancelReason.trim() }); }}
+              data-testid="button-submit-cancel-request"
+            >
+              {requestCancelMutation.isPending ? "Submitting..." : "Submit Request"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -146,6 +146,9 @@ export const purchaseOrders = pgTable("purchase_orders", {
   expectedDelivery: timestamp("expected_delivery"),
   notes: text("notes"),
   deliveryAddress: text("delivery_address"),
+  cancellationReason: text("cancellation_reason"),
+  cancellationRequestedBy: varchar("cancellation_requested_by"),
+  cancellationRequestedAt: timestamp("cancellation_requested_at"),
 });
 
 export const invoices = pgTable("invoices", {

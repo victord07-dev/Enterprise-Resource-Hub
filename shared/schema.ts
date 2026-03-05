@@ -78,6 +78,9 @@ export const salesOrders = pgTable("sales_orders", {
   advanceAmount: decimal("advance_amount", { precision: 12, scale: 2 }),
   paidAmount: decimal("paid_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   expectedDeliveryDate: timestamp("expected_delivery_date"),
+  deliveryMethod: text("delivery_method"),
+  deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
+  deliveryAddress: text("delivery_address"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -103,6 +106,9 @@ export const quotations = pgTable("quotations", {
   discountType: text("discount_type"),
   discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
   expectedDeliveryDate: timestamp("expected_delivery_date"),
+  deliveryMethod: text("delivery_method"),
+  deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
+  deliveryAddress: text("delivery_address"),
 });
 
 export const quotationItems = pgTable("quotation_items", {
@@ -139,6 +145,7 @@ export const purchaseOrders = pgTable("purchase_orders", {
   orderDate: timestamp("order_date").notNull().defaultNow(),
   expectedDelivery: timestamp("expected_delivery"),
   notes: text("notes"),
+  deliveryAddress: text("delivery_address"),
 });
 
 export const invoices = pgTable("invoices", {
@@ -363,6 +370,7 @@ export const deliveryChallans = pgTable("delivery_challans", {
   vehicleNumber: text("vehicle_number"),
   driverName: text("driver_name"),
   notes: text("notes"),
+  deliveryAddress: text("delivery_address"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

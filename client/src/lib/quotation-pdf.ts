@@ -57,8 +57,10 @@ export function generateQuotationPDF(
 
   y = 56;
 
+  const hasDelivery = (quotation as any).deliveryMethod === "delivery";
+  const detailsBoxHeight = hasDelivery ? 36 : 28;
   doc.setFillColor(248, 250, 252);
-  drawRoundedRect(doc, margin, y, contentWidth, 28, 2);
+  drawRoundedRect(doc, margin, y, contentWidth, detailsBoxHeight, 2);
 
   doc.setFontSize(7);
   doc.setTextColor(...COLORS.textSecondary);
@@ -108,7 +110,27 @@ export function generateQuotationPDF(
     }
   }
 
-  y += 34;
+  if (hasDelivery) {
+    doc.setFontSize(7);
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text("Delivery Method", margin + 4, y + 29);
+    doc.setFontSize(8);
+    doc.setTextColor(COLORS.accent[0], COLORS.accent[1], COLORS.accent[2]);
+    doc.setFont("helvetica", "bold");
+    doc.text("Delivery", margin + 35, y + 29);
+    doc.setFont("helvetica", "normal");
+    if ((quotation as any).deliveryAddress) {
+      doc.setFontSize(7);
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("Deliver To:", margin + 55, y + 29);
+      doc.setTextColor(...COLORS.textPrimary);
+      const addrText = doc.splitTextToSize((quotation as any).deliveryAddress, 80);
+      doc.text(addrText[0] || "", margin + 75, y + 29);
+    }
+    y += detailsBoxHeight + 6;
+  } else {
+    y += 34;
+  }
 
   const colX = {
     no: margin,
@@ -179,18 +201,26 @@ export function generateQuotationPDF(
   const summaryX = pageWidth - margin - 80;
   const summaryWidth = 80;
   const hasDiscount = quotation.discountType && quotation.discountValue && Number(quotation.discountValue) > 0;
+  const deliveryCost = hasDelivery && (quotation as any).deliveryCost ? Number((quotation as any).deliveryCost) : 0;
+  const hasDeliveryCostLine = deliveryCost > 0;
+
+  let summaryBoxH = 18;
+  if (hasDiscount) summaryBoxH += 10;
+  if (hasDeliveryCostLine) summaryBoxH += 7;
 
   doc.setFillColor(248, 250, 252);
-  drawRoundedRect(doc, summaryX, y, summaryWidth, hasDiscount ? 28 : 18, 2);
+  drawRoundedRect(doc, summaryX, y, summaryWidth, summaryBoxH, 2);
 
+  let lineY = y + 6;
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Subtotal", summaryX + 4, y + 6);
+  doc.text("Subtotal", summaryX + 4, lineY);
   doc.setTextColor(...COLORS.textPrimary);
-  doc.text(formatCurrency(subtotal), summaryX + summaryWidth - 4, y + 6, { align: "right" });
+  doc.text(formatCurrency(subtotal), summaryX + summaryWidth - 4, lineY, { align: "right" });
 
   if (hasDiscount) {
+    lineY += 7;
     const discountAmt = quotation.discountType === "percentage"
       ? subtotal * Number(quotation.discountValue) / 100
       : Number(quotation.discountValue);
@@ -199,31 +229,32 @@ export function generateQuotationPDF(
       : "Discount";
 
     doc.setTextColor(220, 38, 38);
-    doc.text(discountLabel, summaryX + 4, y + 13);
-    doc.text(`- ${formatCurrency(discountAmt)}`, summaryX + summaryWidth - 4, y + 13, { align: "right" });
-
-    doc.setDrawColor(...COLORS.tableBorder);
-    doc.line(summaryX + 4, y + 16, summaryX + summaryWidth - 4, y + 16);
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(...COLORS.textPrimary);
-    doc.text("Net Total", summaryX + 4, y + 23);
-    doc.text(formatCurrency(quotation.totalAmount), summaryX + summaryWidth - 4, y + 23, { align: "right" });
-
-    y += 28;
-  } else {
-    doc.setDrawColor(...COLORS.tableBorder);
-    doc.line(summaryX + 4, y + 9, summaryX + summaryWidth - 4, y + 9);
-
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.setTextColor(...COLORS.textPrimary);
-    doc.text("Total", summaryX + 4, y + 15);
-    doc.text(formatCurrency(quotation.totalAmount), summaryX + summaryWidth - 4, y + 15, { align: "right" });
-
-    y += 18;
+    doc.text(discountLabel, summaryX + 4, lineY);
+    doc.text(`- ${formatCurrency(discountAmt)}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
   }
+
+  if (hasDeliveryCostLine) {
+    lineY += 7;
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text("Delivery Cost", summaryX + 4, lineY);
+    doc.setTextColor(...COLORS.textPrimary);
+    doc.text(formatCurrency(deliveryCost), summaryX + summaryWidth - 4, lineY, { align: "right" });
+  }
+
+  lineY += 3;
+  doc.setDrawColor(...COLORS.tableBorder);
+  doc.line(summaryX + 4, lineY, summaryX + summaryWidth - 4, lineY);
+
+  lineY += 6;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.setTextColor(...COLORS.textPrimary);
+  doc.text(hasDiscount || hasDeliveryCostLine ? "Net Total" : "Total", summaryX + 4, lineY);
+  doc.text(formatCurrency(quotation.totalAmount), summaryX + summaryWidth - 4, lineY, { align: "right" });
+
+  y += summaryBoxH;
 
   if (quotation.notes) {
     y += 8;

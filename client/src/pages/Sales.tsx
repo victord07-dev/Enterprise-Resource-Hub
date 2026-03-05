@@ -259,13 +259,13 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
-  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "" });
+  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
   const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
@@ -339,15 +339,16 @@ export default function Sales() {
     } catch { setExpandedQuoteId(null); }
   }, [expandedQuoteId]);
 
-  const getNetTotal = (items: LineItem[], discount: DiscountState) => {
+  const getNetTotal = (items: LineItem[], discount: DiscountState, deliveryCost?: number) => {
     const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
     const discountAmt = calculateDiscount(subtotal, discount);
-    return subtotal - discountAmt;
+    return subtotal - discountAmt + (deliveryCost || 0);
   };
 
   const orderMutation = useMutation({
     mutationFn: async (data: any) => {
-      const totalAmount = String(getNetTotal(orderItems, orderDiscount));
+      const deliveryCostNum = data.deliveryMethod === "delivery" && data.deliveryCost ? Number(data.deliveryCost) : 0;
+      const totalAmount = String(getNetTotal(orderItems, orderDiscount, deliveryCostNum));
       const orderData = {
         ...data,
         totalAmount,
@@ -356,6 +357,9 @@ export default function Sales() {
         paymentTerms: data.paymentTerms || null,
         advanceAmount: data.advanceAmount ? String(data.advanceAmount) : null,
         expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
+        deliveryMethod: data.deliveryMethod || null,
+        deliveryCost: data.deliveryMethod === "delivery" && data.deliveryCost ? String(data.deliveryCost) : null,
+        deliveryAddress: data.deliveryMethod === "delivery" ? data.deliveryAddress || null : null,
       };
       let orderId: string;
       if (editingOrder) {
@@ -407,7 +411,8 @@ export default function Sales() {
 
   const quoteMutation = useMutation({
     mutationFn: async (data: any) => {
-      const totalAmount = String(getNetTotal(quoteItems, quoteDiscount));
+      const deliveryCostNum = data.deliveryMethod === "delivery" && data.deliveryCost ? Number(data.deliveryCost) : 0;
+      const totalAmount = String(getNetTotal(quoteItems, quoteDiscount, deliveryCostNum));
       const quoteData = {
         ...data,
         totalAmount,
@@ -415,6 +420,9 @@ export default function Sales() {
         discountType: quoteDiscount.discountType === "none" ? null : quoteDiscount.discountType,
         discountValue: quoteDiscount.discountType === "none" ? null : String(quoteDiscount.discountValue),
         expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
+        deliveryMethod: data.deliveryMethod || null,
+        deliveryCost: data.deliveryMethod === "delivery" && data.deliveryCost ? String(data.deliveryCost) : null,
+        deliveryAddress: data.deliveryMethod === "delivery" ? data.deliveryAddress || null : null,
       };
       let quoteId: string;
       if (editingQuote) {
@@ -671,7 +679,7 @@ export default function Sales() {
   const openNewOrder = () => {
     setEditingOrder(null);
     const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "" });
+    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderDialogOpen(true);
@@ -687,6 +695,9 @@ export default function Sales() {
       paymentTerms: order.paymentTerms || "",
       advanceAmount: order.advanceAmount ? String(order.advanceAmount) : "",
       expectedDeliveryDate: (order as any).expectedDeliveryDate ? new Date((order as any).expectedDeliveryDate).toISOString().split("T")[0] : "",
+      deliveryMethod: (order as any).deliveryMethod || "pickup",
+      deliveryCost: (order as any).deliveryCost ? String((order as any).deliveryCost) : "",
+      deliveryAddress: (order as any).deliveryAddress || "",
     });
     setOrderDiscount({
       discountType: order.discountType || "none",
@@ -718,7 +729,7 @@ export default function Sales() {
   const openNewQuote = () => {
     setEditingQuote(null);
     const num = `QT-${Date.now().toString(36).toUpperCase()}`;
-    setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "" });
+    setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
     setQuoteDialogOpen(true);
@@ -733,6 +744,9 @@ export default function Sales() {
       validUntil: q.validUntil ? new Date(q.validUntil).toISOString().split("T")[0] : "",
       notes: q.notes || "",
       expectedDeliveryDate: q.expectedDeliveryDate ? new Date(q.expectedDeliveryDate).toISOString().split("T")[0] : "",
+      deliveryMethod: (q as any).deliveryMethod || "pickup",
+      deliveryCost: (q as any).deliveryCost ? String((q as any).deliveryCost) : "",
+      deliveryAddress: (q as any).deliveryAddress || "",
     });
     setQuoteDiscount({
       discountType: q.discountType || "none",
@@ -964,6 +978,21 @@ export default function Sales() {
                                     </div>
                                   )}
 
+                                  {(order as any).deliveryMethod === "delivery" && (
+                                    <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md mt-2" data-testid={`text-order-delivery-info-${order.id}`}>
+                                      <Truck className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                      <div className="text-xs">
+                                        <span className="font-medium text-blue-700 dark:text-blue-300">Delivery</span>
+                                        {(order as any).deliveryCost && Number((order as any).deliveryCost) > 0 && (
+                                          <span className="text-blue-600 dark:text-blue-400 ml-2">Cost: ₹{Number((order as any).deliveryCost).toLocaleString()}</span>
+                                        )}
+                                        {(order as any).deliveryAddress && (
+                                          <p className="text-blue-600 dark:text-blue-400 mt-1"><MapPin className="w-3 h-3 inline mr-1" />{(order as any).deliveryAddress}</p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
                                   <div className="border-t pt-3 flex flex-wrap items-center gap-4">
                                     <div className="flex items-center gap-4 text-xs">
                                       <span className="font-semibold" data-testid={`text-order-total-${order.id}`}>Total: ₹{Number(order.totalAmount).toLocaleString()}</span>
@@ -1163,6 +1192,21 @@ export default function Sales() {
                                   {q.discountType && q.discountValue && (
                                     <div className="text-xs text-muted-foreground">
                                       Discount: {q.discountType === "percentage" ? `${Number(q.discountValue)}%` : `₹${Number(q.discountValue).toLocaleString()}`}
+                                    </div>
+                                  )}
+
+                                  {(q as any).deliveryMethod === "delivery" && (
+                                    <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md mt-2" data-testid={`text-quote-delivery-info-${q.id}`}>
+                                      <Truck className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                      <div className="text-xs">
+                                        <span className="font-medium text-blue-700 dark:text-blue-300">Delivery</span>
+                                        {(q as any).deliveryCost && Number((q as any).deliveryCost) > 0 && (
+                                          <span className="text-blue-600 dark:text-blue-400 ml-2">Cost: ₹{Number((q as any).deliveryCost).toLocaleString()}</span>
+                                        )}
+                                        {(q as any).deliveryAddress && (
+                                          <p className="text-blue-600 dark:text-blue-400 mt-1"><MapPin className="w-3 h-3 inline mr-1" />{(q as any).deliveryAddress}</p>
+                                        )}
+                                      </div>
                                     </div>
                                   )}
 
@@ -1489,6 +1533,31 @@ export default function Sales() {
                 <Input id="orderExpectedDeliveryDate" data-testid="input-order-expected-delivery" type="date" value={orderForm.expectedDeliveryDate} onChange={(e) => setOrderForm({ ...orderForm, expectedDeliveryDate: e.target.value })} />
               </div>
             </div>
+            <div className="space-y-3 rounded-lg border p-3">
+              <Label className="text-sm font-semibold flex items-center gap-2"><Truck className="w-4 h-4" /> Delivery Method</Label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="orderDeliveryMethod" data-testid="radio-order-pickup" value="pickup" checked={orderForm.deliveryMethod === "pickup"} onChange={() => setOrderForm({ ...orderForm, deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" })} />
+                  <span className="text-sm">Pickup (No delivery cost)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="orderDeliveryMethod" data-testid="radio-order-delivery" value="delivery" checked={orderForm.deliveryMethod === "delivery"} onChange={() => setOrderForm({ ...orderForm, deliveryMethod: "delivery" })} />
+                  <span className="text-sm">Delivery</span>
+                </label>
+              </div>
+              {orderForm.deliveryMethod === "delivery" && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="orderDeliveryCost">Delivery / Logistics Cost (₹)</Label>
+                    <Input id="orderDeliveryCost" type="number" min="0" step="0.01" data-testid="input-order-delivery-cost" value={orderForm.deliveryCost} onChange={(e) => setOrderForm({ ...orderForm, deliveryCost: e.target.value })} placeholder="0.00" />
+                  </div>
+                  <div className="space-y-2 col-span-2">
+                    <Label htmlFor="orderDeliveryAddress">Delivery Address</Label>
+                    <Textarea id="orderDeliveryAddress" data-testid="input-order-delivery-address" value={orderForm.deliveryAddress} onChange={(e) => setOrderForm({ ...orderForm, deliveryAddress: e.target.value })} placeholder="Enter delivery address" rows={2} />
+                  </div>
+                </div>
+              )}
+            </div>
             <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} />
           </div>
           <DialogFooter>
@@ -1551,6 +1620,31 @@ export default function Sales() {
                 <Label htmlFor="quoteNotes">Notes</Label>
                 <Input id="quoteNotes" data-testid="input-quote-notes" value={quoteForm.notes} onChange={(e) => setQuoteForm({ ...quoteForm, notes: e.target.value })} />
               </div>
+            </div>
+            <div className="space-y-3 rounded-lg border p-3">
+              <Label className="text-sm font-semibold flex items-center gap-2"><Truck className="w-4 h-4" /> Delivery Method</Label>
+              <div className="flex gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="quoteDeliveryMethod" data-testid="radio-quote-pickup" value="pickup" checked={quoteForm.deliveryMethod === "pickup"} onChange={() => setQuoteForm({ ...quoteForm, deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" })} />
+                  <span className="text-sm">Pickup (No delivery cost)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" name="quoteDeliveryMethod" data-testid="radio-quote-delivery" value="delivery" checked={quoteForm.deliveryMethod === "delivery"} onChange={() => setQuoteForm({ ...quoteForm, deliveryMethod: "delivery" })} />
+                  <span className="text-sm">Delivery</span>
+                </label>
+              </div>
+              {quoteForm.deliveryMethod === "delivery" && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="quoteDeliveryCost">Delivery / Logistics Cost (₹)</Label>
+                    <Input id="quoteDeliveryCost" type="number" min="0" step="0.01" data-testid="input-quote-delivery-cost" value={quoteForm.deliveryCost} onChange={(e) => setQuoteForm({ ...quoteForm, deliveryCost: e.target.value })} placeholder="0.00" />
+                  </div>
+                  <div className="space-y-2 col-span-2">
+                    <Label htmlFor="quoteDeliveryAddress">Delivery Address</Label>
+                    <Textarea id="quoteDeliveryAddress" data-testid="input-quote-delivery-address" value={quoteForm.deliveryAddress} onChange={(e) => setQuoteForm({ ...quoteForm, deliveryAddress: e.target.value })} placeholder="Enter delivery address" rows={2} />
+                  </div>
+                </div>
+              )}
             </div>
             <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} discount={quoteDiscount} onDiscountChange={setQuoteDiscount} />
           </div>

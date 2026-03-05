@@ -839,6 +839,9 @@ export async function registerRoutes(
         advanceAmount: null,
         paidAmount: "0",
         expectedDeliveryDate: quotation.expectedDeliveryDate || null,
+        deliveryMethod: (quotation as any).deliveryMethod || null,
+        deliveryCost: (quotation as any).deliveryCost || null,
+        deliveryAddress: (quotation as any).deliveryAddress || null,
       });
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
@@ -1933,11 +1936,20 @@ export async function registerRoutes(
       const nextNum = yearChallans.length + 1;
       const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
 
+      let challanDeliveryAddress = challanData.deliveryAddress || null;
+      if (!challanDeliveryAddress && challanData.orderId) {
+        const linkedOrder = await storage.getSalesOrder(challanData.orderId);
+        if (linkedOrder && (linkedOrder as any).deliveryAddress) {
+          challanDeliveryAddress = (linkedOrder as any).deliveryAddress;
+        }
+      }
+
       const parsed = insertDeliveryChallanSchema.safeParse({
         ...challanData,
         challanNumber,
         status: "draft",
         createdBy: req.user.id,
+        deliveryAddress: challanDeliveryAddress,
       });
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
 
@@ -2529,10 +2541,16 @@ export async function registerRoutes(
       const deliveryType = req.body?.deliveryType === "direct_delivery" ? "direct_delivery" : "warehouse";
 
       let expectedDelivery: Date | null = null;
+      let deliveryAddress: string | null = null;
       if (pr.salesOrderId) {
         const linkedOrder = await storage.getSalesOrder(pr.salesOrderId);
-        if (linkedOrder && (linkedOrder as any).expectedDeliveryDate) {
-          expectedDelivery = new Date((linkedOrder as any).expectedDeliveryDate);
+        if (linkedOrder) {
+          if ((linkedOrder as any).expectedDeliveryDate) {
+            expectedDelivery = new Date((linkedOrder as any).expectedDeliveryDate);
+          }
+          if (deliveryType === "direct_delivery" && (linkedOrder as any).deliveryAddress) {
+            deliveryAddress = (linkedOrder as any).deliveryAddress;
+          }
         }
       }
 
@@ -2544,6 +2562,7 @@ export async function registerRoutes(
         totalAmount: totalAmount.toFixed(2),
         expectedDelivery,
         notes: `Generated from purchase request ${pr.requestNumber}`,
+        deliveryAddress,
       } as any);
 
       for (const poItem of poItemsData) {

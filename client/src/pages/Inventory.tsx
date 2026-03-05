@@ -11,7 +11,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
 
@@ -1207,6 +1207,15 @@ export default function Inventory() {
                               <tr key={`${challan.id}-items`} className="border-b last:border-0">
                                 <td colSpan={12} className="p-0">
                                   <div className="bg-muted/30 px-6 py-3 ml-8">
+                                    {(challan as any).deliveryAddress && (
+                                      <div className="mb-3 flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md" data-testid={`text-challan-delivery-address-${challan.id}`}>
+                                        <MapPin className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                                        <div>
+                                          <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Delivery Address:</span>
+                                          <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">{(challan as any).deliveryAddress}</p>
+                                        </div>
+                                      </div>
+                                    )}
                                     <p className="text-xs font-medium text-muted-foreground mb-2">Line Items</p>
                                     {items.length > 0 ? (
                                       <div className="space-y-1">

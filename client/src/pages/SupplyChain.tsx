@@ -10,7 +10,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
@@ -430,7 +430,7 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
   );
 }
 
-function POExpandedItems({ poId, linkedSalesOrder, deliveryType }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string }) {
+function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string; deliveryAddress?: string | null }) {
   const { data: items, isLoading } = useQuery<PurchaseOrderItem[]>({
     queryKey: ["/api/purchase-orders", poId, "items"],
     queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
@@ -460,6 +460,15 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType }: { poId: strin
           {deliveryType === "direct_delivery" && (
             <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Direct to Customer</span>
           )}
+        </div>
+      )}
+      {deliveryAddress && (
+        <div className="mb-3 flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md" data-testid={`text-po-delivery-address-${poId}`}>
+          <MapPin className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+          <div>
+            <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Delivery Address:</span>
+            <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">{deliveryAddress}</p>
+          </div>
         </div>
       )}
       <div className="overflow-x-auto">
@@ -1173,6 +1182,7 @@ export default function SupplyChain() {
                                       poId={po.id}
                                       linkedSalesOrder={linkedSO ? { orderNumber: linkedSO.orderNumber, id: linkedSO.id } : null}
                                       deliveryType={po.deliveryType}
+                                      deliveryAddress={(po as any).deliveryAddress}
                                     />
                                   </td>
                                 </tr>

@@ -41,8 +41,11 @@ The ERP system is built with a modern web stack, prioritizing a responsive and i
 - **Mixed Line Items:** Support for both product and service line items in quotations and orders, with dynamic pricing and calculations.
 - **Purchase Requests (Auto-Procurement):** Automated generation of purchase requests for stock shortfalls detected upon sales order confirmation, with priority levels and conversion to purchase orders. PR edit dialog filters suppliers to only those whose catalog covers all requested products, with pricing breakdown.
 - **PO Number Auto-Generation:** Purchase Order numbers (PO-YYYY-XXXX) are auto-generated server-side using max-based increment, removing manual entry.
-- **Manual Stock Adjustment:** Available from both the Products & Services tab ("Add Stock" button) and the Stock Movements tab ("Manual Adjustment" button) in Inventory. Supports Stock In, Stock Out, and Adjustment types with warehouse selection.
+- **Manual Stock Adjustment:** Available from the Stock Movements tab ("Manual Adjustment" button) in Inventory for corrections/adjustments only. Supports Stock In, Stock Out, and Adjustment types with warehouse selection.
+- **Goods Receipt Notes (GRN):** Formal receiving process for warehouse-type Purchase Orders. GRN tab in Inventory module allows creating draft GRNs against approved/shipped POs, editing received quantities and buying prices per item, adding delivery costs, and confirming to update inventory stock. GRN numbers auto-generated (GRN-YYYY-XXXX). Confirming a GRN creates stock movements (referenceType "grn") and marks PO as "received" when all items are fully received.
+- **PO Delivery Type:** Purchase Orders have a `deliveryType` field: "warehouse" (goods received via GRN into warehouse stock) or "direct_delivery" (drop-ship via Delivery Challan). Default is "warehouse". Visible in Supply Chain PO list and create/edit dialog.
 - **Field Staff Travel Expense:** System for field staff to submit travel expenses with GPS-based distance calculation, transport mode selection, and approval workflow. Includes live location tracking for administrators.
+- **Field Staff Live Tracking:** Read-only admin view showing live employee locations on map and recorded travel routes panel. Trips are started/stopped by field staff from their devices via API. Recorded routes grouped by date with employee filter and clickable entries that draw route polylines on the map.
 
 ## External Dependencies
 - **Database:** PostgreSQL for persistent data storage.

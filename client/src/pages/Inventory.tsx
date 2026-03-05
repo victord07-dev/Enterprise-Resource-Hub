@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier } from "@shared/schema";
+import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -320,6 +320,136 @@ export default function Inventory() {
     },
   });
 
+  const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
+  const { data: grns, isLoading: grnsLoading } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
+
+  const [grnDialogOpen, setGrnDialogOpen] = useState(false);
+  const [grnForm, setGrnForm] = useState({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "" });
+  const [grnLineItems, setGrnLineItems] = useState<Array<{ productId: string; description: string; orderedQuantity: number; receivedQuantity: number; buyingPrice: number }>>([]);
+  const [grnFilterStatus, setGrnFilterStatus] = useState("all");
+  const [expandedGrnIds, setExpandedGrnIds] = useState<Set<string>>(new Set());
+  const [grnItemsMap, setGrnItemsMap] = useState<Record<string, GoodsReceiptNoteItem[]>>({});
+
+  const warehouseEligiblePOs = (purchaseOrders ?? []).filter(po =>
+    po.deliveryType === "warehouse" && ["approved", "shipped"].includes(po.status)
+  );
+
+  const supplierMap = new Map((suppliers ?? []).map(s => [s.id, s]));
+  const productMap = new Map((products ?? []).map(p => [p.id, p]));
+
+  const filteredGrns = (grns ?? []).filter(g => {
+    if (grnFilterStatus !== "all" && g.status !== grnFilterStatus) return false;
+    return true;
+  }).sort((a, b) => new Date(b.createdAt!).getTime() - new Date(a.createdAt!).getTime());
+
+  const toggleGrnExpanded = useCallback(async (grnId: string) => {
+    setExpandedGrnIds(prev => {
+      const next = new Set(prev);
+      if (next.has(grnId)) next.delete(grnId);
+      else next.add(grnId);
+      return next;
+    });
+    if (!grnItemsMap[grnId]) {
+      try {
+        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const res = await fetch(`/api/grns/${grnId}/items`, { headers });
+        const items = await res.json();
+        setGrnItemsMap(prev => ({ ...prev, [grnId]: Array.isArray(items) ? items : [] }));
+      } catch {
+        setGrnItemsMap(prev => ({ ...prev, [grnId]: [] }));
+      }
+    }
+  }, [grnItemsMap]);
+
+  const loadPOItemsForGRN = async (poId: string) => {
+    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    try {
+      const res = await fetch(`/api/purchase-orders/${poId}/items`, { headers });
+      const items: PurchaseOrderItem[] = await res.json();
+      setGrnLineItems(items.filter(it => it.productId).map(it => ({
+        productId: it.productId || "",
+        description: it.description || productMap.get(it.productId || "")?.name || "",
+        orderedQuantity: it.quantity,
+        receivedQuantity: it.quantity,
+        buyingPrice: Number(it.unitCost) || 0,
+      })));
+    } catch {
+      setGrnLineItems([]);
+    }
+  };
+
+  const openCreateGrn = () => {
+    setGrnForm({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "" });
+    setGrnLineItems([]);
+    setGrnDialogOpen(true);
+  };
+
+  const grnMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const { lineItems, ...grnData } = data;
+      const itemTotal = lineItems.reduce((sum: number, it: any) => sum + (it.receivedQuantity * it.buyingPrice), 0);
+      const deliveryCostNum = Number(grnData.deliveryCost) || 0;
+      const totalAmount = itemTotal + deliveryCostNum;
+      const payload = {
+        ...grnData,
+        deliveryCost: deliveryCostNum > 0 ? String(deliveryCostNum) : null,
+        totalAmount: String(totalAmount),
+      };
+      const res = await apiRequest("POST", "/api/grns", payload);
+      const grn = await res.json();
+      if (lineItems.length > 0) {
+        await apiRequest("POST", `/api/grns/${grn.id}/items`, {
+          items: lineItems.map((it: any) => ({
+            productId: it.productId,
+            description: it.description,
+            orderedQuantity: it.orderedQuantity,
+            receivedQuantity: it.receivedQuantity,
+            buyingPrice: String(it.buyingPrice),
+          })),
+        });
+      }
+      return grn;
+    },
+    onSuccess: (grn: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      toast({ title: "GRN created", description: `GRN ${grn.grnNumber} created as draft` });
+      setGrnDialogOpen(false);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const confirmGrnMutation = useMutation({
+    mutationFn: async (grnId: string) => {
+      const res = await apiRequest("POST", `/api/grns/${grnId}/confirm`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
+      toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteGrnMutation = useMutation({
+    mutationFn: async (grnId: string) => {
+      await apiRequest("DELETE", `/api/grns/${grnId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      toast({ title: "GRN deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const isService = productForm.type === "service";
 
   const openNewProduct = () => {
@@ -474,6 +604,7 @@ export default function Inventory() {
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
           <TabsTrigger value="challans" data-testid="tab-challans">Challans</TabsTrigger>
+          <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -482,10 +613,6 @@ export default function Inventory() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input placeholder="Search products & services..." className="pl-9" data-testid="input-search-products" />
             </div>
-            <Button variant="outline" data-testid="button-add-stock" onClick={() => { setAdjustmentForm({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" }); setAdjustmentDialogOpen(true); }}>
-              <PackagePlus className="w-4 h-4 mr-2" />
-              Add Stock
-            </Button>
           </div>
           <Card>
             <CardContent className="p-0">
@@ -997,7 +1124,333 @@ export default function Inventory() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="grn" className="space-y-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              <Select value={grnFilterStatus} onValueChange={setGrnFilterStatus}>
+                <SelectTrigger className="w-[160px]" data-testid="select-grn-filter-status">
+                  <SelectValue placeholder="All Statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="confirmed">Confirmed</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button data-testid="button-create-grn" onClick={openCreateGrn}>
+              <Plus className="w-4 h-4 mr-2" />
+              Create GRN
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="w-8 p-3"></th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">GRN #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">PO #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Warehouse</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Received Date</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Delivery Cost</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Total Amount</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {grnsLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 10 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : filteredGrns.length > 0 ? (
+                      filteredGrns.map((grn) => {
+                        const isExpanded = expandedGrnIds.has(grn.id);
+                        const items = grnItemsMap[grn.id] || [];
+                        const po = purchaseOrders?.find(p => p.id === grn.purchaseOrderId);
+                        const supplier = po ? supplierMap.get(po.supplierId) : undefined;
+                        const wh = warehouses?.find(w => w.id === grn.warehouseId);
+                        return (
+                          <Fragment key={grn.id}>
+                            <tr className="border-b last:border-0" data-testid={`row-grn-${grn.id}`}>
+                              <td className="p-3">
+                                <button onClick={() => toggleGrnExpanded(grn.id)} className="text-muted-foreground" data-testid={`button-expand-grn-${grn.id}`}>
+                                  {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                </button>
+                              </td>
+                              <td className="p-3 font-medium" data-testid={`text-grn-number-${grn.id}`}>{grn.grnNumber}</td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-grn-po-${grn.id}`}>{po?.poNumber || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{supplier?.name || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{wh?.name || "—"}</td>
+                              <td className="p-3" data-testid={`badge-grn-status-${grn.id}`}>
+                                {grn.status === "draft" && (
+                                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Draft</Badge>
+                                )}
+                                {grn.status === "confirmed" && (
+                                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
+                                )}
+                              </td>
+                              <td className="p-3 text-muted-foreground whitespace-nowrap">{grn.receivedDate ? new Date(grn.receivedDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                              <td className="p-3 text-right text-muted-foreground">{grn.deliveryCost ? `₹${Number(grn.deliveryCost).toLocaleString("en-IN")}` : "—"}</td>
+                              <td className="p-3 text-right font-medium" data-testid={`text-grn-total-${grn.id}`}>₹{Number(grn.totalAmount).toLocaleString("en-IN")}</td>
+                              <td className="p-3 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  {grn.status === "draft" && (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        data-testid={`button-confirm-grn-${grn.id}`}
+                                        disabled={confirmGrnMutation.isPending}
+                                        onClick={() => { if (confirm("Confirm this GRN? Stock will be added to the warehouse.")) confirmGrnMutation.mutate(grn.id); }}
+                                      >
+                                        <CheckCircle className="w-3 h-3 mr-1" /> Confirm
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        data-testid={`button-delete-grn-${grn.id}`}
+                                        disabled={deleteGrnMutation.isPending}
+                                        onClick={() => { if (confirm("Delete this draft GRN?")) deleteGrnMutation.mutate(grn.id); }}
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr key={`${grn.id}-items`} className="border-b last:border-0">
+                                <td colSpan={10} className="p-0">
+                                  <div className="bg-muted/30 px-6 py-3 ml-8">
+                                    <p className="text-xs font-medium text-muted-foreground mb-2">Received Items</p>
+                                    {items.length > 0 ? (
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b">
+                                            <th className="text-left py-1 font-medium text-muted-foreground">Product</th>
+                                            <th className="text-center py-1 font-medium text-muted-foreground">Ordered Qty</th>
+                                            <th className="text-center py-1 font-medium text-muted-foreground">Received Qty</th>
+                                            <th className="text-right py-1 font-medium text-muted-foreground">Buying Price</th>
+                                            <th className="text-right py-1 font-medium text-muted-foreground">Total Cost</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {items.map(item => {
+                                            const prod = productMap.get(item.productId);
+                                            return (
+                                              <tr key={item.id} className="border-b last:border-0" data-testid={`text-grn-item-${item.id}`}>
+                                                <td className="py-1.5">{prod?.name || item.description || item.productId}</td>
+                                                <td className="py-1.5 text-center">{item.orderedQuantity}</td>
+                                                <td className="py-1.5 text-center font-medium">{item.receivedQuantity}</td>
+                                                <td className="py-1.5 text-right">₹{Number(item.buyingPrice).toLocaleString("en-IN")}</td>
+                                                <td className="py-1.5 text-right font-medium">₹{Number(item.totalCost).toLocaleString("en-IN")}</td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    ) : (
+                                      <p className="text-sm text-muted-foreground">Loading items...</p>
+                                    )}
+                                    {grn.notes && <p className="text-xs text-muted-foreground mt-2">Notes: {grn.notes}</p>}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                          <FileText className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
+                          <p className="font-medium">No Goods Receipt Notes found</p>
+                          <p className="text-sm mt-1">Create a GRN to receive goods from a Purchase Order into a warehouse.</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      <Dialog open={grnDialogOpen} onOpenChange={setGrnDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create Goods Receipt Note</DialogTitle>
+            <DialogDescription>Receive goods from a Purchase Order into a warehouse</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Purchase Order</Label>
+              <Select
+                value={grnForm.purchaseOrderId}
+                onValueChange={(v) => {
+                  setGrnForm({ ...grnForm, purchaseOrderId: v });
+                  loadPOItemsForGRN(v);
+                }}
+              >
+                <SelectTrigger data-testid="select-grn-po">
+                  <SelectValue placeholder="Select purchase order..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {warehouseEligiblePOs.map((po) => {
+                    const supplier = supplierMap.get(po.supplierId);
+                    return (
+                      <SelectItem key={po.id} value={po.id}>
+                        {po.poNumber} — {supplier?.name || "Unknown"} (₹{Number(po.totalAmount).toLocaleString("en-IN")})
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Receiving Warehouse</Label>
+                <Select value={grnForm.warehouseId} onValueChange={(v) => setGrnForm({ ...grnForm, warehouseId: v })}>
+                  <SelectTrigger data-testid="select-grn-warehouse">
+                    <SelectValue placeholder="Select warehouse..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(warehouses ?? []).map(w => (
+                      <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="grnDeliveryCost">Delivery Cost (optional)</Label>
+                <Input
+                  id="grnDeliveryCost"
+                  type="number"
+                  min="0"
+                  data-testid="input-grn-delivery-cost"
+                  value={grnForm.deliveryCost}
+                  onChange={(e) => setGrnForm({ ...grnForm, deliveryCost: e.target.value })}
+                  placeholder="₹0"
+                />
+              </div>
+            </div>
+
+            {grnLineItems.length > 0 && (
+              <div className="space-y-2">
+                <Label>Line Items</Label>
+                <div className="border rounded-md overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium text-muted-foreground">Product</th>
+                        <th className="text-center px-3 py-2 font-medium text-muted-foreground">Ordered</th>
+                        <th className="text-center px-3 py-2 font-medium text-muted-foreground">Received</th>
+                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">Buying Price</th>
+                        <th className="text-right px-3 py-2 font-medium text-muted-foreground">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {grnLineItems.map((item, idx) => {
+                        const prod = productMap.get(item.productId);
+                        return (
+                          <tr key={idx} className="border-b last:border-0" data-testid={`row-grn-line-item-${idx}`}>
+                            <td className="px-3 py-2">{prod?.name || item.description}</td>
+                            <td className="px-3 py-2 text-center text-muted-foreground">{item.orderedQuantity}</td>
+                            <td className="px-3 py-2 text-center">
+                              <Input
+                                type="number"
+                                min="0"
+                                max={item.orderedQuantity}
+                                className="w-20 h-8 text-center mx-auto"
+                                data-testid={`input-grn-received-qty-${idx}`}
+                                value={item.receivedQuantity}
+                                onChange={(e) => {
+                                  const updated = [...grnLineItems];
+                                  updated[idx] = { ...updated[idx], receivedQuantity: Math.min(Number(e.target.value) || 0, item.orderedQuantity) };
+                                  setGrnLineItems(updated);
+                                }}
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <Input
+                                type="number"
+                                min="0"
+                                className="w-28 h-8 text-right ml-auto"
+                                data-testid={`input-grn-buying-price-${idx}`}
+                                value={item.buyingPrice}
+                                onChange={(e) => {
+                                  const updated = [...grnLineItems];
+                                  updated[idx] = { ...updated[idx], buyingPrice: Number(e.target.value) || 0 };
+                                  setGrnLineItems(updated);
+                                }}
+                              />
+                            </td>
+                            <td className="px-3 py-2 text-right font-medium">₹{(item.receivedQuantity * item.buyingPrice).toLocaleString("en-IN")}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t">
+                        <td colSpan={4} className="px-3 py-2 text-right font-medium text-muted-foreground">Items Total:</td>
+                        <td className="px-3 py-2 text-right font-medium">
+                          ₹{grnLineItems.reduce((sum, it) => sum + (it.receivedQuantity * it.buyingPrice), 0).toLocaleString("en-IN")}
+                        </td>
+                      </tr>
+                      {Number(grnForm.deliveryCost) > 0 && (
+                        <tr>
+                          <td colSpan={4} className="px-3 py-1 text-right text-sm text-muted-foreground">+ Delivery Cost:</td>
+                          <td className="px-3 py-1 text-right text-sm">₹{Number(grnForm.deliveryCost).toLocaleString("en-IN")}</td>
+                        </tr>
+                      )}
+                      <tr className="bg-muted/30">
+                        <td colSpan={4} className="px-3 py-2 text-right font-semibold">Grand Total:</td>
+                        <td className="px-3 py-2 text-right font-semibold" data-testid="text-grn-grand-total">
+                          ₹{(grnLineItems.reduce((sum, it) => sum + (it.receivedQuantity * it.buyingPrice), 0) + (Number(grnForm.deliveryCost) || 0)).toLocaleString("en-IN")}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="grnNotes">Notes</Label>
+              <Textarea
+                id="grnNotes"
+                data-testid="input-grn-notes"
+                value={grnForm.notes}
+                onChange={(e) => setGrnForm({ ...grnForm, notes: e.target.value })}
+                placeholder="Optional notes..."
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrnDialogOpen(false)}>Cancel</Button>
+            <Button
+              data-testid="button-submit-grn"
+              disabled={!grnForm.purchaseOrderId || !grnForm.warehouseId || grnLineItems.length === 0 || grnMutation.isPending}
+              onClick={() => grnMutation.mutate({ ...grnForm, lineItems: grnLineItems })}
+            >
+              {grnMutation.isPending ? "Creating..." : "Create GRN"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={challanDialogOpen} onOpenChange={setChallanDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">

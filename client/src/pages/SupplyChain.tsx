@@ -10,10 +10,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, PackageCheck, FileText, Check, ArrowRightCircle, AlertTriangle } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
 
 interface POLineItem {
   productId: string;
@@ -557,7 +557,7 @@ export default function SupplyChain() {
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
-  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
+  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "" });
   const [poLineItems, setPoLineItems] = useState<POLineItem[]>([emptyLineItem()]);
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
@@ -575,11 +575,7 @@ export default function SupplyChain() {
   const [prStatusFilter, setPrStatusFilter] = useState("all");
   const [prPriorityFilter, setPrPriorityFilter] = useState("all");
 
-  const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
-  const [receivingPo, setReceivingPo] = useState<PurchaseOrder | null>(null);
-  const [receiveWarehouseId, setReceiveWarehouseId] = useState("");
-
-  const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
+  const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
 
   const selectedSupplierId = poForm.supplierId;
   const { data: supplierCatalog } = useQuery<SupplierProduct[]>({
@@ -638,23 +634,6 @@ export default function SupplyChain() {
     },
   });
 
-  const receiveMutation = useMutation({
-    mutationFn: async ({ poId, warehouseId }: { poId: string; warehouseId: string }) => {
-      await apiRequest("POST", `/api/purchase-orders/${poId}/receive`, { warehouseId });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
-      toast({ title: "Goods received", description: "PO marked as received and inventory updated." });
-      setReceiveDialogOpen(false);
-      setReceivingPo(null);
-      setReceiveWarehouseId("");
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error receiving goods", description: error.message, variant: "destructive" });
-    },
-  });
 
   const updatePrMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: any }) => {
@@ -724,12 +703,6 @@ export default function SupplyChain() {
     setPrDialogOpen(true);
   };
 
-  const openReceiveDialog = (po: PurchaseOrder) => {
-    setReceivingPo(po);
-    setReceiveWarehouseId("");
-    setReceiveDialogOpen(true);
-  };
-
   const supplierMutation = useMutation({
     mutationFn: async (data: any) => {
       if (editingSupplier) {
@@ -762,7 +735,7 @@ export default function SupplyChain() {
 
   const openNewPo = () => {
     setEditingPo(null);
-    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", expectedDelivery: "", notes: "" });
+    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "" });
     setPoLineItems([emptyLineItem()]);
     setPoDialogOpen(true);
   };
@@ -773,6 +746,7 @@ export default function SupplyChain() {
       poNumber: po.poNumber,
       supplierId: po.supplierId,
       status: po.status,
+      deliveryType: po.deliveryType || "warehouse",
       expectedDelivery: po.expectedDelivery ? new Date(po.expectedDelivery).toISOString().split("T")[0] : "",
       notes: po.notes || "",
     });
@@ -1098,6 +1072,7 @@ export default function SupplyChain() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Delivery Type</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Expected Delivery</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
@@ -1107,7 +1082,7 @@ export default function SupplyChain() {
                     {poLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 8 }).map((_, j) => (
+                          {Array.from({ length: 9 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -1130,17 +1105,34 @@ export default function SupplyChain() {
                               <td className="p-3 text-muted-foreground">{supplier?.name || "—"}</td>
                               <td className="p-3 text-muted-foreground">{new Date(po.orderDate).toLocaleDateString()}</td>
                               <td className="p-3"><StatusBadge status={po.status} /></td>
+                              <td className="p-3" data-testid={`text-po-delivery-type-${po.id}`}>
+                                {po.deliveryType === "direct_delivery" ? (
+                                  <Badge variant="outline" className="text-xs">
+                                    <Package className="w-3 h-3 mr-1" />
+                                    Direct Delivery
+                                  </Badge>
+                                ) : (
+                                  <Badge variant="secondary" className="text-xs">
+                                    <Warehouse className="w-3 h-3 mr-1" />
+                                    Warehouse Stock
+                                  </Badge>
+                                )}
+                              </td>
                               <td className="p-3 text-muted-foreground">
                                 {po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString() : "—"}
                               </td>
                               <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
                               <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center justify-end gap-1">
-                                  {(po.status === "approved" || po.status === "shipped") && (
-                                    <Button size="sm" variant="outline" data-testid={`button-receive-po-${po.id}`} onClick={() => openReceiveDialog(po)}>
-                                      <PackageCheck className="w-4 h-4 mr-1" />
-                                      Receive
-                                    </Button>
+                                  {(po.status === "approved" || po.status === "shipped") && po.deliveryType !== "direct_delivery" && (
+                                    <span className="text-xs text-muted-foreground mr-1" data-testid={`text-po-grn-hint-${po.id}`}>
+                                      Create GRN in Inventory
+                                    </span>
+                                  )}
+                                  {(po.status === "approved" || po.status === "shipped") && po.deliveryType === "direct_delivery" && (
+                                    <span className="text-xs text-muted-foreground mr-1" data-testid={`text-po-challan-hint-${po.id}`}>
+                                      Create Challan in Inventory
+                                    </span>
                                   )}
                                   <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
                                     <Pencil className="w-4 h-4" />
@@ -1153,7 +1145,7 @@ export default function SupplyChain() {
                             </tr>
                             {isExpanded && (
                               <tr>
-                                <td colSpan={8} className="bg-muted/30 border-b">
+                                <td colSpan={9} className="bg-muted/30 border-b">
                                   <POExpandedItems poId={po.id} />
                                 </td>
                               </tr>
@@ -1163,7 +1155,7 @@ export default function SupplyChain() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No purchase orders found.</td>
+                        <td colSpan={9} className="p-8 text-center text-muted-foreground">No purchase orders found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -1273,7 +1265,7 @@ export default function SupplyChain() {
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="poStatus">Status</Label>
                 <Select value={poForm.status} onValueChange={(v) => setPoForm({ ...poForm, status: v })}>
@@ -1287,6 +1279,30 @@ export default function SupplyChain() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="poDeliveryType">Delivery Type</Label>
+                <Select value={poForm.deliveryType} onValueChange={(v) => setPoForm({ ...poForm, deliveryType: v })}>
+                  <SelectTrigger data-testid="select-po-delivery-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="warehouse">
+                      <span className="flex items-center gap-1.5">
+                        <Warehouse className="w-3.5 h-3.5" />
+                        Warehouse Stock
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="direct_delivery">
+                      <span className="flex items-center gap-1.5">
+                        <Package className="w-3.5 h-3.5" />
+                        Direct Delivery
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="poDelivery">Expected Delivery</Label>
                 <Input id="poDelivery" type="date" data-testid="input-po-expected-delivery" value={poForm.expectedDelivery} onChange={(e) => setPoForm({ ...poForm, expectedDelivery: e.target.value })} />
@@ -1483,55 +1499,6 @@ export default function SupplyChain() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={receiveDialogOpen} onOpenChange={setReceiveDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Receive Goods</DialogTitle>
-          </DialogHeader>
-          {receivingPo && (
-            <div className="space-y-4">
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">Purchase Order</p>
-                <p className="font-medium" data-testid="text-receive-po-number">{receivingPo.poNumber}</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">Supplier</p>
-                <p className="font-medium" data-testid="text-receive-supplier">{supplierMap.get(receivingPo.supplierId)?.name || "—"}</p>
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm text-muted-foreground">Total Amount</p>
-                <p className="font-medium" data-testid="text-receive-amount">₹{Number(receivingPo.totalAmount).toLocaleString()}</p>
-              </div>
-              <div className="space-y-2">
-                <Label>Receive Into Warehouse</Label>
-                <Select value={receiveWarehouseId} onValueChange={setReceiveWarehouseId}>
-                  <SelectTrigger data-testid="select-receive-warehouse">
-                    <SelectValue placeholder="Select warehouse" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {warehouses?.map((w) => (
-                      <SelectItem key={w.id} value={w.id}>{w.name}{w.location ? ` (${w.location})` : ""}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <POExpandedItems poId={receivingPo.id} />
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setReceiveDialogOpen(false)} data-testid="button-cancel-receive">
-              Cancel
-            </Button>
-            <Button
-              disabled={!receiveWarehouseId || receiveMutation.isPending}
-              onClick={() => receivingPo && receiveMutation.mutate({ poId: receivingPo.id, warehouseId: receiveWarehouseId })}
-              data-testid="button-confirm-receive"
-            >
-              {receiveMutation.isPending ? "Receiving..." : "Confirm Receipt"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, auditLogs,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type AuditLog,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -220,6 +220,19 @@ export interface IStorage {
   getPurchaseRequestItems(requestId: string): Promise<PurchaseRequestItem[]>;
   createPurchaseRequestItem(data: Omit<PurchaseRequestItem, "id">): Promise<PurchaseRequestItem>;
   deletePurchaseRequestItems(requestId: string): Promise<boolean>;
+
+  // Goods Receipt Notes
+  getGRNs(): Promise<GoodsReceiptNote[]>;
+  getGRN(id: string): Promise<GoodsReceiptNote | undefined>;
+  getGRNsByPO(poId: string): Promise<GoodsReceiptNote[]>;
+  createGRN(data: Omit<GoodsReceiptNote, "id" | "createdAt">): Promise<GoodsReceiptNote>;
+  updateGRN(id: string, data: Partial<Omit<GoodsReceiptNote, "id" | "createdAt">>): Promise<GoodsReceiptNote | undefined>;
+  deleteGRN(id: string): Promise<boolean>;
+
+  // Goods Receipt Note Items
+  getGRNItems(grnId: string): Promise<GoodsReceiptNoteItem[]>;
+  createGRNItem(data: Omit<GoodsReceiptNoteItem, "id">): Promise<GoodsReceiptNoteItem>;
+  deleteGRNItems(grnId: string): Promise<boolean>;
 
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
@@ -987,6 +1000,51 @@ export class DatabaseStorage implements IStorage {
 
   async deletePurchaseRequestItems(requestId: string): Promise<boolean> {
     await db.delete(purchaseRequestItems).where(eq(purchaseRequestItems.requestId, requestId));
+    return true;
+  }
+
+  // Goods Receipt Notes
+  async getGRNs(): Promise<GoodsReceiptNote[]> {
+    return await db.select().from(goodsReceiptNotes).orderBy(desc(goodsReceiptNotes.createdAt));
+  }
+
+  async getGRN(id: string): Promise<GoodsReceiptNote | undefined> {
+    const [found] = await db.select().from(goodsReceiptNotes).where(eq(goodsReceiptNotes.id, id));
+    return found;
+  }
+
+  async getGRNsByPO(poId: string): Promise<GoodsReceiptNote[]> {
+    return await db.select().from(goodsReceiptNotes).where(eq(goodsReceiptNotes.purchaseOrderId, poId)).orderBy(desc(goodsReceiptNotes.createdAt));
+  }
+
+  async createGRN(data: Omit<GoodsReceiptNote, "id" | "createdAt">): Promise<GoodsReceiptNote> {
+    const [created] = await db.insert(goodsReceiptNotes).values(data).returning();
+    return created;
+  }
+
+  async updateGRN(id: string, data: Partial<Omit<GoodsReceiptNote, "id" | "createdAt">>): Promise<GoodsReceiptNote | undefined> {
+    const [updated] = await db.update(goodsReceiptNotes).set(data).where(eq(goodsReceiptNotes.id, id)).returning();
+    return updated;
+  }
+
+  async deleteGRN(id: string): Promise<boolean> {
+    await db.delete(goodsReceiptNoteItems).where(eq(goodsReceiptNoteItems.grnId, id));
+    await db.delete(goodsReceiptNotes).where(eq(goodsReceiptNotes.id, id));
+    return true;
+  }
+
+  // Goods Receipt Note Items
+  async getGRNItems(grnId: string): Promise<GoodsReceiptNoteItem[]> {
+    return await db.select().from(goodsReceiptNoteItems).where(eq(goodsReceiptNoteItems.grnId, grnId));
+  }
+
+  async createGRNItem(data: Omit<GoodsReceiptNoteItem, "id">): Promise<GoodsReceiptNoteItem> {
+    const [created] = await db.insert(goodsReceiptNoteItems).values(data).returning();
+    return created;
+  }
+
+  async deleteGRNItems(grnId: string): Promise<boolean> {
+    await db.delete(goodsReceiptNoteItems).where(eq(goodsReceiptNoteItems.grnId, grnId));
     return true;
   }
 

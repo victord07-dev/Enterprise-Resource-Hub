@@ -16,6 +16,7 @@ import {
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
   insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
+  insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
   inventoryStock, deliveryChallans as deliveryChallansTable, purchaseRequests as purchaseRequestsTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
@@ -1833,39 +1834,215 @@ export async function registerRoutes(
     }
   });
 
-  // ======================== PO RECEIVING ========================
-  app.post("/api/purchase-orders/:id/receive", authenticateToken, async (req: any, res) => {
+  // ======================== GOODS RECEIPT NOTES (GRN) ========================
+  app.get("/api/grns", authenticateToken, async (_req, res) => {
     try {
-      const { warehouseId } = req.body;
-      if (!warehouseId) return res.status(400).json({ message: "Warehouse is required" });
+      const data = await storage.getGRNs();
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch GRNs" });
+    }
+  });
 
-      const po = await storage.getPurchaseOrder(req.params.id);
-      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+  app.get("/api/grns/by-po/:poId", authenticateToken, async (req: any, res) => {
+    try {
+      const data = await storage.getGRNsByPO(req.params.poId);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch GRNs for PO" });
+    }
+  });
 
-      const items = await storage.getPurchaseOrderItems(po.id);
-      if (items.length === 0) return res.status(400).json({ message: "PO has no line items to receive" });
+  app.get("/api/grns/:id", authenticateToken, async (req, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      res.json(grn);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch GRN" });
+    }
+  });
+
+  app.post("/api/grns", authenticateToken, async (req: any, res) => {
+    try {
+      const po = await storage.getPurchaseOrder(req.body.purchaseOrderId);
+      if (!po) return res.status(400).json({ message: "Purchase order not found" });
+      if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
+      if (!["approved", "shipped"].includes(po.status)) return res.status(400).json({ message: "PO must be approved or shipped to create a GRN" });
+
+      const year = new Date().getFullYear();
+      const allGrns = await storage.getGRNs();
+      const yearGrns = allGrns.filter(g => g.grnNumber.startsWith(`GRN-${year}`));
+      const maxNum = yearGrns.reduce((max: number, g: any) => {
+        const num = parseInt(g.grnNumber.split("-").pop() || "0", 10);
+        return num > max ? num : max;
+      }, 0);
+      const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+      const body = {
+        ...req.body,
+        grnNumber,
+        createdBy: req.user.id,
+      };
+
+      const parsed = insertGoodsReceiptNoteSchema.safeParse(body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      const created = await storage.createGRN(parsed.data as any);
+      await logAction(req.user.id, "create", "grn", `Created GRN ${grnNumber}`);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("Create GRN error:", error);
+      res.status(500).json({ message: "Failed to create GRN" });
+    }
+  });
+
+  app.patch("/api/grns/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be updated" });
+
+      const updated = await storage.updateGRN(req.params.id, req.body);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update GRN" });
+    }
+  });
+
+  app.delete("/api/grns/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be deleted" });
+
+      await storage.deleteGRN(req.params.id);
+      await logAction(req.user.id, "delete", "grn", `Deleted GRN ${grn.grnNumber}`);
+      res.json({ message: "GRN deleted" });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete GRN" });
+    }
+  });
+
+  app.get("/api/grns/:id/items", authenticateToken, async (req, res) => {
+    try {
+      const items = await storage.getGRNItems(req.params.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch GRN items" });
+    }
+  });
+
+  app.post("/api/grns/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can have items modified" });
+
+      await storage.deleteGRNItems(req.params.id);
+
+      const items = req.body.items;
+      if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items array is required" });
 
       for (const item of items) {
-        if (!item.productId) continue;
+        if (!item.productId) return res.status(400).json({ message: "Each item must have a productId" });
+        if (Number(item.receivedQuantity) <= 0) return res.status(400).json({ message: "Received quantity must be greater than 0" });
+        if (Number(item.receivedQuantity) > Number(item.orderedQuantity)) return res.status(400).json({ message: "Received quantity cannot exceed ordered quantity" });
+        if (Number(item.buyingPrice) < 0) return res.status(400).json({ message: "Buying price cannot be negative" });
+      }
 
+      const createdItems = [];
+      let itemsTotal = 0;
+      for (const item of items) {
+        const totalCost = String(Number(item.receivedQuantity) * Number(item.buyingPrice));
+        const itemData = {
+          grnId: req.params.id,
+          productId: item.productId,
+          description: item.description || null,
+          orderedQuantity: item.orderedQuantity,
+          receivedQuantity: item.receivedQuantity,
+          buyingPrice: item.buyingPrice,
+          totalCost,
+        };
+        const parsed = insertGoodsReceiptNoteItemSchema.safeParse(itemData);
+        if (!parsed.success) return res.status(400).json({ message: "Item validation error", errors: parsed.error.errors });
+        const created = await storage.createGRNItem(parsed.data as any);
+        createdItems.push(created);
+        itemsTotal += Number(totalCost);
+      }
+
+      const deliveryCost = Number(grn.deliveryCost || 0);
+      await storage.updateGRN(req.params.id, { totalAmount: String(itemsTotal + deliveryCost) });
+
+      res.json(createdItems);
+    } catch (error) {
+      console.error("Set GRN items error:", error);
+      res.status(500).json({ message: "Failed to set GRN items" });
+    }
+  });
+
+  app.post("/api/grns/:id/confirm", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be confirmed" });
+
+      const items = await storage.getGRNItems(grn.id);
+      if (items.length === 0) return res.status(400).json({ message: "GRN has no items to confirm" });
+
+      for (const item of items) {
         await storage.createStockMovement({
           productId: item.productId,
-          warehouseId,
+          warehouseId: grn.warehouseId,
           movementType: "in",
-          quantity: item.quantity,
-          referenceType: "purchase_order",
-          referenceId: po.id,
-          notes: `Received from PO ${po.poNumber || po.id}`,
+          quantity: item.receivedQuantity,
+          referenceType: "grn",
+          referenceId: grn.id,
+          notes: `Received via GRN ${grn.grnNumber}`,
           createdBy: req.user.id,
         });
 
-        await updateInventoryStockForMovement(item.productId, warehouseId, item.quantity);
+        await updateInventoryStockForMovement(item.productId, grn.warehouseId, item.receivedQuantity);
       }
 
-      const updated = await storage.updatePurchaseOrder(po.id, { status: "received" } as any);
+      await storage.updateGRN(grn.id, { status: "confirmed" });
+
+      const po = await storage.getPurchaseOrder(grn.purchaseOrderId);
+      if (po) {
+        const poItems = await storage.getPurchaseOrderItems(po.id);
+        const allGrnsForPO = await storage.getGRNsByPO(po.id);
+        const confirmedGrns = allGrnsForPO.filter(g => g.status === "confirmed" || g.id === grn.id);
+
+        let allFullyReceived = true;
+        for (const poItem of poItems) {
+          if (!poItem.productId) continue;
+          let totalReceived = 0;
+          for (const cGrn of confirmedGrns) {
+            const grnItems = await storage.getGRNItems(cGrn.id);
+            for (const gi of grnItems) {
+              if (gi.productId === poItem.productId) {
+                totalReceived += gi.receivedQuantity;
+              }
+            }
+          }
+          if (totalReceived < poItem.quantity) {
+            allFullyReceived = false;
+            break;
+          }
+        }
+
+        if (allFullyReceived) {
+          await storage.updatePurchaseOrder(po.id, { status: "received" } as any);
+        }
+      }
+
+      await logAction(req.user.id, "confirm", "grn", `Confirmed GRN ${grn.grnNumber}`);
+
+      const updated = await storage.getGRN(grn.id);
       res.json(updated);
     } catch (error) {
-      res.status(500).json({ message: "Failed to receive purchase order" });
+      console.error("Confirm GRN error:", error);
+      res.status(500).json({ message: "Failed to confirm GRN" });
     }
   });
 
@@ -2129,6 +2306,7 @@ export async function registerRoutes(
         poNumber,
         supplierId: pr.supplierId,
         status: "pending",
+        deliveryType: "warehouse",
         totalAmount: totalAmount.toFixed(2),
         expectedDate: null,
         notes: `Generated from purchase request ${pr.requestNumber}`,

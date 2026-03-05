@@ -132,6 +132,7 @@ export const purchaseOrders = pgTable("purchase_orders", {
   poNumber: text("po_number").notNull().unique(),
   supplierId: varchar("supplier_id").notNull(),
   status: text("status").notNull().default("pending"),
+  deliveryType: text("delivery_type").notNull().default("warehouse"),
   totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   orderDate: timestamp("order_date").notNull().defaultNow(),
   expectedDelivery: timestamp("expected_delivery"),
@@ -398,6 +399,31 @@ export const purchaseRequestItems = pgTable("purchase_request_items", {
   notes: text("notes"),
 });
 
+export const goodsReceiptNotes = pgTable("goods_receipt_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  grnNumber: text("grn_number").notNull().unique(),
+  purchaseOrderId: varchar("purchase_order_id").notNull(),
+  warehouseId: varchar("warehouse_id").notNull(),
+  status: text("status").notNull().default("draft"),
+  deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  receivedDate: timestamp("received_date").notNull().defaultNow(),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  grnId: varchar("grn_id").notNull(),
+  productId: varchar("product_id").notNull(),
+  description: text("description"),
+  orderedQuantity: integer("ordered_quantity").notNull(),
+  receivedQuantity: integer("received_quantity").notNull(),
+  buyingPrice: decimal("buying_price", { precision: 12, scale: 2 }).notNull(),
+  totalCost: decimal("total_cost", { precision: 12, scale: 2 }),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -442,6 +468,8 @@ export const insertDeliveryChallanSchema = createInsertSchema(deliveryChallans).
 export const insertDeliveryChallanItemSchema = createInsertSchema(deliveryChallanItems).omit({ id: true });
 export const insertPurchaseRequestSchema = createInsertSchema(purchaseRequests).omit({ id: true, createdAt: true });
 export const insertPurchaseRequestItemSchema = createInsertSchema(purchaseRequestItems).omit({ id: true });
+export const insertGoodsReceiptNoteSchema = createInsertSchema(goodsReceiptNotes).omit({ id: true, createdAt: true });
+export const insertGoodsReceiptNoteItemSchema = createInsertSchema(goodsReceiptNoteItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -480,3 +508,5 @@ export type DeliveryChallan = typeof deliveryChallans.$inferSelect;
 export type DeliveryChallanItem = typeof deliveryChallanItems.$inferSelect;
 export type PurchaseRequest = typeof purchaseRequests.$inferSelect;
 export type PurchaseRequestItem = typeof purchaseRequestItems.$inferSelect;
+export type GoodsReceiptNote = typeof goodsReceiptNotes.$inferSelect;
+export type GoodsReceiptNoteItem = typeof goodsReceiptNoteItems.$inferSelect;

@@ -1106,9 +1106,12 @@ export async function registerRoutes(
         reference: reference || `Order ${order.orderNumber}`,
       });
 
-      const updatedOrder = await storage.updateSalesOrder(req.params.id, {
-        paidAmount: newPaidAmount,
-      });
+      const updateData: any = { paidAmount: newPaidAmount };
+      if (["pending", "awaiting_payment"].includes(order.status)) {
+        updateData.status = "confirmed";
+      }
+
+      const updatedOrder = await storage.updateSalesOrder(req.params.id, updateData);
 
       await logAction(req.user.id, "create", "sales", `Recorded payment ₹${paymentAmount} for order ${order.orderNumber}`);
 

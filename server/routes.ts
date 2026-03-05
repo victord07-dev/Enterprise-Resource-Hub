@@ -653,7 +653,11 @@ export async function registerRoutes(
 
   app.post("/api/sales-orders", authenticateToken, async (req: any, res) => {
     try {
-      const parsed = insertSalesOrderSchema.safeParse(req.body);
+      const body = { ...req.body };
+      if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
+        body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
+      }
+      const parsed = insertSalesOrderSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createSalesOrder(parsed.data as any);
       await logAction(req.user.id, "create", "sales", `Created sales order ${parsed.data.orderNumber}`);
@@ -666,8 +670,12 @@ export async function registerRoutes(
 
   app.patch("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
     try {
+      const body = { ...req.body };
+      if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
+        body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
+      }
       const previousOrder = await storage.getSalesOrder(req.params.id);
-      const updated = await storage.updateSalesOrder(req.params.id, req.body);
+      const updated = await storage.updateSalesOrder(req.params.id, body);
       if (!updated) return res.status(404).json({ message: "Sales order not found" });
       await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
 

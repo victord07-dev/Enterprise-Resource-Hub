@@ -1660,6 +1660,49 @@ export async function registerRoutes(
     return remaining;
   }
 
+  // ======================== RESERVED STOCK ========================
+  app.get("/api/inventory/reserved-stock", authenticateToken, async (_req, res) => {
+    try {
+      const reservedStatuses = ["confirmed", "procurement", "ready_to_ship"];
+      const allOrders = await storage.getSalesOrders();
+      const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status));
+
+      const result: Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number }> }> = {};
+
+      for (const order of activeOrders) {
+        const orderItems = await storage.getSalesOrderItems(order.id);
+        const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+        if (productItems.length === 0) continue;
+
+        const challans = await storage.getDeliveryChallansByOrder(order.id);
+        const challanItemsMap: Record<string, number> = {};
+        for (const challan of challans) {
+          if (!["dispatched", "delivered"].includes(challan.status)) continue;
+          const cItems = await storage.getDeliveryChallanItems(challan.id);
+          for (const ci of cItems) {
+            challanItemsMap[ci.productId] = (challanItemsMap[ci.productId] || 0) + ci.quantity;
+          }
+        }
+
+        for (const item of productItems) {
+          const pid = item.productId!;
+          const dispatched = challanItemsMap[pid] || 0;
+          const reserved = Math.max(0, item.quantity - dispatched);
+          if (reserved <= 0) continue;
+
+          if (!result[pid]) result[pid] = { total: 0, orders: [] };
+          result[pid].total += reserved;
+          result[pid].orders.push({ orderId: order.id, orderNumber: order.orderNumber, quantity: reserved });
+        }
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Reserved stock error:", error);
+      res.status(500).json({ message: "Failed to calculate reserved stock" });
+    }
+  });
+
   // ======================== STOCK MOVEMENTS ========================
   app.get("/api/stock-movements", authenticateToken, async (req: any, res) => {
     try {

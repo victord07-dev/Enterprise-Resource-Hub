@@ -381,6 +381,7 @@ export default function Sales() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       toast({ title: editingOrder ? "Order updated" : "Order created" });
       setOrderDialogOpen(false);
       setEditingOrder(null);
@@ -394,6 +395,7 @@ export default function Sales() {
     mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/sales-orders/${id}`); },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       toast({ title: "Order deleted" });
     },
     onError: (error: Error) => {
@@ -478,6 +480,7 @@ export default function Sales() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       toast({ title: "Payment recorded" });
       setPaymentDialogOpen(false);
       setPaymentOrderId(null);

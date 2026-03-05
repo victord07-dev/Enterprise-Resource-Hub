@@ -26,7 +26,7 @@ The ERP system is built with a modern web stack, prioritizing a responsive and i
     - **Leads (CRM):** Pipeline management, status tracking, conversion to quotations, and follow-up system.
     - **Sales:** Comprehensive order and quotation management with discounts, payment tracking, invoice generation, and delivery challan integration.
     - **Project Management:** Project and milestone tracking.
-    - **Inventory:** Real-time stock levels across warehouses, stock movements, and low stock alerts.
+    - **Inventory:** Real-time stock levels across warehouses with Total Stock, Reserved Stock (committed to confirmed/procurement/ready_to_ship orders), and Available Stock columns. Reserved stock is expandable to show which specific sales orders are reserving stock. Includes stock movements and low stock alerts based on available stock.
     - **Supply Chain:** Supplier management, purchase orders, and automated purchase requests based on sales order demands.
     - **Field Staff:** Live location tracking, travel expense management, and approval workflows.
     - **Accounts:** Financial tracking, invoice management.

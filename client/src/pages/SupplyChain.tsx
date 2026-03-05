@@ -744,6 +744,24 @@ export default function SupplyChain() {
     },
   });
 
+  const [generatingChallanPoId, setGeneratingChallanPoId] = useState<string | null>(null);
+  const generateChallanMutation = useMutation({
+    mutationFn: async (poId: string) => {
+      setGeneratingChallanPoId(poId);
+      const res = await apiRequest("POST", `/api/purchase-orders/${poId}/generate-challan`);
+      return res.json();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      toast({ title: "Draft challan generated", description: `Challan ${data.challanNumber} created. View it in the Inventory module.` });
+      setGeneratingChallanPoId(null);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setGeneratingChallanPoId(null);
+    },
+  });
+
   const [downloadingPoId, setDownloadingPoId] = useState<string | null>(null);
   const downloadPoPdf = async (po: PurchaseOrder) => {
     setDownloadingPoId(po.id);
@@ -1258,9 +1276,17 @@ export default function SupplyChain() {
                                     </span>
                                   )}
                                   {(po.status === "approved" || po.status === "shipped") && po.deliveryType === "direct_delivery" && (
-                                    <span className="text-xs text-muted-foreground mr-1" data-testid={`text-po-challan-hint-${po.id}`}>
-                                      Create Challan in Inventory
-                                    </span>
+                                    <Button
+                                      size="sm"
+                                      variant="link"
+                                      className="text-xs text-blue-600 dark:text-blue-400 mr-1 p-0 h-auto"
+                                      data-testid={`button-generate-challan-${po.id}`}
+                                      disabled={generatingChallanPoId === po.id}
+                                      onClick={() => generateChallanMutation.mutate(po.id)}
+                                    >
+                                      <FileText className="w-3 h-3 mr-1" />
+                                      {generatingChallanPoId === po.id ? "Generating..." : "Generate Challan in Inventory"}
+                                    </Button>
                                   )}
                                   {po.status === "pending" && (
                                     <>

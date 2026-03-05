@@ -635,7 +635,14 @@ export default function Inventory() {
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
           <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
-          <TabsTrigger value="challans" data-testid="tab-challans">Challans</TabsTrigger>
+          <TabsTrigger value="challans" data-testid="tab-challans">
+            Challans
+            {(deliveryChallans?.filter(c => c.status === "draft").length ?? 0) > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center w-5 h-5 text-[10px] font-bold rounded-full bg-blue-500 text-white" data-testid="badge-draft-challans-count">
+                {deliveryChallans?.filter(c => c.status === "draft").length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>
         </TabsList>
 

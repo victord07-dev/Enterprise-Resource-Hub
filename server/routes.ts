@@ -2025,6 +2025,79 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/purchase-orders/:id/generate-challan", authenticateToken, async (req: any, res) => {
+    try {
+      const po = await storage.getPurchaseOrder(req.params.id);
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+      if (po.deliveryType !== "direct_delivery") return res.status(400).json({ message: "Only direct delivery POs can generate challans" });
+      if (!["approved", "shipped"].includes(po.status)) return res.status(400).json({ message: "PO must be approved or shipped" });
+
+      const existingChallans = await storage.getDeliveryChallans();
+      const existingDraft = existingChallans.find((c: any) => c.notes?.includes(po.poNumber) && c.status === "draft" && c.sourceType === "supplier" && c.sourceId === po.supplierId);
+      if (existingDraft) {
+        return res.status(200).json(existingDraft);
+      }
+
+      const poItems = await storage.getPurchaseOrderItems(po.id);
+      if (!poItems.length) return res.status(400).json({ message: "PO has no items" });
+
+      const allPRs = await storage.getPurchaseRequests();
+      const linkedPR = allPRs.find((pr: any) => pr.purchaseOrderId === po.id);
+      const salesOrderId = linkedPR?.salesOrderId;
+      if (!salesOrderId) return res.status(400).json({ message: "No linked sales order found for this PO" });
+
+      const salesOrder = await storage.getSalesOrder(salesOrderId);
+      if (!salesOrder) return res.status(400).json({ message: "Linked sales order not found" });
+
+      const year = new Date().getFullYear();
+      const allChallans = await storage.getDeliveryChallans();
+      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
+      const nextNum = yearChallans.length + 1;
+      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+
+      const challanData: any = {
+        challanNumber,
+        orderId: salesOrderId,
+        sourceType: "supplier",
+        sourceId: po.supplierId,
+        status: "draft",
+        createdBy: req.user.id,
+        deliveryAddress: po.deliveryAddress || (salesOrder as any).deliveryAddress || null,
+        notes: `Auto-generated from ${po.poNumber}`,
+      };
+
+      const parsed = insertDeliveryChallanSchema.safeParse(challanData);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      const challan = await storage.createDeliveryChallan(parsed.data as any);
+
+      const createdItems = [];
+      for (const poItem of poItems) {
+        const itemParsed = insertDeliveryChallanItemSchema.safeParse({
+          challanId: challan.id,
+          productId: poItem.productId,
+          quantity: poItem.quantity,
+          unitPrice: poItem.unitCost,
+        });
+        if (!itemParsed.success) continue;
+        const ci = await storage.createDeliveryChallanItem(itemParsed.data as any);
+        createdItems.push(ci);
+      }
+
+      await storage.createAuditEntry({
+        entityType: "delivery_challan",
+        entityId: challan.id,
+        action: "created",
+        userId: req.user.id,
+        details: { challanNumber, generatedFromPO: po.poNumber, salesOrderId },
+      });
+
+      res.status(201).json({ ...challan, items: createdItems });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to generate challan from PO" });
+    }
+  });
+
   app.post("/api/delivery-challans/:id/dispatch", authenticateToken, async (req: any, res) => {
     try {
       const challan = await storage.getDeliveryChallan(req.params.id);

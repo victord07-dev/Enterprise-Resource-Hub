@@ -1,0 +1,89 @@
+Enhance the ERP workflow so that Sales Orders, Inventory, and Supply Chain modules are properly integrated while preventing negative inventory and maintaining clear demand tracking.
+
+When a Sales Order is confirmed, the system must automatically perform an inventory availability check for each product SKU in the order.
+
+If sufficient stock exists in the warehouse, the system should create a Stock Reservation record for that quantity. Reserved stock should reduce the Available Stock but must not reduce Total Stock until goods are actually dispatched.
+
+If the ordered quantity exceeds available stock, the system should:
+
+Reserve the available quantity from inventory.
+
+Calculate the shortage quantity.
+
+Automatically generate a Purchase Request in the Supply Chain module for the shortage amount.
+
+Link the Purchase Request to the originating Sales Order.
+
+The Sales Order itself should not contain any drop-shipment or fulfillment type selection, because the sales team should only record customer demand and not decide procurement or logistics methods.
+
+In the Supply Chain module, when the procurement team converts a Purchase Request into a Purchase Order, they must select a field called Fulfillment Type with the following options:
+
+Warehouse Replenishment
+
+Direct Supplier Delivery (Drop Shipment)
+
+If Warehouse Replenishment is selected, the workflow should be:
+
+Purchase Order → Supplier Delivery → Goods Receipt Note (GRN) → Inventory Stock Movement (+) → Inventory Updated.
+
+If Direct Supplier Delivery (Drop Shipment) is selected, the workflow should be:
+
+Purchase Order → Supplier Dispatch → Delivery Challan → Customer Delivery.
+
+In the drop shipment scenario, warehouse inventory must not increase or decrease, because goods move directly from the supplier to the customer.
+
+The Inventory Products List interface must display clear operational stock information with the following columns:
+
+SKU / Item Code
+
+Product Name
+
+Warehouse
+
+Total Stock (physical stock currently in warehouse)
+
+Reserved Stock (stock reserved by confirmed Sales Orders)
+
+Available Stock (Total Stock − Reserved Stock)
+
+Incoming Stock (quantity expected from open Purchase Orders marked as Warehouse Replenishment)
+
+The system must never allow negative inventory.
+
+If stock is insufficient, the shortage must be handled through Purchase Requests and Purchase Orders, not by reducing inventory below zero.
+
+Users should be able to click on the Reserved Stock number to view a breakdown of which Sales Orders reserved the stock. The detail panel should show:
+
+Sales Order Number
+
+Customer Name
+
+Reserved Quantity
+
+Expected Delivery Date
+
+Reservation Status
+
+When a Delivery Challan is generated and dispatch is confirmed, the system must:
+
+Create a Stock Movement record (type: Sales Dispatch).
+
+Reduce Total Stock.
+
+Reduce or close the corresponding reservation.
+
+When a Goods Receipt Note (GRN) is confirmed for warehouse replenishment, the system must:
+
+Create a Stock Movement record (type: Purchase Receipt).
+
+Increase Total Stock.
+
+Update the product’s moving average cost.
+
+Add visual indicators in the inventory product list to highlight:
+
+Products where Available Stock is below the Reorder Level.
+
+Products where Available Stock is zero.
+
+This workflow ensures that Sales expresses demand, Inventory tracks stock availability and reservations, and the Supply Chain team controls procurement decisions such as warehouse replenishment or direct supplier delivery.

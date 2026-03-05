@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, IStorage } from "./storage";
 import { db } from "./db";
 import { sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
@@ -49,6 +49,75 @@ async function logAction(userId: string, action: string, module: string, details
     await storage.createAuditLog({ userId, action, module, details });
   } catch (e) {
     console.error("Audit log error:", e);
+  }
+}
+
+async function checkAndCreatePurchaseRequests(orderId: string, userId: string, storage: IStorage) {
+  const order = await storage.getSalesOrder(orderId);
+  if (!order) return;
+
+  const existingPRs = await storage.getPurchaseRequestsBySalesOrder(order.id);
+  const activePRs = existingPRs.filter(pr => pr.status === "pending" || pr.status === "approved");
+  if (activePRs.length > 0) return;
+
+  const orderItems = await storage.getSalesOrderItems(order.id);
+  const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+  const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number; costPrice: string | null }> = [];
+
+  const allStock = await storage.getInventoryStock();
+  const allProds = await storage.getProducts();
+  const prodMap = new Map(allProds.map(p => [p.id, p]));
+  for (const item of productItems) {
+    const totalStock = allStock
+      .filter(s => s.productId === item.productId)
+      .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
+    if (totalStock < item.quantity) {
+      const prod = item.productId ? prodMap.get(item.productId) : null;
+      shortfallItems.push({
+        productId: item.productId!,
+        description: item.description || prod?.name || "",
+        required: item.quantity,
+        available: totalStock,
+        shortfall: item.quantity - totalStock,
+        costPrice: prod?.costPrice || null,
+      });
+    }
+  }
+
+  if (shortfallItems.length > 0) {
+    const year = new Date().getFullYear();
+    const allPRs = await storage.getPurchaseRequests();
+    const yearPRs = allPRs.filter(pr => pr.requestNumber.startsWith(`PR-${year}`));
+    const maxNum = yearPRs.reduce((max, pr) => {
+      const num = parseInt(pr.requestNumber.split("-").pop() || "0", 10);
+      return num > max ? num : max;
+    }, 0);
+    const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+    const hasAdvance = Number(order.advanceAmount || 0) > 0 || Number(order.paidAmount || 0) > 0;
+    const pr = await storage.createPurchaseRequest({
+      requestNumber,
+      salesOrderId: order.id,
+      supplierId: null,
+      status: "pending",
+      priority: hasAdvance ? "high" : "medium",
+      notes: `Auto-generated from confirmed order ${order.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.`,
+      purchaseOrderId: null,
+      createdBy: userId,
+    });
+
+    for (const item of shortfallItems) {
+      await storage.createPurchaseRequestItem({
+        requestId: pr.id,
+        productId: item.productId,
+        description: item.description,
+        requiredQuantity: item.required,
+        availableStock: item.available,
+        shortfallQuantity: item.shortfall,
+        unitCost: item.costPrice,
+        notes: null,
+      });
+    }
   }
 }
 
@@ -567,69 +636,7 @@ export async function registerRoutes(
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
         try {
-          const existingPRs = await storage.getPurchaseRequestsBySalesOrder(updated.id);
-          const activePRs = existingPRs.filter(pr => pr.status === "pending" || pr.status === "approved");
-          if (activePRs.length === 0) {
-            const orderItems = await storage.getSalesOrderItems(updated.id);
-            const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
-            const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number; costPrice: string | null }> = [];
-
-            const allStock = await storage.getInventoryStock();
-            const allProds = await storage.getProducts();
-            const prodMap = new Map(allProds.map(p => [p.id, p]));
-            for (const item of productItems) {
-              const totalStock = allStock
-                .filter(s => s.productId === item.productId)
-                .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
-              if (totalStock < item.quantity) {
-                const prod = item.productId ? prodMap.get(item.productId) : null;
-                shortfallItems.push({
-                  productId: item.productId!,
-                  description: item.description || prod?.name || "",
-                  required: item.quantity,
-                  available: totalStock,
-                  shortfall: item.quantity - totalStock,
-                  costPrice: prod?.costPrice || null,
-                });
-              }
-            }
-
-            if (shortfallItems.length > 0) {
-              const year = new Date().getFullYear();
-              const allPRs = await storage.getPurchaseRequests();
-              const yearPRs = allPRs.filter(pr => pr.requestNumber.startsWith(`PR-${year}`));
-              const maxNum = yearPRs.reduce((max, pr) => {
-                const num = parseInt(pr.requestNumber.split("-").pop() || "0", 10);
-                return num > max ? num : max;
-              }, 0);
-              const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
-
-              const hasAdvance = Number(updated.advanceAmount || 0) > 0;
-              const pr = await storage.createPurchaseRequest({
-                requestNumber,
-                salesOrderId: updated.id,
-                supplierId: null,
-                status: "pending",
-                priority: hasAdvance ? "high" : "medium",
-                notes: `Auto-generated from confirmed order ${updated.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.`,
-                purchaseOrderId: null,
-                createdBy: req.user.id,
-              });
-
-              for (const item of shortfallItems) {
-                await storage.createPurchaseRequestItem({
-                  requestId: pr.id,
-                  productId: item.productId,
-                  description: item.description,
-                  requiredQuantity: item.required,
-                  availableStock: item.available,
-                  shortfallQuantity: item.shortfall,
-                  unitCost: item.costPrice,
-                  notes: null,
-                });
-              }
-            }
-          }
+          await checkAndCreatePurchaseRequests(updated.id, req.user.id, storage);
         } catch (prError) {
           console.error("Failed to auto-generate purchase request:", prError);
         }
@@ -1107,11 +1114,20 @@ export async function registerRoutes(
       });
 
       const updateData: any = { paidAmount: newPaidAmount };
-      if (["pending", "awaiting_payment"].includes(order.status)) {
+      const statusTransitionToConfirmed = ["pending", "awaiting_payment"].includes(order.status);
+      if (statusTransitionToConfirmed) {
         updateData.status = "confirmed";
       }
 
       const updatedOrder = await storage.updateSalesOrder(req.params.id, updateData);
+
+      if (statusTransitionToConfirmed) {
+        try {
+          await checkAndCreatePurchaseRequests(req.params.id, req.user.id, storage);
+        } catch (prError) {
+          console.error("Failed to auto-generate purchase request after payment:", prError);
+        }
+      }
 
       await logAction(req.user.id, "create", "sales", `Recorded payment ₹${paymentAmount} for order ${order.orderNumber}`);
 

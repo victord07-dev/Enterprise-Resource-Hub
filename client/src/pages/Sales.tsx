@@ -265,7 +265,7 @@ export default function Sales() {
 
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
-  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "" });
+  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
   const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
@@ -411,9 +411,10 @@ export default function Sales() {
       const quoteData = {
         ...data,
         totalAmount,
-        validUntil: data.validUntil ? new Date(data.validUntil) : null,
+        validUntil: data.validUntil ? new Date(data.validUntil).toISOString() : null,
         discountType: quoteDiscount.discountType === "none" ? null : quoteDiscount.discountType,
         discountValue: quoteDiscount.discountType === "none" ? null : String(quoteDiscount.discountValue),
+        expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
       };
       let quoteId: string;
       if (editingQuote) {
@@ -717,7 +718,7 @@ export default function Sales() {
   const openNewQuote = () => {
     setEditingQuote(null);
     const num = `QT-${Date.now().toString(36).toUpperCase()}`;
-    setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "" });
+    setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
     setQuoteDialogOpen(true);
@@ -731,6 +732,7 @@ export default function Sales() {
       status: q.status,
       validUntil: q.validUntil ? new Date(q.validUntil).toISOString().split("T")[0] : "",
       notes: q.notes || "",
+      expectedDeliveryDate: q.expectedDeliveryDate ? new Date(q.expectedDeliveryDate).toISOString().split("T")[0] : "",
     });
     setQuoteDiscount({
       discountType: q.discountType || "none",
@@ -1540,6 +1542,10 @@ export default function Sales() {
               <div className="space-y-2">
                 <Label htmlFor="quoteValidUntil">Valid Until</Label>
                 <Input id="quoteValidUntil" type="date" data-testid="input-quote-valid-until" value={quoteForm.validUntil} onChange={(e) => setQuoteForm({ ...quoteForm, validUntil: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="quoteExpectedDelivery">Expected Delivery Date</Label>
+                <Input id="quoteExpectedDelivery" type="date" data-testid="input-quote-expected-delivery" value={quoteForm.expectedDeliveryDate} onChange={(e) => setQuoteForm({ ...quoteForm, expectedDeliveryDate: e.target.value })} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="quoteNotes">Notes</Label>

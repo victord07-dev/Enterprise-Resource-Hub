@@ -63,8 +63,9 @@ export function generateQuotationPDF(
   doc.setFontSize(7);
   doc.setTextColor(...COLORS.textSecondary);
   doc.text("Quote Number", margin + 4, y + 6);
-  doc.text("Date", margin + 55, y + 6);
-  doc.text("Valid Until", margin + 100, y + 6);
+  doc.text("Date", margin + 50, y + 6);
+  doc.text("Valid Until", margin + 85, y + 6);
+  doc.text("Expected Delivery", margin + 120, y + 6);
   doc.text("Status", pageWidth - margin - 4, y + 6, { align: "right" });
 
   doc.setFontSize(9);
@@ -72,8 +73,9 @@ export function generateQuotationPDF(
   doc.setFont("helvetica", "bold");
   doc.text(quotation.quoteNumber, margin + 4, y + 12);
   doc.setFont("helvetica", "normal");
-  doc.text(new Date(quotation.createdAt).toLocaleDateString("en-IN"), margin + 55, y + 12);
-  doc.text(quotation.validUntil ? new Date(quotation.validUntil).toLocaleDateString("en-IN") : "—", margin + 100, y + 12);
+  doc.text(new Date(quotation.createdAt).toLocaleDateString("en-IN"), margin + 50, y + 12);
+  doc.text(quotation.validUntil ? new Date(quotation.validUntil).toLocaleDateString("en-IN") : "—", margin + 85, y + 12);
+  doc.text(quotation.expectedDeliveryDate ? new Date(quotation.expectedDeliveryDate).toLocaleDateString("en-IN") : "—", margin + 120, y + 12);
 
   const statusLabel = quotation.status.split("_").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
   doc.text(statusLabel, pageWidth - margin - 4, y + 12, { align: "right" });

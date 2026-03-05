@@ -102,6 +102,7 @@ export const quotations = pgTable("quotations", {
   notes: text("notes"),
   discountType: text("discount_type"),
   discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
+  expectedDeliveryDate: timestamp("expected_delivery_date"),
 });
 
 export const quotationItems = pgTable("quotation_items", {

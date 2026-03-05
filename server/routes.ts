@@ -715,7 +715,14 @@ export async function registerRoutes(
 
   app.post("/api/quotations", authenticateToken, async (req: any, res) => {
     try {
-      const parsed = insertQuotationSchema.safeParse(req.body);
+      const body = { ...req.body };
+      if (body.validUntil && typeof body.validUntil === "string") {
+        body.validUntil = new Date(body.validUntil);
+      }
+      if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
+        body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
+      }
+      const parsed = insertQuotationSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createQuotation(parsed.data as any);
       await logAction(req.user.id, "create", "sales", `Created quotation ${parsed.data.quoteNumber}`);
@@ -731,6 +738,9 @@ export async function registerRoutes(
       const body = { ...req.body };
       if (body.validUntil !== undefined) {
         body.validUntil = body.validUntil ? new Date(body.validUntil) : null;
+      }
+      if (body.expectedDeliveryDate !== undefined) {
+        body.expectedDeliveryDate = body.expectedDeliveryDate ? new Date(body.expectedDeliveryDate) : null;
       }
       const updated = await storage.updateQuotation(req.params.id, body);
       if (!updated) return res.status(404).json({ message: "Quotation not found" });
@@ -828,6 +838,7 @@ export async function registerRoutes(
         paymentTerms: null,
         advanceAmount: null,
         paidAmount: "0",
+        expectedDeliveryDate: quotation.expectedDeliveryDate || null,
       });
 
       const quotationItems = await storage.getQuotationItems(req.params.id);

@@ -94,7 +94,9 @@ export default function Inventory() {
   const lowStockProducts = products?.filter(p => {
     if (p.type === "service") return false;
     const totalStock = getProductTotalStock(p.id);
-    return totalStock < (p.minStockLevel ?? 0);
+    const reserved = reservedStockData?.[p.id]?.total ?? 0;
+    const available = Math.max(0, totalStock - reserved);
+    return available < (p.minStockLevel ?? 0);
   }) ?? [];
 
   const adjustmentMutation = useMutation({
@@ -681,7 +683,7 @@ export default function Inventory() {
                         const totalStock = isProduct ? getProductTotalStock(product.id) : null;
                         const reservedInfo = isProduct ? reservedStockData?.[product.id] : null;
                         const reservedStock = reservedInfo?.total ?? 0;
-                        const availableStock = isProduct && totalStock !== null ? totalStock - reservedStock : null;
+                        const availableStock = isProduct && totalStock !== null ? Math.max(0, totalStock - reservedStock) : null;
                         const incomingInfo = isProduct ? incomingStockData?.[product.id] : null;
                         const incomingStock = incomingInfo?.total ?? 0;
                         const isLowStock = isProduct && availableStock !== null && availableStock < (product.minStockLevel ?? 0);

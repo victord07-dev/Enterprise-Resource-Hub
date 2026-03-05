@@ -1758,6 +1758,30 @@ export async function registerRoutes(
         }
       }
 
+      const allStock = await storage.getInventoryStock();
+      const stockByProduct: Record<string, number> = {};
+      for (const s of allStock) {
+        stockByProduct[s.productId] = (stockByProduct[s.productId] || 0) + (s.quantity ?? 0);
+      }
+
+      for (const pid of Object.keys(result)) {
+        const physicalStock = stockByProduct[pid] || 0;
+        if (result[pid].total > physicalStock) {
+          const ratio = physicalStock > 0 ? physicalStock / result[pid].total : 0;
+          let remaining = physicalStock;
+          for (const orderEntry of result[pid].orders) {
+            const capped = Math.min(Math.floor(orderEntry.quantity * ratio), remaining);
+            orderEntry.quantity = capped;
+            remaining -= capped;
+          }
+          if (remaining > 0 && result[pid].orders.length > 0) {
+            result[pid].orders[0].quantity += remaining;
+          }
+          result[pid].total = physicalStock;
+          result[pid].orders = result[pid].orders.filter(o => o.quantity > 0);
+        }
+      }
+
       res.json(result);
     } catch (error) {
       console.error("Reserved stock error:", error);

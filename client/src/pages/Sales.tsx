@@ -31,7 +31,57 @@ const ORDER_STATUSES = [
   "installed", "completed", "cancelled"
 ];
 
-const INVOICE_ELIGIBLE_STATUSES = ["delivered", "installed", "completed"];
+const INVOICE_ELIGIBLE_STATUSES = ["dispatched", "delivered", "installed", "completed"];
+
+const FULFILLMENT_STEPS = ["pending", "confirmed", "procurement", "ready_to_ship", "dispatched", "delivered", "completed"];
+const FULFILLMENT_STEP_LABELS: Record<string, string> = {
+  pending: "Pending",
+  confirmed: "Confirmed",
+  procurement: "Procurement",
+  ready_to_ship: "Ready to Ship",
+  dispatched: "Dispatched",
+  delivered: "Delivered",
+  completed: "Completed",
+};
+
+function FulfillmentProgressBar({ status, deliveryMethod }: { status: string; deliveryMethod?: string }) {
+  const steps = status === "procurement" || FULFILLMENT_STEPS.indexOf(status) >= FULFILLMENT_STEPS.indexOf("procurement")
+    ? FULFILLMENT_STEPS
+    : FULFILLMENT_STEPS.filter(s => s !== "procurement");
+
+  const currentIdx = steps.indexOf(status);
+  const progressSteps = ["cancelled", "awaiting_payment", "shipped", "installed"].includes(status) ? [] : steps;
+  if (progressSteps.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-1 flex-wrap" data-testid="fulfillment-progress">
+      {progressSteps.map((step, idx) => {
+        const done = idx < currentIdx;
+        const active = idx === currentIdx;
+        return (
+          <div key={step} className="flex items-center gap-1">
+            <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors ${
+              done ? "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400" :
+              active ? "bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 ring-1 ring-blue-400 dark:ring-blue-600" :
+              "bg-muted text-muted-foreground"
+            }`}>
+              {done && <Check className="w-2.5 h-2.5" />}
+              {FULFILLMENT_STEP_LABELS[step] || step}
+            </div>
+            {idx < progressSteps.length - 1 && (
+              <ChevronRight className={`w-3 h-3 ${done ? "text-green-500" : "text-muted-foreground/40"}`} />
+            )}
+          </div>
+        );
+      })}
+      {deliveryMethod && (
+        <span className="ml-2 text-[10px] text-muted-foreground border rounded-full px-1.5 py-0.5">
+          {deliveryMethod === "pickup" ? "Pickup" : "Delivery"}
+        </span>
+      )}
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -517,6 +567,22 @@ export default function Sales() {
     },
   });
 
+  const confirmPickupMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const res = await apiRequest("POST", `/api/sales-orders/${orderId}/confirm-pickup`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      toast({ title: "Pickup confirmed", description: "Order marked as delivered and stock deducted." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const customerMutation = useMutation({
     mutationFn: async (data: any) => {
       if (editingCustomer) {
@@ -940,6 +1006,10 @@ export default function Sales() {
                             <tr key={`${order.id}-items`} className="border-b">
                               <td colSpan={8} className="p-0">
                                 <div className="bg-muted/20 px-6 py-3 space-y-3">
+                                  <div className="pb-1">
+                                    <FulfillmentProgressBar status={order.status} deliveryMethod={(order as any).deliveryMethod} />
+                                  </div>
+
                                   {expandedOrderItems.length > 0 ? (
                                     <table className="w-full text-xs">
                                       <thead>
@@ -1016,6 +1086,18 @@ export default function Sales() {
                                       <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
                                         <CreditCard className="w-3 h-3 mr-1" /> Record Payment
                                       </Button>
+                                      {order.status === "ready_to_ship" && (order as any).deliveryMethod === "pickup" && (
+                                        <Button
+                                          size="sm"
+                                          variant="default"
+                                          className="bg-green-600 hover:bg-green-700 text-white"
+                                          data-testid={`button-confirm-pickup-${order.id}`}
+                                          disabled={confirmPickupMutation.isPending}
+                                          onClick={() => { if (confirm("Confirm pickup? This will deduct stock and mark the order as delivered.")) confirmPickupMutation.mutate(order.id); }}
+                                        >
+                                          <Check className="w-3 h-3 mr-1" /> Confirm Pickup
+                                        </Button>
+                                      )}
                                       {INVOICE_ELIGIBLE_STATUSES.includes(order.status) && (
                                         <Button
                                           size="sm"

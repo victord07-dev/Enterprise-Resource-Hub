@@ -85,13 +85,13 @@ async function calculateReservedStockForOtherOrders(excludeOrderId: string, stor
   return reserved;
 }
 
-async function checkAndCreatePurchaseRequests(orderId: string, userId: string, storage: IStorage) {
+async function checkAndCreatePurchaseRequests(orderId: string, userId: string, storage: IStorage): Promise<boolean> {
   const order = await storage.getSalesOrder(orderId);
-  if (!order) return;
+  if (!order) return false;
 
   const existingPRs = await storage.getPurchaseRequestsBySalesOrder(order.id);
   const activePRs = existingPRs.filter(pr => pr.status === "pending" || pr.status === "approved");
-  if (activePRs.length > 0) return;
+  if (activePRs.length > 0) return true;
 
   const orderItems = await storage.getSalesOrderItems(order.id);
   const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
@@ -155,6 +155,74 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
         notes: null,
       });
     }
+    return true;
+  }
+  return false;
+}
+
+async function checkAndAdvanceSalesOrderFromProcurement(salesOrderId: string, storage: IStorage): Promise<void> {
+  const order = await storage.getSalesOrder(salesOrderId);
+  if (!order || order.status !== "procurement") return;
+
+  const allPRs = await storage.getPurchaseRequestsBySalesOrder(salesOrderId);
+  const relevantPRs = allPRs.filter(pr => pr.purchaseOrderId);
+  if (relevantPRs.length === 0) return;
+
+  const allChallans = await storage.getDeliveryChallans();
+
+  for (const pr of relevantPRs) {
+    const po = await storage.getPurchaseOrder(pr.purchaseOrderId!);
+    if (!po) return;
+
+    if (po.deliveryType === "warehouse") {
+      if (po.status !== "received") return;
+    } else if (po.deliveryType === "direct_delivery") {
+      const challanExists = allChallans.some((c: any) =>
+        c.notes?.includes(po.poNumber) && c.sourceType === "supplier" && c.sourceId === po.supplierId
+      );
+      if (!challanExists) return;
+    } else {
+      return;
+    }
+  }
+
+  await storage.updateSalesOrder(salesOrderId, { status: "ready_to_ship" } as any);
+}
+
+async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: IStorage): Promise<void> {
+  const order = await storage.getSalesOrder(orderId);
+  if (!order) return;
+
+  const orderItems = await storage.getSalesOrderItems(orderId);
+  const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+  if (productItems.length === 0) return;
+
+  const allChallans = await storage.getDeliveryChallans();
+  const orderChallans = allChallans.filter((c: any) => c.orderId === orderId && c.status !== "cancelled");
+
+  const dispatchedQty: Record<string, number> = {};
+  const deliveredQty: Record<string, number> = {};
+
+  for (const challan of orderChallans) {
+    const challanItems = await storage.getDeliveryChallanItems(challan.id);
+    for (const ci of challanItems) {
+      if (!ci.productId) continue;
+      if (["dispatched", "delivered"].includes(challan.status)) {
+        dispatchedQty[ci.productId] = (dispatchedQty[ci.productId] || 0) + ci.quantity;
+      }
+      if (challan.status === "delivered") {
+        deliveredQty[ci.productId] = (deliveredQty[ci.productId] || 0) + ci.quantity;
+      }
+    }
+  }
+
+  const allDispatched = productItems.every(it => (dispatchedQty[it.productId!] || 0) >= it.quantity);
+  const allDelivered = productItems.every(it => (deliveredQty[it.productId!] || 0) >= it.quantity);
+
+  if (allDelivered && ["dispatched", "shipped", "ready_to_ship"].includes(order.status)) {
+    await storage.updateSalesOrder(orderId, { status: "delivered" } as any);
+  } else if (allDispatched && order.status === "ready_to_ship") {
+    await storage.updateSalesOrder(orderId, { status: "dispatched" } as any);
   }
 }
 
@@ -681,7 +749,10 @@ export async function registerRoutes(
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
         try {
-          await checkAndCreatePurchaseRequests(updated.id, req.user.id, storage);
+          const hadShortfall = await checkAndCreatePurchaseRequests(updated.id, req.user.id, storage);
+          const nextStatus = hadShortfall ? "procurement" : "ready_to_ship";
+          const finalOrder = await storage.updateSalesOrder(updated.id, { status: nextStatus } as any);
+          return res.json(finalOrder || updated);
         } catch (prError) {
           console.error("Failed to auto-generate purchase request:", prError);
         }
@@ -1182,7 +1253,9 @@ export async function registerRoutes(
 
       if (statusTransitionToConfirmed) {
         try {
-          await checkAndCreatePurchaseRequests(req.params.id, req.user.id, storage);
+          const hadShortfall = await checkAndCreatePurchaseRequests(req.params.id, req.user.id, storage);
+          const nextStatus = hadShortfall ? "procurement" : "ready_to_ship";
+          await storage.updateSalesOrder(req.params.id, { status: nextStatus } as any);
         } catch (prError) {
           console.error("Failed to auto-generate purchase request after payment:", prError);
         }
@@ -2092,6 +2165,12 @@ export async function registerRoutes(
         details: { challanNumber, generatedFromPO: po.poNumber, salesOrderId },
       });
 
+      try {
+        await checkAndAdvanceSalesOrderFromProcurement(salesOrderId, storage);
+      } catch (e) {
+        console.error("Failed to advance SO from procurement after challan generation:", e);
+      }
+
       res.status(201).json({ ...challan, items: createdItems });
     } catch (error) {
       res.status(500).json({ message: "Failed to generate challan from PO" });
@@ -2135,6 +2214,14 @@ export async function registerRoutes(
         dispatchDate: new Date(),
       });
 
+      if (challan.orderId) {
+        try {
+          await checkAndAdvanceSalesOrderOnChallan(challan.orderId, storage);
+        } catch (e) {
+          console.error("Failed to advance SO on challan dispatch:", e);
+        }
+      }
+
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to dispatch challan" });
@@ -2151,6 +2238,14 @@ export async function registerRoutes(
         status: "delivered",
         deliveryDate: new Date(),
       });
+
+      if (challan.orderId) {
+        try {
+          await checkAndAdvanceSalesOrderOnChallan(challan.orderId, storage);
+        } catch (e) {
+          console.error("Failed to advance SO on challan delivery:", e);
+        }
+      }
 
       res.json(updated);
     } catch (error) {
@@ -2395,6 +2490,16 @@ export async function registerRoutes(
 
         if (allFullyReceived) {
           await storage.updatePurchaseOrder(po.id, { status: "received" } as any);
+
+          const allPRs = await storage.getPurchaseRequests();
+          const linkedPR = allPRs.find((pr: any) => pr.purchaseOrderId === po.id);
+          if (linkedPR?.salesOrderId) {
+            try {
+              await checkAndAdvanceSalesOrderFromProcurement(linkedPR.salesOrderId, storage);
+            } catch (e) {
+              console.error("Failed to advance SO from procurement after GRN:", e);
+            }
+          }
         }
       }
 
@@ -2409,6 +2514,90 @@ export async function registerRoutes(
   });
 
   // ======================== ORDER REMAINING QUANTITIES ========================
+  app.post("/api/sales-orders/:id/confirm-pickup", authenticateToken, async (req: any, res) => {
+    try {
+      const order = await storage.getSalesOrder(req.params.id);
+      if (!order) return res.status(404).json({ message: "Sales order not found" });
+      if (order.status !== "ready_to_ship") return res.status(400).json({ message: "Order must be in ready_to_ship status" });
+      if ((order as any).deliveryMethod !== "pickup") return res.status(400).json({ message: "Only pickup orders can use confirm-pickup" });
+
+      const orderItems = await storage.getSalesOrderItems(order.id);
+      const productItems = orderItems.filter((it: any) => it.itemType === "product" && it.productId);
+
+      const allStock = await storage.getInventoryStock();
+      const warehouses = await storage.getWarehouses();
+
+      let pickupWarehouseId: string | null = null;
+      if (productItems.length > 0 && allStock.length > 0) {
+        const stockByWarehouse: Record<string, number> = {};
+        for (const s of allStock) {
+          if (!stockByWarehouse[s.warehouseId]) stockByWarehouse[s.warehouseId] = 0;
+          stockByWarehouse[s.warehouseId] += s.quantity ?? 0;
+        }
+        const bestWh = warehouses.find((wh: any) => (stockByWarehouse[wh.id] || 0) > 0);
+        pickupWarehouseId = bestWh?.id || warehouses[0]?.id || null;
+      } else {
+        pickupWarehouseId = warehouses[0]?.id || null;
+      }
+
+      if (!pickupWarehouseId) return res.status(400).json({ message: "No warehouse available for pickup" });
+
+      const year = new Date().getFullYear();
+      const allChallans = await storage.getDeliveryChallans();
+      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
+      const nextNum = yearChallans.length + 1;
+      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+
+      const challan = await storage.createDeliveryChallan({
+        challanNumber,
+        orderId: order.id,
+        sourceType: "warehouse",
+        sourceId: pickupWarehouseId,
+        status: "draft",
+        createdBy: req.user.id,
+        notes: `Pickup confirmed for order ${order.orderNumber}`,
+      } as any);
+
+      for (const item of productItems) {
+        await storage.createDeliveryChallanItem({
+          challanId: challan.id,
+          productId: item.productId!,
+          description: item.description || null,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+        } as any);
+
+        await storage.createStockMovement({
+          productId: item.productId!,
+          warehouseId: pickupWarehouseId,
+          movementType: "out",
+          quantity: item.quantity,
+          referenceType: "challan",
+          referenceId: challan.id,
+          notes: `Pickup of order ${order.orderNumber}`,
+          createdBy: req.user.id,
+        });
+
+        await updateInventoryStockForMovement(item.productId!, pickupWarehouseId, -item.quantity);
+      }
+
+      await storage.updateDeliveryChallan(challan.id, {
+        status: "delivered",
+        dispatchDate: new Date(),
+        deliveryDate: new Date(),
+      });
+
+      await storage.updateSalesOrder(order.id, { status: "delivered" } as any);
+
+      await logAction(req.user.id, "confirm_pickup", "sales", `Pickup confirmed for order ${order.orderNumber}`);
+
+      res.json({ message: "Pickup confirmed", challanNumber, orderId: order.id });
+    } catch (error) {
+      console.error("Confirm pickup error:", error);
+      res.status(500).json({ message: "Failed to confirm pickup" });
+    }
+  });
+
   app.get("/api/sales-orders/:id/remaining-quantities", authenticateToken, async (req: any, res) => {
     try {
       const remaining = await getRemainingOrderItemQuantities(req.params.id);

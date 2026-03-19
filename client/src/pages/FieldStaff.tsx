@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
 import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -186,21 +187,18 @@ export default function FieldStaff() {
     }
   }, [originLat, originLng]);
 
-  const getMyLocation = () => {
+  const getMyLocation = async () => {
     setGettingLocation(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setOriginLat(pos.coords.latitude);
-        setOriginLng(pos.coords.longitude);
-        setGettingLocation(false);
-        toast({ title: "Location obtained", description: `Lat: ${pos.coords.latitude.toFixed(4)}, Lng: ${pos.coords.longitude.toFixed(4)}` });
-      },
-      (err) => {
-        setGettingLocation(false);
-        toast({ title: "Location error", description: err.message, variant: "destructive" });
-      },
-      { enableHighAccuracy: true }
-    );
+    try {
+      const { latitude, longitude } = await getCurrentPosition({ enableHighAccuracy: true });
+      setOriginLat(latitude);
+      setOriginLng(longitude);
+      toast({ title: "Location obtained", description: `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}` });
+    } catch (err: any) {
+      toast({ title: "Location error", description: err.message ?? "Unable to get location", variant: "destructive" });
+    } finally {
+      setGettingLocation(false);
+    }
   };
 
   const expenseSubmitMutation = useMutation({

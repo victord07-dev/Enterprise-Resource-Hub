@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { getCurrentPosition } from "@/lib/geolocation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -174,14 +175,11 @@ export default function Kiosk() {
   const captureLocation = useCallback(async () => {
     setLocationLoading(true);
     try {
-      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        });
+      const { latitude, longitude } = await getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
       });
-      const { latitude, longitude } = position.coords;
       setLocationAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
     } catch {
       setLocationAddress("Location not available");

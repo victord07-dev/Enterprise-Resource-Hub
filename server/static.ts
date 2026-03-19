@@ -13,7 +13,7 @@ export function serveStatic(app: Express) {
   app.use(express.static(distPath));
 
   // return JSON 404 for unmatched API routes instead of serving HTML
-  app.use("/api/*", (_req, res) => {
+  app.use("/api/{*path}", (_req, res) => {
     res.status(404).json({ message: "API endpoint not found" });
   });
 

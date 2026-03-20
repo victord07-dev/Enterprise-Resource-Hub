@@ -3694,6 +3694,9 @@ export async function registerRoutes(
   app.patch("/api/leave-requests/:id/approve", authenticateToken, async (req: any, res) => {
     try {
       if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const existing = (await storage.getLeaveRequests()).find(r => r.id === req.params.id);
+      if (!existing) return res.status(404).json({ message: "Leave request not found" });
+      if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be approved" });
       const lr = await storage.updateLeaveRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
       if (!lr) return res.status(404).json({ message: "Leave request not found" });
       await notifyEmployee(lr.employeeId, "leave_approved", "Leave Approved", `Your ${lr.type} leave from ${new Date(lr.startDate).toLocaleDateString("en-IN")} to ${new Date(lr.endDate).toLocaleDateString("en-IN")} has been approved.`, lr.id);
@@ -3706,6 +3709,9 @@ export async function registerRoutes(
   app.patch("/api/leave-requests/:id/reject", authenticateToken, async (req: any, res) => {
     try {
       if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const existing = (await storage.getLeaveRequests()).find(r => r.id === req.params.id);
+      if (!existing) return res.status(404).json({ message: "Leave request not found" });
+      if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be rejected" });
       const { reviewNote } = req.body;
       if (!reviewNote) return res.status(400).json({ message: "reviewNote (rejection reason) is required" });
       const lr = await storage.updateLeaveRequest(req.params.id, { status: "rejected", reviewedBy: req.user.id, reviewNote });

@@ -1658,16 +1658,6 @@ export async function registerRoutes(
     }
   });
 
-  // ======================== USERS ========================
-  app.get("/api/users", authenticateToken, async (_req: any, res) => {
-    try {
-      const data = await storage.getUsers();
-      res.json(data.map(u => ({ id: u.id, username: u.username, role: u.role })));
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch users" });
-    }
-  });
-
   // ======================== EMPLOYEES ========================
   app.get("/api/employees", authenticateToken, async (_req, res) => {
     try {
@@ -1688,11 +1678,20 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/employees", authenticateToken, async (req: any, res) => {
+  app.post("/api/employees", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       const { username, password, role: accountRole, ...empFields } = req.body;
       const parsed = insertEmployeeSchema.safeParse(empFields);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      const allowedRoles = ["field_staff", "hr_manager", "sales_manager", "warehouse_manager", "accountant"];
+      const hasAnyPortalField = username || password || accountRole;
+      if (hasAnyPortalField && (!username || !password)) {
+        return res.status(400).json({ message: "Portal access requires both username and password" });
+      }
+      if (accountRole && !allowedRoles.includes(accountRole)) {
+        return res.status(400).json({ message: `Invalid role. Allowed roles: ${allowedRoles.join(", ")}` });
+      }
 
       let userId: string | null = null;
       if (username && password) {
@@ -1710,7 +1709,7 @@ export async function registerRoutes(
         userId = user.id;
       }
 
-      const created = await storage.createEmployee({ ...parsed.data, userId } as any);
+      const created = await storage.createEmployee({ ...parsed.data, userId });
       await logAction(req.user.id, "create", "employees", `Added employee ${parsed.data.name}${userId ? " with portal access" : ""}`);
       res.status(201).json(created);
     } catch (error) {
@@ -1730,13 +1729,18 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/employees/:id/account", authenticateToken, async (req: any, res) => {
+  app.patch("/api/employees/:id/account", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
       const emp = await storage.getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ message: "Employee not found" });
 
       const { username, password, role: accountRole } = req.body;
       if (!username) return res.status(400).json({ message: "Username is required" });
+
+      const allowedAccountRoles = ["field_staff", "hr_manager", "sales_manager", "warehouse_manager", "accountant"];
+      if (accountRole && !allowedAccountRoles.includes(accountRole)) {
+        return res.status(400).json({ message: `Invalid role. Allowed roles: ${allowedAccountRoles.join(", ")}` });
+      }
 
       if (emp.userId) {
         const existingUser = await storage.getUserByUsername(username);
@@ -1760,7 +1764,7 @@ export async function registerRoutes(
           role: accountRole || "field_staff",
           isActive: true,
         });
-        await storage.updateEmployee(emp.id, { userId: user.id } as any);
+        await storage.updateEmployee(emp.id, { userId: user.id });
       }
 
       const finalEmp = await storage.getEmployee(emp.id);

@@ -14,13 +14,15 @@ import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Employee, AttendanceRecord, PayrollStatus, User } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus } from "@shared/schema";
+
+type UserAccount = { id: string; username: string; role: string };
 
 export default function Employees() {
   const { toast } = useToast();
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: attendance, isLoading: attLoading } = useQuery<AttendanceRecord[]>({ queryKey: ["/api/attendance"] });
-  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
+  const { data: users } = useQuery<UserAccount[]>({ queryKey: ["/api/users"] });
 
   const activeCount = employees?.filter((e) => e.isActive).length ?? 0;
 
@@ -70,7 +72,7 @@ export default function Employees() {
     },
   });
 
-  const getLinkedUser = (emp: Employee): User | undefined => {
+  const getLinkedUser = (emp: Employee): UserAccount | undefined => {
     return emp.userId ? users?.find(u => u.id === emp.userId) : undefined;
   };
 
@@ -784,7 +786,6 @@ export default function Employees() {
                         <SelectItem value="warehouse_manager">Warehouse Manager</SelectItem>
                         <SelectItem value="hr_manager">HR Manager</SelectItem>
                         <SelectItem value="accountant">Accountant</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -796,7 +797,19 @@ export default function Employees() {
             <Button
               data-testid="button-submit-employee"
               disabled={employeeMutation.isPending}
-              onClick={() => employeeMutation.mutate({ ...form, ...portalForm })}
+              onClick={() => {
+                if (showPortalSection && !editingEmployee) {
+                  if (portalForm.username && !portalForm.password) {
+                    toast({ title: "Validation error", description: "Password is required to create a portal account.", variant: "destructive" });
+                    return;
+                  }
+                  if (!portalForm.username && portalForm.password) {
+                    toast({ title: "Validation error", description: "Username is required to create a portal account.", variant: "destructive" });
+                    return;
+                  }
+                }
+                employeeMutation.mutate({ ...form, ...portalForm });
+              }}
             >
               {employeeMutation.isPending ? "Saving..." : editingEmployee ? "Update" : "Create"}
             </Button>

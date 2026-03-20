@@ -24,6 +24,14 @@ const monthNames = ["January", "February", "March", "April", "May", "June", "Jul
 export default function MyPortal() {
   const { toast } = useToast();
   const { data: currentUser, isLoading: userLoading } = useCurrentUser();
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("denied") === "1") {
+      toast({ title: "Access Denied", description: "You don't have permission to view that page.", variant: "destructive" });
+      window.history.replaceState({}, "", "/my-portal");
+    }
+  }, []);
   const employeeId = currentUser?.employeeId;
 
   const { data: employees } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });

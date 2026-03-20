@@ -60,12 +60,70 @@ export default function FieldStaff() {
   const [gettingLocation, setGettingLocation] = useState(false);
   const [rejectExpenseId, setRejectExpenseId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [tripStarting, setTripStarting] = useState(false);
+  const [tripStopping, setTripStopping] = useState(false);
 
   useEffect(() => {
     if (isFieldStaff && currentUser?.employeeId) {
       setExpenseEmployeeId(currentUser.employeeId);
     }
   }, [isFieldStaff, currentUser?.employeeId]);
+
+  const myActiveTrip = isFieldStaff && currentUser?.employeeId
+    ? activeTripsData?.find(t => t.employeeId === currentUser.employeeId) || null
+    : null;
+
+  const startTripMutation = useMutation({
+    mutationFn: async () => {
+      setTripStarting(true);
+      const { latitude, longitude } = await getCurrentPosition({ enableHighAccuracy: true });
+      const res = await apiRequest("POST", "/api/trips/start", {
+        employeeId: currentUser?.employeeId,
+        lat: latitude,
+        lng: longitude,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to start trip");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips/active"] });
+      toast({ title: "Trip started", description: "Your location will now be tracked." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => setTripStarting(false),
+  });
+
+  const stopTripMutation = useMutation({
+    mutationFn: async (tripId: string) => {
+      setTripStopping(true);
+      let lat: number | undefined, lng: number | undefined;
+      try {
+        const pos = await getCurrentPosition({ enableHighAccuracy: true });
+        lat = pos.latitude; lng = pos.longitude;
+      } catch {}
+      const res = await apiRequest("POST", `/api/trips/${tripId}/end`, { lat, lng });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to end trip");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips/active"] });
+      toast({ title: "Trip ended", description: "Your trip has been recorded." });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+    onSettled: () => setTripStopping(false),
+  });
 
   const adminMapInstance = useRef<L.Map | null>(null);
   const adminMarkersRef = useRef<L.Marker[]>([]);
@@ -362,9 +420,57 @@ export default function FieldStaff() {
         </Card>
       </div>
 
+      {isFieldStaff && (
+        <Card className={myActiveTrip ? "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/20" : ""}>
+          <CardContent className="p-5">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-md flex items-center justify-center ${myActiveTrip ? "bg-emerald-100 dark:bg-emerald-900/40" : "bg-muted"}`}>
+                  <Navigation className={`w-5 h-5 ${myActiveTrip ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`} />
+                </div>
+                <div>
+                  <p className="font-medium text-sm">
+                    {myActiveTrip ? "Trip in Progress" : "No Active Trip"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {myActiveTrip
+                      ? `Started at ${new Date(myActiveTrip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      : "Start a trip to begin location tracking"}
+                  </p>
+                </div>
+                {myActiveTrip && <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />}
+              </div>
+              <div>
+                {!myActiveTrip ? (
+                  <Button
+                    onClick={() => startTripMutation.mutate()}
+                    disabled={tripStarting || startTripMutation.isPending}
+                    data-testid="button-start-trip"
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  >
+                    <Play className="w-4 h-4 mr-2" />
+                    {tripStarting || startTripMutation.isPending ? "Starting..." : "Start Trip"}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="destructive"
+                    onClick={() => stopTripMutation.mutate(myActiveTrip.id)}
+                    disabled={tripStopping || stopTripMutation.isPending}
+                    data-testid="button-stop-trip"
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    {tripStopping || stopTripMutation.isPending ? "Stopping..." : "End Trip"}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
-          <TabsTrigger value="tracking" data-testid="tab-tracking">Live Tracking</TabsTrigger>
+          {!isFieldStaff && <TabsTrigger value="tracking" data-testid="tab-tracking">Live Tracking</TabsTrigger>}
           <TabsTrigger value="expenses" data-testid="tab-expenses">Travel Expenses</TabsTrigger>
           <TabsTrigger value="history" data-testid="tab-history">Expense History</TabsTrigger>
         </TabsList>

@@ -3111,9 +3111,15 @@ export async function registerRoutes(
   });
 
   // ======================== TRAVEL EXPENSES ========================
-  app.get("/api/travel-expenses", authenticateToken, async (_req, res) => {
+  app.get("/api/travel-expenses", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getTravelExpenses();
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linkedEmployee = employees.find(e => e.userId === req.user.id);
+        if (!linkedEmployee) return res.json([]);
+        return res.json(data.filter(te => te.employeeId === linkedEmployee.id));
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch travel expenses" });
@@ -3207,14 +3213,20 @@ export async function registerRoutes(
 
   app.patch("/api/travel-expenses/:id/resubmit", authenticateToken, async (req: any, res) => {
     try {
-      const expense = await storage.getTravelExpenses();
-      const te = expense.find(e => e.id === req.params.id);
+      const allExpenses = await storage.getTravelExpenses();
+      const te = allExpenses.find(e => e.id === req.params.id);
       if (!te) return res.status(404).json({ message: "Travel expense not found" });
       if (te.status !== "rejected") return res.status(400).json({ message: "Only rejected expenses can be resubmitted" });
+      const employees = await storage.getEmployees();
+      const linkedEmployee = employees.find(e => e.userId === req.user.id);
+      if (!linkedEmployee || te.employeeId !== linkedEmployee.id) {
+        return res.status(403).json({ message: "You can only resubmit your own expenses" });
+      }
       const { notes, transportMode } = req.body;
       const updated = await storage.updateTravelExpense(req.params.id, {
         status: "pending",
         rejectionReason: null,
+        approvedAt: null,
         notes: notes !== undefined ? notes : te.notes,
         transportMode: transportMode || te.transportMode,
       });
@@ -3226,9 +3238,15 @@ export async function registerRoutes(
   });
 
   // ======================== LOCATION LOGS ========================
-  app.get("/api/location-logs", authenticateToken, async (_req, res) => {
+  app.get("/api/location-logs", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getLocationLogs();
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linkedEmployee = employees.find(e => e.userId === req.user.id);
+        if (!linkedEmployee) return res.json([]);
+        return res.json(data.filter(log => log.employeeId === linkedEmployee.id));
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch location logs" });
@@ -3278,16 +3296,22 @@ export async function registerRoutes(
   });
 
   // Trips
-  app.get("/api/trips", authenticateToken, async (_req, res) => {
+  app.get("/api/trips", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getTrips();
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linkedEmployee = employees.find(e => e.userId === req.user.id);
+        if (!linkedEmployee) return res.json([]);
+        return res.json(data.filter(t => t.employeeId === linkedEmployee.id));
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch trips" });
     }
   });
 
-  app.get("/api/trips/active", authenticateToken, async (_req, res) => {
+  app.get("/api/trips/active", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getActiveTrips();
       res.json(data);

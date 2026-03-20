@@ -3177,6 +3177,34 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/travel-expenses/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const allExpenses = await storage.getTravelExpenses();
+      const te = allExpenses.find(e => e.id === req.params.id);
+      if (!te) return res.status(404).json({ message: "Travel expense not found" });
+      const employees = await storage.getEmployees();
+      const linkedEmployee = employees.find(e => e.userId === req.user.id);
+      if (!linkedEmployee || te.employeeId !== linkedEmployee.id) {
+        return res.status(403).json({ message: "You can only edit your own expenses" });
+      }
+      if (te.status !== "rejected") {
+        return res.status(400).json({ message: "Only rejected expenses can be edited and resubmitted" });
+      }
+      const { notes, transportMode } = req.body;
+      const updated = await storage.updateTravelExpense(req.params.id, {
+        status: "pending",
+        rejectionReason: null,
+        approvedAt: null,
+        notes: notes !== undefined ? notes : te.notes,
+        transportMode: transportMode || te.transportMode,
+      });
+      await logAction(req.user.id, "resubmit", "travel_expenses", `Resubmitted travel expense ${req.params.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update travel expense" });
+    }
+  });
+
   app.patch("/api/travel-expenses/:id/approve", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       const updated = await storage.updateTravelExpense(req.params.id, { status: "approved", approvedAt: new Date() });
@@ -3314,6 +3342,12 @@ export async function registerRoutes(
   app.get("/api/trips/active", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getActiveTrips();
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linkedEmployee = employees.find(e => e.userId === req.user.id);
+        if (!linkedEmployee) return res.json([]);
+        return res.json(data.filter(t => t.employeeId === linkedEmployee.id));
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch active trips" });

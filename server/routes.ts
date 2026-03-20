@@ -3650,7 +3650,7 @@ export async function registerRoutes(
 
   app.patch("/api/notifications/:id/read", authenticateToken, async (req: any, res) => {
     try {
-      const updated = await storage.markNotificationRead(req.params.id);
+      const updated = await storage.markNotificationRead(req.params.id, req.user.id);
       if (!updated) return res.status(404).json({ message: "Notification not found" });
       res.json(updated);
     } catch (error) {

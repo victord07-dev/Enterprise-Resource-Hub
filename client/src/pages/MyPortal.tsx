@@ -6,7 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -110,6 +111,7 @@ export default function MyPortal() {
   const monthlySalary = employee?.salary ? Number(employee.salary) : 0;
   const dailyRate = Math.round(monthlySalary / 26);
 
+  const [showAllNotifications, setShowAllNotifications] = useState(false);
   const [resubmitExpense, setResubmitExpense] = useState<TravelExpense | null>(null);
   const [editNotes, setEditNotes] = useState("");
   const [editMode, setEditMode] = useState<"bus" | "train" | "bike">("bus");
@@ -368,19 +370,32 @@ export default function MyPortal() {
                 </span>
               )}
             </CardTitle>
-            {myNotifications.filter(n => !n.isRead).length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs gap-1"
-                data-testid="button-portal-mark-all-read"
-                onClick={() => markAllReadMutation.mutate()}
-                disabled={markAllReadMutation.isPending}
-              >
-                <CheckCheck className="h-3 w-3" />
-                Mark all read
-              </Button>
-            )}
+            <div className="flex items-center gap-1">
+              {myNotifications.filter(n => !n.isRead).length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs gap-1"
+                  data-testid="button-portal-mark-all-read"
+                  onClick={() => markAllReadMutation.mutate()}
+                  disabled={markAllReadMutation.isPending}
+                >
+                  <CheckCheck className="h-3 w-3" />
+                  Mark all read
+                </Button>
+              )}
+              {myNotifications.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-blue-600 hover:text-blue-700"
+                  data-testid="button-portal-view-all-notifications"
+                  onClick={() => setShowAllNotifications(true)}
+                >
+                  View all
+                </Button>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -390,7 +405,7 @@ export default function MyPortal() {
               <p className="text-sm">No notifications yet</p>
             </div>
           ) : (
-            <div className="divide-y max-h-72 overflow-y-auto">
+            <div className="divide-y">
               {myNotifications.slice(0, 5).map(n => {
                 const typeIcon: Record<string, string> = {
                   expense_approved: "✅",
@@ -419,10 +434,82 @@ export default function MyPortal() {
                   </div>
                 );
               })}
+              {myNotifications.length > 5 && (
+                <div className="px-4 py-2 text-center border-t">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs text-blue-600 hover:text-blue-700 h-7"
+                    data-testid="button-portal-view-all-footer"
+                    onClick={() => setShowAllNotifications(true)}
+                  >
+                    View all {myNotifications.length} notifications
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={showAllNotifications} onOpenChange={setShowAllNotifications}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-violet-500" />
+              All Notifications
+            </DialogTitle>
+            <DialogDescription>Your recent alerts and updates</DialogDescription>
+          </DialogHeader>
+          {myNotifications.filter(n => !n.isRead).length > 0 && (
+            <div className="flex justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                data-testid="button-all-notif-mark-all-read"
+                onClick={() => markAllReadMutation.mutate()}
+                disabled={markAllReadMutation.isPending}
+              >
+                <CheckCheck className="h-3 w-3" />
+                Mark all read
+              </Button>
+            </div>
+          )}
+          <ScrollArea className="h-[400px]">
+            <div className="divide-y">
+              {myNotifications.map(n => {
+                const typeIcon: Record<string, string> = {
+                  expense_approved: "✅",
+                  expense_rejected: "❌",
+                  payroll_disbursed: "💰",
+                };
+                const diff = Date.now() - new Date(String(n.createdAt)).getTime();
+                const mins = Math.floor(diff / 60000);
+                const timeAgo = mins < 1 ? "Just now" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.floor(mins / 60)}h ago` : `${Math.floor(mins / 1440)}d ago`;
+                return (
+                  <div
+                    key={n.id}
+                    data-testid={`all-notification-${n.id}`}
+                    className={`flex gap-3 py-3 px-2 cursor-pointer hover:bg-muted/50 transition-colors rounded-md ${!n.isRead ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
+                    onClick={() => { if (!n.isRead) markReadMutation.mutate(n.id); }}
+                  >
+                    <span className="text-base mt-0.5 shrink-0">{typeIcon[n.type] ?? "🔔"}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-1">
+                        <p className={`text-sm font-medium leading-tight ${!n.isRead ? "text-foreground" : "text-muted-foreground"}`}>{n.title}</p>
+                        {!n.isRead && <span className="shrink-0 h-2 w-2 rounded-full bg-blue-500 mt-1.5" />}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{n.message}</p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-1">{timeAgo}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
 
       {currentUser?.role === "field_staff" && (
         <Card>

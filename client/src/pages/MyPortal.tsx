@@ -14,10 +14,10 @@ import { useCurrentUser } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import {
   User, Briefcase, Building2, Calendar, Wallet, CheckCircle2, XCircle, Clock,
-  Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw
+  Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw, Bell, CheckCheck
 } from "lucide-react";
 import { getCurrentPosition } from "@/lib/geolocation";
-import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification } from "@shared/schema";
 
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -57,6 +57,18 @@ export default function MyPortal() {
     enabled: !!employeeId,
   });
   const { data: payrollStatuses } = useQuery<PayrollStatus[]>({ queryKey: ["/api/payroll-status"] });
+  const { data: myNotifications = [] } = useQuery<Notification[]>({
+    queryKey: ["/api/notifications"],
+    refetchInterval: 60000,
+  });
+  const markReadMutation = useMutation({
+    mutationFn: (id: string) => apiRequest("PATCH", `/api/notifications/${id}/read`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/notifications"] }),
+  });
+  const markAllReadMutation = useMutation({
+    mutationFn: () => apiRequest("POST", "/api/notifications/read-all"),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/notifications"] }),
+  });
   const { data: myExpenses = [], isLoading: teLoading } = useQuery<TravelExpense[]>({
     queryKey: ["/api/travel-expenses/employee", employeeId],
     queryFn: async () => {
@@ -341,6 +353,74 @@ export default function MyPortal() {
               <p className="text-xs text-muted-foreground mt-0.5">Salaries are processed on the last working day of each month. Contact HR for any discrepancies.</p>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Bell className="w-4 h-4 text-violet-500" />
+              Recent Notifications
+              {myNotifications.filter(n => !n.isRead).length > 0 && (
+                <span className="inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-red-100 text-red-600 text-xs font-bold">
+                  {myNotifications.filter(n => !n.isRead).length}
+                </span>
+              )}
+            </CardTitle>
+            {myNotifications.filter(n => !n.isRead).length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                data-testid="button-portal-mark-all-read"
+                onClick={() => markAllReadMutation.mutate()}
+                disabled={markAllReadMutation.isPending}
+              >
+                <CheckCheck className="h-3 w-3" />
+                Mark all read
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          {myNotifications.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
+              <Bell className="h-6 w-6 opacity-30" />
+              <p className="text-sm">No notifications yet</p>
+            </div>
+          ) : (
+            <div className="divide-y max-h-72 overflow-y-auto">
+              {myNotifications.slice(0, 5).map(n => {
+                const typeIcon: Record<string, string> = {
+                  expense_approved: "✅",
+                  expense_rejected: "❌",
+                  payroll_disbursed: "💰",
+                };
+                const diff = Date.now() - new Date(String(n.createdAt)).getTime();
+                const mins = Math.floor(diff / 60000);
+                const timeAgo = mins < 1 ? "Just now" : mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.floor(mins / 60)}h ago` : `${Math.floor(mins / 1440)}d ago`;
+                return (
+                  <div
+                    key={n.id}
+                    data-testid={`portal-notification-${n.id}`}
+                    className={`flex gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 transition-colors ${!n.isRead ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
+                    onClick={() => { if (!n.isRead) markReadMutation.mutate(n.id); }}
+                  >
+                    <span className="text-base mt-0.5 shrink-0">{typeIcon[n.type] ?? "🔔"}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-1">
+                        <p className={`text-sm font-medium leading-tight ${!n.isRead ? "text-foreground" : "text-muted-foreground"}`}>{n.title}</p>
+                        {!n.isRead && <span className="shrink-0 h-2 w-2 rounded-full bg-blue-500 mt-1.5" />}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{n.message}</p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-1">{timeAgo}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardContent>
       </Card>
 

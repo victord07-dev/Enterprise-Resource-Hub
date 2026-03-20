@@ -450,6 +450,17 @@ export const auditLogs = pgTable("audit_logs", {
   ipAddress: text("ip_address"),
 });
 
+export const notifications = pgTable("notifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(),
+  type: text("type").notNull(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  isRead: boolean("is_read").notNull().default(false),
+  relatedId: varchar("related_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true });
@@ -487,6 +498,7 @@ export const insertPurchaseRequestItemSchema = createInsertSchema(purchaseReques
 export const insertGoodsReceiptNoteSchema = createInsertSchema(goodsReceiptNotes).omit({ id: true, createdAt: true });
 export const insertGoodsReceiptNoteItemSchema = createInsertSchema(goodsReceiptNoteItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
+export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -526,3 +538,4 @@ export type PurchaseRequest = typeof purchaseRequests.$inferSelect;
 export type PurchaseRequestItem = typeof purchaseRequestItems.$inferSelect;
 export type GoodsReceiptNote = typeof goodsReceiptNotes.$inferSelect;
 export type GoodsReceiptNoteItem = typeof goodsReceiptNoteItems.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;

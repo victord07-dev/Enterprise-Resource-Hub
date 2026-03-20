@@ -52,6 +52,18 @@ async function logAction(userId: string, action: string, module: string, details
   }
 }
 
+async function notifyEmployee(employeeId: string, type: string, title: string, message: string, relatedId?: string) {
+  try {
+    const employees = await storage.getEmployees();
+    const emp = employees.find(e => e.id === employeeId);
+    if (emp?.userId) {
+      await storage.createNotification({ userId: emp.userId, type, title, message, relatedId });
+    }
+  } catch (e) {
+    console.error("Notification error:", e);
+  }
+}
+
 async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
   const reservedStatuses = ["confirmed", "procurement", "ready_to_ship"];
   const allOrders = await storage.getSalesOrders();
@@ -1887,10 +1899,32 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/payroll-status/:id/disburse", authenticateToken, async (req, res) => {
+  app.patch("/api/payroll-status/:id/disburse", authenticateToken, async (req: any, res) => {
     try {
+      const ps = await storage.getPayrollStatuses();
+      const payrollRecord = ps.find(p => p.id === req.params.id);
       const updated = await storage.updatePayrollStatus(req.params.id, { status: "disbursed", disbursedAt: new Date() });
       if (!updated) return res.status(404).json({ message: "Payroll status not found" });
+      if (payrollRecord) {
+        const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        const monthLabel = `${monthNames[payrollRecord.month]} ${payrollRecord.year}`;
+        const allEmployees = await storage.getEmployees();
+        const employeeUserIds = allEmployees
+          .filter(e => e.isActive && e.userId)
+          .map(e => e.userId!);
+        for (const userId of employeeUserIds) {
+          const emp = allEmployees.find(e => e.userId === userId);
+          const salary = emp?.salary ? Number(emp.salary) : 0;
+          const salaryStr = salary > 0 ? `₹${salary.toLocaleString("en-IN")}` : "your salary";
+          await storage.createNotification({
+            userId,
+            type: "payroll_disbursed",
+            title: "Salary Disbursed",
+            message: `${salaryStr} for ${monthLabel} has been disbursed.`,
+            relatedId: payrollRecord.id,
+          });
+        }
+      }
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update payroll status" });
@@ -3250,9 +3284,15 @@ export async function registerRoutes(
 
   app.patch("/api/travel-expenses/:id/approve", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
+      const allExpenses = await storage.getTravelExpenses();
+      const te = allExpenses.find(e => e.id === req.params.id);
       const updated = await storage.updateTravelExpense(req.params.id, { status: "approved", approvedAt: new Date() });
       if (!updated) return res.status(404).json({ message: "Travel expense not found" });
       await logAction(req.user.id, "approve", "travel_expenses", `Approved travel expense ${req.params.id}`);
+      if (te) {
+        const dateStr = new Date(te.date).toLocaleDateString("en-IN");
+        await notifyEmployee(te.employeeId, "expense_approved", "Expense Approved", `Your expense of ₹${Number(te.totalAmount).toLocaleString("en-IN")} on ${dateStr} was approved.`, te.id);
+      }
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to approve travel expense" });
@@ -3272,10 +3312,17 @@ export async function registerRoutes(
 
   app.patch("/api/travel-expenses/:id/reject", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
+      const allExpenses = await storage.getTravelExpenses();
+      const te = allExpenses.find(e => e.id === req.params.id);
       const { reason } = req.body;
-      const updated = await storage.updateTravelExpense(req.params.id, { status: "rejected", rejectionReason: reason || "Rejected by manager" });
+      const rejectionReason = reason || "Rejected by manager";
+      const updated = await storage.updateTravelExpense(req.params.id, { status: "rejected", rejectionReason });
       if (!updated) return res.status(404).json({ message: "Travel expense not found" });
       await logAction(req.user.id, "reject", "travel_expenses", `Rejected travel expense ${req.params.id}`);
+      if (te) {
+        const dateStr = new Date(te.date).toLocaleDateString("en-IN");
+        await notifyEmployee(te.employeeId, "expense_rejected", "Expense Rejected", `Your expense of ₹${Number(te.totalAmount).toLocaleString("en-IN")} on ${dateStr} was rejected — Reason: ${rejectionReason}`, te.id);
+      }
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to reject travel expense" });
@@ -3588,6 +3635,35 @@ export async function registerRoutes(
       res.json({ qrDataUrl, qrCode: employee.qrCode, employeeName: employee.name });
     } catch (error) {
       res.status(500).json({ message: "Failed to get QR image" });
+    }
+  });
+
+  // ======================== NOTIFICATIONS ========================
+  app.get("/api/notifications", authenticateToken, async (req: any, res) => {
+    try {
+      const items = await storage.getNotifications(req.user.id);
+      res.json(items);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch notifications" });
+    }
+  });
+
+  app.patch("/api/notifications/:id/read", authenticateToken, async (req: any, res) => {
+    try {
+      const updated = await storage.markNotificationRead(req.params.id);
+      if (!updated) return res.status(404).json({ message: "Notification not found" });
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to mark notification read" });
+    }
+  });
+
+  app.post("/api/notifications/read-all", authenticateToken, async (req: any, res) => {
+    try {
+      await storage.markAllNotificationsRead(req.user.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to mark all notifications read" });
     }
   });
 

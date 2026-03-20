@@ -317,7 +317,7 @@ export default function FieldStaff() {
       queryClient.invalidateQueries({ queryKey: ["/api/travel-expenses"] });
       toast({ title: "Expense submitted", description: `Total: \u20B9${totalExpense.toLocaleString("en-IN")}` });
       setOriginLat(null); setOriginLng(null); setDestLat(null); setDestLng(null);
-      setTransportMode("bus"); setExpenseEmployeeId(""); setExpenseNotes("");
+      setTransportMode("bus"); setExpenseEmployeeId(isFieldStaff && currentUser?.employeeId ? currentUser.employeeId : ""); setExpenseNotes("");
       if (destMarkerRef.current) { destMarkerRef.current.remove(); destMarkerRef.current = null; }
       if (originMarkerRef.current) { originMarkerRef.current.remove(); originMarkerRef.current = null; }
     },

@@ -1658,6 +1658,16 @@ export async function registerRoutes(
     }
   });
 
+  // ======================== USERS ========================
+  app.get("/api/users", authenticateToken, async (_req: any, res) => {
+    try {
+      const data = await storage.getUsers();
+      res.json(data.map(u => ({ id: u.id, username: u.username, role: u.role })));
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
   // ======================== EMPLOYEES ========================
   app.get("/api/employees", authenticateToken, async (_req, res) => {
     try {
@@ -1680,10 +1690,28 @@ export async function registerRoutes(
 
   app.post("/api/employees", authenticateToken, async (req: any, res) => {
     try {
-      const parsed = insertEmployeeSchema.safeParse(req.body);
+      const { username, password, role: accountRole, ...empFields } = req.body;
+      const parsed = insertEmployeeSchema.safeParse(empFields);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createEmployee(parsed.data as any);
-      await logAction(req.user.id, "create", "employees", `Added employee ${parsed.data.name}`);
+
+      let userId: string | null = null;
+      if (username && password) {
+        const existingUser = await storage.getUserByUsername(username);
+        if (existingUser) return res.status(409).json({ message: "Username already exists" });
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await storage.createUser({
+          username,
+          password: hashedPassword,
+          fullName: parsed.data.name,
+          email: parsed.data.email,
+          role: accountRole || "field_staff",
+          isActive: true,
+        });
+        userId = user.id;
+      }
+
+      const created = await storage.createEmployee({ ...parsed.data, userId } as any);
+      await logAction(req.user.id, "create", "employees", `Added employee ${parsed.data.name}${userId ? " with portal access" : ""}`);
       res.status(201).json(created);
     } catch (error) {
       res.status(500).json({ message: "Failed to create employee" });
@@ -1692,12 +1720,54 @@ export async function registerRoutes(
 
   app.patch("/api/employees/:id", authenticateToken, async (req: any, res) => {
     try {
-      const updated = await storage.updateEmployee(req.params.id, req.body);
+      const { username, password, role: accountRole, ...empFields } = req.body;
+      const updated = await storage.updateEmployee(req.params.id, empFields);
       if (!updated) return res.status(404).json({ message: "Employee not found" });
       await logAction(req.user.id, "update", "employees", `Updated employee ${updated.name}`);
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update employee" });
+    }
+  });
+
+  app.patch("/api/employees/:id/account", authenticateToken, async (req: any, res) => {
+    try {
+      const emp = await storage.getEmployee(req.params.id);
+      if (!emp) return res.status(404).json({ message: "Employee not found" });
+
+      const { username, password, role: accountRole } = req.body;
+      if (!username) return res.status(400).json({ message: "Username is required" });
+
+      if (emp.userId) {
+        const existingUser = await storage.getUserByUsername(username);
+        if (existingUser && existingUser.id !== emp.userId) {
+          return res.status(409).json({ message: "Username already exists" });
+        }
+        const updateData: any = { username };
+        if (accountRole) updateData.role = accountRole;
+        if (password) updateData.password = await bcrypt.hash(password, 10);
+        await storage.updateUser(emp.userId, updateData);
+      } else {
+        const existingUser = await storage.getUserByUsername(username);
+        if (existingUser) return res.status(409).json({ message: "Username already exists" });
+        if (!password) return res.status(400).json({ message: "Password is required for new account" });
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const user = await storage.createUser({
+          username,
+          password: hashedPassword,
+          fullName: emp.name,
+          email: emp.email,
+          role: accountRole || "field_staff",
+          isActive: true,
+        });
+        await storage.updateEmployee(emp.id, { userId: user.id } as any);
+      }
+
+      const finalEmp = await storage.getEmployee(emp.id);
+      await logAction(req.user.id, "update", "employees", `Updated portal access for employee ${emp.name}`);
+      res.json(finalEmp);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update employee account" });
     }
   });
 

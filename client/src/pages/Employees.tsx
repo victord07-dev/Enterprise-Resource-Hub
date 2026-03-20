@@ -10,16 +10,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2 } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Employee, AttendanceRecord, PayrollStatus } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, User } from "@shared/schema";
 
 export default function Employees() {
   const { toast } = useToast();
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: attendance, isLoading: attLoading } = useQuery<AttendanceRecord[]>({ queryKey: ["/api/attendance"] });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"] });
 
   const activeCount = employees?.filter((e) => e.isActive).length ?? 0;
 
@@ -30,6 +31,9 @@ export default function Employees() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
+
+  const [showPortalSection, setShowPortalSection] = useState(false);
+  const [portalForm, setPortalForm] = useState({ username: "", password: "", role: "field_staff" });
 
   const [qrDialogOpen, setQrDialogOpen] = useState(false);
   const [qrData, setQrData] = useState<{ qrDataUrl: string; employeeName: string; qrCode: string } | null>(null);
@@ -66,16 +70,39 @@ export default function Employees() {
     },
   });
 
+  const getLinkedUser = (emp: Employee): User | undefined => {
+    return emp.userId ? users?.find(u => u.id === emp.userId) : undefined;
+  };
+
   const employeeMutation = useMutation({
     mutationFn: async (data: any) => {
+      const { username, password, role: accountRole, ...empData } = data;
       if (editingEmployee) {
-        await apiRequest("PATCH", `/api/employees/${editingEmployee.id}`, data);
+        await apiRequest("PATCH", `/api/employees/${editingEmployee.id}`, empData);
+        if (showPortalSection && username) {
+          const res = await apiRequest("PATCH", `/api/employees/${editingEmployee.id}/account`, { username, password: password || undefined, role: accountRole });
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.message || "Failed to update account");
+          }
+        }
       } else {
-        await apiRequest("POST", "/api/employees", data);
+        const payload: any = { ...empData };
+        if (showPortalSection && username && password) {
+          payload.username = username;
+          payload.password = password;
+          payload.role = accountRole;
+        }
+        const res = await apiRequest("POST", "/api/employees", payload);
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.message || "Failed to create employee");
+        }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/employees"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
       toast({ title: editingEmployee ? "Employee updated" : "Employee added" });
       setDialogOpen(false);
       setEditingEmployee(null);
@@ -99,6 +126,8 @@ export default function Employees() {
   const openNew = () => {
     setEditingEmployee(null);
     setForm({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
+    setShowPortalSection(false);
+    setPortalForm({ username: "", password: "", role: "field_staff" });
     setDialogOpen(true);
   };
 
@@ -114,6 +143,14 @@ export default function Employees() {
       salary: emp.salary ? String(emp.salary) : "",
       isActive: emp.isActive,
     });
+    const linkedUser = getLinkedUser(emp);
+    if (linkedUser) {
+      setShowPortalSection(true);
+      setPortalForm({ username: linkedUser.username, password: "", role: linkedUser.role });
+    } else {
+      setShowPortalSection(false);
+      setPortalForm({ username: emp.email || "", password: "", role: "field_staff" });
+    }
     setDialogOpen(true);
   };
 
@@ -314,6 +351,7 @@ export default function Employees() {
                       <th className="text-right p-3 font-medium text-muted-foreground">Monthly Salary</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Daily Rate</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">QR Code</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Portal Access</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
@@ -360,6 +398,19 @@ export default function Employees() {
                               </Button>
                             )}
                           </td>
+                          <td className="p-3" data-testid={`cell-portal-access-${emp.id}`}>
+                            {emp.userId ? (
+                              <Badge variant="outline" className="border-emerald-300 text-emerald-700 dark:text-emerald-400 gap-1 no-default-hover-elevate no-default-active-elevate">
+                                <ShieldCheck className="w-3 h-3" />
+                                Has Access
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="border-muted text-muted-foreground gap-1 no-default-hover-elevate no-default-active-elevate">
+                                <ShieldOff className="w-3 h-3" />
+                                No Access
+                              </Badge>
+                            )}
+                          </td>
                           <td className="p-3">
                             <Badge variant={emp.isActive ? "default" : "secondary"}>
                               {emp.isActive ? "Active" : "Inactive"}
@@ -379,7 +430,7 @@ export default function Employees() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={10} className="p-8 text-center text-muted-foreground">No employees found.</td>
+                        <td colSpan={11} className="p-8 text-center text-muted-foreground">No employees found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -669,9 +720,84 @@ export default function Employees() {
               <Checkbox id="empActive" data-testid="checkbox-employee-active" checked={form.isActive} onCheckedChange={(checked) => setForm({ ...form, isActive: !!checked })} />
               <Label htmlFor="empActive">Active</Label>
             </div>
+
+            <div className="border rounded-md overflow-hidden">
+              <button
+                type="button"
+                className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium bg-muted/40 hover:bg-muted/60 transition-colors"
+                onClick={() => {
+                  const next = !showPortalSection;
+                  setShowPortalSection(next);
+                  if (next && !portalForm.username) {
+                    setPortalForm(prev => ({ ...prev, username: form.email }));
+                  }
+                }}
+                data-testid="button-toggle-portal-section"
+              >
+                <span className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-blue-500" />
+                  Portal Access (Login Account)
+                  {editingEmployee && getLinkedUser(editingEmployee) && (
+                    <Badge variant="outline" className="text-emerald-600 border-emerald-300 text-xs no-default-hover-elevate no-default-active-elevate">
+                      Linked
+                    </Badge>
+                  )}
+                </span>
+                {showPortalSection ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+
+              {showPortalSection && (
+                <div className="p-3 space-y-3 border-t">
+                  {editingEmployee && getLinkedUser(editingEmployee) && (
+                    <p className="text-xs text-muted-foreground bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-md px-3 py-2">
+                      This employee has a linked account. Update username, role, or set a new password below. Leave password blank to keep current.
+                    </p>
+                  )}
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Username</Label>
+                    <Input
+                      data-testid="input-portal-username"
+                      placeholder="e.g. john.doe or +919876543210"
+                      value={portalForm.username}
+                      onChange={(e) => setPortalForm({ ...portalForm, username: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">{editingEmployee && getLinkedUser(editingEmployee) ? "New Password (leave blank to keep current)" : "Password"}</Label>
+                    <Input
+                      type="password"
+                      data-testid="input-portal-password"
+                      placeholder={editingEmployee && getLinkedUser(editingEmployee) ? "Leave blank to keep current" : "Enter password"}
+                      value={portalForm.password}
+                      onChange={(e) => setPortalForm({ ...portalForm, password: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Role</Label>
+                    <Select value={portalForm.role} onValueChange={(v) => setPortalForm({ ...portalForm, role: v })}>
+                      <SelectTrigger data-testid="select-portal-role">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="field_staff">Field Staff</SelectItem>
+                        <SelectItem value="sales_manager">Sales Manager</SelectItem>
+                        <SelectItem value="warehouse_manager">Warehouse Manager</SelectItem>
+                        <SelectItem value="hr_manager">HR Manager</SelectItem>
+                        <SelectItem value="accountant">Accountant</SelectItem>
+                        <SelectItem value="admin">Admin</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
-            <Button data-testid="button-submit-employee" disabled={employeeMutation.isPending} onClick={() => employeeMutation.mutate(form)}>
+            <Button
+              data-testid="button-submit-employee"
+              disabled={employeeMutation.isPending}
+              onClick={() => employeeMutation.mutate({ ...form, ...portalForm })}
+            >
               {employeeMutation.isPending ? "Saving..." : editingEmployee ? "Update" : "Create"}
             </Button>
           </DialogFooter>

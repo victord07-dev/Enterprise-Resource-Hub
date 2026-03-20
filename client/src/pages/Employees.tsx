@@ -127,7 +127,8 @@ export default function Employees() {
 
   const openNew = () => {
     setEditingEmployee(null);
-    setForm({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
+    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true };
+    setForm(emptyForm);
     setShowPortalSection(false);
     setPortalForm({ username: "", password: "", role: "field_staff" });
     setDialogOpen(true);
@@ -404,7 +405,7 @@ export default function Employees() {
                             {emp.userId ? (
                               <Badge variant="outline" className="border-emerald-300 text-emerald-700 dark:text-emerald-400 gap-1 no-default-hover-elevate no-default-active-elevate">
                                 <ShieldCheck className="w-3 h-3" />
-                                Has Access
+                                Has Login Access
                               </Badge>
                             ) : (
                               <Badge variant="outline" className="border-muted text-muted-foreground gap-1 no-default-hover-elevate no-default-active-elevate">
@@ -675,7 +676,22 @@ export default function Employees() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="empEmail">Email</Label>
-              <Input id="empEmail" type="email" data-testid="input-employee-email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+              <Input
+                id="empEmail"
+                type="email"
+                data-testid="input-employee-email"
+                value={form.email}
+                onChange={(e) => {
+                  const newEmail = e.target.value;
+                  setForm(prev => ({ ...prev, email: newEmail }));
+                  setPortalForm(prev => {
+                    if (prev.username === "" || prev.username === form.email) {
+                      return { ...prev, username: newEmail };
+                    }
+                    return prev;
+                  });
+                }}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="empPhone">Phone</Label>

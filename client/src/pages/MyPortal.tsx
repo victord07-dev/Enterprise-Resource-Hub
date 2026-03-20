@@ -390,9 +390,9 @@ export default function MyPortal() {
                                 te.status === "pending"
                                   ? "border-amber-400 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate"
                                   : te.status === "approved"
-                                  ? "border-blue-400 text-blue-600 dark:text-blue-400 no-default-hover-elevate no-default-active-elevate"
-                                  : te.status === "disbursed"
                                   ? "border-emerald-400 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate"
+                                  : te.status === "disbursed"
+                                  ? "border-emerald-600 text-emerald-700 dark:text-emerald-300 no-default-hover-elevate no-default-active-elevate"
                                   : "border-red-400 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate"
                               }
                             >

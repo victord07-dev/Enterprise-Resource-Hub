@@ -3219,13 +3219,27 @@ export async function registerRoutes(
       if (te.status !== "rejected") {
         return res.status(400).json({ message: "Only rejected expenses can be edited and resubmitted" });
       }
-      const { notes, transportMode } = req.body;
+      const { notes, transportMode, originAddress, destAddress } = req.body;
+      const newMode = transportMode || te.transportMode;
+      const validModes = ["bus", "train", "bike"];
+      if (!validModes.includes(newMode)) {
+        return res.status(400).json({ message: "Invalid transport mode" });
+      }
+      const rates: Record<string, number> = { bus: 10, train: 5, bike: 20 };
+      const dist = parseFloat(te.distance || "0");
+      const newTravelCost = Math.round(dist * rates[newMode]);
+      const lunchMoney = parseFloat(te.lunchMoney || "200");
+      const newTotal = newTravelCost + lunchMoney;
       const updated = await storage.updateTravelExpense(req.params.id, {
         status: "pending",
         rejectionReason: null,
         approvedAt: null,
         notes: notes !== undefined ? notes : te.notes,
-        transportMode: transportMode || te.transportMode,
+        transportMode: newMode,
+        originAddress: originAddress !== undefined ? originAddress : te.originAddress,
+        destAddress: destAddress !== undefined ? destAddress : te.destAddress,
+        travelCost: String(newTravelCost),
+        totalAmount: String(newTotal),
       });
       await logAction(req.user.id, "resubmit", "travel_expenses", `Resubmitted travel expense ${req.params.id}`);
       res.json(updated);

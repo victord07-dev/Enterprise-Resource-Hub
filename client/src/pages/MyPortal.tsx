@@ -34,7 +34,17 @@ export default function MyPortal() {
   }, []);
   const employeeId = currentUser?.employeeId;
 
-  const { data: employees } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
+  const { data: employee } = useQuery<Employee>({
+    queryKey: ["/api/employees", employeeId],
+    queryFn: async () => {
+      if (!employeeId) return undefined;
+      const res = await fetch(`/api/employees/${employeeId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      return res.json();
+    },
+    enabled: !!employeeId,
+  });
   const { data: myAttendance = [], isLoading: attLoading } = useQuery<AttendanceRecord[]>({
     queryKey: ["/api/attendance", { employeeId }],
     queryFn: async () => {
@@ -47,12 +57,17 @@ export default function MyPortal() {
     enabled: !!employeeId,
   });
   const { data: payrollStatuses } = useQuery<PayrollStatus[]>({ queryKey: ["/api/payroll-status"] });
-  const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({
-    queryKey: ["/api/travel-expenses"],
+  const { data: myExpenses = [], isLoading: teLoading } = useQuery<TravelExpense[]>({
+    queryKey: ["/api/travel-expenses/employee", employeeId],
+    queryFn: async () => {
+      if (!employeeId) return [];
+      const res = await fetch(`/api/travel-expenses/employee/${employeeId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      return res.json();
+    },
     enabled: !!employeeId,
   });
-
-  const employee = employees?.find(e => e.id === employeeId);
 
   const now = new Date();
   const currentMonth = now.getMonth();
@@ -83,17 +98,25 @@ export default function MyPortal() {
   const monthlySalary = employee?.salary ? Number(employee.salary) : 0;
   const dailyRate = Math.round(monthlySalary / 26);
 
-  const myExpenses = travelExpenses?.filter(te => te.employeeId === employeeId) || [];
-
   const [resubmitExpense, setResubmitExpense] = useState<TravelExpense | null>(null);
   const [editNotes, setEditNotes] = useState("");
   const [editMode, setEditMode] = useState<"bus" | "train" | "bike">("bus");
+  const [editOriginAddress, setEditOriginAddress] = useState("");
+  const [editDestAddress, setEditDestAddress] = useState("");
+
+  const rates: Record<string, number> = { bus: 10, train: 5, bike: 20 };
+  const previewDist = resubmitExpense ? parseFloat(resubmitExpense.distance || "0") : 0;
+  const previewTravelCost = Math.round(previewDist * (rates[editMode] || 10));
+  const previewLunch = resubmitExpense ? parseFloat(resubmitExpense.lunchMoney || "200") : 200;
+  const previewTotal = previewTravelCost + previewLunch;
 
   const resubmitMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("PATCH", `/api/travel-expenses/${resubmitExpense!.id}`, {
         notes: editNotes,
         transportMode: editMode,
+        originAddress: editOriginAddress,
+        destAddress: editDestAddress,
       });
       if (!res.ok) {
         const err = await res.json();
@@ -101,7 +124,7 @@ export default function MyPortal() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/travel-expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/travel-expenses/employee", employeeId] });
       toast({ title: "Expense resubmitted", description: "Your expense has been resubmitted for approval." });
       setResubmitExpense(null);
     },
@@ -114,6 +137,8 @@ export default function MyPortal() {
     setResubmitExpense(te);
     setEditNotes(te.notes || "");
     setEditMode((te.transportMode as "bus" | "train" | "bike") || "bus");
+    setEditOriginAddress(te.originAddress || "");
+    setEditDestAddress(te.destAddress || "");
   };
 
   if (userLoading) {
@@ -420,8 +445,7 @@ export default function MyPortal() {
                 <p className="text-muted-foreground mt-0.5">{resubmitExpense.rejectionReason || "No reason provided"}</p>
               </div>
 
-              <div className="rounded-md border bg-muted/30 p-3 space-y-2 text-sm">
-                <p className="font-medium text-xs text-muted-foreground uppercase tracking-wide mb-1">Expense Details (read-only)</p>
+              <div className="rounded-md border bg-muted/30 p-3 space-y-1 text-sm">
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <span className="text-muted-foreground">Date:</span>
@@ -431,32 +455,35 @@ export default function MyPortal() {
                     <span className="text-muted-foreground">Distance:</span>
                     <span className="ml-1 font-medium">{Number(resubmitExpense.distance).toFixed(1)} km</span>
                   </div>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">From:</span>
-                  <span className="ml-1 font-medium font-mono text-xs">{Number(resubmitExpense.originLat).toFixed(4)}, {Number(resubmitExpense.originLng).toFixed(4)}</span>
-                </div>
-                <div>
-                  <span className="text-muted-foreground">To:</span>
-                  <span className="ml-1 font-medium font-mono text-xs">{Number(resubmitExpense.destLat).toFixed(4)}, {Number(resubmitExpense.destLng).toFixed(4)}</span>
-                </div>
-                <div className="border-t pt-2 grid grid-cols-2 gap-2">
-                  <div>
-                    <span className="text-muted-foreground">Travel cost:</span>
-                    <span className="ml-1 font-medium">₹{Number(resubmitExpense.travelCost).toLocaleString("en-IN")}</span>
+                  <div className="text-xs text-muted-foreground">
+                    GPS: {Number(resubmitExpense.originLat).toFixed(4)}, {Number(resubmitExpense.originLng).toFixed(4)}
                   </div>
-                  <div>
-                    <span className="text-muted-foreground">Lunch:</span>
-                    <span className="ml-1 font-medium">₹{Number(resubmitExpense.lunchMoney).toLocaleString("en-IN")}</span>
-                  </div>
-                  <div className="col-span-2 font-semibold">
-                    Total: ₹{Number(resubmitExpense.totalAmount).toLocaleString("en-IN")}
+                  <div className="text-xs text-muted-foreground">
+                    → {Number(resubmitExpense.destLat).toFixed(4)}, {Number(resubmitExpense.destLng).toFixed(4)}
                   </div>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label>Transport Mode <span className="text-muted-foreground text-xs">(editable — affects cost calculation on next submission)</span></Label>
+                <Label>From (Location / Address)</Label>
+                <Input
+                  value={editOriginAddress}
+                  onChange={e => setEditOriginAddress(e.target.value)}
+                  placeholder="Origin location or address..."
+                  data-testid="input-resubmit-origin"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>To (Location / Address)</Label>
+                <Input
+                  value={editDestAddress}
+                  onChange={e => setEditDestAddress(e.target.value)}
+                  placeholder="Destination location or address..."
+                  data-testid="input-resubmit-dest"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Transport Mode</Label>
                 <Select value={editMode} onValueChange={(v) => setEditMode(v as "bus" | "train" | "bike")}>
                   <SelectTrigger data-testid="select-resubmit-mode">
                     <SelectValue />
@@ -476,6 +503,23 @@ export default function MyPortal() {
                   placeholder="Add or update trip purpose/notes..."
                   data-testid="input-resubmit-notes"
                 />
+              </div>
+              <div className="rounded-md border bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800 p-3 text-sm space-y-1">
+                <p className="font-medium text-xs text-blue-700 dark:text-blue-400 uppercase tracking-wide">Recomputed Cost Preview</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="text-muted-foreground text-xs">Travel</p>
+                    <p className="font-medium">₹{previewTravelCost.toLocaleString("en-IN")}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground text-xs">Lunch</p>
+                    <p className="font-medium">₹{previewLunch.toLocaleString("en-IN")}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground text-xs">Total</p>
+                    <p className="font-semibold text-blue-700 dark:text-blue-400">₹{previewTotal.toLocaleString("en-IN")}</p>
+                  </div>
+                </div>
               </div>
             </div>
           )}

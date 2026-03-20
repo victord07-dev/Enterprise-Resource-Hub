@@ -251,8 +251,10 @@ export const trips = pgTable("trips", {
   endTime: timestamp("end_time"),
   startLat: decimal("start_lat", { precision: 10, scale: 7 }),
   startLng: decimal("start_lng", { precision: 10, scale: 7 }),
+  startAddress: text("start_address"),
   endLat: decimal("end_lat", { precision: 10, scale: 7 }),
   endLng: decimal("end_lng", { precision: 10, scale: 7 }),
+  endAddress: text("end_address"),
   status: text("status").notNull().default("active"),
   date: timestamp("date").notNull().defaultNow(),
 });

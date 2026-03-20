@@ -79,14 +79,29 @@ export default function FieldStaff() {
     ? activeTripsData?.find(t => t.employeeId === currentUser.employeeId) || null
     : null;
 
+  const reverseGeocode = async (lat: number, lng: number): Promise<string | null> => {
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=16`, {
+        headers: { "Accept-Language": "en" },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.display_name?.split(",").slice(0, 3).join(",").trim() || null;
+    } catch {
+      return null;
+    }
+  };
+
   const startTripMutation = useMutation({
     mutationFn: async () => {
       setTripStarting(true);
       const { latitude, longitude } = await getCurrentPosition({ enableHighAccuracy: true });
+      const address = await reverseGeocode(latitude, longitude);
       const res = await apiRequest("POST", "/api/trips/start", {
         employeeId: currentUser?.employeeId,
         lat: latitude,
         lng: longitude,
+        address,
       });
       if (!res.ok) {
         const err = await res.json();
@@ -109,11 +124,13 @@ export default function FieldStaff() {
     mutationFn: async (tripId: string) => {
       setTripStopping(true);
       let lat: number | undefined, lng: number | undefined;
+      let address: string | null = null;
       try {
         const pos = await getCurrentPosition({ enableHighAccuracy: true });
         lat = pos.latitude; lng = pos.longitude;
+        address = await reverseGeocode(lat, lng);
       } catch {}
-      const res = await apiRequest("POST", `/api/trips/${tripId}/end`, { lat, lng });
+      const res = await apiRequest("POST", `/api/trips/${tripId}/end`, { lat, lng, address });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.message || "Failed to end trip");
@@ -562,11 +579,19 @@ export default function FieldStaff() {
                                   {trip.endTime && <> → {new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>}
                                 </div>
                                 <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5" data-testid={`text-trip-coords-${trip.id}`}>
-                                    <MapPin className="w-2.5 h-2.5 shrink-0" />
-                                    {trip.startLat ? `${Number(trip.startLat).toFixed(2)},${Number(trip.startLng).toFixed(2)}` : "—"}
-                                    {" → "}
-                                    {trip.endLat ? `${Number(trip.endLat).toFixed(2)},${Number(trip.endLng).toFixed(2)}` : "—"}
-                                  </div>
+                                  <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate">
+                                    {trip.startAddress
+                                      ? trip.startAddress
+                                      : trip.startLat ? `${Number(trip.startLat).toFixed(3)}, ${Number(trip.startLng).toFixed(3)}` : "—"}
+                                  </span>
+                                  <span className="shrink-0"> → </span>
+                                  <span className="truncate">
+                                    {trip.endAddress
+                                      ? trip.endAddress
+                                      : trip.endLat ? `${Number(trip.endLat).toFixed(3)}, ${Number(trip.endLng).toFixed(3)}` : "In progress"}
+                                  </span>
+                                </div>
                               </div>
                             </div>
                             <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-view-route-${trip.id}`}>

@@ -1843,12 +1843,9 @@ export async function registerRoutes(
   });
 
   // ======================== PAYROLL STATUS ========================
-  app.get("/api/payroll-status", authenticateToken, async (req: any, res) => {
+  app.get("/api/payroll-status", authenticateToken, async (_req, res) => {
     try {
       const data = await storage.getPayrollStatuses();
-      if (req.user.role === "field_staff") {
-        return res.json([]);
-      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch payroll statuses" });
@@ -3384,8 +3381,18 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/trips/:id/route", authenticateToken, async (req, res) => {
+  app.get("/api/trips/:id/route", authenticateToken, async (req: any, res) => {
     try {
+      if (req.user.role === "field_staff") {
+        const allTrips = await storage.getTrips();
+        const trip = allTrips.find(t => t.id === req.params.id);
+        if (!trip) return res.status(404).json({ message: "Trip not found" });
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || trip.employeeId !== linked.id) {
+          return res.status(403).json({ message: "You can only view your own trip routes" });
+        }
+      }
       const logs = await storage.getLocationLogsByTrip(req.params.id);
       res.json(logs);
     } catch (error) {
@@ -3416,14 +3423,17 @@ export async function registerRoutes(
       }
       const parsedLat = lat ? parseFloat(lat) : null;
       const parsedLng = lng ? parseFloat(lng) : null;
+      const { address: startAddress } = req.body;
       const trip = await storage.createTrip({
         employeeId,
         startTime: new Date(),
         endTime: null,
         startLat: parsedLat !== null ? String(parsedLat) : null,
         startLng: parsedLng !== null ? String(parsedLng) : null,
+        startAddress: startAddress || null,
         endLat: null,
         endLng: null,
+        endAddress: null,
         status: "active",
         date: new Date(),
       });
@@ -3441,13 +3451,24 @@ export async function registerRoutes(
 
   app.post("/api/trips/:id/end", authenticateToken, async (req: any, res) => {
     try {
-      const { lat, lng } = req.body;
+      const { lat, lng, address: endAddress } = req.body;
+      if (req.user.role === "field_staff") {
+        const allTrips = await storage.getTrips();
+        const trip = allTrips.find(t => t.id === req.params.id);
+        if (!trip) return res.status(404).json({ message: "Trip not found" });
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || trip.employeeId !== linked.id) {
+          return res.status(403).json({ message: "You can only end your own trips" });
+        }
+      }
       const parsedLat = lat ? parseFloat(lat) : null;
       const parsedLng = lng ? parseFloat(lng) : null;
       const updated = await storage.updateTrip(req.params.id, {
         endTime: new Date(),
         endLat: parsedLat !== null ? String(parsedLat) : null,
         endLng: parsedLng !== null ? String(parsedLng) : null,
+        endAddress: endAddress || null,
         status: "completed",
       });
       if (!updated) return res.status(404).json({ message: "Trip not found" });

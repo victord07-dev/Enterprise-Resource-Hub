@@ -3648,6 +3648,86 @@ export async function registerRoutes(
     }
   });
 
+  // Leave Requests
+  app.get("/api/leave-requests", authenticateToken, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role === "admin" || user.role === "hr_manager") {
+        const all = await storage.getLeaveRequests();
+        return res.json(all);
+      }
+      if (!user.employeeId) return res.json([]);
+      const own = await storage.getLeaveRequestsByEmployee(user.employeeId);
+      res.json(own);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch leave requests" });
+    }
+  });
+
+  app.post("/api/leave-requests", authenticateToken, async (req: any, res) => {
+    try {
+      const { type, startDate, endDate, reason, employeeId } = req.body;
+      if (!type || !startDate || !endDate) return res.status(400).json({ message: "type, startDate, endDate are required" });
+      const empId = req.user.role === "admin" || req.user.role === "hr_manager" ? (employeeId || req.user.employeeId) : req.user.employeeId;
+      if (!empId) return res.status(400).json({ message: "No employee record linked to your account" });
+      const lr = await storage.createLeaveRequest({
+        employeeId: empId,
+        type,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        reason: reason || null,
+        status: "pending",
+        reviewedBy: null,
+        reviewNote: null,
+      });
+      res.status(201).json(lr);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create leave request" });
+    }
+  });
+
+  app.patch("/api/leave-requests/:id/approve", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const lr = await storage.updateLeaveRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
+      if (!lr) return res.status(404).json({ message: "Leave request not found" });
+      await notifyEmployee(lr.employeeId, "leave_approved", "Leave Approved", `Your ${lr.type} leave from ${new Date(lr.startDate).toLocaleDateString("en-IN")} to ${new Date(lr.endDate).toLocaleDateString("en-IN")} has been approved.`, lr.id);
+      res.json(lr);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to approve leave request" });
+    }
+  });
+
+  app.patch("/api/leave-requests/:id/reject", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const { reviewNote } = req.body;
+      if (!reviewNote) return res.status(400).json({ message: "reviewNote (rejection reason) is required" });
+      const lr = await storage.updateLeaveRequest(req.params.id, { status: "rejected", reviewedBy: req.user.id, reviewNote });
+      if (!lr) return res.status(404).json({ message: "Leave request not found" });
+      await notifyEmployee(lr.employeeId, "leave_rejected", "Leave Rejected", `Your ${lr.type} leave request was rejected — Reason: ${reviewNote}`, lr.id);
+      res.json(lr);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to reject leave request" });
+    }
+  });
+
+  app.delete("/api/leave-requests/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const all = await storage.getLeaveRequests();
+      const lr = all.find(r => r.id === req.params.id);
+      if (!lr) return res.status(404).json({ message: "Leave request not found" });
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") {
+        if (lr.employeeId !== req.user.employeeId) return res.status(403).json({ message: "Forbidden" });
+        if (lr.status !== "pending") return res.status(400).json({ message: "Only pending requests can be withdrawn" });
+      }
+      await storage.deleteLeaveRequest(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete leave request" });
+    }
+  });
+
   app.patch("/api/notifications/:id/read", authenticateToken, async (req: any, res) => {
     try {
       const updated = await storage.markNotificationRead(req.params.id, req.user.id);

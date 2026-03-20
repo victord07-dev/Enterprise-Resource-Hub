@@ -18,7 +18,8 @@ import {
   Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw, Bell, CheckCheck
 } from "lucide-react";
 import { getCurrentPosition } from "@/lib/geolocation";
-import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification } from "@shared/schema";
+import { Textarea } from "@/components/ui/textarea";
+import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification, LeaveRequest } from "@shared/schema";
 
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -112,6 +113,48 @@ export default function MyPortal() {
   const dailyRate = Math.round(monthlySalary / 26);
 
   const { openBell } = useNotificationBell();
+
+  const { data: myLeaveRequests = [], isLoading: lrLoading } = useQuery<LeaveRequest[]>({
+    queryKey: ["/api/leave-requests"],
+  });
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [leaveForm, setLeaveForm] = useState({ type: "annual", startDate: "", endDate: "", reason: "" });
+  const [rejectLeaveId, setRejectLeaveId] = useState<string | null>(null);
+
+  const createLeaveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/leave-requests", leaveForm);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to submit"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leave-requests"] });
+      toast({ title: "Leave request submitted", description: "Your request is pending approval." });
+      setLeaveDialogOpen(false);
+      setLeaveForm({ type: "annual", startDate: "", endDate: "", reason: "" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const withdrawLeaveMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/leave-requests/${id}`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leave-requests"] });
+      toast({ title: "Leave request withdrawn" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const leaveTypeLabel: Record<string, string> = { annual: "Annual", sick: "Sick", casual: "Casual", unpaid: "Unpaid" };
+  const leaveTypeColor: Record<string, string> = {
+    annual: "border-blue-400 text-blue-600 dark:text-blue-400",
+    sick: "border-red-400 text-red-600 dark:text-red-400",
+    casual: "border-violet-400 text-violet-600 dark:text-violet-400",
+    unpaid: "border-orange-400 text-orange-600 dark:text-orange-400",
+  };
+
   const [resubmitExpense, setResubmitExpense] = useState<TravelExpense | null>(null);
   const [editNotes, setEditNotes] = useState("");
   const [editMode, setEditMode] = useState<"bus" | "train" | "bike">("bus");
@@ -452,6 +495,95 @@ export default function MyPortal() {
         </CardContent>
       </Card>
 
+      {employeeId && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-blue-500" />
+                My Leave Requests
+              </CardTitle>
+              <Button size="sm" onClick={() => setLeaveDialogOpen(true)} data-testid="button-request-leave">
+                Request Leave
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {lrLoading ? (
+              <div className="p-4 space-y-2">
+                {Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+              </div>
+            ) : myLeaveRequests.length === 0 ? (
+              <p className="p-6 text-center text-sm text-muted-foreground">No leave requests yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">From</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">To</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Days</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {myLeaveRequests.map(lr => {
+                      const start = new Date(lr.startDate);
+                      const end = new Date(lr.endDate);
+                      const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+                      return (
+                        <tr key={lr.id} className="border-b last:border-0" data-testid={`row-leave-${lr.id}`}>
+                          <td className="p-3">
+                            <Badge variant="outline" className={`${leaveTypeColor[lr.type] || ""} no-default-hover-elevate no-default-active-elevate`}>
+                              {leaveTypeLabel[lr.type] || lr.type}
+                            </Badge>
+                          </td>
+                          <td className="p-3">{start.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</td>
+                          <td className="p-3">{end.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</td>
+                          <td className="p-3 text-muted-foreground">{days}d</td>
+                          <td className="p-3 text-muted-foreground max-w-[180px] truncate">{lr.reason || "—"}</td>
+                          <td className="p-3">
+                            {lr.status === "pending" && (
+                              <Badge variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate">Pending</Badge>
+                            )}
+                            {lr.status === "approved" && (
+                              <Badge variant="outline" className="border-emerald-400 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate">Approved</Badge>
+                            )}
+                            {lr.status === "rejected" && (
+                              <div>
+                                <Badge variant="outline" className="border-red-400 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate">Rejected</Badge>
+                                {lr.reviewNote && <p className="text-xs text-red-500 mt-0.5">{lr.reviewNote}</p>}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3 text-right">
+                            {lr.status === "pending" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20"
+                                data-testid={`button-withdraw-leave-${lr.id}`}
+                                onClick={() => { if (confirm("Withdraw this leave request?")) withdrawLeaveMutation.mutate(lr.id); }}
+                                disabled={withdrawLeaveMutation.isPending}
+                              >
+                                Withdraw
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {currentUser?.role === "field_staff" && (
         <Card>
           <CardHeader className="pb-3">
@@ -540,6 +672,85 @@ export default function MyPortal() {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Request Leave</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Leave Type</Label>
+              <Select value={leaveForm.type} onValueChange={(v) => setLeaveForm({ ...leaveForm, type: v })}>
+                <SelectTrigger data-testid="select-leave-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="annual">Annual Leave</SelectItem>
+                  <SelectItem value="sick">Sick Leave</SelectItem>
+                  <SelectItem value="casual">Casual Leave</SelectItem>
+                  <SelectItem value="unpaid">Unpaid Leave</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Start Date</Label>
+                <Input
+                  type="date"
+                  value={leaveForm.startDate}
+                  onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
+                  data-testid="input-leave-start"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>End Date</Label>
+                <Input
+                  type="date"
+                  value={leaveForm.endDate}
+                  onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
+                  data-testid="input-leave-end"
+                />
+              </div>
+            </div>
+            {leaveForm.startDate && leaveForm.endDate && new Date(leaveForm.endDate) >= new Date(leaveForm.startDate) && (
+              <p className="text-xs text-muted-foreground">
+                Duration: {Math.round((new Date(leaveForm.endDate).getTime() - new Date(leaveForm.startDate).getTime()) / 86400000) + 1} day(s)
+              </p>
+            )}
+            <div className="space-y-2">
+              <Label>Reason <span className="text-muted-foreground text-xs">(optional)</span></Label>
+              <Textarea
+                value={leaveForm.reason}
+                onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
+                placeholder="Briefly describe the reason for your leave..."
+                rows={3}
+                data-testid="input-leave-reason"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLeaveDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (!leaveForm.startDate || !leaveForm.endDate) {
+                  toast({ title: "Validation error", description: "Please select start and end dates.", variant: "destructive" });
+                  return;
+                }
+                if (new Date(leaveForm.endDate) < new Date(leaveForm.startDate)) {
+                  toast({ title: "Validation error", description: "End date must be on or after start date.", variant: "destructive" });
+                  return;
+                }
+                createLeaveMutation.mutate();
+              }}
+              disabled={createLeaveMutation.isPending}
+              data-testid="button-submit-leave"
+            >
+              {createLeaveMutation.isPending ? "Submitting..." : "Submit Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!resubmitExpense} onOpenChange={(open) => { if (!open) setResubmitExpense(null); }}>
         <DialogContent className="max-w-lg">

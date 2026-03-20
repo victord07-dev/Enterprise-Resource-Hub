@@ -10,11 +10,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp, CalendarOff, Check, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import type { Employee, AttendanceRecord, PayrollStatus } from "@shared/schema";
+import { Textarea } from "@/components/ui/textarea";
+import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest } from "@shared/schema";
 
 type UserAccount = { id: string; username: string; role: string };
 
@@ -50,6 +51,59 @@ export default function Employees() {
   const { data: payrollStatusData, isLoading: psLoading } = useQuery<PayrollStatus | null>({
     queryKey: ["/api/payroll-status", payrollMonth, payrollYear],
   });
+
+  const { data: allLeaveRequests = [], isLoading: lrLoading } = useQuery<LeaveRequest[]>({
+    queryKey: ["/api/leave-requests"],
+  });
+  const [leaveSubTab, setLeaveSubTab] = useState<"pending" | "history">("pending");
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
+  const [rejectingLeaveId, setRejectingLeaveId] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState("");
+  const [leaveEmployeeFilter, setLeaveEmployeeFilter] = useState("all");
+
+  const approveLeaveMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("PATCH", `/api/leave-requests/${id}/approve`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leave-requests"] });
+      toast({ title: "Leave approved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const rejectLeaveMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/leave-requests/${rejectingLeaveId}/reject`, { reviewNote: rejectNote });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leave-requests"] });
+      toast({ title: "Leave rejected" });
+      setRejectDialogOpen(false);
+      setRejectingLeaveId(null);
+      setRejectNote("");
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const leaveTypeLabel: Record<string, string> = { annual: "Annual", sick: "Sick", casual: "Casual", unpaid: "Unpaid" };
+
+  const getLeaveBalance = (empId: string) => {
+    const year = new Date().getFullYear();
+    const approved = allLeaveRequests.filter(lr => lr.employeeId === empId && lr.status === "approved" && new Date(lr.startDate).getFullYear() === year);
+    const used: Record<string, number> = { annual: 0, sick: 0, casual: 0, unpaid: 0 };
+    for (const lr of approved) {
+      const days = Math.round((new Date(lr.endDate).getTime() - new Date(lr.startDate).getTime()) / 86400000) + 1;
+      used[lr.type] = (used[lr.type] || 0) + days;
+    }
+    return {
+      annual: { total: 12, used: used.annual, remaining: Math.max(0, 12 - used.annual) },
+      sick: { total: 6, used: used.sick, remaining: Math.max(0, 6 - used.sick) },
+      casual: { total: 6, used: used.casual, remaining: Math.max(0, 6 - used.casual) },
+    };
+  };
 
   const disburseMutation = useMutation({
     mutationFn: async () => {
@@ -331,6 +385,14 @@ export default function Employees() {
           <TabsTrigger value="employees" data-testid="tab-employees">Employees</TabsTrigger>
           <TabsTrigger value="attendance" data-testid="tab-attendance">Attendance</TabsTrigger>
           <TabsTrigger value="payroll" data-testid="tab-payroll">Payroll</TabsTrigger>
+          <TabsTrigger value="leave" data-testid="tab-leave" className="relative">
+            Leave Requests
+            {allLeaveRequests.filter(lr => lr.status === "pending").length > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+                {allLeaveRequests.filter(lr => lr.status === "pending").length}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="employees" className="space-y-4">
@@ -662,7 +724,255 @@ export default function Employees() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="leave" className="space-y-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                className={`px-4 py-1.5 text-sm font-medium transition-colors ${leaveSubTab === "pending" ? "bg-primary text-primary-foreground" : "hover:bg-muted/50"}`}
+                onClick={() => setLeaveSubTab("pending")}
+                data-testid="button-leave-pending-tab"
+              >
+                Pending {allLeaveRequests.filter(lr => lr.status === "pending").length > 0 && `(${allLeaveRequests.filter(lr => lr.status === "pending").length})`}
+              </button>
+              <button
+                className={`px-4 py-1.5 text-sm font-medium transition-colors border-l ${leaveSubTab === "history" ? "bg-primary text-primary-foreground" : "hover:bg-muted/50"}`}
+                onClick={() => setLeaveSubTab("history")}
+                data-testid="button-leave-history-tab"
+              >
+                History
+              </button>
+            </div>
+            <Select value={leaveEmployeeFilter} onValueChange={setLeaveEmployeeFilter}>
+              <SelectTrigger className="w-48" data-testid="select-leave-employee-filter">
+                <SelectValue placeholder="All Employees" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Employees</SelectItem>
+                {employees?.map(emp => (
+                  <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {leaveSubTab === "pending" && (
+            <Card>
+              <CardContent className="p-0">
+                {lrLoading ? (
+                  <div className="p-4 space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
+                ) : (() => {
+                  const rows = allLeaveRequests.filter(lr => lr.status === "pending" && (leaveEmployeeFilter === "all" || lr.employeeId === leaveEmployeeFilter));
+                  return rows.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+                      <CalendarOff className="w-8 h-8 opacity-30" />
+                      <p className="text-sm">No pending leave requests</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">From</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">To</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">Days</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                            <th className="text-left p-3 font-medium text-muted-foreground">Submitted</th>
+                            <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(lr => {
+                            const emp = employees?.find(e => e.id === lr.employeeId);
+                            const start = new Date(lr.startDate);
+                            const end = new Date(lr.endDate);
+                            const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+                            return (
+                              <tr key={lr.id} className="border-b last:border-0" data-testid={`row-leave-${lr.id}`}>
+                                <td className="p-3">
+                                  <div className="flex items-center gap-2">
+                                    <Avatar className="w-7 h-7"><AvatarFallback className="text-xs">{emp?.name?.charAt(0) || "?"}</AvatarFallback></Avatar>
+                                    <span className="font-medium">{emp?.name || "Unknown"}</span>
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  <Badge variant="outline" className="no-default-hover-elevate no-default-active-elevate">{leaveTypeLabel[lr.type] || lr.type}</Badge>
+                                </td>
+                                <td className="p-3">{start.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</td>
+                                <td className="p-3">{end.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</td>
+                                <td className="p-3 text-muted-foreground">{days}d</td>
+                                <td className="p-3 text-muted-foreground text-xs max-w-[160px] truncate">{lr.reason || "—"}</td>
+                                <td className="p-3 text-muted-foreground text-xs">{new Date(lr.createdAt).toLocaleDateString("en-IN")}</td>
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 gap-1"
+                                      data-testid={`button-approve-leave-${lr.id}`}
+                                      onClick={() => { if (confirm(`Approve ${leaveTypeLabel[lr.type] || lr.type} leave for ${emp?.name}?`)) approveLeaveMutation.mutate(lr.id); }}
+                                      disabled={approveLeaveMutation.isPending}
+                                    >
+                                      <Check className="w-3 h-3" /> Approve
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-red-400 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 gap-1"
+                                      data-testid={`button-reject-leave-${lr.id}`}
+                                      onClick={() => { setRejectingLeaveId(lr.id); setRejectNote(""); setRejectDialogOpen(true); }}
+                                    >
+                                      <X className="w-3 h-3" /> Reject
+                                    </Button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
+
+          {leaveSubTab === "history" && (
+            <div className="space-y-4">
+              <Card>
+                <CardContent className="p-0">
+                  {lrLoading ? (
+                    <div className="p-4 space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
+                  ) : (() => {
+                    const rows = allLeaveRequests.filter(lr => lr.status !== "pending" && (leaveEmployeeFilter === "all" || lr.employeeId === leaveEmployeeFilter));
+                    return rows.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+                        <CalendarOff className="w-8 h-8 opacity-30" />
+                        <p className="text-sm">No leave history yet</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b">
+                              <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">From</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">To</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">Days</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                              <th className="text-left p-3 font-medium text-muted-foreground">Note</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(lr => {
+                              const emp = employees?.find(e => e.id === lr.employeeId);
+                              const start = new Date(lr.startDate);
+                              const end = new Date(lr.endDate);
+                              const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+                              return (
+                                <tr key={lr.id} className="border-b last:border-0">
+                                  <td className="p-3">
+                                    <div className="flex items-center gap-2">
+                                      <Avatar className="w-7 h-7"><AvatarFallback className="text-xs">{emp?.name?.charAt(0) || "?"}</AvatarFallback></Avatar>
+                                      <span className="font-medium">{emp?.name || "Unknown"}</span>
+                                    </div>
+                                  </td>
+                                  <td className="p-3">
+                                    <Badge variant="outline" className="no-default-hover-elevate no-default-active-elevate">{leaveTypeLabel[lr.type] || lr.type}</Badge>
+                                  </td>
+                                  <td className="p-3">{start.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</td>
+                                  <td className="p-3">{end.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</td>
+                                  <td className="p-3 text-muted-foreground">{days}d</td>
+                                  <td className="p-3">
+                                    {lr.status === "approved"
+                                      ? <Badge variant="outline" className="border-emerald-400 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate">Approved</Badge>
+                                      : <Badge variant="outline" className="border-red-400 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate">Rejected</Badge>
+                                    }
+                                  </td>
+                                  <td className="p-3 text-xs text-muted-foreground max-w-[200px]">{lr.reviewNote || "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+
+              {leaveEmployeeFilter !== "all" && employees && (() => {
+                const emp = employees.find(e => e.id === leaveEmployeeFilter);
+                if (!emp) return null;
+                const bal = getLeaveBalance(leaveEmployeeFilter);
+                return (
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Leave Balance — {emp.name} ({new Date().getFullYear()})</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-3 gap-4">
+                        {(["annual", "sick", "casual"] as const).map(t => (
+                          <div key={t} className="p-3 rounded-lg border bg-muted/20 text-center space-y-1">
+                            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{leaveTypeLabel[t]}</p>
+                            <p className="text-2xl font-bold">{bal[t].remaining}</p>
+                            <p className="text-xs text-muted-foreground">of {bal[t].total} remaining</p>
+                            <div className="w-full bg-muted rounded-full h-1.5 mt-1">
+                              <div
+                                className="bg-blue-500 h-1.5 rounded-full transition-all"
+                                style={{ width: `${Math.round((bal[t].remaining / bal[t].total) * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
+            </div>
+          )}
+        </TabsContent>
       </Tabs>
+
+      <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reject Leave Request</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">Provide a reason for rejection. The employee will be notified.</p>
+            <div className="space-y-2">
+              <Label>Rejection Reason</Label>
+              <Textarea
+                value={rejectNote}
+                onChange={e => setRejectNote(e.target.value)}
+                placeholder="e.g. Critical project deadline, insufficient notice..."
+                rows={3}
+                data-testid="input-reject-leave-note"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectDialogOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!rejectNote.trim()) { toast({ title: "Reason required", description: "Please provide a rejection reason.", variant: "destructive" }); return; }
+                rejectLeaveMutation.mutate();
+              }}
+              disabled={rejectLeaveMutation.isPending}
+              data-testid="button-confirm-reject-leave"
+            >
+              {rejectLeaveMutation.isPending ? "Rejecting..." : "Reject Leave"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>

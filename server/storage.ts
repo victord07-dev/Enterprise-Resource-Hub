@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -243,6 +243,13 @@ export interface IStorage {
   createNotification(data: { userId: string; type: string; title: string; message: string; relatedId?: string | null }): Promise<Notification>;
   markNotificationRead(id: string, userId: string): Promise<Notification | undefined>;
   markAllNotificationsRead(userId: string): Promise<void>;
+
+  // Leave Requests
+  getLeaveRequests(): Promise<LeaveRequest[]>;
+  getLeaveRequestsByEmployee(employeeId: string): Promise<LeaveRequest[]>;
+  createLeaveRequest(data: Omit<LeaveRequest, "id" | "createdAt">): Promise<LeaveRequest>;
+  updateLeaveRequest(id: string, data: Partial<Omit<LeaveRequest, "id" | "createdAt">>): Promise<LeaveRequest | undefined>;
+  deleteLeaveRequest(id: string): Promise<boolean>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1082,6 +1089,30 @@ export class DatabaseStorage implements IStorage {
 
   async deleteGRNItems(grnId: string): Promise<boolean> {
     await db.delete(goodsReceiptNoteItems).where(eq(goodsReceiptNoteItems.grnId, grnId));
+    return true;
+  }
+
+  // Leave Requests
+  async getLeaveRequests(): Promise<LeaveRequest[]> {
+    return await db.select().from(leaveRequests).orderBy(desc(leaveRequests.createdAt));
+  }
+
+  async getLeaveRequestsByEmployee(employeeId: string): Promise<LeaveRequest[]> {
+    return await db.select().from(leaveRequests).where(eq(leaveRequests.employeeId, employeeId)).orderBy(desc(leaveRequests.createdAt));
+  }
+
+  async createLeaveRequest(data: Omit<LeaveRequest, "id" | "createdAt">): Promise<LeaveRequest> {
+    const [created] = await db.insert(leaveRequests).values(data).returning();
+    return created;
+  }
+
+  async updateLeaveRequest(id: string, data: Partial<Omit<LeaveRequest, "id" | "createdAt">>): Promise<LeaveRequest | undefined> {
+    const [updated] = await db.update(leaveRequests).set(data).where(eq(leaveRequests.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLeaveRequest(id: string): Promise<boolean> {
+    await db.delete(leaveRequests).where(eq(leaveRequests.id, id));
     return true;
   }
 

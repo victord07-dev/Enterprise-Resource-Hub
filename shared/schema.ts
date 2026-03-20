@@ -461,6 +461,19 @@ export const notifications = pgTable("notifications", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const leaveRequests = pgTable("leave_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  type: text("type").notNull(),
+  startDate: timestamp("start_date").notNull(),
+  endDate: timestamp("end_date").notNull(),
+  reason: text("reason"),
+  status: text("status").notNull().default("pending"),
+  reviewedBy: varchar("reviewed_by"),
+  reviewNote: text("review_note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true });
@@ -499,6 +512,7 @@ export const insertGoodsReceiptNoteSchema = createInsertSchema(goodsReceiptNotes
 export const insertGoodsReceiptNoteItemSchema = createInsertSchema(goodsReceiptNoteItems).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true });
+export const insertLeaveRequestSchema = createInsertSchema(leaveRequests).omit({ id: true, createdAt: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -539,3 +553,4 @@ export type PurchaseRequestItem = typeof purchaseRequestItems.$inferSelect;
 export type GoodsReceiptNote = typeof goodsReceiptNotes.$inferSelect;
 export type GoodsReceiptNoteItem = typeof goodsReceiptNoteItems.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
+export type LeaveRequest = typeof leaveRequests.$inferSelect;

@@ -82,7 +82,7 @@ export default function MyPortal() {
 
   const resubmitMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("PATCH", `/api/travel-expenses/${resubmitExpense!.id}/resubmit`, {
+      const res = await apiRequest("PATCH", `/api/travel-expenses/${resubmitExpense!.id}`, {
         notes: editNotes,
         transportMode: editMode,
       });

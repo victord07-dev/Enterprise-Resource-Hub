@@ -43,7 +43,13 @@ export default function FieldStaff() {
   const { data: allTrips } = useQuery<Trip[]>({ queryKey: ["/api/trips"] });
   const { data: activeTripsData } = useQuery<Trip[]>({ queryKey: ["/api/trips/active"], refetchInterval: 30000 });
 
-  const [activeTab, setActiveTab] = useState(isFieldStaff ? "expenses" : "tracking");
+  const [activeTab, setActiveTab] = useState("tracking");
+
+  useEffect(() => {
+    if (isFieldStaff) {
+      setActiveTab("expenses");
+    }
+  }, [isFieldStaff]);
 
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);

@@ -1662,9 +1662,13 @@ export async function registerRoutes(
   });
 
   // ======================== EMPLOYEES ========================
-  app.get("/api/employees", authenticateToken, async (_req, res) => {
+  app.get("/api/employees", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getEmployees();
+      if (req.user.role === "field_staff") {
+        const linked = data.find(e => e.userId === req.user.id);
+        return res.json(linked ? [linked] : []);
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch employees" });
@@ -1789,9 +1793,15 @@ export async function registerRoutes(
   });
 
   // ======================== ATTENDANCE ========================
-  app.get("/api/attendance", authenticateToken, async (_req, res) => {
+  app.get("/api/attendance", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getAttendance();
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked) return res.json([]);
+        return res.json(data.filter(a => a.employeeId === linked.id));
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch attendance" });
@@ -1833,9 +1843,12 @@ export async function registerRoutes(
   });
 
   // ======================== PAYROLL STATUS ========================
-  app.get("/api/payroll-status", authenticateToken, async (_req, res) => {
+  app.get("/api/payroll-status", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getPayrollStatuses();
+      if (req.user.role === "field_staff") {
+        return res.json([]);
+      }
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch payroll statuses" });
@@ -3137,13 +3150,21 @@ export async function registerRoutes(
 
   app.post("/api/travel-expenses", authenticateToken, async (req: any, res) => {
     try {
-      const { employeeId, originLat, originLng, destLat, destLng, originAddress, destAddress, transportMode, notes } = req.body;
+      let { employeeId, originLat, originLng, destLat, destLng, originAddress, destAddress, transportMode, notes } = req.body;
+      const allEmployees = await storage.getEmployees();
+      if (req.user.role === "field_staff") {
+        const linked = allEmployees.find(e => e.userId === req.user.id);
+        if (!linked) return res.status(403).json({ message: "No employee record linked to your account" });
+        if (employeeId && employeeId !== linked.id) {
+          return res.status(403).json({ message: "Field staff can only submit expenses for themselves" });
+        }
+        employeeId = linked.id;
+      }
       const oLat = parseFloat(originLat); const oLng = parseFloat(originLng);
       const dLat = parseFloat(destLat); const dLng = parseFloat(destLng);
       if (!employeeId || isNaN(oLat) || isNaN(oLng) || isNaN(dLat) || isNaN(dLng)) {
         return res.status(400).json({ message: "Missing or invalid required fields" });
       }
-      const allEmployees = await storage.getEmployees();
       const empExists = allEmployees.find(e => e.id === employeeId);
       if (!empExists) {
         return res.status(400).json({ message: "Employee not found" });
@@ -3374,9 +3395,17 @@ export async function registerRoutes(
 
   app.post("/api/trips/start", authenticateToken, async (req: any, res) => {
     try {
-      const { employeeId, lat, lng } = req.body;
-      if (!employeeId) return res.status(400).json({ message: "Employee ID required" });
+      let { employeeId, lat, lng } = req.body;
       const allEmps = await storage.getEmployees();
+      if (req.user.role === "field_staff") {
+        const linked = allEmps.find(e => e.userId === req.user.id);
+        if (!linked) return res.status(403).json({ message: "No employee record linked to your account" });
+        if (employeeId && employeeId !== linked.id) {
+          return res.status(403).json({ message: "Field staff can only start trips for themselves" });
+        }
+        employeeId = linked.id;
+      }
+      if (!employeeId) return res.status(400).json({ message: "Employee ID required" });
       if (!allEmps.find(e => e.id === employeeId)) {
         return res.status(400).json({ message: "Employee not found" });
       }

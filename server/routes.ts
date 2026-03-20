@@ -3140,8 +3140,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/travel-expenses/employee/:employeeId", authenticateToken, async (req, res) => {
+  app.get("/api/travel-expenses/employee/:employeeId", authenticateToken, async (req: any, res) => {
     try {
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || linked.id !== req.params.employeeId) {
+          return res.status(403).json({ message: "You can only view your own travel expenses" });
+        }
+      }
       const data = await storage.getTravelExpensesByEmployee(req.params.employeeId);
       res.json(data);
     } catch (error) {
@@ -3376,8 +3383,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/trips/employee/:employeeId", authenticateToken, async (req, res) => {
+  app.get("/api/trips/employee/:employeeId", authenticateToken, async (req: any, res) => {
     try {
+      if (req.user.role === "field_staff") {
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || linked.id !== req.params.employeeId) {
+          return res.status(403).json({ message: "You can only view your own trips" });
+        }
+      }
       const data = await storage.getTripsByEmployee(req.params.employeeId);
       res.json(data);
     } catch (error) {
@@ -3491,7 +3505,18 @@ export async function registerRoutes(
 
   app.post("/api/trips/:id/log", authenticateToken, async (req: any, res) => {
     try {
-      const { lat, lng, employeeId } = req.body;
+      let { lat, lng, employeeId } = req.body;
+      if (req.user.role === "field_staff") {
+        const allTrips = await storage.getTrips();
+        const trip = allTrips.find(t => t.id === req.params.id);
+        if (!trip) return res.status(404).json({ message: "Trip not found" });
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || trip.employeeId !== linked.id) {
+          return res.status(403).json({ message: "You can only log location for your own trips" });
+        }
+        employeeId = linked.id;
+      }
       const parsedLat = parseFloat(lat); const parsedLng = parseFloat(lng);
       if (isNaN(parsedLat) || isNaN(parsedLng) || !employeeId) {
         return res.status(400).json({ message: "Missing required fields" });

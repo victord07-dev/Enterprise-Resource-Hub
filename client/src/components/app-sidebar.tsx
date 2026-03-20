@@ -14,6 +14,7 @@ import {
   LogOut,
   UserPlus,
   Box,
+  User,
 } from "lucide-react";
 import {
   Sidebar,
@@ -27,9 +28,11 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Shield } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
-const menuItems = [
+type NavItem = { title: string; url: string; icon: React.ElementType };
+
+const ALL_ITEMS: NavItem[] = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Products & Services", url: "/products", icon: Box },
   { title: "Leads", url: "/leads", icon: UserPlus },
@@ -44,9 +47,52 @@ const menuItems = [
   { title: "Audit Trail", url: "/audit-trail", icon: FileSearch },
 ];
 
+const ROLE_NAV: Record<string, string[]> = {
+  admin: ALL_ITEMS.map(i => i.url),
+  hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
+  field_staff: ["/my-portal", "/field-staff"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/reports"],
+  warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/reports"],
+};
+
+const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };
+
+export function getNavItemsForRole(role: string): NavItem[] {
+  const allowedUrls = ROLE_NAV[role] || ROLE_NAV["admin"];
+  if (role === "admin") return ALL_ITEMS;
+
+  const items: NavItem[] = [MY_PORTAL_ITEM];
+  for (const url of allowedUrls) {
+    if (url === "/my-portal") continue;
+    const found = ALL_ITEMS.find(i => i.url === url);
+    if (found) items.push(found);
+  }
+  return items;
+}
+
+export function isRouteAllowedForRole(role: string, path: string): boolean {
+  if (role === "admin") return true;
+  if (path === "/my-portal") return true;
+  if (path === "/login" || path === "/kiosk") return true;
+  const allowed = ROLE_NAV[role] || [];
+  return allowed.includes(path) || allowed.some(u => path.startsWith(u) && u !== "/");
+}
+
+const roleLabels: Record<string, string> = {
+  admin: "Admin",
+  hr_manager: "HR Manager",
+  field_staff: "Field Staff",
+  sales_manager: "Sales Manager",
+  warehouse_manager: "Warehouse Mgr",
+  accountant: "Accountant",
+};
+
 export function AppSidebar() {
   const [location] = useLocation();
   const user = getUser();
+  const role = user?.role || "admin";
+  const menuItems = getNavItemsForRole(role);
 
   const isActive = (url: string) => {
     if (url === "/") return location === "/";
@@ -97,9 +143,9 @@ export function AppSidebar() {
             <p className="text-sm font-medium text-sidebar-foreground truncate" data-testid="text-user-name">
               {user?.fullName || "Admin"}
             </p>
-            <p className="text-xs text-sidebar-foreground/60 truncate" data-testid="text-user-email">
-              {user?.email || "admin@itfi.co.in"}
-            </p>
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 mt-0.5 border-sidebar-border text-sidebar-foreground/60 no-default-hover-elevate no-default-active-elevate">
+              {roleLabels[role] || role}
+            </Badge>
           </div>
         </div>
         <SidebarMenu>

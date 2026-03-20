@@ -5,11 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye } from "lucide-react";
+import { useCurrentUser } from "@/lib/auth";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -30,13 +33,17 @@ const createMarkerIcon = (type: 'staff' | 'origin' | 'destination') => {
 
 export default function FieldStaff() {
   const { toast } = useToast();
+  const { data: currentUser } = useCurrentUser();
+  const isFieldStaff = currentUser?.role === "field_staff";
+  const isManagerOrAdmin = currentUser?.role === "admin" || currentUser?.role === "hr_manager";
+
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({ queryKey: ["/api/travel-expenses"] });
   const { data: locationLogs } = useQuery<LocationLog[]>({ queryKey: ["/api/location-logs"] });
   const { data: allTrips } = useQuery<Trip[]>({ queryKey: ["/api/trips"] });
   const { data: activeTripsData } = useQuery<Trip[]>({ queryKey: ["/api/trips/active"], refetchInterval: 30000 });
 
-  const [activeTab, setActiveTab] = useState("tracking");
+  const [activeTab, setActiveTab] = useState(isFieldStaff ? "expenses" : "tracking");
 
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);
@@ -51,6 +58,14 @@ export default function FieldStaff() {
   const [expenseEmployeeId, setExpenseEmployeeId] = useState<string>("");
   const [expenseNotes, setExpenseNotes] = useState("");
   const [gettingLocation, setGettingLocation] = useState(false);
+  const [rejectExpenseId, setRejectExpenseId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    if (isFieldStaff && currentUser?.employeeId) {
+      setExpenseEmployeeId(currentUser.employeeId);
+    }
+  }, [isFieldStaff, currentUser?.employeeId]);
 
   const adminMapInstance = useRef<L.Map | null>(null);
   const adminMarkersRef = useRef<L.Marker[]>([]);
@@ -246,6 +261,25 @@ export default function FieldStaff() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/travel-expenses"] });
       toast({ title: "Expense disbursed" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const rejectExpenseMutation = useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
+      const res = await apiRequest("PATCH", `/api/travel-expenses/${id}/reject`, { reason });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to reject");
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/travel-expenses"] });
+      toast({ title: "Expense rejected", description: "The rejection reason has been recorded." });
+      setRejectExpenseId(null);
+      setRejectReason("");
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -479,19 +513,21 @@ export default function FieldStaff() {
             <CardContent>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Employee</Label>
-                    <Select value={expenseEmployeeId} onValueChange={setExpenseEmployeeId}>
-                      <SelectTrigger data-testid="select-expense-employee">
-                        <SelectValue placeholder="Select employee" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {employees?.map(emp => (
-                          <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {!isFieldStaff && (
+                    <div className="space-y-2">
+                      <Label>Employee</Label>
+                      <Select value={expenseEmployeeId} onValueChange={setExpenseEmployeeId}>
+                        <SelectTrigger data-testid="select-expense-employee">
+                          <SelectValue placeholder="Select employee" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {employees?.map(emp => (
+                            <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
 
                   <div className="space-y-2">
                     <Label>Origin (Your Location)</Label>
@@ -597,106 +633,132 @@ export default function FieldStaff() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
-                      <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                      {!isFieldStaff && <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>}
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Route</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Distance</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Mode</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Travel Cost</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Lunch</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Total</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Rejection Reason</th>
+                      {isManagerOrAdmin && <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {teLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 10 }).map((_, j) => (
+                          {Array.from({ length: 8 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
                       ))
-                    ) : travelExpenses && travelExpenses.length > 0 ? (
-                      travelExpenses.map(te => {
-                        const modeIcon = te.transportMode === "bus" ? <Bus className="w-3 h-3" /> : te.transportMode === "train" ? <Train className="w-3 h-3" /> : <Bike className="w-3 h-3" />;
-                        return (
-                          <tr key={te.id} className="border-b last:border-0" data-testid={`row-expense-${te.id}`}>
-                            <td className="p-3">
-                              <div className="flex items-center gap-2">
-                                <Avatar className="w-6 h-6">
-                                  <AvatarFallback className="text-[10px]">{getEmployeeName(te.employeeId).charAt(0)}</AvatarFallback>
-                                </Avatar>
-                                <span className="font-medium">{getEmployeeName(te.employeeId)}</span>
-                              </div>
-                            </td>
-                            <td className="p-3 text-muted-foreground">{new Date(te.date).toLocaleDateString("en-IN")}</td>
-                            <td className="p-3 text-xs text-muted-foreground">
-                              {Number(te.originLat).toFixed(2)},{Number(te.originLng).toFixed(2)} {"\u2192"} {Number(te.destLat).toFixed(2)},{Number(te.destLng).toFixed(2)}
-                            </td>
-                            <td className="p-3 text-right">{Number(te.distance).toFixed(1)} km</td>
-                            <td className="p-3">
-                              <span className="flex items-center gap-1 capitalize">{modeIcon} {te.transportMode}</span>
-                            </td>
-                            <td className="p-3 text-right">{"\u20B9"}{Number(te.travelCost).toLocaleString("en-IN")}</td>
-                            <td className="p-3 text-right">{"\u20B9"}{Number(te.lunchMoney).toLocaleString("en-IN")}</td>
-                            <td className="p-3 text-right font-medium" data-testid={`text-expense-total-${te.id}`}>{"\u20B9"}{Number(te.totalAmount).toLocaleString("en-IN")}</td>
-                            <td className="p-3">
-                              <Badge
-                                data-testid={`badge-expense-status-${te.id}`}
-                                variant={te.status === "disbursed" ? "default" : "outline"}
-                                className={
-                                  te.status === "pending"
-                                    ? "border-amber-500 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate"
-                                    : te.status === "approved"
-                                    ? "border-blue-500 text-blue-600 dark:text-blue-400 no-default-hover-elevate no-default-active-elevate"
-                                    : "bg-emerald-600 text-white no-default-hover-elevate no-default-active-elevate"
-                                }
-                              >
-                                {te.status === "pending" ? "Pending" : te.status === "approved" ? "Approved" : "Disbursed"}
-                              </Badge>
-                            </td>
-                            <td className="p-3 text-right">
-                              <div className="flex items-center justify-end gap-1">
-                                {te.status === "pending" && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => approveMutation.mutate(te.id)}
-                                    disabled={approveMutation.isPending}
-                                    data-testid={`button-approve-expense-${te.id}`}
-                                  >
-                                    <CheckCircle className="w-3 h-3 mr-1" />
-                                    Approve
-                                  </Button>
-                                )}
-                                {te.status === "approved" && (
-                                  <Button
-                                    size="sm"
-                                    variant="default"
-                                    onClick={() => disburseTravelMutation.mutate(te.id)}
-                                    disabled={disburseTravelMutation.isPending}
-                                    data-testid={`button-disburse-expense-${te.id}`}
-                                  >
-                                    <Banknote className="w-3 h-3 mr-1" />
-                                    Disburse
-                                  </Button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    ) : (
-                      <tr>
-                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
-                          <DollarSign className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
-                          <p>No travel expenses submitted yet.</p>
-                          <p className="text-xs mt-1">Go to the Travel Expenses tab to submit a claim.</p>
-                        </td>
-                      </tr>
-                    )}
+                    ) : (() => {
+                      const visibleExpenses = isFieldStaff
+                        ? (travelExpenses || []).filter(te => te.employeeId === currentUser?.employeeId)
+                        : (travelExpenses || []);
+                      return visibleExpenses.length > 0 ? (
+                        visibleExpenses.map(te => {
+                          const modeIcon = te.transportMode === "bus" ? <Bus className="w-3 h-3" /> : te.transportMode === "train" ? <Train className="w-3 h-3" /> : <Bike className="w-3 h-3" />;
+                          return (
+                            <tr key={te.id} className="border-b last:border-0" data-testid={`row-expense-${te.id}`}>
+                              {!isFieldStaff && (
+                                <td className="p-3">
+                                  <div className="flex items-center gap-2">
+                                    <Avatar className="w-6 h-6">
+                                      <AvatarFallback className="text-[10px]">{getEmployeeName(te.employeeId).charAt(0)}</AvatarFallback>
+                                    </Avatar>
+                                    <span className="font-medium">{getEmployeeName(te.employeeId)}</span>
+                                  </div>
+                                </td>
+                              )}
+                              <td className="p-3 text-muted-foreground">{new Date(te.date).toLocaleDateString("en-IN")}</td>
+                              <td className="p-3 text-xs text-muted-foreground">
+                                {Number(te.originLat).toFixed(2)},{Number(te.originLng).toFixed(2)} {"\u2192"} {Number(te.destLat).toFixed(2)},{Number(te.destLng).toFixed(2)}
+                              </td>
+                              <td className="p-3 text-right">{Number(te.distance).toFixed(1)} km</td>
+                              <td className="p-3">
+                                <span className="flex items-center gap-1 capitalize">{modeIcon} {te.transportMode}</span>
+                              </td>
+                              <td className="p-3 text-right font-medium" data-testid={`text-expense-total-${te.id}`}>{"\u20B9"}{Number(te.totalAmount).toLocaleString("en-IN")}</td>
+                              <td className="p-3">
+                                <Badge
+                                  data-testid={`badge-expense-status-${te.id}`}
+                                  variant="outline"
+                                  className={
+                                    te.status === "pending"
+                                      ? "border-amber-500 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate"
+                                      : te.status === "approved"
+                                      ? "border-blue-500 text-blue-600 dark:text-blue-400 no-default-hover-elevate no-default-active-elevate"
+                                      : te.status === "disbursed"
+                                      ? "border-emerald-500 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate"
+                                      : "border-red-500 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate"
+                                  }
+                                >
+                                  {te.status === "pending" ? "Pending" : te.status === "approved" ? "Approved" : te.status === "disbursed" ? "Disbursed" : "Rejected"}
+                                </Badge>
+                              </td>
+                              <td className="p-3 text-xs text-muted-foreground max-w-[180px]">
+                                {te.status === "rejected" && te.rejectionReason ? (
+                                  <span className="text-red-600 dark:text-red-400">{te.rejectionReason}</span>
+                                ) : "—"}
+                              </td>
+                              {isManagerOrAdmin && (
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    {te.status === "pending" && (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => approveMutation.mutate(te.id)}
+                                          disabled={approveMutation.isPending}
+                                          data-testid={`button-approve-expense-${te.id}`}
+                                        >
+                                          <CheckCircle className="w-3 h-3 mr-1" />
+                                          Approve
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => { setRejectExpenseId(te.id); setRejectReason(""); }}
+                                          disabled={rejectExpenseMutation.isPending}
+                                          data-testid={`button-reject-expense-${te.id}`}
+                                          className="border-red-300 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20"
+                                        >
+                                          <XCircle className="w-3 h-3 mr-1" />
+                                          Reject
+                                        </Button>
+                                      </>
+                                    )}
+                                    {te.status === "approved" && (
+                                      <Button
+                                        size="sm"
+                                        variant="default"
+                                        onClick={() => disburseTravelMutation.mutate(te.id)}
+                                        disabled={disburseTravelMutation.isPending}
+                                        data-testid={`button-disburse-expense-${te.id}`}
+                                      >
+                                        <Banknote className="w-3 h-3 mr-1" />
+                                        Disburse
+                                      </Button>
+                                    )}
+                                  </div>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={isManagerOrAdmin ? 9 : 8} className="p-8 text-center text-muted-foreground">
+                            <DollarSign className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
+                            <p>No travel expenses submitted yet.</p>
+                            <p className="text-xs mt-1">Go to the Travel Expenses tab to submit a claim.</p>
+                          </td>
+                        </tr>
+                      );
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -704,6 +766,38 @@ export default function FieldStaff() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!rejectExpenseId} onOpenChange={(open) => { if (!open) { setRejectExpenseId(null); setRejectReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Travel Expense</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">Please provide a reason for rejection. The field staff member will see this reason and can edit & resubmit.</p>
+            <div className="space-y-2">
+              <Label>Rejection Reason</Label>
+              <Textarea
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                placeholder="e.g. Distance seems incorrect, please resubmit with correct route..."
+                rows={3}
+                data-testid="input-reject-reason"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setRejectExpenseId(null); setRejectReason(""); }}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => rejectExpenseMutation.mutate({ id: rejectExpenseId!, reason: rejectReason })}
+              disabled={rejectExpenseMutation.isPending || !rejectReason.trim()}
+              data-testid="button-confirm-reject"
+            >
+              {rejectExpenseMutation.isPending ? "Rejecting..." : "Confirm Rejection"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

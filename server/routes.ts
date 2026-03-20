@@ -391,12 +391,15 @@ export async function registerRoutes(
   app.get("/api/auth/me", authenticateToken, async (req: any, res) => {
     const user = await storage.getUser(req.user.id);
     if (!user) return res.status(404).json({ message: "User not found" });
+    const employees = await storage.getEmployees();
+    const linkedEmployee = employees.find(e => e.userId === user.id);
     res.json({
       id: user.id,
       username: user.username,
       fullName: user.fullName,
       email: user.email,
       role: user.role,
+      employeeId: linkedEmployee?.id || null,
     });
   });
 
@@ -3168,7 +3171,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/travel-expenses/:id/approve", authenticateToken, async (req: any, res) => {
+  app.patch("/api/travel-expenses/:id/approve", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       const updated = await storage.updateTravelExpense(req.params.id, { status: "approved", approvedAt: new Date() });
       if (!updated) return res.status(404).json({ message: "Travel expense not found" });
@@ -3179,7 +3182,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/travel-expenses/:id/disburse", authenticateToken, async (req: any, res) => {
+  app.patch("/api/travel-expenses/:id/disburse", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       const updated = await storage.updateTravelExpense(req.params.id, { status: "disbursed", disbursedAt: new Date() });
       if (!updated) return res.status(404).json({ message: "Travel expense not found" });
@@ -3187,6 +3190,38 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to disburse travel expense" });
+    }
+  });
+
+  app.patch("/api/travel-expenses/:id/reject", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
+    try {
+      const { reason } = req.body;
+      const updated = await storage.updateTravelExpense(req.params.id, { status: "rejected", rejectionReason: reason || "Rejected by manager" });
+      if (!updated) return res.status(404).json({ message: "Travel expense not found" });
+      await logAction(req.user.id, "reject", "travel_expenses", `Rejected travel expense ${req.params.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to reject travel expense" });
+    }
+  });
+
+  app.patch("/api/travel-expenses/:id/resubmit", authenticateToken, async (req: any, res) => {
+    try {
+      const expense = await storage.getTravelExpenses();
+      const te = expense.find(e => e.id === req.params.id);
+      if (!te) return res.status(404).json({ message: "Travel expense not found" });
+      if (te.status !== "rejected") return res.status(400).json({ message: "Only rejected expenses can be resubmitted" });
+      const { notes, transportMode } = req.body;
+      const updated = await storage.updateTravelExpense(req.params.id, {
+        status: "pending",
+        rejectionReason: null,
+        notes: notes !== undefined ? notes : te.notes,
+        transportMode: transportMode || te.transportMode,
+      });
+      await logAction(req.user.id, "resubmit", "travel_expenses", `Resubmitted travel expense ${req.params.id}`);
+      res.json(updated);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to resubmit travel expense" });
     }
   });
 

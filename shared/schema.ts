@@ -238,6 +238,7 @@ export const travelExpenses = pgTable("travel_expenses", {
   totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
   status: text("status").notNull().default("pending"),
   notes: text("notes"),
+  rejectionReason: text("rejection_reason"),
   approvedAt: timestamp("approved_at"),
   disbursedAt: timestamp("disbursed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),

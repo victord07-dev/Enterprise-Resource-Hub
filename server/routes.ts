@@ -460,7 +460,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/customers", authenticateToken, async (req: any, res) => {
+  app.post("/api/customers", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const parsed = insertCustomerSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
@@ -472,7 +472,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/customers/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/customers/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const updated = await storage.updateCustomer(req.params.id, req.body);
       if (!updated) return res.status(404).json({ message: "Customer not found" });
@@ -483,7 +483,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/customers/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/customers/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       await storage.deleteCustomer(req.params.id);
       await logAction(req.user.id, "delete", "customers", `Deleted customer ${req.params.id}`);
@@ -722,7 +722,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/sales-orders", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-orders", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const body = { ...req.body };
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
@@ -739,7 +739,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/sales-orders/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const body = { ...req.body };
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
@@ -767,7 +767,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/sales-orders/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/sales-orders/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       await storage.deleteSalesOrder(req.params.id);
       await logAction(req.user.id, "delete", "sales", `Deleted sales order ${req.params.id}`);
@@ -787,7 +787,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/quotations", authenticateToken, async (req: any, res) => {
+  app.post("/api/quotations", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const body = { ...req.body };
       if (body.validUntil && typeof body.validUntil === "string") {
@@ -807,7 +807,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/quotations/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/quotations/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const body = { ...req.body };
       if (body.validUntil !== undefined) {
@@ -826,7 +826,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/quotations/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/quotations/:id", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       await storage.deleteQuotation(req.params.id);
       await logAction(req.user.id, "delete", "sales", `Deleted quotation ${req.params.id}`);
@@ -846,7 +846,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/sales-orders/:id/items", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-orders/:id/items", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const items = req.body.items;
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
@@ -874,7 +874,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/quotations/:id/items", authenticateToken, async (req: any, res) => {
+  app.post("/api/quotations/:id/items", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const items = req.body.items;
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
@@ -893,7 +893,7 @@ export async function registerRoutes(
   });
 
   // ======================== CONVERT QUOTATION TO ORDER ========================
-  app.post("/api/quotations/:id/convert-to-order", authenticateToken, async (req: any, res) => {
+  app.post("/api/quotations/:id/convert-to-order", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const quotation = await storage.getQuotation(req.params.id);
       if (!quotation) return res.status(404).json({ message: "Quotation not found" });
@@ -1219,7 +1219,7 @@ export async function registerRoutes(
   });
 
   // ======================== ORDER PAYMENTS & INVOICES ========================
-  app.post("/api/sales-orders/:id/record-payment", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-orders/:id/record-payment", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const order = await storage.getSalesOrder(req.params.id);
       if (!order) return res.status(404).json({ message: "Order not found" });
@@ -1272,7 +1272,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/sales-orders/:id/generate-invoice", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-orders/:id/generate-invoice", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const order = await storage.getSalesOrder(req.params.id);
       if (!order) return res.status(404).json({ message: "Order not found" });
@@ -1801,6 +1801,10 @@ export async function registerRoutes(
         const linked = employees.find(e => e.userId === req.user.id);
         if (!linked) return res.json([]);
         return res.json(data.filter(a => a.employeeId === linked.id));
+      }
+      const { employeeId } = req.query;
+      if (employeeId && typeof employeeId === "string") {
+        return res.json(data.filter(a => a.employeeId === employeeId));
       }
       res.json(data);
     } catch (error) {
@@ -2601,7 +2605,7 @@ export async function registerRoutes(
   });
 
   // ======================== ORDER REMAINING QUANTITIES ========================
-  app.post("/api/sales-orders/:id/confirm-pickup", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-orders/:id/confirm-pickup", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const order = await storage.getSalesOrder(req.params.id);
       if (!order) return res.status(404).json({ message: "Sales order not found" });

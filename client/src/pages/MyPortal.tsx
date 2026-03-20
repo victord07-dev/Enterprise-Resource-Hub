@@ -35,7 +35,17 @@ export default function MyPortal() {
   const employeeId = currentUser?.employeeId;
 
   const { data: employees } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
-  const { data: allAttendance, isLoading: attLoading } = useQuery<AttendanceRecord[]>({ queryKey: ["/api/attendance"] });
+  const { data: myAttendance = [], isLoading: attLoading } = useQuery<AttendanceRecord[]>({
+    queryKey: ["/api/attendance", { employeeId }],
+    queryFn: async () => {
+      if (!employeeId) return [];
+      const res = await fetch(`/api/attendance?employeeId=${employeeId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      return res.json();
+    },
+    enabled: !!employeeId,
+  });
   const { data: payrollStatuses } = useQuery<PayrollStatus[]>({ queryKey: ["/api/payroll-status"] });
   const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({
     queryKey: ["/api/travel-expenses"],
@@ -48,7 +58,6 @@ export default function MyPortal() {
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
 
-  const myAttendance = allAttendance?.filter(a => a.employeeId === employeeId) || [];
   const thisMonthAttendance = myAttendance.filter(a => {
     const d = new Date(a.date);
     return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
@@ -400,7 +409,7 @@ export default function MyPortal() {
       )}
 
       <Dialog open={!!resubmitExpense} onOpenChange={(open) => { if (!open) setResubmitExpense(null); }}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Edit & Resubmit Expense</DialogTitle>
           </DialogHeader>
@@ -410,12 +419,44 @@ export default function MyPortal() {
                 <p className="font-medium text-red-700 dark:text-red-400">Rejection reason:</p>
                 <p className="text-muted-foreground mt-0.5">{resubmitExpense.rejectionReason || "No reason provided"}</p>
               </div>
-              <div className="grid grid-cols-2 gap-3 text-sm text-muted-foreground bg-muted/40 rounded-md p-3">
-                <div><span className="font-medium text-foreground">Distance:</span> {Number(resubmitExpense.distance).toFixed(1)} km</div>
-                <div><span className="font-medium text-foreground">Total:</span> ₹{Number(resubmitExpense.totalAmount).toLocaleString("en-IN")}</div>
+
+              <div className="rounded-md border bg-muted/30 p-3 space-y-2 text-sm">
+                <p className="font-medium text-xs text-muted-foreground uppercase tracking-wide mb-1">Expense Details (read-only)</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-muted-foreground">Date:</span>
+                    <span className="ml-1 font-medium">{new Date(resubmitExpense.date).toLocaleDateString("en-IN")}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Distance:</span>
+                    <span className="ml-1 font-medium">{Number(resubmitExpense.distance).toFixed(1)} km</span>
+                  </div>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">From:</span>
+                  <span className="ml-1 font-medium font-mono text-xs">{Number(resubmitExpense.originLat).toFixed(4)}, {Number(resubmitExpense.originLng).toFixed(4)}</span>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">To:</span>
+                  <span className="ml-1 font-medium font-mono text-xs">{Number(resubmitExpense.destLat).toFixed(4)}, {Number(resubmitExpense.destLng).toFixed(4)}</span>
+                </div>
+                <div className="border-t pt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-muted-foreground">Travel cost:</span>
+                    <span className="ml-1 font-medium">₹{Number(resubmitExpense.travelCost).toLocaleString("en-IN")}</span>
+                  </div>
+                  <div>
+                    <span className="text-muted-foreground">Lunch:</span>
+                    <span className="ml-1 font-medium">₹{Number(resubmitExpense.lunchMoney).toLocaleString("en-IN")}</span>
+                  </div>
+                  <div className="col-span-2 font-semibold">
+                    Total: ₹{Number(resubmitExpense.totalAmount).toLocaleString("en-IN")}
+                  </div>
+                </div>
               </div>
+
               <div className="space-y-2">
-                <Label>Transport Mode</Label>
+                <Label>Transport Mode <span className="text-muted-foreground text-xs">(editable — affects cost calculation on next submission)</span></Label>
                 <Select value={editMode} onValueChange={(v) => setEditMode(v as "bus" | "train" | "bike")}>
                   <SelectTrigger data-testid="select-resubmit-mode">
                     <SelectValue />
@@ -432,7 +473,7 @@ export default function MyPortal() {
                 <Input
                   value={editNotes}
                   onChange={e => setEditNotes(e.target.value)}
-                  placeholder="Add or update notes..."
+                  placeholder="Add or update trip purpose/notes..."
                   data-testid="input-resubmit-notes"
                 />
               </div>

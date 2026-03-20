@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -300,6 +301,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
 
 export default function Sales() {
   const { toast } = useToast();
+  const { data: currentUser } = useCurrentUser();
+  const isReadOnly = currentUser?.role === "accountant";
   const { data: orders, isLoading: ordersLoading } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
   const { data: customers, isLoading: customersLoading } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: quotations, isLoading: quotationsLoading } = useQuery<Quotation[]>({ queryKey: ["/api/quotations"] });
@@ -892,10 +895,15 @@ export default function Sales() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Sales</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage orders, quotations, and customers</p>
         </div>
-        <Button data-testid="button-new-order" onClick={openNewOrder}>
-          <Plus className="w-4 h-4 mr-2" />
-          New Order
-        </Button>
+        {!isReadOnly && (
+          <Button data-testid="button-new-order" onClick={openNewOrder}>
+            <Plus className="w-4 h-4 mr-2" />
+            New Order
+          </Button>
+        )}
+        {isReadOnly && (
+          <Badge variant="outline" className="text-muted-foreground no-default-hover-elevate no-default-active-elevate">View Only</Badge>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -992,14 +1000,16 @@ export default function Sales() {
                             <td className="p-3 text-right font-medium">₹{Number(order.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right text-muted-foreground" data-testid={`text-paid-${order.id}`}>₹{Number(order.paidAmount || 0).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center justify-end gap-1">
-                                <Button size="icon" variant="ghost" data-testid={`button-edit-order-${order.id}`} onClick={() => openEditOrder(order)}>
-                                  <Pencil className="w-4 h-4" />
-                                </Button>
-                                <Button size="icon" variant="ghost" data-testid={`button-delete-order-${order.id}`} onClick={() => { if (confirm("Delete this order?")) deleteOrderMutation.mutate(order.id); }}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
+                              {!isReadOnly && (
+                                <div className="flex items-center justify-end gap-1">
+                                  <Button size="icon" variant="ghost" data-testid={`button-edit-order-${order.id}`} onClick={() => openEditOrder(order)}>
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-order-${order.id}`} onClick={() => { if (confirm("Delete this order?")) deleteOrderMutation.mutate(order.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              )}
                             </td>
                           </tr>
                           {expandedOrderId === order.id && (
@@ -1083,10 +1093,12 @@ export default function Sales() {
                                           </Button>
                                         )
                                       )}
-                                      <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
-                                        <CreditCard className="w-3 h-3 mr-1" /> Record Payment
-                                      </Button>
-                                      {order.status === "ready_to_ship" && (order as any).deliveryMethod === "pickup" && (
+                                      {!isReadOnly && (
+                                        <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
+                                          <CreditCard className="w-3 h-3 mr-1" /> Record Payment
+                                        </Button>
+                                      )}
+                                      {!isReadOnly && order.status === "ready_to_ship" && (order as any).deliveryMethod === "pickup" && (
                                         <Button
                                           size="sm"
                                           variant="default"
@@ -1165,12 +1177,14 @@ export default function Sales() {
         </TabsContent>
 
         <TabsContent value="quotations" className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Button size="sm" data-testid="button-new-quote" onClick={openNewQuote}>
-              <Plus className="w-4 h-4 mr-2" />
-              New Quote
-            </Button>
-          </div>
+          {!isReadOnly && (
+            <div className="flex items-center gap-2">
+              <Button size="sm" data-testid="button-new-quote" onClick={openNewQuote}>
+                <Plus className="w-4 h-4 mr-2" />
+                New Quote
+              </Button>
+            </div>
+          )}
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
@@ -1217,7 +1231,7 @@ export default function Sales() {
                             <td className="p-3 text-right font-medium">₹{Number(q.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
-                                {q.status !== "accepted" && (
+                                {!isReadOnly && q.status !== "accepted" && (
                                   <Button size="icon" variant="ghost" title="Convert to Order" data-testid={`button-convert-quote-${q.id}`}
                                     onClick={() => { if (confirm("Convert this quotation to an order?")) convertToOrderMutation.mutate(q.id); }}
                                     disabled={convertToOrderMutation.isPending}>
@@ -1227,12 +1241,16 @@ export default function Sales() {
                                 <Button size="icon" variant="ghost" title="Download PDF" data-testid={`button-download-quote-${q.id}`} onClick={() => downloadQuotePDF(q)}>
                                   <Download className="w-4 h-4" />
                                 </Button>
-                                <Button size="icon" variant="ghost" data-testid={`button-edit-quote-${q.id}`} onClick={() => openEditQuote(q)}>
-                                  <Pencil className="w-4 h-4" />
-                                </Button>
-                                <Button size="icon" variant="ghost" data-testid={`button-delete-quote-${q.id}`} onClick={() => { if (confirm("Delete this quotation?")) deleteQuoteMutation.mutate(q.id); }}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
+                                {!isReadOnly && (
+                                  <Button size="icon" variant="ghost" data-testid={`button-edit-quote-${q.id}`} onClick={() => openEditQuote(q)}>
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                )}
+                                {!isReadOnly && (
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-quote-${q.id}`} onClick={() => { if (confirm("Delete this quotation?")) deleteQuoteMutation.mutate(q.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -1502,12 +1520,14 @@ export default function Sales() {
         </TabsContent>
 
         <TabsContent value="customers" className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Button size="sm" data-testid="button-new-customer" onClick={openNewCustomer}>
-              <Plus className="w-4 h-4 mr-2" />
-              New Customer
-            </Button>
-          </div>
+          {!isReadOnly && (
+            <div className="flex items-center gap-2">
+              <Button size="sm" data-testid="button-new-customer" onClick={openNewCustomer}>
+                <Plus className="w-4 h-4 mr-2" />
+                New Customer
+              </Button>
+            </div>
+          )}
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
@@ -1532,14 +1552,16 @@ export default function Sales() {
                           <td className="p-3 text-muted-foreground">{c.phone || "—"}</td>
                           <td className="p-3 text-muted-foreground">{c.gstNumber || "—"}</td>
                           <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-customer-${c.id}`} onClick={() => openEditCustomer(c)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-customer-${c.id}`} onClick={() => { if (confirm("Delete this customer?")) deleteCustomerMutation.mutate(c.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
+                            {!isReadOnly && (
+                              <div className="flex items-center justify-end gap-1">
+                                <Button size="icon" variant="ghost" data-testid={`button-edit-customer-${c.id}`} onClick={() => openEditCustomer(c)}>
+                                  <Pencil className="w-4 h-4" />
+                                </Button>
+                                <Button size="icon" variant="ghost" data-testid={`button-delete-customer-${c.id}`} onClick={() => { if (confirm("Delete this customer?")) deleteCustomerMutation.mutate(c.id); }}>
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))

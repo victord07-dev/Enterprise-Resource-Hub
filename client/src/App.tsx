@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Bell, CheckCheck } from "lucide-react";
+import { NotificationContext } from "@/lib/notification-context";
 import type { Notification } from "@shared/schema";
 import NotFound from "@/pages/not-found";
 import Login from "@/pages/Login";
@@ -30,9 +31,12 @@ import Leads from "@/pages/Leads";
 import Products from "@/pages/Products";
 import MyPortal from "@/pages/MyPortal";
 
-function NotificationBell() {
-  const [open, setOpen] = useState(false);
+interface NotificationBellProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
 
+function NotificationBell({ open, onOpenChange }: NotificationBellProps) {
   const { data: notifications = [] } = useQuery<Notification[]>({
     queryKey: ["/api/notifications"],
     refetchInterval: 60000,
@@ -67,7 +71,7 @@ function NotificationBell() {
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
@@ -173,6 +177,7 @@ function AuthenticatedLayout() {
   const [location] = useLocation();
   const user = getUser();
   const role = user?.role || "admin";
+  const [bellOpen, setBellOpen] = useState(false);
 
   const style = {
     "--sidebar-width": "16rem",
@@ -184,21 +189,23 @@ function AuthenticatedLayout() {
   }
 
   return (
-    <SidebarProvider style={style as CSSProperties}>
-      <div className="flex h-screen w-full">
-        <AppSidebar />
-        <div className="flex flex-col flex-1 min-w-0">
-          <header className="flex items-center gap-2 p-2 border-b h-12 flex-shrink-0">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <div className="flex-1" />
-            <NotificationBell />
-          </header>
-          <main className="flex-1 overflow-hidden">
-            <Router />
-          </main>
+    <NotificationContext.Provider value={{ openBell: () => setBellOpen(true) }}>
+      <SidebarProvider style={style as CSSProperties}>
+        <div className="flex h-screen w-full">
+          <AppSidebar />
+          <div className="flex flex-col flex-1 min-w-0">
+            <header className="flex items-center gap-2 p-2 border-b h-12 flex-shrink-0">
+              <SidebarTrigger data-testid="button-sidebar-toggle" />
+              <div className="flex-1" />
+              <NotificationBell open={bellOpen} onOpenChange={setBellOpen} />
+            </header>
+            <main className="flex-1 overflow-hidden">
+              <Router />
+            </main>
+          </div>
         </div>
-      </div>
-    </SidebarProvider>
+      </SidebarProvider>
+    </NotificationContext.Provider>
   );
 }
 

@@ -3651,14 +3651,13 @@ export async function registerRoutes(
   // Leave Requests
   app.get("/api/leave-requests", authenticateToken, async (req: any, res) => {
     try {
-      const user = req.user;
-      if (user.role === "admin" || user.role === "hr_manager") {
-        const all = await storage.getLeaveRequests();
-        return res.json(all);
+      if (req.user.role === "admin" || req.user.role === "hr_manager") {
+        return res.json(await storage.getLeaveRequests());
       }
-      if (!user.employeeId) return res.json([]);
-      const own = await storage.getLeaveRequestsByEmployee(user.employeeId);
-      res.json(own);
+      const allEmps = await storage.getEmployees();
+      const linked = allEmps.find(e => e.userId === req.user.id);
+      if (!linked) return res.json([]);
+      res.json(await storage.getLeaveRequestsByEmployee(linked.id));
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch leave requests" });
     }
@@ -3668,8 +3667,14 @@ export async function registerRoutes(
     try {
       const { type, startDate, endDate, reason, employeeId } = req.body;
       if (!type || !startDate || !endDate) return res.status(400).json({ message: "type, startDate, endDate are required" });
-      const empId = req.user.role === "admin" || req.user.role === "hr_manager" ? (employeeId || req.user.employeeId) : req.user.employeeId;
-      if (!empId) return res.status(400).json({ message: "No employee record linked to your account" });
+      let empId = employeeId;
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") {
+        const allEmps = await storage.getEmployees();
+        const linked = allEmps.find(e => e.userId === req.user.id);
+        if (!linked) return res.status(400).json({ message: "No employee record linked to your account" });
+        empId = linked.id;
+      }
+      if (!empId) return res.status(400).json({ message: "employeeId is required" });
       const lr = await storage.createLeaveRequest({
         employeeId: empId,
         type,
@@ -3718,8 +3723,10 @@ export async function registerRoutes(
       const lr = all.find(r => r.id === req.params.id);
       if (!lr) return res.status(404).json({ message: "Leave request not found" });
       if (req.user.role !== "admin" && req.user.role !== "hr_manager") {
-        if (lr.employeeId !== req.user.employeeId) return res.status(403).json({ message: "Forbidden" });
-        if (lr.status !== "pending") return res.status(400).json({ message: "Only pending requests can be withdrawn" });
+        const allEmps = await storage.getEmployees();
+        const linked = allEmps.find(e => e.userId === req.user.id);
+        if (!linked || lr.employeeId !== linked.id) return res.status(403).json({ message: "Forbidden" });
+        if (lr.status !== "pending" && lr.status !== "rejected") return res.status(400).json({ message: "Only pending or rejected requests can be withdrawn" });
       }
       await storage.deleteLeaveRequest(req.params.id);
       res.json({ success: true });

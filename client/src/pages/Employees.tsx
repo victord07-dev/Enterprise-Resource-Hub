@@ -60,6 +60,7 @@ export default function Employees() {
   const [rejectingLeaveId, setRejectingLeaveId] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
   const [leaveEmployeeFilter, setLeaveEmployeeFilter] = useState("all");
+  const [leaveMonthFilter, setLeaveMonthFilter] = useState("all");
 
   const approveLeaveMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -754,6 +755,19 @@ export default function Employees() {
                 ))}
               </SelectContent>
             </Select>
+            {leaveSubTab === "history" && (
+              <Select value={leaveMonthFilter} onValueChange={setLeaveMonthFilter}>
+                <SelectTrigger className="w-44" data-testid="select-leave-month-filter">
+                  <SelectValue placeholder="All Months" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Months</SelectItem>
+                  {monthNames.map((m, i) => (
+                    <SelectItem key={i} value={String(i)}>{m} {new Date().getFullYear()}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           {leaveSubTab === "pending" && (
@@ -847,7 +861,16 @@ export default function Employees() {
                   {lrLoading ? (
                     <div className="p-4 space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
                   ) : (() => {
-                    const rows = allLeaveRequests.filter(lr => lr.status !== "pending" && (leaveEmployeeFilter === "all" || lr.employeeId === leaveEmployeeFilter));
+                    const rows = allLeaveRequests.filter(lr => {
+                    if (lr.status === "pending") return false;
+                    if (leaveEmployeeFilter !== "all" && lr.employeeId !== leaveEmployeeFilter) return false;
+                    if (leaveMonthFilter !== "all") {
+                      const startMonth = new Date(lr.startDate).getMonth();
+                      const startYear = new Date(lr.startDate).getFullYear();
+                      if (startMonth !== parseInt(leaveMonthFilter) || startYear !== new Date().getFullYear()) return false;
+                    }
+                    return true;
+                  });
                     return rows.length === 0 ? (
                       <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
                         <CalendarOff className="w-8 h-8 opacity-30" />

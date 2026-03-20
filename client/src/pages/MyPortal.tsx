@@ -560,7 +560,7 @@ export default function MyPortal() {
                             )}
                           </td>
                           <td className="p-3 text-right">
-                            {lr.status === "pending" && (
+                            {(lr.status === "pending" || lr.status === "rejected") && (
                               <Button
                                 size="sm"
                                 variant="outline"

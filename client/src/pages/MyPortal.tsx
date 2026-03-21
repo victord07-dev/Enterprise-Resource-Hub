@@ -295,20 +295,26 @@ export default function MyPortal() {
               </CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col items-center gap-4">
-              <EmployeeIdCard employee={employee} />
-              {!employee.qrCode && (
-                <p className="text-sm text-muted-foreground text-center" data-testid="text-no-qr-prompt">
-                  No QR code generated yet. Ask HR to generate your QR code to enable attendance scanning.
-                </p>
+              {employee.qrCode ? (
+                <>
+                  <EmployeeIdCard employee={employee} />
+                  <Button
+                    className="w-full gap-2"
+                    onClick={() => downloadIdCardPDF(employee)}
+                    data-testid="button-download-id-card"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download ID Card (PDF)
+                  </Button>
+                </>
+              ) : (
+                <div className="flex flex-col items-center gap-3 py-4 text-center">
+                  <CreditCard className="w-10 h-10 text-muted-foreground opacity-40" />
+                  <p className="text-sm text-muted-foreground" data-testid="text-no-qr-prompt">
+                    No QR code generated yet. Ask HR to generate your QR code to enable attendance scanning and ID card download.
+                  </p>
+                </div>
               )}
-              <Button
-                className="w-full gap-2"
-                onClick={() => downloadIdCardPDF(employee)}
-                data-testid="button-download-id-card"
-              >
-                <Download className="w-4 h-4" />
-                Download ID Card (PDF)
-              </Button>
             </CardContent>
           </Card>
         )}

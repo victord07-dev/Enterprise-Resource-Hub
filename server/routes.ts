@@ -243,6 +243,21 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Seed kiosk user
+  const existingKiosk = await storage.getUserByUsername("kiosk");
+  if (!existingKiosk) {
+    const kioskPassword = await bcrypt.hash("kiosk@itfi2026", 10);
+    await storage.createUser({
+      username: "kiosk",
+      password: kioskPassword,
+      fullName: "Kiosk Terminal",
+      email: "kiosk@itfi.co.in",
+      role: "kiosk",
+      isActive: true,
+    });
+    console.log("Kiosk user seeded: kiosk / kiosk@itfi2026");
+  }
+
   // Seed admin user and demo data
   const existingAdmin = await storage.getUserByUsername("admin");
   if (!existingAdmin) {

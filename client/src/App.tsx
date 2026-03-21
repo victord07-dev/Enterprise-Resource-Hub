@@ -146,6 +146,7 @@ function NotificationBell({ open, onOpenChange }: NotificationBellProps) {
 function ProtectedRoute({ component: Component, path }: { component: React.ComponentType; path: string }) {
   const user = getUser();
   const role = user?.role || "admin";
+  if (role === "kiosk") return <Redirect to="/kiosk" />;
   if (!isRouteAllowedForRole(role, path)) {
     return <Redirect to="/my-portal?denied=1" />;
   }
@@ -183,6 +184,10 @@ function AuthenticatedLayout() {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3.5rem",
   };
+
+  if (role === "kiosk") {
+    return <Redirect to="/kiosk" />;
+  }
 
   if (location === "/" && role !== "admin") {
     return <Redirect to="/my-portal" />;

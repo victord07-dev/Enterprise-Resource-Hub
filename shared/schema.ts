@@ -3,7 +3,7 @@ import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum } 
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "sales_manager", "warehouse_manager", "field_staff", "hr_manager", "accountant"]);
+export const userRoleEnum = pgEnum("user_role", ["admin", "sales_manager", "warehouse_manager", "field_staff", "hr_manager", "accountant", "kiosk"]);
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

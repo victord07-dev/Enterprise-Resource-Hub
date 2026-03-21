@@ -23,8 +23,12 @@ export default function Login() {
       const data = await res.json();
       localStorage.setItem("token", data.token);
       localStorage.setItem("user", JSON.stringify(data.user));
-      setLocation("/");
-      window.location.reload();
+      if (data.user?.role === "kiosk") {
+        window.location.href = "/kiosk";
+      } else {
+        setLocation("/");
+        window.location.reload();
+      }
     } catch (err: any) {
       toast({ title: "Login Failed", description: err.message || "Invalid credentials", variant: "destructive" });
     } finally {

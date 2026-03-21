@@ -12,13 +12,16 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle } from "lucide-react";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal, WifiOff } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import type { Employee, TravelExpense, LocationLog, Trip } from "@shared/schema";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+
+type UserAccount = { id: string; username: string; role: string };
+const OFFLINE_QUEUE_KEY = "pending_location_logs";
 
 const createMarkerIcon = (type: 'staff' | 'origin' | 'destination') => {
   const hasPulse = type === 'staff' || type === 'origin';
@@ -38,8 +41,9 @@ export default function FieldStaff() {
   const isManagerOrAdmin = currentUser?.role === "admin" || currentUser?.role === "hr_manager";
 
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
+  const { data: users } = useQuery<UserAccount[]>({ queryKey: ["/api/users"] });
   const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({ queryKey: ["/api/travel-expenses"] });
-  const { data: locationLogs } = useQuery<LocationLog[]>({ queryKey: ["/api/location-logs"] });
+  const { data: locationLogs } = useQuery<LocationLog[]>({ queryKey: ["/api/location-logs"], refetchInterval: 30000 });
   const { data: allTrips } = useQuery<Trip[]>({ queryKey: ["/api/trips"] });
   const { data: activeTripsData } = useQuery<Trip[]>({ queryKey: ["/api/trips/active"], refetchInterval: 30000 });
 
@@ -68,6 +72,8 @@ export default function FieldStaff() {
   const [rejectReason, setRejectReason] = useState("");
   const [tripStarting, setTripStarting] = useState(false);
   const [tripStopping, setTripStopping] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
     if (isFieldStaff && currentUser?.employeeId) {
@@ -78,6 +84,32 @@ export default function FieldStaff() {
   const myActiveTrip = isFieldStaff && currentUser?.employeeId
     ? activeTripsData?.find(t => t.employeeId === currentUser.employeeId) || null
     : null;
+
+  const fieldStaffEmployees = (employees ?? []).filter(emp =>
+    users?.find(u => u.id === emp.userId && u.role === "field_staff")
+  );
+
+  const getTripDistance = useCallback((tripId: string) => {
+    const logs = (locationLogs ?? [])
+      .filter(l => l.tripId === tripId)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    if (logs.length < 2) return 0;
+    let dist = 0;
+    for (let i = 1; i < logs.length; i++) {
+      const dLat = (Number(logs[i].lat) - Number(logs[i - 1].lat)) * Math.PI / 180;
+      const dLon = (Number(logs[i].lng) - Number(logs[i - 1].lng)) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos(Number(logs[i - 1].lat) * Math.PI / 180) * Math.cos(Number(logs[i].lat) * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+      dist += 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3;
+    }
+    return dist;
+  }, [locationLogs]);
+
+  const formatDuration = (startTime: string | Date) => {
+    const ms = nowTick - new Date(startTime).getTime();
+    const m = Math.floor(ms / 60000);
+    const h = Math.floor(m / 60);
+    return h > 0 ? `${h}h ${m % 60}m` : `${m}m`;
+  };
 
   const reverseGeocode = async (lat: number, lng: number): Promise<string | null> => {
     try {
@@ -259,8 +291,12 @@ export default function FieldStaff() {
         adminMapInstance.current!.setView(latlngs[0] as L.LatLngExpression, 14);
       }
     } else if (locationLogs && locationLogs.length > 0) {
+      const activeEmpIds = new Set((activeTripsData ?? []).map(t => t.employeeId));
+      const logsToShow = activeEmpIds.size > 0
+        ? locationLogs.filter(l => activeEmpIds.has(l.employeeId))
+        : locationLogs;
       const latestByEmp: Record<string, LocationLog> = {};
-      locationLogs.forEach(log => {
+      logsToShow.forEach(log => {
         if (!latestByEmp[log.employeeId] || new Date(log.timestamp) > new Date(latestByEmp[log.employeeId].timestamp)) {
           latestByEmp[log.employeeId] = log;
         }
@@ -268,11 +304,11 @@ export default function FieldStaff() {
       Object.values(latestByEmp).forEach(log => {
         const marker = L.marker([Number(log.lat), Number(log.lng)], { icon: createMarkerIcon('staff') })
           .addTo(adminMapInstance.current!)
-          .bindPopup(getEmployeeName(log.employeeId));
+          .bindPopup(`${getEmployeeName(log.employeeId)}<br/><small>${new Date(log.timestamp).toLocaleTimeString()}</small>`);
         adminMarkersRef.current.push(marker);
       });
     }
-  }, [locationLogs, selectedTripRoute, getEmployeeName]);
+  }, [locationLogs, selectedTripRoute, getEmployeeName, activeTripsData]);
 
 
   useEffect(() => {
@@ -291,6 +327,87 @@ export default function FieldStaff() {
       setTimeout(() => { if (adminMapInstance.current) adminMapInstance.current.invalidateSize(); }, 300);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    const ticker = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  useEffect(() => {
+    const handler = () => setIsOffline(!navigator.onLine);
+    window.addEventListener("online", handler);
+    window.addEventListener("offline", handler);
+    return () => { window.removeEventListener("online", handler); window.removeEventListener("offline", handler); };
+  }, []);
+
+  useEffect(() => {
+    if (!isFieldStaff || !myActiveTrip) return;
+    const tripId = myActiveTrip.id;
+    const token = localStorage.getItem("token");
+
+    const flushQueue = async () => {
+      const queue: Array<{ tripId: string; lat: number; lng: number }> =
+        JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+      if (!queue.length) return;
+      const remaining: typeof queue = [];
+      for (const item of queue) {
+        try {
+          await fetch(`/api/trips/${item.tripId}/log`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ lat: item.lat, lng: item.lng }),
+          });
+        } catch {
+          remaining.push(item);
+        }
+      }
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
+    };
+
+    const logPosition = async () => {
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
+        );
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+        if (accuracy > 100) return;
+        await flushQueue();
+        try {
+          await fetch(`/api/trips/${tripId}/log`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ lat, lng }),
+          });
+          queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
+        } catch {
+          const queue: Array<{ tripId: string; lat: number; lng: number }> =
+            JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+          queue.push({ tripId, lat, lng });
+          localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+        }
+      } catch {
+        setTimeout(async () => {
+          try {
+            const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+              navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
+            );
+            const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+            if (accuracy > 100) return;
+            await fetch(`/api/trips/${tripId}/log`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ lat, lng }),
+            });
+            queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
+          } catch { }
+        }, 10000);
+      }
+    };
+
+    logPosition();
+    const interval = setInterval(logPosition, 30000);
+    return () => clearInterval(interval);
+  }, [isFieldStaff, myActiveTrip?.id]);
 
   const getMyLocation = async () => {
     setGettingLocation(true);
@@ -454,7 +571,7 @@ export default function FieldStaff() {
 
       {isFieldStaff && (
         <Card className={myActiveTrip ? "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/20" : ""}>
-          <CardContent className="p-5">
+          <CardContent className="p-5 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center gap-3">
                 <div className={`w-10 h-10 rounded-md flex items-center justify-center ${myActiveTrip ? "bg-emerald-100 dark:bg-emerald-900/40" : "bg-muted"}`}>
@@ -496,6 +613,30 @@ export default function FieldStaff() {
                 )}
               </div>
             </div>
+            {myActiveTrip && (
+              <div className="flex items-center flex-wrap gap-3 pt-1 border-t border-emerald-200 dark:border-emerald-800">
+                <div className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+                  <Signal className="w-3.5 h-3.5 animate-pulse" />
+                  <span>Location tracking active</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Timer className="w-3.5 h-3.5" />
+                  <span data-testid="text-trip-duration">{formatDuration(myActiveTrip.startTime)}</span>
+                </div>
+                {myActiveTrip && getTripDistance(myActiveTrip.id) > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Route className="w-3.5 h-3.5" />
+                    <span data-testid="text-my-trip-distance">{getTripDistance(myActiveTrip.id).toFixed(2)} km</span>
+                  </div>
+                )}
+                {isOffline && (
+                  <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                    <WifiOff className="w-3.5 h-3.5" />
+                    <span>Offline — points queued</span>
+                  </div>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -519,22 +660,31 @@ export default function FieldStaff() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-2">
-                    {activeTripsData?.map(trip => (
+                    {activeTripsData?.map(trip => {
+                      const dist = getTripDistance(trip.id);
+                      return (
                       <div
                         key={trip.id}
-                        className="flex items-center justify-between gap-2 p-2 rounded-md bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800"
+                        className={`flex items-center justify-between gap-2 p-2.5 rounded-md border cursor-pointer transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"}`}
+                        onClick={() => viewTripRoute(trip.id)}
                         data-testid={`active-trip-${trip.id}`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
                           <div className="min-w-0">
                             <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
-                            <p className="text-xs text-muted-foreground">Started {new Date(trip.startTime).toLocaleTimeString()}</p>
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span className="flex items-center gap-1"><Timer className="w-3 h-3" />{formatDuration(trip.startTime)}</span>
+                              {dist > 0 && <span className="flex items-center gap-1"><Route className="w-3 h-3" />{dist.toFixed(1)} km</span>}
+                            </div>
                           </div>
                         </div>
-                        <Badge variant="outline" className="text-emerald-600 border-emerald-300 no-default-hover-elevate no-default-active-elevate">Live</Badge>
+                        <Button size="sm" variant="ghost" className="shrink-0 text-emerald-600" data-testid={`button-view-active-trip-${trip.id}`}>
+                          <Eye className="w-3.5 h-3.5" />
+                        </Button>
                       </div>
-                    ))}
+                    );})}
+
                   </CardContent>
                 </Card>
               )}
@@ -552,8 +702,8 @@ export default function FieldStaff() {
                         <SelectValue placeholder="Filter by employee" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All Employees</SelectItem>
-                        {employees?.map(emp => (
+                        <SelectItem value="all">All Field Staff</SelectItem>
+                        {fieldStaffEmployees.map(emp => (
                           <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
                         ))}
                       </SelectContent>
@@ -667,7 +817,7 @@ export default function FieldStaff() {
                           <SelectValue placeholder="Select employee" />
                         </SelectTrigger>
                         <SelectContent>
-                          {employees?.map(emp => (
+                          {fieldStaffEmployees.map(emp => (
                             <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
                           ))}
                         </SelectContent>

@@ -15,8 +15,11 @@ import { useNotificationBell } from "@/lib/notification-context";
 import { useToast } from "@/hooks/use-toast";
 import {
   User, Briefcase, Building2, Calendar, Wallet, CheckCircle2, XCircle, Clock,
-  Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw, Bell, CheckCheck
+  Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw, Bell, CheckCheck,
+  CreditCard, Download
 } from "lucide-react";
+import EmployeeIdCard from "@/components/EmployeeIdCard";
+import { downloadIdCardPDF } from "@/lib/id-card-pdf";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { Textarea } from "@/components/ui/textarea";
 import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification, LeaveRequest } from "@shared/schema";
@@ -120,6 +123,26 @@ export default function MyPortal() {
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [leaveForm, setLeaveForm] = useState({ type: "annual", startDate: "", endDate: "", reason: "" });
   const [rejectLeaveId, setRejectLeaveId] = useState<string | null>(null);
+
+  const [idCardDialogOpen, setIdCardDialogOpen] = useState(false);
+  const [idCardQrUrl, setIdCardQrUrl] = useState<string | null>(null);
+  const [idCardLoading, setIdCardLoading] = useState(false);
+
+  const openIdCard = async () => {
+    setIdCardDialogOpen(true);
+    if (!employeeId || idCardQrUrl) return;
+    setIdCardLoading(true);
+    try {
+      const res = await fetch(`/api/employees/${employeeId}/qr-image`);
+      if (res.ok) {
+        const data = await res.json();
+        setIdCardQrUrl(data.qrDataUrl || null);
+      }
+    } catch {
+    } finally {
+      setIdCardLoading(false);
+    }
+  };
 
   const createLeaveMutation = useMutation({
     mutationFn: async () => {
@@ -277,6 +300,18 @@ export default function MyPortal() {
                   <p className="font-medium" data-testid="text-emp-salary">{monthlySalary > 0 ? `₹${monthlySalary.toLocaleString("en-IN")}` : "—"}</p>
                 </div>
               </div>
+            </div>
+
+            <div className="border-t pt-4">
+              <Button
+                variant="outline"
+                className="w-full gap-2"
+                onClick={openIdCard}
+                data-testid="button-view-id-card"
+              >
+                <CreditCard className="w-4 h-4" />
+                My ID Card
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -852,6 +887,46 @@ export default function MyPortal() {
               {resubmitMutation.isPending ? "Resubmitting..." : "Resubmit"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={idCardDialogOpen} onOpenChange={setIdCardDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CreditCard className="w-4 h-4" />
+              My Employee ID Card
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-5 py-2">
+            {employee ? (
+              <>
+                {idCardLoading ? (
+                  <div className="rounded-2xl bg-muted animate-pulse" style={{ width: 320, height: 200 }} />
+                ) : (
+                  <EmployeeIdCard employee={employee} qrDataUrl={idCardQrUrl} />
+                )}
+                {!employee.qrCode && !idCardLoading && (
+                  <p className="text-sm text-muted-foreground text-center">
+                    No QR code generated yet. Ask HR to generate your QR code to enable attendance scanning.
+                  </p>
+                )}
+                <div className="flex gap-3 w-full">
+                  <Button
+                    className="flex-1 gap-2"
+                    onClick={() => downloadIdCardPDF(employee, idCardQrUrl)}
+                    disabled={idCardLoading}
+                    data-testid="button-download-id-card"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download ID Card (PDF)
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className="text-center text-muted-foreground py-8">Loading employee data...</div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

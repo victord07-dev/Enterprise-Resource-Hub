@@ -77,9 +77,6 @@ export default function Login() {
             <Button type="submit" className="w-full" disabled={isLoading} data-testid="button-login">
               {isLoading ? "Signing in..." : "Sign In"}
             </Button>
-            <p className="text-center text-xs text-muted-foreground mt-4">
-              Default: admin / admin123
-            </p>
           </form>
         </CardContent>
       </Card>

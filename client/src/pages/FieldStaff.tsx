@@ -157,19 +157,22 @@ export default function FieldStaff() {
   const originMarkerRef = useRef<L.Marker | null>(null);
 
   const adminMapRef = useCallback((node: HTMLDivElement | null) => {
-    if (adminMapInstance.current) {
-      try { adminMapInstance.current.remove(); } catch {}
-      adminMapInstance.current = null;
+    if (!node) {
+      if (adminMapInstance.current) {
+        try { adminMapInstance.current.remove(); } catch {}
+        adminMapInstance.current = null;
+      }
+      adminMarkersRef.current = [];
+      adminPolylineRef.current = null;
+      return;
     }
-    adminMarkersRef.current = [];
-    adminPolylineRef.current = null;
-    if (!node) return;
+    if (adminMapInstance.current) return;
     const map = L.map(node).setView([20.5937, 78.9629], 5);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; OpenStreetMap contributors',
     }).addTo(map);
     adminMapInstance.current = map;
-    setTimeout(() => map.invalidateSize(), 100);
+    setTimeout(() => { if (adminMapInstance.current) adminMapInstance.current.invalidateSize(); }, 300);
   }, []);
 
   const destMapRef = useCallback((node: HTMLDivElement | null) => {
@@ -282,6 +285,12 @@ export default function FieldStaff() {
       destMapInstance.current.setView([originLat, originLng], 12);
     }
   }, [originLat, originLng]);
+
+  useEffect(() => {
+    if (activeTab === "tracking") {
+      setTimeout(() => { if (adminMapInstance.current) adminMapInstance.current.invalidateSize(); }, 300);
+    }
+  }, [activeTab]);
 
   const getMyLocation = async () => {
     setGettingLocation(true);

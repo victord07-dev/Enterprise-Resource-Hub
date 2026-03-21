@@ -998,11 +998,11 @@ export default function Employees() {
       </Dialog>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent className="flex flex-col max-h-[90vh]">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{editingEmployee ? "Edit Employee" : "Add Employee"}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="flex-1 overflow-y-auto pr-1 space-y-4">
             <div className="space-y-2">
               <Label htmlFor="empName">Name</Label>
               <Input id="empName" data-testid="input-employee-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -1142,7 +1142,7 @@ export default function Employees() {
               )}
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button
               data-testid="button-submit-employee"
               disabled={employeeMutation.isPending}

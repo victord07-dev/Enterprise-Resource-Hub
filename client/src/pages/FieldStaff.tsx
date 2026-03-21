@@ -40,7 +40,7 @@ export default function FieldStaff() {
   const isManagerOrAdmin = currentUser?.role === "admin" || currentUser?.role === "hr_manager";
 
   const { data: employees, isLoading: empLoading } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
-  const { data: users } = useQuery<UserAccount[]>({ queryKey: ["/api/users"] });
+  const { data: users } = useQuery<UserAccount[]>({ queryKey: ["/api/users"], enabled: isManagerOrAdmin });
   const { data: travelExpenses, isLoading: teLoading } = useQuery<TravelExpense[]>({ queryKey: ["/api/travel-expenses"] });
   const { data: locationLogs } = useQuery<LocationLog[]>({ queryKey: ["/api/location-logs"], refetchInterval: 30000 });
   const { data: allTrips } = useQuery<Trip[]>({ queryKey: ["/api/trips"] });

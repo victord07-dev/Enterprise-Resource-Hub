@@ -1,9 +1,6 @@
+import { useState, useEffect } from "react";
+import QRCode from "qrcode";
 import type { Employee } from "@shared/schema";
-
-interface EmployeeIdCardProps {
-  employee: Employee;
-  qrDataUrl: string | null;
-}
 
 function getInitials(name: string) {
   return name
@@ -14,7 +11,20 @@ function getInitials(name: string) {
     .slice(0, 2);
 }
 
-export default function EmployeeIdCard({ employee, qrDataUrl }: EmployeeIdCardProps) {
+interface EmployeeIdCardProps {
+  employee: Employee;
+}
+
+export default function EmployeeIdCard({ employee }: EmployeeIdCardProps) {
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!employee.qrCode) { setQrDataUrl(null); return; }
+    QRCode.toDataURL(employee.qrCode, { width: 200, margin: 1, color: { dark: "#000000", light: "#ffffff" } })
+      .then((url) => setQrDataUrl(url))
+      .catch(() => setQrDataUrl(null));
+  }, [employee.qrCode]);
+
   const empCode = employee.qrCode
     ? employee.qrCode.replace("NEXERP-EMP-", "").slice(0, 8).toUpperCase()
     : employee.id.slice(0, 8).toUpperCase();

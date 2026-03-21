@@ -46,8 +46,6 @@ export default function Employees() {
 
   const [idCardDialogOpen, setIdCardDialogOpen] = useState(false);
   const [idCardEmployee, setIdCardEmployee] = useState<Employee | null>(null);
-  const [idCardQrUrl, setIdCardQrUrl] = useState<string | null>(null);
-  const [idCardQrLoading, setIdCardQrLoading] = useState(false);
 
   const now = new Date();
   const [payrollMonth, setPayrollMonth] = useState(now.getMonth());
@@ -274,22 +272,9 @@ export default function Employees() {
     link.click();
   };
 
-  const openIdCard = async (emp: Employee) => {
+  const openIdCard = (emp: Employee) => {
     setIdCardEmployee(emp);
-    setIdCardQrUrl(null);
     setIdCardDialogOpen(true);
-    if (!emp.qrCode) return;
-    setIdCardQrLoading(true);
-    try {
-      const res = await fetch(`/api/employees/${emp.id}/qr-image`);
-      if (res.ok) {
-        const data = await res.json();
-        setIdCardQrUrl(data.qrDataUrl || null);
-      }
-    } catch {
-    } finally {
-      setIdCardQrLoading(false);
-    }
   };
 
   const getEmployeeName = (empId: string) => {
@@ -509,9 +494,11 @@ export default function Employees() {
                           </td>
                           <td className="p-3 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" title="View ID Card" data-testid={`button-id-card-${emp.id}`} onClick={() => openIdCard(emp)}>
-                                <CreditCard className="w-4 h-4" />
-                              </Button>
+                              {emp.qrCode && (
+                                <Button size="icon" variant="ghost" title="View ID Card" data-testid={`button-id-card-${emp.id}`} onClick={() => openIdCard(emp)}>
+                                  <CreditCard className="w-4 h-4" />
+                                </Button>
+                              )}
                               <Button size="icon" variant="ghost" data-testid={`button-edit-employee-${emp.id}`} onClick={() => openEdit(emp)}>
                                 <Pencil className="w-4 h-4" />
                               </Button>
@@ -1231,20 +1218,10 @@ export default function Employees() {
           <div className="flex flex-col items-center gap-5 py-2">
             {idCardEmployee && (
               <>
-                {idCardQrLoading ? (
-                  <div className="rounded-2xl bg-muted animate-pulse" style={{ width: 320, height: 200 }} />
-                ) : (
-                  <EmployeeIdCard employee={idCardEmployee} qrDataUrl={idCardQrUrl} />
-                )}
-                {!idCardEmployee.qrCode && (
-                  <p className="text-sm text-muted-foreground text-center">
-                    No QR code generated for this employee. Use the QR Code column to generate one first.
-                  </p>
-                )}
+                <EmployeeIdCard employee={idCardEmployee} />
                 <Button
                   className="w-full gap-2"
-                  onClick={() => downloadIdCardPDF(idCardEmployee, idCardQrUrl)}
-                  disabled={idCardQrLoading}
+                  onClick={() => downloadIdCardPDF(idCardEmployee)}
                   data-testid="button-download-id-card-hr"
                 >
                   <Download className="w-4 h-4" />

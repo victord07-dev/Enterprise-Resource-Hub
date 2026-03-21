@@ -1,4 +1,5 @@
 import jsPDF from "jspdf";
+import QRCode from "qrcode";
 import type { Employee } from "@shared/schema";
 
 function getInitials(name: string) {
@@ -10,7 +11,15 @@ function getInitials(name: string) {
     .slice(0, 2);
 }
 
-export async function downloadIdCardPDF(employee: Employee, qrDataUrl: string | null) {
+export async function downloadIdCardPDF(employee: Employee) {
+  let qrDataUrl: string | null = null;
+  if (employee.qrCode) {
+    try {
+      qrDataUrl = await QRCode.toDataURL(employee.qrCode, { width: 300, margin: 1, color: { dark: "#000000", light: "#ffffff" } });
+    } catch {
+    }
+  }
+
   const W = 86;
   const H = 54;
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: [H, W] });
@@ -22,7 +31,7 @@ export async function downloadIdCardPDF(employee: Employee, qrDataUrl: string | 
   doc.setFillColor(15, 23, 42);
   doc.rect(0, 0, W, H, "F");
 
-  doc.setFillColor(255, 255, 255, 0.04);
+  doc.setFillColor(255, 255, 255);
   for (let i = 0; i < W + H; i += 10) {
     doc.setDrawColor(255, 255, 255);
     doc.setLineWidth(0.05);
@@ -31,7 +40,7 @@ export async function downloadIdCardPDF(employee: Employee, qrDataUrl: string | 
 
   doc.setFillColor(20, 40, 72);
   doc.rect(0, 0, W, 9, "F");
-  doc.setDrawColor(255, 255, 255, 0.1);
+  doc.setDrawColor(255, 255, 255);
   doc.setLineWidth(0.2);
   doc.line(0, 9, W, 9);
 
@@ -76,7 +85,7 @@ export async function downloadIdCardPDF(employee: Employee, qrDataUrl: string | 
   const deptLine = [employee.department, employee.company].filter(Boolean).join(" · ");
   doc.text(deptLine, textX, 27);
 
-  doc.setFillColor(59, 130, 246, 0.25);
+  doc.setFillColor(30, 58, 110);
   doc.setDrawColor(59, 130, 246);
   doc.setLineWidth(0.3);
   doc.roundedRect(textX, 30, 20, 5, 0.8, 0.8, "FD");
@@ -111,9 +120,9 @@ export async function downloadIdCardPDF(employee: Employee, qrDataUrl: string | 
   doc.setTextColor(120, 150, 190);
   doc.text("SCAN TO CHECK IN", W - 14, 34, { align: "center" });
 
-  doc.setFillColor(0, 0, 0, 0.3);
+  doc.setFillColor(0, 0, 0);
   doc.rect(0, H - 7, W, 7, "F");
-  doc.setDrawColor(255, 255, 255, 0.08);
+  doc.setDrawColor(255, 255, 255);
   doc.setLineWidth(0.2);
   doc.line(0, H - 7, W, H - 7);
 

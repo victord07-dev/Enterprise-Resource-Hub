@@ -124,26 +124,6 @@ export default function MyPortal() {
   const [leaveForm, setLeaveForm] = useState({ type: "annual", startDate: "", endDate: "", reason: "" });
   const [rejectLeaveId, setRejectLeaveId] = useState<string | null>(null);
 
-  const [idCardDialogOpen, setIdCardDialogOpen] = useState(false);
-  const [idCardQrUrl, setIdCardQrUrl] = useState<string | null>(null);
-  const [idCardLoading, setIdCardLoading] = useState(false);
-
-  const openIdCard = async () => {
-    setIdCardDialogOpen(true);
-    if (!employeeId || idCardQrUrl) return;
-    setIdCardLoading(true);
-    try {
-      const res = await fetch(`/api/employees/${employeeId}/qr-image`);
-      if (res.ok) {
-        const data = await res.json();
-        setIdCardQrUrl(data.qrDataUrl || null);
-      }
-    } catch {
-    } finally {
-      setIdCardLoading(false);
-    }
-  };
-
   const createLeaveMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/leave-requests", leaveForm);
@@ -252,7 +232,8 @@ export default function MyPortal() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-1">
+        <div className="lg:col-span-1 space-y-6">
+        <Card>
           <CardContent className="p-6 space-y-4">
             <div className="flex flex-col items-center gap-3 text-center">
               <Avatar className="w-20 h-20">
@@ -302,19 +283,36 @@ export default function MyPortal() {
               </div>
             </div>
 
-            <div className="border-t pt-4">
-              <Button
-                variant="outline"
-                className="w-full gap-2"
-                onClick={openIdCard}
-                data-testid="button-view-id-card"
-              >
-                <CreditCard className="w-4 h-4" />
-                My ID Card
-              </Button>
-            </div>
           </CardContent>
         </Card>
+
+        {employee && (
+          <Card data-testid="section-id-card">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <CreditCard className="w-4 h-4 text-blue-500" />
+                My ID Card
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col items-center gap-4">
+              <EmployeeIdCard employee={employee} />
+              {!employee.qrCode && (
+                <p className="text-sm text-muted-foreground text-center" data-testid="text-no-qr-prompt">
+                  No QR code generated yet. Ask HR to generate your QR code to enable attendance scanning.
+                </p>
+              )}
+              <Button
+                className="w-full gap-2"
+                onClick={() => downloadIdCardPDF(employee)}
+                data-testid="button-download-id-card"
+              >
+                <Download className="w-4 h-4" />
+                Download ID Card (PDF)
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+        </div>
 
         <div className="lg:col-span-2 space-y-6">
           <Card>
@@ -890,45 +888,6 @@ export default function MyPortal() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={idCardDialogOpen} onOpenChange={setIdCardDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <CreditCard className="w-4 h-4" />
-              My Employee ID Card
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col items-center gap-5 py-2">
-            {employee ? (
-              <>
-                {idCardLoading ? (
-                  <div className="rounded-2xl bg-muted animate-pulse" style={{ width: 320, height: 200 }} />
-                ) : (
-                  <EmployeeIdCard employee={employee} qrDataUrl={idCardQrUrl} />
-                )}
-                {!employee.qrCode && !idCardLoading && (
-                  <p className="text-sm text-muted-foreground text-center">
-                    No QR code generated yet. Ask HR to generate your QR code to enable attendance scanning.
-                  </p>
-                )}
-                <div className="flex gap-3 w-full">
-                  <Button
-                    className="flex-1 gap-2"
-                    onClick={() => downloadIdCardPDF(employee, idCardQrUrl)}
-                    disabled={idCardLoading}
-                    data-testid="button-download-id-card"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download ID Card (PDF)
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <div className="text-center text-muted-foreground py-8">Loading employee data...</div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

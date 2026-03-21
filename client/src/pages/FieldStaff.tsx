@@ -12,7 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal, WifiOff } from "lucide-react";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +21,6 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 type UserAccount = { id: string; username: string; role: string };
-const OFFLINE_QUEUE_KEY = "pending_location_logs";
 
 const createMarkerIcon = (type: 'staff' | 'origin' | 'destination') => {
   const hasPulse = type === 'staff' || type === 'origin';
@@ -73,7 +72,6 @@ export default function FieldStaff() {
   const [tripStarting, setTripStarting] = useState(false);
   const [tripStopping, setTripStopping] = useState(false);
   const [nowTick, setNowTick] = useState(Date.now());
-  const [isOffline, setIsOffline] = useState(false);
 
   useEffect(() => {
     if (isFieldStaff && currentUser?.employeeId) {
@@ -333,82 +331,6 @@ export default function FieldStaff() {
     return () => clearInterval(ticker);
   }, []);
 
-  useEffect(() => {
-    const handler = () => setIsOffline(!navigator.onLine);
-    window.addEventListener("online", handler);
-    window.addEventListener("offline", handler);
-    return () => { window.removeEventListener("online", handler); window.removeEventListener("offline", handler); };
-  }, []);
-
-  useEffect(() => {
-    if (!isFieldStaff || !myActiveTrip) return;
-    const tripId = myActiveTrip.id;
-    const token = localStorage.getItem("token");
-
-    const flushQueue = async () => {
-      const queue: Array<{ tripId: string; lat: number; lng: number }> =
-        JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
-      if (!queue.length) return;
-      const remaining: typeof queue = [];
-      for (const item of queue) {
-        try {
-          await fetch(`/api/trips/${item.tripId}/log`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ lat: item.lat, lng: item.lng }),
-          });
-        } catch {
-          remaining.push(item);
-        }
-      }
-      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remaining));
-    };
-
-    const logPosition = async () => {
-      try {
-        const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
-        );
-        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-        if (accuracy > 100) return;
-        await flushQueue();
-        try {
-          await fetch(`/api/trips/${tripId}/log`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ lat, lng }),
-          });
-          queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
-        } catch {
-          const queue: Array<{ tripId: string; lat: number; lng: number }> =
-            JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
-          queue.push({ tripId, lat, lng });
-          localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
-        }
-      } catch {
-        setTimeout(async () => {
-          try {
-            const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
-              navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 })
-            );
-            const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-            if (accuracy > 100) return;
-            await fetch(`/api/trips/${tripId}/log`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ lat, lng }),
-            });
-            queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
-          } catch { }
-        }, 10000);
-      }
-    };
-
-    logPosition();
-    const interval = setInterval(logPosition, 30000);
-    return () => clearInterval(interval);
-  }, [isFieldStaff, myActiveTrip?.id]);
-
   const getMyLocation = async () => {
     setGettingLocation(true);
     try {
@@ -629,12 +551,7 @@ export default function FieldStaff() {
                     <span data-testid="text-my-trip-distance">{getTripDistance(myActiveTrip.id).toFixed(2)} km</span>
                   </div>
                 )}
-                {isOffline && (
-                  <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                    <WifiOff className="w-3.5 h-3.5" />
-                    <span>Offline — points queued</span>
-                  </div>
-                )}
+
               </div>
             )}
           </CardContent>

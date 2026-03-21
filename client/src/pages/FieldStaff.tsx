@@ -102,6 +102,12 @@ export default function FieldStaff() {
     return dist;
   }, [locationLogs]);
 
+  const tripDistances = useMemo(() => {
+    const map: Record<string, number> = {};
+    (activeTripsData ?? []).forEach(trip => { map[trip.id] = getTripDistance(trip.id); });
+    return map;
+  }, [activeTripsData, locationLogs, getTripDistance]);
+
   const formatDuration = (startTime: string | Date) => {
     const ms = nowTick - new Date(startTime).getTime();
     const m = Math.floor(ms / 60000);
@@ -545,10 +551,10 @@ export default function FieldStaff() {
                   <Timer className="w-3.5 h-3.5" />
                   <span data-testid="text-trip-duration">{formatDuration(myActiveTrip.startTime)}</span>
                 </div>
-                {myActiveTrip && getTripDistance(myActiveTrip.id) > 0 && (
+                {myActiveTrip && (tripDistances[myActiveTrip.id] ?? 0) > 0 && (
                   <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Route className="w-3.5 h-3.5" />
-                    <span data-testid="text-my-trip-distance">{getTripDistance(myActiveTrip.id).toFixed(2)} km</span>
+                    <span data-testid="text-my-trip-distance">{(tripDistances[myActiveTrip.id] ?? 0).toFixed(2)} km</span>
                   </div>
                 )}
 
@@ -578,7 +584,7 @@ export default function FieldStaff() {
                   </CardHeader>
                   <CardContent className="space-y-2">
                     {activeTripsData?.map(trip => {
-                      const dist = getTripDistance(trip.id);
+                      const dist = tripDistances[trip.id] ?? 0;
                       return (
                       <div
                         key={trip.id}

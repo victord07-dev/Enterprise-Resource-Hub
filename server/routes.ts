@@ -427,7 +427,7 @@ export async function registerRoutes(
   });
 
   // ======================== USERS ========================
-  app.get("/api/users", authenticateToken, requireRole("admin"), async (req: any, res) => {
+  app.get("/api/users", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       const data = await storage.getUsers();
       const sanitized = data.map(u => ({ ...u, password: undefined }));

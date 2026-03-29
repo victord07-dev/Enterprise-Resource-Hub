@@ -2,7 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage } from "./storage";
 import { db } from "./db";
-import { sql, eq, and } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
@@ -17,9 +17,6 @@ import {
   insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
   insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
-  inventoryStock, deliveryChallans as deliveryChallansTable, purchaseRequests as purchaseRequestsTable,
-  stockMovements as stockMovementsTable, products as productsTable, warehouses as warehousesTable,
-  goodsReceiptNotes as goodsReceiptNotesTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -1949,16 +1946,6 @@ export async function registerRoutes(
   });
 
   // ======================== STOCK HELPER ========================
-  async function updateInventoryStockForMovement(productId: string, warehouseId: string, quantityDelta: number) {
-    const allStock = await storage.getInventoryStock();
-    const existing = allStock.find((s: any) => s.productId === productId && s.warehouseId === warehouseId);
-    if (existing) {
-      await storage.updateInventoryStock(existing.id, { quantity: (existing.quantity || 0) + quantityDelta });
-    } else {
-      await storage.createInventoryStock({ productId, warehouseId, quantity: Math.max(0, quantityDelta) } as any);
-    }
-  }
-
   async function addLedgerEntry(
     tx: Awaited<Parameters<Parameters<typeof db.transaction>[0]>[0]>,
     params: {

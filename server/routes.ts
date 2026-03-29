@@ -2606,6 +2606,10 @@ export async function registerRoutes(
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
       if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
 
+      const poGrns = await storage.getGRNsByPO(req.body.purchaseOrderId);
+      const draftGrn = poGrns.find((g: any) => g.status === "draft");
+      if (draftGrn) return res.status(409).json({ message: "A draft GRN already exists for this PO", existingGrnId: draftGrn.id, existingGrnNumber: draftGrn.grnNumber });
+
       const year = new Date().getFullYear();
       const allGrns = await storage.getGRNs();
       const yearGrns = allGrns.filter(g => g.grnNumber.startsWith(`GRN-${year}`));
@@ -2741,12 +2745,20 @@ export async function registerRoutes(
           }
         }
 
+        const orderedPerProduct: Record<string, number> = {};
+        for (const pi of poItems) {
+          if (pi.productId) {
+            orderedPerProduct[pi.productId] = (orderedPerProduct[pi.productId] || 0) + pi.quantity;
+          }
+        }
+
         const overReceived: string[] = [];
         for (const grnItem of items) {
-          const poItem = poItems.find((p: any) => p.productId === grnItem.productId);
-          if (!poItem) continue;
+          if (!grnItem.productId) continue;
+          const totalOrdered = orderedPerProduct[grnItem.productId];
+          if (totalOrdered === undefined) continue;
           const alreadyReceived = receivedPerProduct[grnItem.productId] || 0;
-          const remaining = poItem.quantity - alreadyReceived;
+          const remaining = totalOrdered - alreadyReceived;
           if (grnItem.receivedQuantity > remaining) {
             overReceived.push(`Product ${grnItem.productId}: trying to receive ${grnItem.receivedQuantity}, but only ${remaining} remaining on PO`);
           }

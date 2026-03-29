@@ -498,7 +498,6 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
   allProducts?.forEach(p => productMap.set(p.id, p));
 
   const confirmedGrns = (poGrns ?? []).filter(g => g.status === "confirmed");
-  const hasReceiptData = confirmedGrns.length > 0;
 
   const [grnItemsCache, setGrnItemsCache] = useState<Record<string, GoodsReceiptNoteItem[]>>({});
   useEffect(() => {
@@ -558,8 +557,8 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
               <th className="text-left p-2 font-medium text-muted-foreground text-xs">Product</th>
               <th className="text-left p-2 font-medium text-muted-foreground text-xs">Description</th>
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Ordered</th>
-              {hasReceiptData && <th className="text-center p-2 font-medium text-muted-foreground text-xs">Received</th>}
-              {hasReceiptData && <th className="text-center p-2 font-medium text-muted-foreground text-xs">Outstanding</th>}
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Received</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Outstanding</th>
               <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
               <th className="text-right p-2 font-medium text-muted-foreground text-xs">Total</th>
             </tr>
@@ -574,20 +573,16 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
                   <td className="p-2 font-medium">{prod?.name || "—"}</td>
                   <td className="p-2 text-muted-foreground">{item.description || "—"}</td>
                   <td className="p-2 text-center">{item.quantity}</td>
-                  {hasReceiptData && (
-                    <td className="p-2 text-center">
-                      <span className={`font-medium ${received >= item.quantity ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"}`} data-testid={`text-po-item-received-${item.id}`}>
-                        {received}
-                      </span>
-                    </td>
-                  )}
-                  {hasReceiptData && (
-                    <td className="p-2 text-center">
-                      <span className={`font-medium ${outstanding === 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid={`text-po-item-outstanding-${item.id}`}>
-                        {outstanding}
-                      </span>
-                    </td>
-                  )}
+                  <td className="p-2 text-center">
+                    <span className={`font-medium ${received >= item.quantity ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"}`} data-testid={`text-po-item-received-${item.id}`}>
+                      {received}
+                    </span>
+                  </td>
+                  <td className="p-2 text-center">
+                    <span className={`font-medium ${outstanding === 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid={`text-po-item-outstanding-${item.id}`}>
+                      {outstanding}
+                    </span>
+                  </td>
                   <td className="p-2 text-right">₹{Number(item.unitCost).toLocaleString()}</td>
                   <td className="p-2 text-right font-medium">₹{Number(item.totalCost).toLocaleString()}</td>
                 </tr>
@@ -596,7 +591,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={hasReceiptData ? 6 : 4} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
+              <td colSpan={6} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
               <td className="p-2 text-right font-semibold" data-testid={`text-po-items-total-${poId}`}>
                 ₹{items.reduce((sum, i) => sum + Number(i.totalCost), 0).toLocaleString()}
               </td>

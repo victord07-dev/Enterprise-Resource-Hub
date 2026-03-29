@@ -4015,6 +4015,13 @@ export async function registerRoutes(
     await storage.updateSupplierInvoice(invoiceId, { status });
   }
 
+  async function recomputeInvoicesForPO(poId: string): Promise<void> {
+    const invoices = await storage.getSupplierInvoicesByPO(poId);
+    for (const inv of invoices) {
+      await recomputeInvoiceStatus(inv.id);
+    }
+  }
+
   // ── Supplier Invoices ───────────────────────────────────────────────────────
   app.get("/api/supplier-invoices", authenticateToken, async (_req, res) => {
     try {
@@ -4098,6 +4105,7 @@ export async function registerRoutes(
     } catch { res.status(500).json({ message: "Failed to fetch supplier payments" }); }
   });
 
+  // Specific sub-routes must be registered BEFORE the generic :id route
   app.get("/api/supplier-payments/by-invoice/:invoiceId", authenticateToken, async (req, res) => {
     try {
       const pays = await storage.getSupplierPaymentsByInvoice(req.params.invoiceId);
@@ -4112,17 +4120,38 @@ export async function registerRoutes(
     } catch { res.status(500).json({ message: "Failed to fetch payments for PO" }); }
   });
 
+  app.get("/api/supplier-payments/:id", authenticateToken, async (req, res) => {
+    try {
+      const pay = await storage.getSupplierPayment(req.params.id);
+      if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
+      res.json(pay);
+    } catch { res.status(500).json({ message: "Failed to fetch supplier payment" }); }
+  });
+
   app.post("/api/supplier-payments", authenticateToken, async (req: any, res) => {
     try {
       const { supplierInvoiceId, purchaseOrderId, supplierId, amount, paymentType, paymentMethod, paymentDate, reference } = req.body;
-      if (!supplierId || !amount) return res.status(400).json({ message: "supplierId and amount are required" });
-      if (!paymentType || !["advance", "regular"].includes(paymentType)) return res.status(400).json({ message: "paymentType must be advance or regular" });
+
+      // Required fields
+      if (!supplierId) return res.status(400).json({ message: "supplierId is required" });
+      if (!amount) return res.status(400).json({ message: "amount is required" });
+      if (!paymentType || !["advance", "regular"].includes(paymentType)) {
+        return res.status(400).json({ message: "paymentType must be 'advance' or 'regular'" });
+      }
+
+      // Enforce linkage rules
+      if (paymentType === "regular" && !supplierInvoiceId) {
+        return res.status(400).json({ message: "Regular payments must be linked to a supplier invoice (supplierInvoiceId is required)" });
+      }
+      if (paymentType === "advance" && !purchaseOrderId) {
+        return res.status(400).json({ message: "Advance payments must be linked to a purchase order (purchaseOrderId is required)" });
+      }
 
       const amountNum = Number(amount);
       if (isNaN(amountNum) || amountNum <= 0) return res.status(400).json({ message: "amount must be a positive number" });
 
       // Overpayment validation for regular payments
-      if (paymentType === "regular" && supplierInvoiceId) {
+      if (paymentType === "regular") {
         const inv = await storage.getSupplierInvoice(supplierInvoiceId);
         if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
         const existingPays = await storage.getSupplierPaymentsByInvoice(supplierInvoiceId);
@@ -4131,14 +4160,14 @@ export async function registerRoutes(
           ? Number((await storage.getPurchaseOrder(inv.purchaseOrderId))?.advancePaid ?? 0)
           : 0;
         const balance = Number(inv.totalAmount) - advance - alreadyPaid;
-        if (amountNum > balance) {
+        if (amountNum > balance + 0.01) {
           return res.status(400).json({ message: `Payment (₹${amountNum.toLocaleString()}) exceeds current invoice balance (₹${balance.toLocaleString()})` });
         }
       }
 
       const pay = await storage.createSupplierPayment({
-        supplierInvoiceId: supplierInvoiceId || null,
-        purchaseOrderId: purchaseOrderId || null,
+        supplierInvoiceId: paymentType === "regular" ? supplierInvoiceId : null,
+        purchaseOrderId: paymentType === "advance" ? purchaseOrderId : null,
         supplierId,
         amount: String(amountNum),
         paymentType,
@@ -4147,17 +4176,21 @@ export async function registerRoutes(
         reference: reference || null,
       });
 
-      // Update PO advancePaid if this is an advance
-      if (paymentType === "advance" && purchaseOrderId) {
+      // Update PO advancePaid and recompute linked invoices
+      if (paymentType === "advance") {
         const po = await storage.getPurchaseOrder(purchaseOrderId);
         if (po) {
           const newAdvance = Number(po.advancePaid ?? 0) + amountNum;
-          await storage.updatePurchaseOrder(purchaseOrderId, { advancePaid: String(newAdvance) } as any);
+          await storage.updatePurchaseOrder(purchaseOrderId, { advancePaid: String(newAdvance) });
         }
+        // Recompute any invoices linked to this PO (advance affects their balance)
+        await recomputeInvoicesForPO(purchaseOrderId);
       }
 
-      // Recompute invoice status if linked to an invoice
-      if (supplierInvoiceId) await recomputeInvoiceStatus(supplierInvoiceId);
+      // Recompute the specific invoice status for regular payments
+      if (paymentType === "regular" && supplierInvoiceId) {
+        await recomputeInvoiceStatus(supplierInvoiceId);
+      }
 
       res.status(201).json(pay);
     } catch (error: any) {
@@ -4169,9 +4202,24 @@ export async function registerRoutes(
     try {
       const pay = await storage.getSupplierPayment(req.params.id);
       if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
+
       await storage.deleteSupplierPayment(req.params.id);
-      // Recompute invoice status
-      if (pay.supplierInvoiceId) await recomputeInvoiceStatus(pay.supplierInvoiceId);
+
+      // For advance payments: decrement advancePaid on the PO, then recompute all invoices for that PO
+      if (pay.paymentType === "advance" && pay.purchaseOrderId) {
+        const po = await storage.getPurchaseOrder(pay.purchaseOrderId);
+        if (po) {
+          const newAdvance = Math.max(0, Number(po.advancePaid ?? 0) - Number(pay.amount));
+          await storage.updatePurchaseOrder(pay.purchaseOrderId, { advancePaid: String(newAdvance) });
+        }
+        await recomputeInvoicesForPO(pay.purchaseOrderId);
+      }
+
+      // For regular payments: recompute the specific invoice status
+      if (pay.paymentType === "regular" && pay.supplierInvoiceId) {
+        await recomputeInvoiceStatus(pay.supplierInvoiceId);
+      }
+
       res.json({ success: true });
     } catch { res.status(500).json({ message: "Failed to delete supplier payment" }); }
   });

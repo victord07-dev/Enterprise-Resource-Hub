@@ -68,20 +68,20 @@ export default function Accounts() {
 
   const apSummary = useMemo(() => {
     const now = new Date();
-    let totalPayable = 0, totalPaid = 0, totalOverdue = 0;
+    // Total paid = sum of ALL supplier payments recorded (advances + regular)
+    const totalPaid = (supplierPayments ?? []).reduce((sum, p) => sum + Number(p.amount), 0);
+    let totalPayable = 0, totalOverdue = 0;
     (supplierInvoices ?? []).forEach(inv => {
       const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
       const paid = (paidPerInvoice[inv.id] ?? 0) + advance;
       const balance = Number(inv.totalAmount) - paid;
-      if (inv.status === "paid") {
-        totalPaid += Number(inv.totalAmount);
-      } else {
+      if (inv.status !== "paid" && balance > 0) {
         totalPayable += balance;
         if (inv.dueDate && new Date(inv.dueDate) < now) totalOverdue += balance;
       }
     });
     return { totalPayable, totalPaid, totalOverdue };
-  }, [supplierInvoices, paidPerInvoice, poMap]);
+  }, [supplierInvoices, supplierPayments, paidPerInvoice, poMap]);
 
   // ── AR State ──────────────────────────────────────────────────────────────
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
@@ -799,26 +799,30 @@ export default function Accounts() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Purchase Order</Label>
+              <Label>Purchase Order *</Label>
               <Select value={siForm.purchaseOrderId} onValueChange={(v) => setSiForm({ ...siForm, purchaseOrderId: v, grnId: "" })} disabled={!siForm.supplierId}>
                 <SelectTrigger data-testid="select-si-po">
-                  <SelectValue placeholder={siForm.supplierId ? "Select PO (optional)" : "Select supplier first"} />
+                  <SelectValue placeholder={siForm.supplierId ? "Select PO" : "Select supplier first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  {filteredPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)}
+                  {filteredPOs.length === 0
+                    ? <SelectItem value="_none" disabled>No POs for this supplier</SelectItem>
+                    : filteredPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)
+                  }
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>GRN</Label>
-              <Select value={siForm.grnId} onValueChange={(v) => setSiForm({ ...siForm, grnId: v })} disabled={!siForm.purchaseOrderId || siForm.purchaseOrderId === "none"}>
+              <Label>GRN *</Label>
+              <Select value={siForm.grnId} onValueChange={(v) => setSiForm({ ...siForm, grnId: v })} disabled={!siForm.purchaseOrderId}>
                 <SelectTrigger data-testid="select-si-grn">
-                  <SelectValue placeholder={siForm.purchaseOrderId && siForm.purchaseOrderId !== "none" ? "Select GRN (optional)" : "Select PO first"} />
+                  <SelectValue placeholder={siForm.purchaseOrderId ? "Select confirmed GRN" : "Select PO first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  {filteredGRNs.map(g => <SelectItem key={g.id} value={g.id}>{g.grnNumber} — ₹{Number(g.totalAmount).toLocaleString()}</SelectItem>)}
+                  {filteredGRNs.length === 0
+                    ? <SelectItem value="_none" disabled>No confirmed GRNs for this PO</SelectItem>
+                    : filteredGRNs.map(g => <SelectItem key={g.id} value={g.id}>{g.grnNumber} — ₹{Number(g.totalAmount).toLocaleString()}</SelectItem>)
+                  }
                 </SelectContent>
               </Select>
             </div>
@@ -870,11 +874,12 @@ export default function Accounts() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSiDialogOpen(false)}>Cancel</Button>
-            <Button data-testid="button-submit-supplier-invoice" disabled={siMutation.isPending || !siForm.supplierId || !siForm.invoiceNumber || !siForm.subtotal}
+            <Button data-testid="button-submit-supplier-invoice"
+              disabled={siMutation.isPending || !siForm.supplierId || !siForm.purchaseOrderId || !siForm.grnId || !siForm.invoiceNumber || !siForm.subtotal}
               onClick={() => siMutation.mutate({
                 supplierId: siForm.supplierId,
-                purchaseOrderId: siForm.purchaseOrderId && siForm.purchaseOrderId !== "none" ? siForm.purchaseOrderId : null,
-                grnId: siForm.grnId && siForm.grnId !== "none" ? siForm.grnId : null,
+                purchaseOrderId: siForm.purchaseOrderId,
+                grnId: siForm.grnId,
                 invoiceNumber: siForm.invoiceNumber,
                 invoiceDate: siForm.invoiceDate,
                 subtotal: siForm.subtotal,

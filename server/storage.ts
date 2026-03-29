@@ -266,6 +266,7 @@ export interface IStorage {
   getSupplierPaymentsByInvoice(invoiceId: string): Promise<SupplierPayment[]>;
   getSupplierPaymentsByPO(poId: string): Promise<SupplierPayment[]>;
   createSupplierPayment(data: Omit<SupplierPayment, "id" | "createdAt">): Promise<SupplierPayment>;
+  updateSupplierPayment(id: string, data: Partial<Omit<SupplierPayment, "id" | "createdAt">>): Promise<SupplierPayment | undefined>;
   deleteSupplierPayment(id: string): Promise<boolean>;
 
   // Dashboard
@@ -1188,6 +1189,11 @@ export class DatabaseStorage implements IStorage {
   async createSupplierPayment(data: Omit<SupplierPayment, "id" | "createdAt">): Promise<SupplierPayment> {
     const [created] = await db.insert(supplierPayments).values(data).returning();
     return created;
+  }
+
+  async updateSupplierPayment(id: string, data: Partial<Omit<SupplierPayment, "id" | "createdAt">>): Promise<SupplierPayment | undefined> {
+    const [updated] = await db.update(supplierPayments).set(data).where(eq(supplierPayments.id, id)).returning();
+    return updated;
   }
 
   async deleteSupplierPayment(id: string): Promise<boolean> {

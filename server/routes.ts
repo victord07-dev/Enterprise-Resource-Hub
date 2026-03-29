@@ -4042,6 +4042,8 @@ export async function registerRoutes(
     try {
       const { invoiceNumber, supplierId, purchaseOrderId, grnId, invoiceDate, subtotal, taxAmount, paymentTerms, notes } = req.body;
       if (!invoiceNumber || !supplierId || !subtotal) return res.status(400).json({ message: "invoiceNumber, supplierId, and subtotal are required" });
+      if (!purchaseOrderId) return res.status(400).json({ message: "purchaseOrderId is required — a supplier invoice must be linked to a purchase order" });
+      if (!grnId) return res.status(400).json({ message: "grnId is required — a supplier invoice must be linked to a goods receipt note" });
 
       // Duplicate check: same invoiceNumber + supplierId
       const existing = await storage.getSupplierInvoicesBySupplier(supplierId);
@@ -4126,6 +4128,51 @@ export async function registerRoutes(
       if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
       res.json(pay);
     } catch { res.status(500).json({ message: "Failed to fetch supplier payment" }); }
+  });
+
+  app.patch("/api/supplier-payments/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const pay = await storage.getSupplierPayment(req.params.id);
+      if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
+
+      const { reference, paymentMethod, paymentDate, amount } = req.body;
+      const updates: Partial<typeof pay> = {};
+
+      if (reference !== undefined) updates.reference = reference;
+      if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod;
+      if (paymentDate !== undefined) updates.paymentDate = new Date(paymentDate);
+
+      // If amount is being changed, handle advance recomputation
+      if (amount !== undefined && String(amount) !== String(pay.amount)) {
+        const newAmount = Number(amount);
+        if (isNaN(newAmount) || newAmount <= 0) return res.status(400).json({ message: "amount must be a positive number" });
+        const oldAmount = Number(pay.amount);
+        const diff = newAmount - oldAmount;
+
+        if (pay.paymentType === "advance" && pay.purchaseOrderId) {
+          const po = await storage.getPurchaseOrder(pay.purchaseOrderId);
+          if (po) {
+            const newAdvance = Math.max(0, Number(po.advancePaid ?? 0) + diff);
+            await storage.updatePurchaseOrder(pay.purchaseOrderId, { advancePaid: String(newAdvance) });
+          }
+        }
+        updates.amount = String(newAmount);
+      }
+
+      const updated = await storage.updateSupplierPayment(req.params.id, updates);
+
+      // Recompute statuses after update
+      if (pay.paymentType === "advance" && pay.purchaseOrderId) {
+        await recomputeInvoicesForPO(pay.purchaseOrderId);
+      }
+      if (pay.paymentType === "regular" && pay.supplierInvoiceId) {
+        await recomputeInvoiceStatus(pay.supplierInvoiceId);
+      }
+
+      res.json(updated);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to update supplier payment" });
+    }
   });
 
   app.post("/api/supplier-payments", authenticateToken, async (req: any, res) => {

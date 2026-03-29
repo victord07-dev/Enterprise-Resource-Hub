@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -250,6 +250,23 @@ export interface IStorage {
   createLeaveRequest(data: Omit<LeaveRequest, "id" | "createdAt">): Promise<LeaveRequest>;
   updateLeaveRequest(id: string, data: Partial<Omit<LeaveRequest, "id" | "createdAt">>): Promise<LeaveRequest | undefined>;
   deleteLeaveRequest(id: string): Promise<boolean>;
+
+  // Supplier Invoices
+  getSupplierInvoices(): Promise<SupplierInvoice[]>;
+  getSupplierInvoice(id: string): Promise<SupplierInvoice | undefined>;
+  getSupplierInvoicesBySupplier(supplierId: string): Promise<SupplierInvoice[]>;
+  getSupplierInvoicesByPO(poId: string): Promise<SupplierInvoice[]>;
+  createSupplierInvoice(data: Omit<SupplierInvoice, "id" | "createdAt">): Promise<SupplierInvoice>;
+  updateSupplierInvoice(id: string, data: Partial<Omit<SupplierInvoice, "id" | "createdAt">>): Promise<SupplierInvoice | undefined>;
+  deleteSupplierInvoice(id: string): Promise<boolean>;
+
+  // Supplier Payments
+  getSupplierPayments(): Promise<SupplierPayment[]>;
+  getSupplierPayment(id: string): Promise<SupplierPayment | undefined>;
+  getSupplierPaymentsByInvoice(invoiceId: string): Promise<SupplierPayment[]>;
+  getSupplierPaymentsByPO(poId: string): Promise<SupplierPayment[]>;
+  createSupplierPayment(data: Omit<SupplierPayment, "id" | "createdAt">): Promise<SupplierPayment>;
+  deleteSupplierPayment(id: string): Promise<boolean>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1113,6 +1130,68 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLeaveRequest(id: string): Promise<boolean> {
     await db.delete(leaveRequests).where(eq(leaveRequests.id, id));
+    return true;
+  }
+
+  // Supplier Invoices
+  async getSupplierInvoices(): Promise<SupplierInvoice[]> {
+    return db.select().from(supplierInvoices).orderBy(desc(supplierInvoices.createdAt));
+  }
+
+  async getSupplierInvoice(id: string): Promise<SupplierInvoice | undefined> {
+    const [inv] = await db.select().from(supplierInvoices).where(eq(supplierInvoices.id, id));
+    return inv;
+  }
+
+  async getSupplierInvoicesBySupplier(supplierId: string): Promise<SupplierInvoice[]> {
+    return db.select().from(supplierInvoices).where(eq(supplierInvoices.supplierId, supplierId)).orderBy(desc(supplierInvoices.createdAt));
+  }
+
+  async getSupplierInvoicesByPO(poId: string): Promise<SupplierInvoice[]> {
+    return db.select().from(supplierInvoices).where(eq(supplierInvoices.purchaseOrderId, poId)).orderBy(desc(supplierInvoices.createdAt));
+  }
+
+  async createSupplierInvoice(data: Omit<SupplierInvoice, "id" | "createdAt">): Promise<SupplierInvoice> {
+    const [created] = await db.insert(supplierInvoices).values(data).returning();
+    return created;
+  }
+
+  async updateSupplierInvoice(id: string, data: Partial<Omit<SupplierInvoice, "id" | "createdAt">>): Promise<SupplierInvoice | undefined> {
+    const [updated] = await db.update(supplierInvoices).set(data).where(eq(supplierInvoices.id, id)).returning();
+    return updated;
+  }
+
+  async deleteSupplierInvoice(id: string): Promise<boolean> {
+    await db.delete(supplierPayments).where(eq(supplierPayments.supplierInvoiceId, id));
+    await db.delete(supplierInvoices).where(eq(supplierInvoices.id, id));
+    return true;
+  }
+
+  // Supplier Payments
+  async getSupplierPayments(): Promise<SupplierPayment[]> {
+    return db.select().from(supplierPayments).orderBy(desc(supplierPayments.createdAt));
+  }
+
+  async getSupplierPayment(id: string): Promise<SupplierPayment | undefined> {
+    const [pay] = await db.select().from(supplierPayments).where(eq(supplierPayments.id, id));
+    return pay;
+  }
+
+  async getSupplierPaymentsByInvoice(invoiceId: string): Promise<SupplierPayment[]> {
+    return db.select().from(supplierPayments).where(eq(supplierPayments.supplierInvoiceId, invoiceId)).orderBy(desc(supplierPayments.createdAt));
+  }
+
+  async getSupplierPaymentsByPO(poId: string): Promise<SupplierPayment[]> {
+    return db.select().from(supplierPayments).where(eq(supplierPayments.purchaseOrderId, poId)).orderBy(desc(supplierPayments.createdAt));
+  }
+
+  async createSupplierPayment(data: Omit<SupplierPayment, "id" | "createdAt">): Promise<SupplierPayment> {
+    const [created] = await db.insert(supplierPayments).values(data).returning();
+    return created;
+  }
+
+  async deleteSupplierPayment(id: string): Promise<boolean> {
+    await db.delete(supplierPayments).where(eq(supplierPayments.id, id));
     return true;
   }
 

@@ -17,6 +17,7 @@ import {
   insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
   insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
+  insertSupplierInvoiceSchema, insertSupplierPaymentSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -3987,6 +3988,192 @@ export async function registerRoutes(
     } catch (error) {
       res.status(500).json({ message: "Failed to mark all notifications read" });
     }
+  });
+
+  // ── Supplier Invoice helpers ────────────────────────────────────────────────
+  function calcDueDate(invoiceDate: Date, terms: string): Date {
+    const d = new Date(invoiceDate);
+    if (terms === "immediate") return d;
+    if (terms === "net_30") { d.setDate(d.getDate() + 30); return d; }
+    if (terms === "net_60") { d.setDate(d.getDate() + 60); return d; }
+    return d;
+  }
+
+  async function recomputeInvoiceStatus(invoiceId: string): Promise<void> {
+    const inv = await storage.getSupplierInvoice(invoiceId);
+    if (!inv) return;
+    const payments = await storage.getSupplierPaymentsByInvoice(invoiceId);
+    const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const advance = inv.purchaseOrderId
+      ? Number((await storage.getPurchaseOrder(inv.purchaseOrderId))?.advancePaid ?? 0)
+      : 0;
+    const effectivePaid = totalPaid + advance;
+    const total = Number(inv.totalAmount);
+    let status = "pending";
+    if (effectivePaid >= total) status = "paid";
+    else if (effectivePaid > 0) status = "partial_paid";
+    await storage.updateSupplierInvoice(invoiceId, { status });
+  }
+
+  // ── Supplier Invoices ───────────────────────────────────────────────────────
+  app.get("/api/supplier-invoices", authenticateToken, async (_req, res) => {
+    try {
+      const invs = await storage.getSupplierInvoices();
+      res.json(invs);
+    } catch { res.status(500).json({ message: "Failed to fetch supplier invoices" }); }
+  });
+
+  app.get("/api/supplier-invoices/:id", authenticateToken, async (req, res) => {
+    try {
+      const inv = await storage.getSupplierInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      res.json(inv);
+    } catch { res.status(500).json({ message: "Failed to fetch supplier invoice" }); }
+  });
+
+  app.post("/api/supplier-invoices", authenticateToken, async (req: any, res) => {
+    try {
+      const { invoiceNumber, supplierId, purchaseOrderId, grnId, invoiceDate, subtotal, taxAmount, paymentTerms, notes } = req.body;
+      if (!invoiceNumber || !supplierId || !subtotal) return res.status(400).json({ message: "invoiceNumber, supplierId, and subtotal are required" });
+
+      // Duplicate check: same invoiceNumber + supplierId
+      const existing = await storage.getSupplierInvoicesBySupplier(supplierId);
+      if (existing.some(i => i.invoiceNumber === invoiceNumber)) {
+        return res.status(409).json({ message: `Supplier invoice ${invoiceNumber} already exists for this supplier` });
+      }
+
+      const invDate = invoiceDate ? new Date(invoiceDate) : new Date();
+      const terms = paymentTerms || "net_30";
+      const dueDate = calcDueDate(invDate, terms);
+      const sub = Number(subtotal);
+      const tax = Number(taxAmount ?? 0);
+      const totalAmount = String(sub + tax);
+
+      const inv = await storage.createSupplierInvoice({
+        invoiceNumber,
+        supplierId,
+        purchaseOrderId: purchaseOrderId || null,
+        grnId: grnId || null,
+        invoiceDate: invDate,
+        subtotal: String(sub),
+        taxAmount: String(tax),
+        totalAmount,
+        paymentTerms: terms,
+        dueDate,
+        status: "pending",
+        notes: notes || null,
+        createdBy: req.user.id,
+      });
+
+      // Immediately recompute status (advance may already exist)
+      await recomputeInvoiceStatus(inv.id);
+      const updated = await storage.getSupplierInvoice(inv.id);
+      res.status(201).json(updated);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to create supplier invoice" });
+    }
+  });
+
+  app.patch("/api/supplier-invoices/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const inv = await storage.getSupplierInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      const updated = await storage.updateSupplierInvoice(req.params.id, req.body);
+      res.json(updated);
+    } catch { res.status(500).json({ message: "Failed to update supplier invoice" }); }
+  });
+
+  app.delete("/api/supplier-invoices/:id", authenticateToken, async (req, res) => {
+    try {
+      await storage.deleteSupplierInvoice(req.params.id);
+      res.json({ success: true });
+    } catch { res.status(500).json({ message: "Failed to delete supplier invoice" }); }
+  });
+
+  // ── Supplier Payments ───────────────────────────────────────────────────────
+  app.get("/api/supplier-payments", authenticateToken, async (_req, res) => {
+    try {
+      const pays = await storage.getSupplierPayments();
+      res.json(pays);
+    } catch { res.status(500).json({ message: "Failed to fetch supplier payments" }); }
+  });
+
+  app.get("/api/supplier-payments/by-invoice/:invoiceId", authenticateToken, async (req, res) => {
+    try {
+      const pays = await storage.getSupplierPaymentsByInvoice(req.params.invoiceId);
+      res.json(pays);
+    } catch { res.status(500).json({ message: "Failed to fetch payments for invoice" }); }
+  });
+
+  app.get("/api/supplier-payments/by-po/:poId", authenticateToken, async (req, res) => {
+    try {
+      const pays = await storage.getSupplierPaymentsByPO(req.params.poId);
+      res.json(pays);
+    } catch { res.status(500).json({ message: "Failed to fetch payments for PO" }); }
+  });
+
+  app.post("/api/supplier-payments", authenticateToken, async (req: any, res) => {
+    try {
+      const { supplierInvoiceId, purchaseOrderId, supplierId, amount, paymentType, paymentMethod, paymentDate, reference } = req.body;
+      if (!supplierId || !amount) return res.status(400).json({ message: "supplierId and amount are required" });
+      if (!paymentType || !["advance", "regular"].includes(paymentType)) return res.status(400).json({ message: "paymentType must be advance or regular" });
+
+      const amountNum = Number(amount);
+      if (isNaN(amountNum) || amountNum <= 0) return res.status(400).json({ message: "amount must be a positive number" });
+
+      // Overpayment validation for regular payments
+      if (paymentType === "regular" && supplierInvoiceId) {
+        const inv = await storage.getSupplierInvoice(supplierInvoiceId);
+        if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+        const existingPays = await storage.getSupplierPaymentsByInvoice(supplierInvoiceId);
+        const alreadyPaid = existingPays.reduce((sum, p) => sum + Number(p.amount), 0);
+        const advance = inv.purchaseOrderId
+          ? Number((await storage.getPurchaseOrder(inv.purchaseOrderId))?.advancePaid ?? 0)
+          : 0;
+        const balance = Number(inv.totalAmount) - advance - alreadyPaid;
+        if (amountNum > balance) {
+          return res.status(400).json({ message: `Payment (₹${amountNum.toLocaleString()}) exceeds current invoice balance (₹${balance.toLocaleString()})` });
+        }
+      }
+
+      const pay = await storage.createSupplierPayment({
+        supplierInvoiceId: supplierInvoiceId || null,
+        purchaseOrderId: purchaseOrderId || null,
+        supplierId,
+        amount: String(amountNum),
+        paymentType,
+        paymentMethod: paymentMethod || "bank_transfer",
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        reference: reference || null,
+      });
+
+      // Update PO advancePaid if this is an advance
+      if (paymentType === "advance" && purchaseOrderId) {
+        const po = await storage.getPurchaseOrder(purchaseOrderId);
+        if (po) {
+          const newAdvance = Number(po.advancePaid ?? 0) + amountNum;
+          await storage.updatePurchaseOrder(purchaseOrderId, { advancePaid: String(newAdvance) } as any);
+        }
+      }
+
+      // Recompute invoice status if linked to an invoice
+      if (supplierInvoiceId) await recomputeInvoiceStatus(supplierInvoiceId);
+
+      res.status(201).json(pay);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message || "Failed to record supplier payment" });
+    }
+  });
+
+  app.delete("/api/supplier-payments/:id", authenticateToken, async (req, res) => {
+    try {
+      const pay = await storage.getSupplierPayment(req.params.id);
+      if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
+      await storage.deleteSupplierPayment(req.params.id);
+      // Recompute invoice status
+      if (pay.supplierInvoiceId) await recomputeInvoiceStatus(pay.supplierInvoiceId);
+      res.json({ success: true });
+    } catch { res.status(500).json({ message: "Failed to delete supplier payment" }); }
   });
 
   return httpServer;

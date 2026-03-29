@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,36 +9,81 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, FileText, CreditCard, IndianRupee, TrendingUp, Pencil, Trash2 } from "lucide-react";
+import { Plus, Search, FileText, CreditCard, IndianRupee, TrendingUp, Pencil, Trash2, Building2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Invoice, Payment, Customer } from "@shared/schema";
+import type { Invoice, Payment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
     unpaid: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
     paid: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     partial: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
+    partial_paid: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
     overdue: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
     completed: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
     failed: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
   };
+  const labels: Record<string, string> = {
+    partial_paid: "Partial Paid",
+  };
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${variants[status] || variants.pending}`}>
-      {status.charAt(0).toUpperCase() + status.slice(1)}
+      {labels[status] ?? (status.charAt(0).toUpperCase() + status.slice(1))}
     </span>
   );
 }
 
 export default function Accounts() {
   const { toast } = useToast();
+
+  // ── AR Queries ────────────────────────────────────────────────────────────
   const { data: invoices, isLoading: invoicesLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: payments, isLoading: paymentsLoading } = useQuery<Payment[]>({ queryKey: ["/api/payments"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
+  // ── AP Queries ────────────────────────────────────────────────────────────
+  const { data: supplierInvoices, isLoading: siLoading } = useQuery<SupplierInvoice[]>({ queryKey: ["/api/supplier-invoices"] });
+  const { data: supplierPayments, isLoading: spLoading } = useQuery<SupplierPayment[]>({ queryKey: ["/api/supplier-payments"] });
+  const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
+  const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
+  const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
+
+  // ── AR Summary ────────────────────────────────────────────────────────────
   const totalRevenue = payments?.reduce((sum, p) => sum + Number(p.amount), 0) ?? 0;
   const pendingAmount = invoices?.filter((i) => i.status === "unpaid").reduce((sum, i) => sum + Number(i.amount), 0) ?? 0;
 
+  // ── AP Computed values ────────────────────────────────────────────────────
+  const supplierMap = useMemo(() => new Map((suppliers ?? []).map(s => [s.id, s])), [suppliers]);
+  const poMap = useMemo(() => new Map((purchaseOrders ?? []).map(p => [p.id, p])), [purchaseOrders]);
+  const grnMap = useMemo(() => new Map((grns ?? []).map(g => [g.id, g])), [grns]);
+
+  const paidPerInvoice = useMemo(() => {
+    const map: Record<string, number> = {};
+    (supplierPayments ?? []).filter(p => p.paymentType === "regular" && p.supplierInvoiceId).forEach(p => {
+      map[p.supplierInvoiceId!] = (map[p.supplierInvoiceId!] || 0) + Number(p.amount);
+    });
+    return map;
+  }, [supplierPayments]);
+
+  const apSummary = useMemo(() => {
+    const now = new Date();
+    let totalPayable = 0, totalPaid = 0, totalOverdue = 0;
+    (supplierInvoices ?? []).forEach(inv => {
+      const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
+      const paid = (paidPerInvoice[inv.id] ?? 0) + advance;
+      const balance = Number(inv.totalAmount) - paid;
+      if (inv.status === "paid") {
+        totalPaid += Number(inv.totalAmount);
+      } else {
+        totalPayable += balance;
+        if (inv.dueDate && new Date(inv.dueDate) < now) totalOverdue += balance;
+      }
+    });
+    return { totalPayable, totalPaid, totalOverdue };
+  }, [supplierInvoices, paidPerInvoice, poMap]);
+
+  // ── AR State ──────────────────────────────────────────────────────────────
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
   const [invoiceForm, setInvoiceForm] = useState({ invoiceNumber: "", customerId: "", amount: "", status: "unpaid", dueDate: "" });
@@ -47,6 +92,59 @@ export default function Accounts() {
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [paymentForm, setPaymentForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "" });
 
+  // ── AP State ──────────────────────────────────────────────────────────────
+  const [siDialogOpen, setSiDialogOpen] = useState(false);
+  const [siForm, setSiForm] = useState({
+    supplierId: "", purchaseOrderId: "", grnId: "", invoiceNumber: "",
+    invoiceDate: new Date().toISOString().split("T")[0], subtotal: "",
+    taxAmount: "0", paymentTerms: "net_30", notes: "",
+  });
+
+  const [spDialogOpen, setSpDialogOpen] = useState(false);
+  const [spForm, setSpForm] = useState({
+    paymentType: "regular", supplierId: "", supplierInvoiceId: "",
+    purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer",
+    paymentDate: new Date().toISOString().split("T")[0], reference: "",
+  });
+
+  // ── AR Computed helpers ───────────────────────────────────────────────────
+  const siDueDate = useMemo(() => {
+    if (!siForm.invoiceDate) return null;
+    const d = new Date(siForm.invoiceDate);
+    if (siForm.paymentTerms === "immediate") return d.toLocaleDateString();
+    if (siForm.paymentTerms === "net_30") { d.setDate(d.getDate() + 30); return d.toLocaleDateString(); }
+    if (siForm.paymentTerms === "net_60") { d.setDate(d.getDate() + 60); return d.toLocaleDateString(); }
+    return null;
+  }, [siForm.invoiceDate, siForm.paymentTerms]);
+
+  const filteredPOs = useMemo(() =>
+    (purchaseOrders ?? []).filter(po => !siForm.supplierId || po.supplierId === siForm.supplierId),
+    [purchaseOrders, siForm.supplierId]);
+
+  const filteredGRNs = useMemo(() =>
+    (grns ?? []).filter(g => g.status === "confirmed" && (!siForm.purchaseOrderId || g.purchaseOrderId === siForm.purchaseOrderId)),
+    [grns, siForm.purchaseOrderId]);
+
+  const supplierPOs = useMemo(() =>
+    (purchaseOrders ?? []).filter(po => !spForm.supplierId || po.supplierId === spForm.supplierId),
+    [purchaseOrders, spForm.supplierId]);
+
+  const supplierSIs = useMemo(() =>
+    (supplierInvoices ?? []).filter(si => !spForm.supplierId || si.supplierId === spForm.supplierId),
+    [supplierInvoices, spForm.supplierId]);
+
+  const selectedSI = useMemo(() =>
+    spForm.supplierInvoiceId ? supplierInvoices?.find(si => si.id === spForm.supplierInvoiceId) : null,
+    [supplierInvoices, spForm.supplierInvoiceId]);
+
+  const invoiceBalance = useMemo(() => {
+    if (!selectedSI) return null;
+    const advance = selectedSI.purchaseOrderId ? Number(poMap.get(selectedSI.purchaseOrderId)?.advancePaid ?? 0) : 0;
+    const paid = paidPerInvoice[selectedSI.id] ?? 0;
+    return Number(selectedSI.totalAmount) - advance - paid;
+  }, [selectedSI, paidPerInvoice, poMap]);
+
+  // ── AR Mutations ──────────────────────────────────────────────────────────
   const invoiceMutation = useMutation({
     mutationFn: async (data: any) => {
       if (editingInvoice) {
@@ -107,6 +205,74 @@ export default function Accounts() {
     },
   });
 
+  // ── AP Mutations ──────────────────────────────────────────────────────────
+  const siMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const res = await apiRequest("POST", "/api/supplier-invoices", data);
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.message || "Failed to create supplier invoice");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      toast({ title: "Supplier invoice created" });
+      setSiDialogOpen(false);
+      setSiForm({ supplierId: "", purchaseOrderId: "", grnId: "", invoiceNumber: "", invoiceDate: new Date().toISOString().split("T")[0], subtotal: "", taxAmount: "0", paymentTerms: "net_30", notes: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteSiMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/supplier-invoices/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
+      toast({ title: "Supplier invoice deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const spMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const res = await apiRequest("POST", "/api/supplier-payments", data);
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.message || "Failed to record payment");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "Payment recorded" });
+      setSpDialogOpen(false);
+      setSpForm({ paymentType: "regular", supplierId: "", supplierInvoiceId: "", purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const deleteSpMutation = useMutation({
+    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/supplier-payments/${id}`); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      toast({ title: "Payment deleted" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // ── AR helpers ────────────────────────────────────────────────────────────
   const openNewInvoice = () => {
     setEditingInvoice(null);
     setInvoiceForm({ invoiceNumber: "", customerId: "", amount: "", status: "unpaid", dueDate: "" });
@@ -169,7 +335,7 @@ export default function Accounts() {
             </div>
             <div>
               <p className="text-2xl font-bold">{invoices?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Total Invoices</p>
+              <p className="text-xs text-muted-foreground">AR Invoices</p>
             </div>
           </CardContent>
         </Card>
@@ -180,7 +346,7 @@ export default function Accounts() {
             </div>
             <div>
               <p className="text-2xl font-bold">{payments?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Payments</p>
+              <p className="text-xs text-muted-foreground">AR Payments</p>
             </div>
           </CardContent>
         </Card>
@@ -202,7 +368,7 @@ export default function Accounts() {
             </div>
             <div>
               <p className="text-2xl font-bold">₹{pendingAmount.toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground">Pending Amount</p>
+              <p className="text-xs text-muted-foreground">AR Pending</p>
             </div>
           </CardContent>
         </Card>
@@ -212,8 +378,11 @@ export default function Accounts() {
         <TabsList>
           <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>
           <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
+          <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>
+          <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>
         </TabsList>
 
+        {/* ── AR: Invoices ───────────────────────────────────────────────── */}
         <TabsContent value="invoices" className="space-y-4">
           <div className="flex items-center gap-2">
             <div className="relative flex-1 max-w-sm">
@@ -276,6 +445,7 @@ export default function Accounts() {
           </Card>
         </TabsContent>
 
+        {/* ── AR: Payments ───────────────────────────────────────────────── */}
         <TabsContent value="payments" className="space-y-4">
           <Card>
             <CardContent className="p-0">
@@ -325,8 +495,188 @@ export default function Accounts() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── AP: Supplier Invoices ──────────────────────────────────────── */}
+        <TabsContent value="supplier-invoices" className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Card>
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-orange-50 dark:bg-orange-950/30 flex items-center justify-center">
+                  <IndianRupee className="w-5 h-5 text-orange-500" />
+                </div>
+                <div>
+                  <p className="text-xl font-bold">₹{apSummary.totalPayable.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Total Payable</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
+                  <CheckCircle2 className="w-5 h-5 text-green-500" />
+                </div>
+                <div>
+                  <p className="text-xl font-bold">₹{apSummary.totalPaid.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Total Paid</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-5 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5 text-red-500" />
+                </div>
+                <div>
+                  <p className="text-xl font-bold">₹{apSummary.totalOverdue.toLocaleString()}</p>
+                  <p className="text-xs text-muted-foreground">Total Overdue</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{supplierInvoices?.length ?? 0} invoice(s)</p>
+            <Button data-testid="button-new-supplier-invoice" onClick={() => setSiDialogOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              New Supplier Invoice
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Invoice #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Due Date</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Total</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Paid</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Balance</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {siLoading ? (
+                      Array.from({ length: 3 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 9 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : supplierInvoices && supplierInvoices.length > 0 ? (
+                      supplierInvoices.map((inv) => {
+                        const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
+                        const paid = (paidPerInvoice[inv.id] ?? 0) + advance;
+                        const balance = Number(inv.totalAmount) - paid;
+                        const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
+                        return (
+                          <tr key={inv.id} className="border-b last:border-0" data-testid={`row-supplier-invoice-${inv.id}`}>
+                            <td className="p-3 font-medium">{supplierMap.get(inv.supplierId)?.name ?? "—"}</td>
+                            <td className="p-3">{inv.invoiceNumber}</td>
+                            <td className="p-3 text-muted-foreground">{new Date(inv.invoiceDate).toLocaleDateString()}</td>
+                            <td className={`p-3 ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
+                              {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}
+                            </td>
+                            <td className="p-3 text-right font-medium">₹{Number(inv.totalAmount).toLocaleString()}</td>
+                            <td className="p-3 text-right text-green-600 dark:text-green-400">₹{paid.toLocaleString()}</td>
+                            <td className="p-3 text-right font-semibold">₹{Math.max(0, balance).toLocaleString()}</td>
+                            <td className="p-3"><StatusBadge status={inv.status} /></td>
+                            <td className="p-3 text-right">
+                              <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-invoice-${inv.id}`}
+                                onClick={() => { if (confirm("Delete this supplier invoice and its payments?")) deleteSiMutation.mutate(inv.id); }}>
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={9} className="p-8 text-center text-muted-foreground">No supplier invoices found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── AP: Supplier Payments ──────────────────────────────────────── */}
+        <TabsContent value="supplier-payments" className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{supplierPayments?.length ?? 0} payment(s)</p>
+            <Button data-testid="button-record-supplier-payment" onClick={() => setSpDialogOpen(true)}>
+              <CreditCard className="w-4 h-4 mr-2" />
+              Record Payment
+            </Button>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Method</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Linked To</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Reference</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {spLoading ? (
+                      <tr><td colSpan={8} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                    ) : supplierPayments && supplierPayments.length > 0 ? (
+                      supplierPayments.map((pay) => {
+                        const linkedSI = pay.supplierInvoiceId ? supplierInvoices?.find(si => si.id === pay.supplierInvoiceId) : null;
+                        const linkedPO = pay.purchaseOrderId ? poMap.get(pay.purchaseOrderId) : null;
+                        return (
+                          <tr key={pay.id} className="border-b last:border-0" data-testid={`row-supplier-payment-${pay.id}`}>
+                            <td className="p-3 text-muted-foreground">{new Date(pay.paymentDate).toLocaleDateString()}</td>
+                            <td className="p-3">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${pay.paymentType === "advance" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400" : "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300"}`}>
+                                {pay.paymentType === "advance" ? "Advance" : "Regular"}
+                              </span>
+                            </td>
+                            <td className="p-3 capitalize">{pay.paymentMethod.replace(/_/g, " ")}</td>
+                            <td className="p-3 font-medium">{supplierMap.get(pay.supplierId)?.name ?? "—"}</td>
+                            <td className="p-3 text-muted-foreground">
+                              {linkedSI ? linkedSI.invoiceNumber : linkedPO ? linkedPO.poNumber : "—"}
+                            </td>
+                            <td className="p-3 text-muted-foreground">{pay.reference || "—"}</td>
+                            <td className="p-3 text-right font-medium">₹{Number(pay.amount).toLocaleString()}</td>
+                            <td className="p-3 text-right">
+                              <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-payment-${pay.id}`}
+                                onClick={() => { if (confirm("Delete this payment?")) deleteSpMutation.mutate(pay.id); }}>
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No supplier payments recorded.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
+      {/* ── AR: Invoice Dialog ────────────────────────────────────────────── */}
       <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -380,6 +730,7 @@ export default function Accounts() {
         </DialogContent>
       </Dialog>
 
+      {/* ── AR: Payment Dialog ────────────────────────────────────────────── */}
       <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -424,6 +775,232 @@ export default function Accounts() {
           <DialogFooter>
             <Button data-testid="button-submit-payment" disabled={paymentMutation.isPending} onClick={() => paymentMutation.mutate(paymentForm)}>
               {paymentMutation.isPending ? "Saving..." : editingPayment ? "Update" : "Record"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── AP: New Supplier Invoice Dialog ──────────────────────────────── */}
+      <Dialog open={siDialogOpen} onOpenChange={setSiDialogOpen}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New Supplier Invoice</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Supplier *</Label>
+              <Select value={siForm.supplierId} onValueChange={(v) => setSiForm({ ...siForm, supplierId: v, purchaseOrderId: "", grnId: "" })}>
+                <SelectTrigger data-testid="select-si-supplier">
+                  <SelectValue placeholder="Select supplier" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(suppliers ?? []).map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Purchase Order</Label>
+              <Select value={siForm.purchaseOrderId} onValueChange={(v) => setSiForm({ ...siForm, purchaseOrderId: v, grnId: "" })} disabled={!siForm.supplierId}>
+                <SelectTrigger data-testid="select-si-po">
+                  <SelectValue placeholder={siForm.supplierId ? "Select PO (optional)" : "Select supplier first"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {filteredPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>GRN</Label>
+              <Select value={siForm.grnId} onValueChange={(v) => setSiForm({ ...siForm, grnId: v })} disabled={!siForm.purchaseOrderId || siForm.purchaseOrderId === "none"}>
+                <SelectTrigger data-testid="select-si-grn">
+                  <SelectValue placeholder={siForm.purchaseOrderId && siForm.purchaseOrderId !== "none" ? "Select GRN (optional)" : "Select PO first"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {filteredGRNs.map(g => <SelectItem key={g.id} value={g.id}>{g.grnNumber} — ₹{Number(g.totalAmount).toLocaleString()}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Invoice Number *</Label>
+              <Input data-testid="input-si-invoice-number" value={siForm.invoiceNumber} onChange={e => setSiForm({ ...siForm, invoiceNumber: e.target.value })} placeholder="e.g. SUP-INV-2026-001" />
+            </div>
+            <div className="space-y-2">
+              <Label>Invoice Date</Label>
+              <Input type="date" data-testid="input-si-invoice-date" value={siForm.invoiceDate} onChange={e => setSiForm({ ...siForm, invoiceDate: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Subtotal (₹) *</Label>
+                <Input type="number" data-testid="input-si-subtotal" value={siForm.subtotal} onChange={e => setSiForm({ ...siForm, subtotal: e.target.value })} placeholder="0" />
+              </div>
+              <div className="space-y-2">
+                <Label>Tax Amount (₹)</Label>
+                <Input type="number" data-testid="input-si-tax" value={siForm.taxAmount} onChange={e => setSiForm({ ...siForm, taxAmount: e.target.value })} placeholder="0" />
+              </div>
+            </div>
+            <div className="p-3 bg-muted/50 rounded-md text-sm flex justify-between">
+              <span className="text-muted-foreground">Total Amount</span>
+              <span className="font-semibold">₹{((Number(siForm.subtotal) || 0) + (Number(siForm.taxAmount) || 0)).toLocaleString()}</span>
+            </div>
+            <div className="space-y-2">
+              <Label>Payment Terms</Label>
+              <Select value={siForm.paymentTerms} onValueChange={v => setSiForm({ ...siForm, paymentTerms: v })}>
+                <SelectTrigger data-testid="select-si-terms">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="immediate">Immediate</SelectItem>
+                  <SelectItem value="net_30">Net 30 Days</SelectItem>
+                  <SelectItem value="net_60">Net 60 Days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {siDueDate && (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-md text-sm flex justify-between">
+                <span className="text-blue-700 dark:text-blue-300">Due Date</span>
+                <span className="font-medium text-blue-800 dark:text-blue-200">{siDueDate}</span>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Input data-testid="input-si-notes" value={siForm.notes} onChange={e => setSiForm({ ...siForm, notes: e.target.value })} placeholder="Optional notes" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSiDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-submit-supplier-invoice" disabled={siMutation.isPending || !siForm.supplierId || !siForm.invoiceNumber || !siForm.subtotal}
+              onClick={() => siMutation.mutate({
+                supplierId: siForm.supplierId,
+                purchaseOrderId: siForm.purchaseOrderId && siForm.purchaseOrderId !== "none" ? siForm.purchaseOrderId : null,
+                grnId: siForm.grnId && siForm.grnId !== "none" ? siForm.grnId : null,
+                invoiceNumber: siForm.invoiceNumber,
+                invoiceDate: siForm.invoiceDate,
+                subtotal: siForm.subtotal,
+                taxAmount: siForm.taxAmount || "0",
+                paymentTerms: siForm.paymentTerms,
+                notes: siForm.notes || null,
+              })}>
+              {siMutation.isPending ? "Creating..." : "Create Invoice"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── AP: Record Supplier Payment Dialog ───────────────────────────── */}
+      <Dialog open={spDialogOpen} onOpenChange={setSpDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Record Supplier Payment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Payment Type *</Label>
+              <Select value={spForm.paymentType} onValueChange={v => setSpForm({ ...spForm, paymentType: v, supplierInvoiceId: "", purchaseOrderId: "" })}>
+                <SelectTrigger data-testid="select-sp-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="regular">Regular (against invoice)</SelectItem>
+                  <SelectItem value="advance">Advance (against PO)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Supplier *</Label>
+              <Select value={spForm.supplierId} onValueChange={v => setSpForm({ ...spForm, supplierId: v, supplierInvoiceId: "", purchaseOrderId: "" })}>
+                <SelectTrigger data-testid="select-sp-supplier">
+                  <SelectValue placeholder="Select supplier" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(suppliers ?? []).map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {spForm.paymentType === "advance" ? (
+              <div className="space-y-2">
+                <Label>Purchase Order *</Label>
+                <Select value={spForm.purchaseOrderId} onValueChange={v => setSpForm({ ...spForm, purchaseOrderId: v })} disabled={!spForm.supplierId}>
+                  <SelectTrigger data-testid="select-sp-po">
+                    <SelectValue placeholder={spForm.supplierId ? "Select PO" : "Select supplier first"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {supplierPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {spForm.purchaseOrderId && (
+                  <p className="text-xs text-muted-foreground">
+                    Advance already paid: ₹{Number(poMap.get(spForm.purchaseOrderId)?.advancePaid ?? 0).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>Supplier Invoice *</Label>
+                <Select value={spForm.supplierInvoiceId} onValueChange={v => setSpForm({ ...spForm, supplierInvoiceId: v })} disabled={!spForm.supplierId}>
+                  <SelectTrigger data-testid="select-sp-invoice">
+                    <SelectValue placeholder={spForm.supplierId ? "Select invoice" : "Select supplier first"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {supplierSIs.filter(si => si.status !== "paid").map(si => <SelectItem key={si.id} value={si.id}>{si.invoiceNumber} — ₹{Number(si.totalAmount).toLocaleString()}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {invoiceBalance !== null && (
+                  <div className="p-3 bg-muted/50 rounded-md text-sm flex justify-between">
+                    <span className="text-muted-foreground">Current Balance</span>
+                    <span className={`font-semibold ${invoiceBalance <= 0 ? "text-green-600" : ""}`}>₹{Math.max(0, invoiceBalance).toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label>Amount (₹) *</Label>
+              <Input type="number" data-testid="input-sp-amount" value={spForm.amount} onChange={e => setSpForm({ ...spForm, amount: e.target.value })} placeholder="0" />
+            </div>
+            <div className="space-y-2">
+              <Label>Payment Method</Label>
+              <Select value={spForm.paymentMethod} onValueChange={v => setSpForm({ ...spForm, paymentMethod: v })}>
+                <SelectTrigger data-testid="select-sp-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["bank_transfer", "cash", "cheque", "upi", "card"].map(m => (
+                    <SelectItem key={m} value={m}>{m.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase())}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Payment Date</Label>
+              <Input type="date" data-testid="input-sp-date" value={spForm.paymentDate} onChange={e => setSpForm({ ...spForm, paymentDate: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Reference</Label>
+              <Input data-testid="input-sp-reference" value={spForm.reference} onChange={e => setSpForm({ ...spForm, reference: e.target.value })} placeholder="NEFT/Cheque number, etc." />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSpDialogOpen(false)}>Cancel</Button>
+            <Button
+              data-testid="button-submit-supplier-payment"
+              disabled={spMutation.isPending || !spForm.supplierId || !spForm.amount ||
+                (spForm.paymentType === "regular" && !spForm.supplierInvoiceId) ||
+                (spForm.paymentType === "advance" && !spForm.purchaseOrderId)}
+              onClick={() => spMutation.mutate({
+                paymentType: spForm.paymentType,
+                supplierId: spForm.supplierId,
+                supplierInvoiceId: spForm.paymentType === "regular" ? spForm.supplierInvoiceId : null,
+                purchaseOrderId: spForm.paymentType === "advance" ? spForm.purchaseOrderId : null,
+                amount: spForm.amount,
+                paymentMethod: spForm.paymentMethod,
+                paymentDate: spForm.paymentDate,
+                reference: spForm.reference || null,
+              })}
+            >
+              {spMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>

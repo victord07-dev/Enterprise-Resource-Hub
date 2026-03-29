@@ -149,6 +149,7 @@ export const purchaseOrders = pgTable("purchase_orders", {
   cancellationReason: text("cancellation_reason"),
   cancellationRequestedBy: varchar("cancellation_requested_by"),
   cancellationRequestedAt: timestamp("cancellation_requested_at"),
+  advancePaid: decimal("advance_paid", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const invoices = pgTable("invoices", {
@@ -440,6 +441,37 @@ export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
   totalCost: decimal("total_cost", { precision: 12, scale: 2 }),
 });
 
+export const supplierInvoices = pgTable("supplier_invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceNumber: text("invoice_number").notNull(),
+  supplierId: varchar("supplier_id").notNull(),
+  purchaseOrderId: varchar("purchase_order_id"),
+  grnId: varchar("grn_id"),
+  invoiceDate: timestamp("invoice_date").notNull().defaultNow(),
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull(),
+  paymentTerms: text("payment_terms").notNull().default("net_30"),
+  dueDate: timestamp("due_date"),
+  status: text("status").notNull().default("pending"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const supplierPayments = pgTable("supplier_payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  supplierInvoiceId: varchar("supplier_invoice_id"),
+  purchaseOrderId: varchar("purchase_order_id"),
+  supplierId: varchar("supplier_id").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  paymentType: text("payment_type").notNull().default("regular"),
+  paymentMethod: text("payment_method").notNull().default("bank_transfer"),
+  paymentDate: timestamp("payment_date").notNull().defaultNow(),
+  reference: text("reference"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull(),
@@ -513,6 +545,8 @@ export const insertGoodsReceiptNoteItemSchema = createInsertSchema(goodsReceiptN
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true });
 export const insertNotificationSchema = createInsertSchema(notifications).omit({ id: true });
 export const insertLeaveRequestSchema = createInsertSchema(leaveRequests).omit({ id: true, createdAt: true });
+export const insertSupplierInvoiceSchema = createInsertSchema(supplierInvoices).omit({ id: true, createdAt: true });
+export const insertSupplierPaymentSchema = createInsertSchema(supplierPayments).omit({ id: true, createdAt: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -554,3 +588,5 @@ export type GoodsReceiptNote = typeof goodsReceiptNotes.$inferSelect;
 export type GoodsReceiptNoteItem = typeof goodsReceiptNoteItems.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type LeaveRequest = typeof leaveRequests.$inferSelect;
+export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
+export type SupplierPayment = typeof supplierPayments.$inferSelect;

@@ -33,11 +33,13 @@ export default function Inventory() {
 
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
+  const [activeTab, setActiveTab] = useState("products");
   const [movementFilterProduct, setMovementFilterProduct] = useState("all");
   const [movementFilterWarehouse, setMovementFilterWarehouse] = useState("all");
   const [movementFilterType, setMovementFilterType] = useState("all");
   const [movementFilterDateFrom, setMovementFilterDateFrom] = useState("");
   const [movementFilterDateTo, setMovementFilterDateTo] = useState("");
+  const [refDetailModal, setRefDetailModal] = useState<{ open: boolean; type: string; label: string; number: string; notes: string }>({ open: false, type: "", label: "", number: "", notes: "" });
 
   const { data: stockMovements, isLoading: movementsLoading } = useQuery<StockMovement[]>({ queryKey: ["/api/stock-movements"] });
   const { data: inventoryStockData } = useQuery<InventoryStock[]>({ queryKey: ["/api/inventory-stock"] });
@@ -630,7 +632,7 @@ export default function Inventory() {
         </Card>
       </div>
 
-      <Tabs defaultValue="products" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
@@ -1021,9 +1023,24 @@ export default function Inventory() {
                         const product = products?.find(p => p.id === m.productId);
                         const warehouse = warehouses?.find(w => w.id === m.warehouseId);
                         const displayQty = m.movementType === "out" ? -Math.abs(m.quantity) : m.quantity;
-                        const refLabel = m.referenceType === "purchase_order" ? `PO` :
-                                         m.referenceType === "sales_order" ? `SO` :
-                                         m.referenceType === "challan" ? `DC` : "Manual";
+
+                        let refLabel = "Manual";
+                        let refNumber = "";
+                        let refClickable = false;
+                        let refTargetTab = "";
+                        if (m.referenceType === "grn" && m.referenceId) {
+                          const grn = grns?.find(g => g.id === m.referenceId);
+                          refLabel = "GRN";
+                          refNumber = grn?.grnNumber || m.referenceId.slice(0, 8);
+                          refClickable = true;
+                          refTargetTab = "grn";
+                        } else if (m.referenceType === "challan" && m.referenceId) {
+                          const challan = deliveryChallans?.find(c => c.id === m.referenceId);
+                          refLabel = "DC";
+                          refNumber = challan?.challanNumber || m.referenceId.slice(0, 8);
+                          refClickable = true;
+                          refTargetTab = "challans";
+                        }
 
                         return (
                           <tr key={m.id} className="border-b last:border-0" data-testid={`row-movement-${m.id}`}>
@@ -1055,8 +1072,26 @@ export default function Inventory() {
                             {runningBalance && (
                               <td className="p-3 text-right font-medium" data-testid={`text-movement-balance-${m.id}`}>{runningBalance[idx]}</td>
                             )}
-                            <td className="p-3 text-muted-foreground" data-testid={`text-movement-ref-${m.id}`}>
-                              {m.referenceId ? `${refLabel} #${m.referenceId.slice(0, 8)}` : refLabel}
+                            <td className="p-3" data-testid={`text-movement-ref-${m.id}`}>
+                              {refClickable ? (
+                                <button
+                                  className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline font-medium text-xs"
+                                  onClick={() => setActiveTab(refTargetTab)}
+                                  data-testid={`link-ref-${m.id}`}
+                                >
+                                  <FileText className="w-3 h-3" />
+                                  {refLabel} {refNumber}
+                                </button>
+                              ) : (
+                                <button
+                                  className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground text-xs"
+                                  onClick={() => setRefDetailModal({ open: true, type: "manual", label: "Manual Adjustment", number: "", notes: m.notes || "No notes" })}
+                                  data-testid={`link-ref-manual-${m.id}`}
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                  Manual
+                                </button>
+                              )}
                             </td>
                             <td className="p-3 text-muted-foreground max-w-[200px] truncate" data-testid={`text-movement-notes-${m.id}`}>{m.notes || "—"}</td>
                             <td className="p-3 text-muted-foreground" data-testid={`text-movement-creator-${m.id}`}>{m.createdBy?.slice(0, 8) || "—"}</td>
@@ -1936,6 +1971,19 @@ export default function Inventory() {
               {adjustmentMutation.isPending ? "Recording..." : "Record Adjustment"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={refDetailModal.open} onOpenChange={(open) => setRefDetailModal(prev => ({ ...prev, open }))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{refDetailModal.label}</DialogTitle>
+            <DialogDescription>Manual stock adjustment details</DialogDescription>
+          </DialogHeader>
+          <div className="py-2 space-y-2">
+            <p className="text-sm text-muted-foreground">Notes / Reason:</p>
+            <p className="text-sm font-medium rounded bg-muted p-3">{refDetailModal.notes || "No notes provided"}</p>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

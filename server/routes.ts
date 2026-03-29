@@ -2,7 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage } from "./storage";
 import { db } from "./db";
-import { sql } from "drizzle-orm";
+import { sql, eq, and } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
@@ -18,6 +18,8 @@ import {
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
   insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
   inventoryStock, deliveryChallans as deliveryChallansTable, purchaseRequests as purchaseRequestsTable,
+  stockMovements as stockMovementsTable, products as productsTable, warehouses as warehousesTable,
+  goodsReceiptNotes as goodsReceiptNotesTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -1957,6 +1959,54 @@ export async function registerRoutes(
     }
   }
 
+  async function addLedgerEntry(
+    tx: typeof db,
+    params: {
+      productId: string;
+      warehouseId: string;
+      movementType: string;
+      quantity: number;
+      referenceType?: string;
+      referenceId?: string;
+      notes?: string;
+      createdBy: string;
+    }
+  ) {
+    const [movement] = await (tx as any).insert(stockMovementsTable).values({
+      productId: params.productId,
+      warehouseId: params.warehouseId,
+      movementType: params.movementType,
+      quantity: params.quantity,
+      referenceType: params.referenceType ?? null,
+      referenceId: params.referenceId ?? null,
+      notes: params.notes ?? null,
+      createdBy: params.createdBy,
+    }).returning();
+
+    const qtyDelta = params.movementType === "out" ? -Math.abs(params.quantity) : params.quantity;
+
+    const existing = await (tx as any).select().from(inventoryStock).where(
+      and(
+        eq(inventoryStock.productId, params.productId),
+        eq(inventoryStock.warehouseId, params.warehouseId)
+      )
+    );
+
+    if (existing.length > 0) {
+      await (tx as any).update(inventoryStock)
+        .set({ quantity: (existing[0].quantity || 0) + qtyDelta })
+        .where(eq(inventoryStock.id, existing[0].id));
+    } else {
+      await (tx as any).insert(inventoryStock).values({
+        productId: params.productId,
+        warehouseId: params.warehouseId,
+        quantity: Math.max(0, qtyDelta),
+      });
+    }
+
+    return movement;
+  }
+
   async function getAvailableStock(productId: string, warehouseId: string): Promise<number> {
     const allStock = await storage.getInventoryStock();
     const existing = allStock.find((s: any) => s.productId === productId && s.warehouseId === warehouseId);
@@ -2124,6 +2174,66 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/inventory/ledger", authenticateToken, async (req: any, res) => {
+    try {
+      const { productId, warehouseId, type } = req.query as Record<string, string>;
+      const allMovements = await storage.getStockMovements();
+      const allProducts = await storage.getProducts();
+      const allWarehouses = await storage.getWarehouses();
+      const allGRNs = await storage.getGRNs();
+      const allChallans = await storage.getDeliveryChallans();
+
+      const productMap = new Map(allProducts.map((p: any) => [p.id, p]));
+      const warehouseMap = new Map(allWarehouses.map((w: any) => [w.id, w]));
+      const grnMap = new Map(allGRNs.map((g: any) => [g.id, g]));
+      const challanMap = new Map(allChallans.map((c: any) => [c.id, c]));
+
+      let filtered = allMovements as any[];
+
+      if (productId) filtered = filtered.filter((m: any) => m.productId === productId);
+      if (warehouseId) filtered = filtered.filter((m: any) => m.warehouseId === warehouseId);
+      if (type === "grn") filtered = filtered.filter((m: any) => m.referenceType === "grn");
+      else if (type === "dispatch") filtered = filtered.filter((m: any) => m.referenceType === "challan");
+      else if (type === "adjustment") filtered = filtered.filter((m: any) => m.referenceType === "manual" || (!m.referenceType && m.movementType !== "in" && m.movementType !== "out"));
+
+      const enriched = filtered
+        .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map((m: any) => {
+          const product = productMap.get(m.productId);
+          const warehouse = warehouseMap.get(m.warehouseId);
+          let referenceLabel = "";
+          let referenceNumber = "";
+          if (m.referenceType === "grn" && m.referenceId) {
+            const grn = grnMap.get(m.referenceId);
+            referenceLabel = "GRN";
+            referenceNumber = grn?.grnNumber || m.referenceId.slice(0, 8);
+          } else if (m.referenceType === "challan" && m.referenceId) {
+            const challan = challanMap.get(m.referenceId);
+            referenceLabel = "DC";
+            referenceNumber = challan?.challanNumber || m.referenceId.slice(0, 8);
+          } else if (m.referenceType === "manual" || !m.referenceType) {
+            referenceLabel = "Manual";
+            referenceNumber = "";
+          } else {
+            referenceLabel = m.referenceType?.toUpperCase() || "—";
+            referenceNumber = m.referenceId?.slice(0, 8) || "";
+          }
+          return {
+            ...m,
+            productName: product?.name || m.productId,
+            warehouseName: warehouse?.name || (m.warehouseId ? m.warehouseId.slice(0, 8) : "—"),
+            referenceLabel,
+            referenceNumber,
+          };
+        });
+
+      res.json(enriched);
+    } catch (error) {
+      console.error("Ledger fetch error:", error);
+      res.status(500).json({ message: "Failed to fetch inventory ledger" });
+    }
+  });
+
   app.post("/api/stock-movements", authenticateToken, async (req: any, res) => {
     try {
       const parsed = insertStockMovementSchema.safeParse({
@@ -2139,11 +2249,22 @@ export async function registerRoutes(
         }
       }
 
-      const movement = await storage.createStockMovement(parsed.data as any);
-
-      if (movement.warehouseId) {
-        const qty = movement.movementType === "out" ? -Math.abs(movement.quantity) : movement.quantity;
-        await updateInventoryStockForMovement(movement.productId, movement.warehouseId, qty);
+      let movement: any;
+      if (parsed.data.warehouseId) {
+        movement = await db.transaction(async (tx) => {
+          return await addLedgerEntry(tx, {
+            productId: parsed.data.productId,
+            warehouseId: parsed.data.warehouseId!,
+            movementType: parsed.data.movementType,
+            quantity: parsed.data.quantity,
+            referenceType: parsed.data.referenceType ?? undefined,
+            referenceId: parsed.data.referenceId ?? undefined,
+            notes: parsed.data.notes ?? undefined,
+            createdBy: parsed.data.createdBy,
+          });
+        });
+      } else {
+        movement = await storage.createStockMovement(parsed.data as any);
       }
 
       res.status(201).json(movement);
@@ -2333,20 +2454,20 @@ export async function registerRoutes(
           }
         }
 
-        for (const item of items) {
-          await storage.createStockMovement({
-            productId: item.productId,
-            warehouseId: challan.sourceId,
-            movementType: "out",
-            quantity: item.quantity,
-            referenceType: "challan",
-            referenceId: challan.id,
-            notes: `Dispatched via challan ${challan.challanNumber}`,
-            createdBy: req.user.id,
-          });
-
-          await updateInventoryStockForMovement(item.productId, challan.sourceId, -item.quantity);
-        }
+        await db.transaction(async (tx) => {
+          for (const item of items) {
+            await addLedgerEntry(tx, {
+              productId: item.productId,
+              warehouseId: challan.sourceId,
+              movementType: "out",
+              quantity: item.quantity,
+              referenceType: "challan",
+              referenceId: challan.id,
+              notes: `Dispatched via challan ${challan.challanNumber}`,
+              createdBy: req.user.id,
+            });
+          }
+        });
       }
 
       const updated = await storage.updateDeliveryChallan(challan.id, {
@@ -2560,21 +2681,6 @@ export async function registerRoutes(
 
       const allStock = await storage.getInventoryStock();
 
-      for (const item of items) {
-        await storage.createStockMovement({
-          productId: item.productId,
-          warehouseId: grn.warehouseId,
-          movementType: "in",
-          quantity: item.receivedQuantity,
-          referenceType: "grn",
-          referenceId: grn.id,
-          notes: `Received via GRN ${grn.grnNumber}`,
-          createdBy: req.user.id,
-        });
-
-        await updateInventoryStockForMovement(item.productId, grn.warehouseId, item.receivedQuantity);
-      }
-
       const costAggregates: Record<string, { totalQty: number; totalCost: number }> = {};
       for (const item of items) {
         if (item.buyingPrice && parseFloat(item.buyingPrice) > 0) {
@@ -2586,21 +2692,36 @@ export async function registerRoutes(
         }
       }
 
-      for (const [productId, agg] of Object.entries(costAggregates)) {
-        const existingStock = allStock
-          .filter((s: any) => s.productId === productId)
-          .reduce((sum: number, s: any) => sum + (s.quantity ?? 0), 0);
-        const product = await storage.getProduct(productId);
-        if (product) {
-          const existingCost = product.costPrice ? parseFloat(product.costPrice) : 0;
-          const avgBuyingPrice = agg.totalQty > 0 ? agg.totalCost / agg.totalQty : 0;
-          const totalQty = existingStock + agg.totalQty;
-          const newCost = totalQty > 0
-            ? ((existingStock * existingCost) + (agg.totalQty * avgBuyingPrice)) / totalQty
-            : avgBuyingPrice;
-          await storage.updateProduct(product.id, { costPrice: newCost.toFixed(2) });
+      await db.transaction(async (tx) => {
+        for (const item of items) {
+          await addLedgerEntry(tx, {
+            productId: item.productId,
+            warehouseId: grn.warehouseId,
+            movementType: "in",
+            quantity: item.receivedQuantity,
+            referenceType: "grn",
+            referenceId: grn.id,
+            notes: `Received via GRN ${grn.grnNumber}`,
+            createdBy: req.user.id,
+          });
         }
-      }
+
+        for (const [productId, agg] of Object.entries(costAggregates)) {
+          const existingStock = allStock
+            .filter((s: any) => s.productId === productId)
+            .reduce((sum: number, s: any) => sum + (s.quantity ?? 0), 0);
+          const [product] = await (tx as any).select().from(productsTable).where(eq(productsTable.id, productId));
+          if (product) {
+            const existingCost = product.costPrice ? parseFloat(product.costPrice) : 0;
+            const avgBuyingPrice = agg.totalQty > 0 ? agg.totalCost / agg.totalQty : 0;
+            const totalQty = existingStock + agg.totalQty;
+            const newCost = totalQty > 0
+              ? ((existingStock * existingCost) + (agg.totalQty * avgBuyingPrice)) / totalQty
+              : avgBuyingPrice;
+            await (tx as any).update(productsTable).set({ costPrice: newCost.toFixed(2) }).where(eq(productsTable.id, productId));
+          }
+        }
+      });
 
       await storage.updateGRN(grn.id, { status: "confirmed" });
 
@@ -2706,20 +2827,22 @@ export async function registerRoutes(
           quantity: item.quantity,
           unitPrice: item.unitPrice,
         } as any);
-
-        await storage.createStockMovement({
-          productId: item.productId!,
-          warehouseId: pickupWarehouseId,
-          movementType: "out",
-          quantity: item.quantity,
-          referenceType: "challan",
-          referenceId: challan.id,
-          notes: `Pickup of order ${order.orderNumber}`,
-          createdBy: req.user.id,
-        });
-
-        await updateInventoryStockForMovement(item.productId!, pickupWarehouseId, -item.quantity);
       }
+
+      await db.transaction(async (tx) => {
+        for (const item of productItems) {
+          await addLedgerEntry(tx, {
+            productId: item.productId!,
+            warehouseId: pickupWarehouseId,
+            movementType: "out",
+            quantity: item.quantity,
+            referenceType: "challan",
+            referenceId: challan.id,
+            notes: `Pickup of order ${order.orderNumber}`,
+            createdBy: req.user.id,
+          });
+        }
+      });
 
       await storage.updateDeliveryChallan(challan.id, {
         status: "delivered",

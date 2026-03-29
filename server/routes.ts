@@ -4098,7 +4098,25 @@ export async function registerRoutes(
     try {
       const inv = await storage.getSupplierInvoice(req.params.id);
       if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
-      const updated = await storage.updateSupplierInvoice(req.params.id, req.body);
+
+      const allowed = ["status", "notes", "paymentTerms", "dueDate", "subtotal", "taxAmount", "totalAmount", "invoiceDate"];
+      const validStatuses = ["pending", "partial_paid", "paid"];
+      const validTerms = ["immediate", "net_30", "net_60"];
+
+      const updates: Record<string, unknown> = {};
+      for (const key of allowed) {
+        if (req.body[key] !== undefined) updates[key] = req.body[key];
+      }
+      if (updates.status && !validStatuses.includes(updates.status as string)) {
+        return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+      }
+      if (updates.paymentTerms && !validTerms.includes(updates.paymentTerms as string)) {
+        return res.status(400).json({ message: `Invalid paymentTerms. Must be one of: ${validTerms.join(", ")}` });
+      }
+      if (updates.dueDate) updates.dueDate = new Date(updates.dueDate as string);
+      if (updates.invoiceDate) updates.invoiceDate = new Date(updates.invoiceDate as string);
+
+      const updated = await storage.updateSupplierInvoice(req.params.id, updates as any);
       res.json(updated);
     } catch { res.status(500).json({ message: "Failed to update supplier invoice" }); }
   });

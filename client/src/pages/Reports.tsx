@@ -118,15 +118,30 @@ function APAgingTab() {
   });
 
   const rows = data?.rows ?? [];
-  const summary = data?.summary ?? { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 };
 
   const uniqueSuppliers = Array.from(new Map(rows.map(r => [r.supplierId, r.supplierName])).entries());
 
-  const filtered = rows.filter(r => {
-    if (supplierFilter !== "all" && r.supplierId !== supplierFilter) return false;
-    if (!showPaid && r.balance === 0) return false;
-    return true;
-  });
+  // Apply supplier filter (but always include all non-zero balance rows for summary)
+  const supplierFiltered = supplierFilter === "all" ? rows : rows.filter(r => r.supplierId === supplierFilter);
+
+  // Compute summary from supplier-filtered, non-zero rows only
+  const summary = supplierFiltered
+    .filter(r => r.balance > 0)
+    .reduce(
+      (acc, r) => {
+        acc.totalOutstanding += r.balance;
+        if (r.bucket === "current") acc.current += r.balance;
+        else if (r.bucket === "1-30") acc.days1_30 += r.balance;
+        else if (r.bucket === "31-60") acc.days31_60 += r.balance;
+        else if (r.bucket === "61-90") acc.days61_90 += r.balance;
+        else acc.days90plus += r.balance;
+        return acc;
+      },
+      { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
+    );
+
+  // Table rows: apply paid-invoice toggle on top of supplier filter
+  const filtered = supplierFiltered.filter(r => showPaid || r.balance > 0);
 
   const summaryCards = [
     { label: "Total Outstanding", value: summary.totalOutstanding, bucket: "90+", icon: AlertCircle, iconClass: "text-red-500" },

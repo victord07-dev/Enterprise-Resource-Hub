@@ -1,0 +1,187 @@
+🧱 1. CORE IDEA (FINAL ARCHITECTURE)
+Inventory (snapshot)  → fast numbers
+InventoryLedger       → all movements (clickable history)
+Reservation           → separate (later)
+
+👉 Ledger = source of truth
+👉 Inventory = cached total
+
+🧾 2. FINAL LEDGER SCHEMA (USE THIS)
+InventoryLedger {
+  id
+
+  productId
+  warehouseId
+
+  type: "GRN" | "DISPATCH" | "ADJUSTMENT"
+
+  quantityChange   // +ve or -ve
+
+  referenceType: "GRN" | "CHALLAN" | "MANUAL"
+  referenceId
+
+  createdAt
+}
+🔑 IMPORTANT DESIGN RULES
+❌ Never update stock directly
+✅ Always go through ledger
+❌ Never edit/delete ledger entries
+✅ Always append new entries
+⚙️ 3. CENTRAL FUNCTION (HEART OF SYSTEM)
+👉 Build this once
+InventoryService.addLedgerEntry()
+🔧 What it MUST do:
+Insert ledger entry
+Update inventory snapshot
+Validate stock (no negative)
+🔁 Example Flow
+GRN Confirm
+addLedgerEntry({
+  productId,
+  warehouseId,
+  type: "GRN",
+  quantityChange: +100,
+  referenceType: "GRN",
+  referenceId: grnId
+})
+Dispatch (Challan)
+addLedgerEntry({
+  productId,
+  warehouseId,
+  type: "DISPATCH",
+  quantityChange: -10,
+  referenceType: "CHALLAN",
+  referenceId: challanId
+})
+Adjustment
+type: "ADJUSTMENT"
+🔗 4. AUTOMATION FLOW (IMPORTANT)
+GRN Confirm → Ledger → Inventory Update
+Challan Dispatch → Ledger → Inventory Update
+Adjustment → Ledger → Inventory Update
+
+👉 No manual stock updates anywhere else
+
+🖱️ 5. CLICKABLE LEDGER (UI BEHAVIOR)
+✅ Ledger List (per product / warehouse)
+
+Show:
+
++100  GRN-001     [Click]
+-10   DC-045      [Click]
++5    Adjustment
+🔗 Click Behavior
+Click	Opens
+GRN referenceId	GRN details page
+Challan referenceId	Challan details
+Adjustment	simple modal/log
+👉 API Needed
+Get ledger:
+GET /inventory/ledger?productId=&warehouseId=
+Response:
+[
+  {
+    type: "GRN",
+    quantityChange: 100,
+    referenceType: "GRN",
+    referenceId: "grn_123",
+    createdAt: "..."
+  }
+]
+📊 6. OPTIONAL (BUT EASY WIN)
+
+Add basic filters:
+
+product
+warehouse
+type
+
+👉 Keep simple (no analytics yet)
+
+🔒 7. TRANSACTION SAFETY (VERY IMPORTANT)
+
+Every ledger operation must be atomic:
+
+Example (GRN Confirm)
+START TRANSACTION
+
+1. Insert ledger entry
+2. Update inventory.total += qty
+
+COMMIT
+Example (Dispatch)
+START TRANSACTION
+
+1. Check available stock
+2. Insert ledger (-qty)
+3. Update inventory.total -= qty
+
+COMMIT
+⚠️ 8. VALIDATIONS (MUST ADD)
+❌ stock cannot go below 0
+❌ cannot dispatch more than available
+❌ warehouse must match
+🧠 9. HOW THIS ENABLES FULL AUTOMATION
+
+After this:
+
+✅ No manual stock dependency
+GRN → auto stock in
+Dispatch → auto stock out
+✅ Full traceability
+
+You can answer:
+
+where stock came from
+where it went
+who changed it
+✅ Ready for next features
+serial tracking
+warranty tracking
+audit logs
+🚀 10. IMPLEMENTATION STEPS (FOLLOW EXACTLY)
+STEP 1
+
+Create InventoryLedger table
+
+STEP 2
+
+Create addLedgerEntry() service
+
+STEP 3
+
+Refactor:
+
+GRN confirm → use ledger
+Challan dispatch → use ledger
+Adjustment → use ledger
+STEP 4
+
+Update inventory snapshot inside service
+
+STEP 5
+
+Create ledger API + simple UI list
+
+❌ WHAT NOT TO BUILD (IMPORTANT)
+reservation in ledger
+costing logic
+transfers
+complex dashboards
+👉 WHAT COMES NEXT (AFTER THIS)
+🔥 Next Step:
+
+Warehouse-level reservation system
+
+🧠 FINAL SUMMARY
+
+👉 Build:
+
+Ledger table
+One service
+Hook 3 flows
+Clickable references
+
+👉 Outcome:
+
+Fully automated, traceable, SAP-style inventory system

@@ -1,0 +1,206 @@
+🧠 WHAT IS INVENTORY LEDGER (IN ERP TERMS)
+
+👉 Think of it like a bank statement for stock
+
+Instead of storing only:
+
+total = 100
+
+You store every change that led to 100
+
++100 (GRN)
+-20  (SO Dispatch)
++5   (Adjustment)
+-10  (Reservation)
+
+👉 Current stock = sum of all ledger entries
+
+❗ WHY YOU NEED IT (VERY IMPORTANT)
+
+Right now your system:
+
+stores stock ❌
+shows movements ❌ (not strict enough)
+
+👉 Problem:
+
+You cannot audit
+You cannot debug mismatch
+You cannot trust numbers at scale
+🧱 CORE DESIGN (PRODUCTION-GRADE)
+1. Ledger Table / Schema
+InventoryLedger {
+  id
+  productId
+  warehouseId
+
+  transactionType:
+    "OPENING"
+    "GRN"
+    "RESERVE"
+    "RELEASE"
+    "DISPATCH"
+    "ADJUSTMENT"
+    "TRANSFER_IN"
+    "TRANSFER_OUT"
+
+  quantityChange   // +ve or -ve
+
+  referenceType    // "SO", "PO", "GRN", "ADJUSTMENT"
+  referenceId
+
+  metadata         // optional JSON (notes, user, etc.)
+
+  createdAt
+}
+🔥 KEY RULE
+
+❗ NEVER UPDATE STOCK DIRECTLY
+✅ ALWAYS WRITE TO LEDGER
+
+⚙️ HOW STOCK IS CALCULATED
+
+Instead of:
+
+inventory.total
+
+You do:
+
+totalStock = SUM(quantityChange)
+GROUP BY productId + warehouseId
+⚡ Optimization (Important)
+
+To avoid slow queries:
+
+Keep BOTH:
+
+Inventory (fast read)
+InventoryLedger (source of truth)
+
+👉 Flow:
+
+Write ledger entry
+Update inventory snapshot
+🔁 HOW EACH ACTION CREATES LEDGER ENTRY
+📦 1. GRN (Goods Received)
++100 panels
+transactionType: "GRN"
+quantityChange: +100
+referenceType: "GRN"
+🛒 2. Reservation (SO created)
+-10 (reserved)
+transactionType: "RESERVE"
+quantityChange: -10
+🚚 3. Dispatch (Delivery)
+-10 (actual stock out)
+transactionType: "DISPATCH"
+quantityChange: -10
+🔁 4. Reservation Release (SO cancel)
++10 (put back to stock)
+transactionType: "RELEASE"
+quantityChange: +10
+🛠️ 5. Adjustment
++5 or -3
+🔄 6. Warehouse Transfer
+Warehouse A → B
+
+A: -10 (TRANSFER_OUT)
+B: +10 (TRANSFER_IN)
+🧠 IMPORTANT DESIGN DECISION
+❓ Should reservation affect stock?
+
+👉 Two approaches:
+
+OPTION A (Recommended for you)
+
+Ledger tracks ONLY physical stock
+
+GRN → +100
+Dispatch → -10
+
+Reservation is tracked separately
+
+👉 Cleaner & scalable
+
+OPTION B
+
+Reservation also reduces stock
+
+👉 Complicated (avoid for now)
+
+✅ RECOMMENDED STRUCTURE
+Inventory {
+  productId
+  warehouseId
+
+  totalStock      // from ledger
+  reservedStock   // from reservation table
+  availableStock = total - reserved
+}
+🔒 TRANSACTION FLOW (VERY IMPORTANT)
+
+Every operation must be atomic:
+
+Example: GRN Confirm
+start transaction
+
+1. Insert ledger entry (+100)
+2. Update inventory.total += 100
+3. Update PO receivedQty
+
+commit
+Example: Reservation
+start transaction
+
+1. Check available stock
+2. Insert reservation
+3. Update inventory.reserved
+
+commit
+⚠️ COMMON MISTAKES (AVOID THESE)
+❌ Updating stock without ledger
+❌ Deleting ledger entries
+❌ Editing past ledger records
+❌ Not linking referenceId
+❌ Mixing reservation with actual stock
+🧩 HOW IT FITS YOUR CURRENT SYSTEM
+
+You already have:
+
+stock movements UI
+inventory stock table
+GRN
+challan
+
+👉 Replace:
+
+Current	Replace With
+stock movements	inventory ledger
+direct stock update	ledger-driven update
+🚀 IMPLEMENTATION STEPS (ACTIONABLE)
+STEP 1
+
+Create InventoryLedger table
+
+STEP 2
+
+Create service:
+
+InventoryService.addLedgerEntry()
+STEP 3
+
+Refactor:
+
+GRN confirm → ledger
+Challan dispatch → ledger
+Adjustment → ledger
+STEP 4
+
+Update inventory snapshot after ledger insert
+
+STEP 5
+
+Add API:
+
+/inventory/ledger
+filters: product, warehouse, date

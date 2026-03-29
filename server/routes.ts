@@ -4045,6 +4045,17 @@ export async function registerRoutes(
       if (!purchaseOrderId) return res.status(400).json({ message: "purchaseOrderId is required — a supplier invoice must be linked to a purchase order" });
       if (!grnId) return res.status(400).json({ message: "grnId is required — a supplier invoice must be linked to a goods receipt note" });
 
+      // Validate PO belongs to supplier
+      const linkedPO = await storage.getPurchaseOrder(purchaseOrderId);
+      if (!linkedPO) return res.status(404).json({ message: "Purchase order not found" });
+      if (linkedPO.supplierId !== supplierId) return res.status(400).json({ message: "Purchase order does not belong to the selected supplier" });
+
+      // Validate GRN belongs to the linked PO
+      const linkedGRN = await storage.getGRN(grnId);
+      if (!linkedGRN) return res.status(404).json({ message: "Goods receipt note not found" });
+      if (linkedGRN.purchaseOrderId !== purchaseOrderId) return res.status(400).json({ message: "GRN does not belong to the selected purchase order" });
+      if (linkedGRN.status !== "confirmed") return res.status(400).json({ message: "GRN must be confirmed before creating a supplier invoice" });
+
       // Duplicate check: same invoiceNumber + supplierId
       const existing = await storage.getSupplierInvoicesBySupplier(supplierId);
       if (existing.some(i => i.invoiceNumber === invoiceNumber)) {
@@ -4142,12 +4153,29 @@ export async function registerRoutes(
       if (paymentMethod !== undefined) updates.paymentMethod = paymentMethod;
       if (paymentDate !== undefined) updates.paymentDate = new Date(paymentDate);
 
-      // If amount is being changed, handle advance recomputation
+      // If amount is being changed, handle recomputation
       if (amount !== undefined && String(amount) !== String(pay.amount)) {
         const newAmount = Number(amount);
         if (isNaN(newAmount) || newAmount <= 0) return res.status(400).json({ message: "amount must be a positive number" });
         const oldAmount = Number(pay.amount);
         const diff = newAmount - oldAmount;
+
+        // Overpayment guard for regular payment amount changes
+        if (pay.paymentType === "regular" && pay.supplierInvoiceId) {
+          const inv = await storage.getSupplierInvoice(pay.supplierInvoiceId);
+          if (inv) {
+            const existingPays = await storage.getSupplierPaymentsByInvoice(pay.supplierInvoiceId);
+            // Exclude current payment from existing totals
+            const alreadyPaid = existingPays.filter(p => p.id !== pay.id).reduce((sum, p) => sum + Number(p.amount), 0);
+            const advance = inv.purchaseOrderId
+              ? Number((await storage.getPurchaseOrder(inv.purchaseOrderId))?.advancePaid ?? 0)
+              : 0;
+            const balance = Number(inv.totalAmount) - advance - alreadyPaid;
+            if (newAmount > balance + 0.01) {
+              return res.status(400).json({ message: `Updated amount (₹${newAmount.toLocaleString()}) exceeds invoice balance (₹${balance.toLocaleString()})` });
+            }
+          }
+        }
 
         if (pay.paymentType === "advance" && pay.purchaseOrderId) {
           const po = await storage.getPurchaseOrder(pay.purchaseOrderId);

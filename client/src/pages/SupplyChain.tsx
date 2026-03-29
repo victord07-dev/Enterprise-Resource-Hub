@@ -510,7 +510,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
         } catch { setGrnItemsCache(prev => ({ ...prev, [g.id]: [] })); }
       }
     });
-  }, [confirmedGrns.length]);
+  }, [confirmedGrns.map(g => g.id).join(",")]);
 
   const receivedPerProduct: Record<string, number> = {};
   Object.values(grnItemsCache).forEach(gItems => {
@@ -1358,7 +1358,14 @@ export default function SupplyChain() {
                                       className="text-xs text-emerald-600 dark:text-emerald-400 mr-1 p-0 h-auto"
                                       data-testid={`button-create-grn-${po.id}`}
                                       disabled={creatingGrnPoId === po.id}
-                                      onClick={() => { setGrnWarehouseDialogPoId(po.id); setGrnSelectedWarehouseId(warehouses?.[0]?.id || ""); }}
+                                      onClick={() => {
+                                        if (warehouses && warehouses.length === 1) {
+                                          createGrnFromPoMutation.mutate({ poId: po.id, warehouseId: warehouses[0].id });
+                                        } else {
+                                          setGrnWarehouseDialogPoId(po.id);
+                                          setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
+                                        }
+                                      }}
                                     >
                                       <PackagePlus className="w-3 h-3 mr-1" />
                                       {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}

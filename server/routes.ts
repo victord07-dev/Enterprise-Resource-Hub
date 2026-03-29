@@ -2186,7 +2186,7 @@ export async function registerRoutes(
       if (warehouseId) filtered = filtered.filter((m: any) => m.warehouseId === warehouseId);
       if (type === "grn") filtered = filtered.filter((m: any) => m.referenceType === "grn");
       else if (type === "dispatch") filtered = filtered.filter((m: any) => m.referenceType === "challan");
-      else if (type === "adjustment") filtered = filtered.filter((m: any) => m.referenceType === "manual" || (!m.referenceType && m.movementType !== "in" && m.movementType !== "out"));
+      else if (type === "adjustment") filtered = filtered.filter((m: any) => m.referenceType === "manual" || (!m.referenceType && m.referenceType !== "grn" && m.referenceType !== "challan"));
 
       const enriched = filtered
         .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -2241,6 +2241,8 @@ export async function registerRoutes(
         }
       }
 
+      const manualRefType = parsed.data.referenceType ?? "manual";
+
       let movement: any;
       if (parsed.data.warehouseId) {
         movement = await db.transaction(async (tx) => {
@@ -2249,14 +2251,14 @@ export async function registerRoutes(
             warehouseId: parsed.data.warehouseId!,
             movementType: parsed.data.movementType,
             quantity: parsed.data.quantity,
-            referenceType: parsed.data.referenceType ?? undefined,
+            referenceType: manualRefType,
             referenceId: parsed.data.referenceId ?? undefined,
             notes: parsed.data.notes ?? undefined,
             createdBy: parsed.data.createdBy,
           });
         });
       } else {
-        movement = await storage.createStockMovement(parsed.data as any);
+        movement = await storage.createStockMovement({ ...parsed.data, referenceType: manualRefType } as any);
       }
 
       res.status(201).json(movement);

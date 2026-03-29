@@ -1960,7 +1960,7 @@ export async function registerRoutes(
   }
 
   async function addLedgerEntry(
-    tx: typeof db,
+    tx: Awaited<Parameters<Parameters<typeof db.transaction>[0]>[0]>,
     params: {
       productId: string;
       warehouseId: string;
@@ -1972,36 +1972,28 @@ export async function registerRoutes(
       createdBy: string;
     }
   ) {
-    const [movement] = await (tx as any).insert(stockMovementsTable).values({
-      productId: params.productId,
-      warehouseId: params.warehouseId,
-      movementType: params.movementType,
-      quantity: params.quantity,
-      referenceType: params.referenceType ?? null,
-      referenceId: params.referenceId ?? null,
-      notes: params.notes ?? null,
-      createdBy: params.createdBy,
-    }).returning();
+    const mvResult = await tx.execute(sql`
+      INSERT INTO stock_movements (id, product_id, warehouse_id, movement_type, quantity, reference_type, reference_id, notes, created_by, created_at)
+      VALUES (gen_random_uuid(), ${params.productId}, ${params.warehouseId}, ${params.movementType}, ${params.quantity},
+              ${params.referenceType ?? null}, ${params.referenceId ?? null}, ${params.notes ?? null}, ${params.createdBy}, now())
+      RETURNING *
+    `);
+    const movement = mvResult.rows[0];
 
     const qtyDelta = params.movementType === "out" ? -Math.abs(params.quantity) : params.quantity;
 
-    const existing = await (tx as any).select().from(inventoryStock).where(
-      and(
-        eq(inventoryStock.productId, params.productId),
-        eq(inventoryStock.warehouseId, params.warehouseId)
-      )
-    );
+    const updateResult = await tx.execute(sql`
+      UPDATE inventory_stock
+      SET quantity = quantity + ${qtyDelta}
+      WHERE product_id = ${params.productId} AND warehouse_id = ${params.warehouseId}
+      RETURNING id
+    `);
 
-    if (existing.length > 0) {
-      await (tx as any).update(inventoryStock)
-        .set({ quantity: (existing[0].quantity || 0) + qtyDelta })
-        .where(eq(inventoryStock.id, existing[0].id));
-    } else {
-      await (tx as any).insert(inventoryStock).values({
-        productId: params.productId,
-        warehouseId: params.warehouseId,
-        quantity: Math.max(0, qtyDelta),
-      });
+    if (updateResult.rows.length === 0) {
+      await tx.execute(sql`
+        INSERT INTO inventory_stock (id, product_id, warehouse_id, quantity)
+        VALUES (gen_random_uuid(), ${params.productId}, ${params.warehouseId}, ${Math.max(0, qtyDelta)})
+      `);
     }
 
     return movement;
@@ -2453,8 +2445,10 @@ export async function registerRoutes(
             return res.status(400).json({ message: `Insufficient stock for product. Available: ${available}, Required: ${item.quantity}` });
           }
         }
+      }
 
-        await db.transaction(async (tx) => {
+      await db.transaction(async (tx) => {
+        if (challan.sourceType === "warehouse") {
           for (const item of items) {
             await addLedgerEntry(tx, {
               productId: item.productId,
@@ -2467,13 +2461,13 @@ export async function registerRoutes(
               createdBy: req.user.id,
             });
           }
-        });
-      }
-
-      const updated = await storage.updateDeliveryChallan(challan.id, {
-        status: "dispatched",
-        dispatchDate: new Date(),
+        }
+        await tx.execute(sql`
+          UPDATE delivery_challans SET status = 'dispatched', dispatch_date = now() WHERE id = ${challan.id}
+        `);
       });
+
+      const updated = await storage.getDeliveryChallan(challan.id);
 
       if (challan.orderId) {
         try {
@@ -2710,20 +2704,21 @@ export async function registerRoutes(
           const existingStock = allStock
             .filter((s: any) => s.productId === productId)
             .reduce((sum: number, s: any) => sum + (s.quantity ?? 0), 0);
-          const [product] = await (tx as any).select().from(productsTable).where(eq(productsTable.id, productId));
-          if (product) {
-            const existingCost = product.costPrice ? parseFloat(product.costPrice) : 0;
+          const productResult = await tx.execute(sql`SELECT cost_price FROM products WHERE id = ${productId} LIMIT 1`);
+          const product = productResult.rows[0] as { cost_price: string | null } | undefined;
+          if (product !== undefined) {
+            const existingCost = product.cost_price ? parseFloat(product.cost_price) : 0;
             const avgBuyingPrice = agg.totalQty > 0 ? agg.totalCost / agg.totalQty : 0;
             const totalQty = existingStock + agg.totalQty;
             const newCost = totalQty > 0
               ? ((existingStock * existingCost) + (agg.totalQty * avgBuyingPrice)) / totalQty
               : avgBuyingPrice;
-            await (tx as any).update(productsTable).set({ costPrice: newCost.toFixed(2) }).where(eq(productsTable.id, productId));
+            await tx.execute(sql`UPDATE products SET cost_price = ${newCost.toFixed(2)} WHERE id = ${productId}`);
           }
         }
-      });
 
-      await storage.updateGRN(grn.id, { status: "confirmed" });
+        await tx.execute(sql`UPDATE goods_receipt_notes SET status = 'confirmed' WHERE id = ${grn.id}`);
+      });
 
       const po = await storage.getPurchaseOrder(grn.purchaseOrderId);
       if (po) {

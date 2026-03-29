@@ -1,4 +1,4 @@
-import { useState, Fragment, useCallback } from "react";
+import { useState, Fragment, useCallback, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -210,6 +210,7 @@ export default function Inventory() {
   const [challanFilterStatus, setChallanFilterStatus] = useState("all");
   const [challanFilterSourceType, setChallanFilterSourceType] = useState("all");
   const [expandedChallanIds, setExpandedChallanIds] = useState<Set<string>>(new Set());
+  const [highlightedChallanId, setHighlightedChallanId] = useState<string | null>(null);
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
 
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
@@ -359,7 +360,20 @@ export default function Inventory() {
   const [grnLineItems, setGrnLineItems] = useState<Array<{ productId: string; description: string; orderedQuantity: number; receivedQuantity: number; buyingPrice: number }>>([]);
   const [grnFilterStatus, setGrnFilterStatus] = useState("all");
   const [expandedGrnIds, setExpandedGrnIds] = useState<Set<string>>(new Set());
+  const [highlightedGrnId, setHighlightedGrnId] = useState<string | null>(null);
   const [grnItemsMap, setGrnItemsMap] = useState<Record<string, GoodsReceiptNoteItem[]>>({});
+
+  useEffect(() => {
+    if (!highlightedGrnId) return;
+    const t = setTimeout(() => setHighlightedGrnId(null), 3000);
+    return () => clearTimeout(t);
+  }, [highlightedGrnId]);
+
+  useEffect(() => {
+    if (!highlightedChallanId) return;
+    const t = setTimeout(() => setHighlightedChallanId(null), 3000);
+    return () => clearTimeout(t);
+  }, [highlightedChallanId]);
 
   const warehouseEligiblePOs = (purchaseOrders ?? []).filter(po =>
     po.deliveryType === "warehouse" && ["approved", "shipped"].includes(po.status)
@@ -1076,7 +1090,22 @@ export default function Inventory() {
                               {refClickable ? (
                                 <button
                                   className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline font-medium text-xs"
-                                  onClick={() => setActiveTab(refTargetTab)}
+                                  onClick={() => {
+                                    setActiveTab(refTargetTab);
+                                    if (m.referenceType === "grn" && m.referenceId) {
+                                      setHighlightedGrnId(m.referenceId);
+                                      setExpandedGrnIds(prev => new Set([...prev, m.referenceId!]));
+                                      setTimeout(() => {
+                                        document.getElementById(`grn-row-${m.referenceId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                      }, 200);
+                                    } else if (m.referenceType === "challan" && m.referenceId) {
+                                      setHighlightedChallanId(m.referenceId);
+                                      setExpandedChallanIds(prev => new Set([...prev, m.referenceId!]));
+                                      setTimeout(() => {
+                                        document.getElementById(`challan-row-${m.referenceId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                      }, 200);
+                                    }
+                                  }}
                                   data-testid={`link-ref-${m.id}`}
                                 >
                                   <FileText className="w-3 h-3" />
@@ -1181,7 +1210,11 @@ export default function Inventory() {
                         const items = challanItemsMap[challan.id] || [];
                         return (
                           <Fragment key={challan.id}>
-                            <tr className="border-b last:border-0" data-testid={`row-challan-${challan.id}`}>
+                            <tr
+                              id={`challan-row-${challan.id}`}
+                              className={`border-b last:border-0 transition-colors duration-700 ${highlightedChallanId === challan.id ? "bg-blue-50 dark:bg-blue-950/30 ring-2 ring-inset ring-blue-400 dark:ring-blue-600" : ""}`}
+                              data-testid={`row-challan-${challan.id}`}
+                            >
                               <td className="p-3">
                                 <button
                                   onClick={() => toggleChallanExpanded(challan.id)}
@@ -1360,7 +1393,11 @@ export default function Inventory() {
                         const wh = warehouses?.find(w => w.id === grn.warehouseId);
                         return (
                           <Fragment key={grn.id}>
-                            <tr className="border-b last:border-0" data-testid={`row-grn-${grn.id}`}>
+                            <tr
+                              id={`grn-row-${grn.id}`}
+                              className={`border-b last:border-0 transition-colors duration-700 ${highlightedGrnId === grn.id ? "bg-blue-50 dark:bg-blue-950/30 ring-2 ring-inset ring-blue-400 dark:ring-blue-600" : ""}`}
+                              data-testid={`row-grn-${grn.id}`}
+                            >
                               <td className="p-3">
                                 <button onClick={() => toggleGrnExpanded(grn.id)} className="text-muted-foreground" data-testid={`button-expand-grn-${grn.id}`}>
                                   {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}

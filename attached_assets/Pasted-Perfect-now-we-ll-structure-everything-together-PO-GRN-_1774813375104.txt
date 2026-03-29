@@ -1,0 +1,247 @@
+Perfect — now we’ll structure everything together (PO + GRN + Documents + Accounts + Payments) into one clean, production-ready plan.
+
+No confusion, no overlap — this is your full procurement system blueprint 👇
+
+🧠 COMPLETE FLOW (FINAL)
+PO Created
+   ↓
+(Optional) Advance Payment
+   ↓
+PO Confirmed
+   ↓
+User clicks "Create GRN"
+   ↓
+GRN Draft
+   ↓
+Goods Arrive + Challan Upload
+   ↓
+GRN Confirm → Inventory Updated
+   ↓
+Create Supplier Invoice
+   ↓
+Upload Invoice Document
+   ↓
+3-Way Match (PO vs GRN vs Invoice)
+   ↓
+Payment (adjust advance if any)
+🧱 MODULE-WISE DEVELOPMENT PLAN
+✅ 1. PURCHASE ORDER (PO)
+🔹 Schema
+PO {
+  id
+  poNumber
+  supplierId
+
+  status: "draft" | "confirmed" | "partial" | "completed"
+
+  items: [
+    {
+      productId
+      quantity
+      unitCost
+      taxRate
+      total
+      receivedQty
+    }
+  ]
+
+  warehouseId
+  expectedDeliveryDate
+
+  // Payment
+  paymentType: "credit" | "advance" | "partial_advance"
+  advanceAmount
+  totalAmount
+  remainingAmount
+
+  createdAt
+}
+🔧 Features
+Create PO
+Confirm PO
+“Create GRN” button
+Show:
+ordered vs received qty
+linked GRNs
+📦 2. GRN (GOODS RECEIPT NOTE)
+🔹 Schema
+GRN {
+  id
+  poId
+  supplierId
+
+  status: "draft" | "confirmed"
+
+  items: [
+    {
+      productId
+      orderedQty
+      receivedQty
+    }
+  ]
+
+  warehouseId
+
+  supplierChallanNumber
+  supplierInvoiceNumber
+
+  createdAt
+}
+🔧 Features
+Create GRN (from PO)
+via button
+copy PO items
+GRN Draft
+editable qty
+upload challan
+GRN Confirm
+validate:
+qty ≤ remaining PO qty
+call:
+addLedgerEntry()
+update:
+inventory
+PO receivedQty
+📄 3. DOCUMENT MODULE (COMMON)
+🔹 Schema
+Documents {
+  id
+  entityType: "PO" | "GRN" | "INVOICE"
+  entityId
+
+  documentType: "supplier_invoice" | "supplier_challan"
+
+  fileUrl
+  fileName
+
+  uploadedAt
+}
+🔧 Usage
+PO → invoice (proforma)
+GRN → challan
+Invoice → final invoice
+💰 4. SUPPLIER INVOICE (ACCOUNTS ENTRY)
+🔹 Schema
+SupplierInvoice {
+  id
+
+  supplierId
+  poId
+  grnId
+
+  invoiceNumber
+  invoiceDate
+
+  subtotal
+  taxAmount
+  totalAmount
+
+  status: "pending" | "partial_paid" | "paid"
+
+  dueDate
+}
+🔧 Features
+Create invoice (after GRN)
+Upload invoice document
+Show:
+PO
+GRN
+payments
+💳 5. PAYMENT MODULE
+🔹 Schema
+SupplierPayment {
+  id
+
+  supplierId
+  poId
+  supplierInvoiceId
+
+  amount
+
+  paymentType: "advance" | "regular"
+  paymentMethod: "bank" | "cash" | "upi"
+
+  paymentDate
+}
+🔧 Features
+Advance payment (linked to PO)
+Payment against invoice
+Auto adjust advance
+🔁 6. CORE LOGIC (VERY IMPORTANT)
+📦 Inventory
+ONLY updated on GRN confirm
+via ledger system
+💰 Accounts
+Invoice = liability
+Payment = settlement
+🔗 Linking
+PO → GRN → Inventory
+PO → Payments (advance)
+GRN → Invoice
+Invoice → Payments
+🔍 7. VALIDATIONS
+PO
+cannot confirm empty PO
+GRN
+qty ≤ PO remaining qty
+Invoice
+must link to GRN
+must match qty
+Payment
+cannot exceed invoice balance
+🧠 8. STATUS FLOW
+PO
+draft → confirmed → partial → completed
+GRN
+draft → confirmed
+Invoice
+pending → partial_paid → paid
+🖱️ 9. UI STRUCTURE
+PO Screen
+Create PO
+Confirm
+Create GRN button
+Show:
+received qty
+payments
+GRN Screen
+Draft → Confirm
+Upload challan
+Edit qty
+Invoice Screen
+Create invoice
+Upload invoice
+Show payments
+Payment Screen
+Add payment
+select:
+PO / Invoice
+🚀 10. BUILD ORDER (VERY IMPORTANT)
+🔥 PHASE 1 (DO FIRST)
+PO module
+GRN module
+Ledger integration
+⚡ PHASE 2
+Document upload system
+GRN challan upload
+💰 PHASE 3
+Supplier invoice module
+Payment module
+🔍 PHASE 4
+3-way matching
+validations
+🧠 FINAL UNDERSTANDING
+
+👉 This system gives you:
+
+stock automation (GRN)
+financial control (invoice)
+traceability (documents)
+flexibility (advance payments)
+💬 FINAL ANSWER
+
+👉 Build all modules together but in phases
+👉 GRN = stock
+👉 Invoice = accounts
+👉 Payment = settlement
+👉 Documents = proof

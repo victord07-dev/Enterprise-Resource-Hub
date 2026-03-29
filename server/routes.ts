@@ -4325,5 +4325,91 @@ export async function registerRoutes(
     } catch { res.status(500).json({ message: "Failed to delete supplier payment" }); }
   });
 
+  // AP Aging Report
+  app.get("/api/reports/ap-aging", authenticateToken, async (req: any, res) => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const allInvoices = await storage.getSupplierInvoices();
+      const allPayments = await storage.getSupplierPayments();
+      const allSuppliers = await storage.getSuppliers();
+      const allPOs = await storage.getPurchaseOrders();
+
+      const supplierMap = new Map(allSuppliers.map(s => [s.id, s]));
+      const poMap = new Map(allPOs.map(p => [p.id, p]));
+
+      const summary = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 };
+
+      const rows = allInvoices.map(inv => {
+        const supplier = supplierMap.get(inv.supplierId);
+        const po = inv.purchaseOrderId ? poMap.get(inv.purchaseOrderId) : undefined;
+
+        // Sum regular payments for this invoice
+        const regularPaid = allPayments
+          .filter(p => p.supplierInvoiceId === inv.id && p.paymentType === "regular")
+          .reduce((sum, p) => sum + Number(p.amount), 0);
+
+        // Advance from the linked PO (applies per invoice)
+        const advancePaid = po ? Number(po.advancePaid || 0) : 0;
+
+        const totalPaid = Math.min(Number(inv.totalAmount), regularPaid + advancePaid);
+        const balance = Math.max(0, Number(inv.totalAmount) - totalPaid);
+
+        const dueDate = new Date(inv.dueDate);
+        dueDate.setHours(0, 0, 0, 0);
+        const diffMs = today.getTime() - dueDate.getTime();
+        const daysOverdue = diffMs > 0 ? Math.floor(diffMs / 86400000) : 0;
+        const isOverdue = diffMs > 0;
+
+        let bucket: string;
+        if (!isOverdue) {
+          bucket = "current";
+        } else if (daysOverdue <= 30) {
+          bucket = "1-30";
+        } else if (daysOverdue <= 60) {
+          bucket = "31-60";
+        } else if (daysOverdue <= 90) {
+          bucket = "61-90";
+        } else {
+          bucket = "90+";
+        }
+
+        if (balance > 0) {
+          summary.totalOutstanding += balance;
+          if (bucket === "current") summary.current += balance;
+          else if (bucket === "1-30") summary.days1_30 += balance;
+          else if (bucket === "31-60") summary.days31_60 += balance;
+          else if (bucket === "61-90") summary.days61_90 += balance;
+          else summary.days90plus += balance;
+        }
+
+        return {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          supplierId: inv.supplierId,
+          supplierName: supplier?.name ?? "Unknown",
+          purchaseOrderId: inv.purchaseOrderId,
+          poNumber: po?.poNumber ?? null,
+          invoiceDate: inv.invoiceDate,
+          dueDate: inv.dueDate,
+          totalAmount: Number(inv.totalAmount),
+          totalPaid,
+          balance,
+          daysOverdue,
+          bucket,
+          status: inv.status,
+        };
+      });
+
+      // Sort by daysOverdue descending
+      rows.sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+      res.json({ rows, summary });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to generate AP aging report" });
+    }
+  });
+
   return httpServer;
 }

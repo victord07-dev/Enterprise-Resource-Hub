@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -457,7 +457,9 @@ export const supplierInvoices = pgTable("supplier_invoices", {
   notes: text("notes"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  supplierInvoiceUnique: uniqueIndex("supplier_invoice_number_supplier_idx").on(table.supplierId, table.invoiceNumber),
+}));
 
 export const supplierPayments = pgTable("supplier_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

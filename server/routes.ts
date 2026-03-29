@@ -4225,10 +4225,18 @@ export async function registerRoutes(
       const amountNum = Number(amount);
       if (isNaN(amountNum) || amountNum <= 0) return res.status(400).json({ message: "amount must be a positive number" });
 
-      // Overpayment validation for regular payments
+      // Validate linked records exist and belong to the given supplier
+      if (paymentType === "advance") {
+        const linkedPO = await storage.getPurchaseOrder(purchaseOrderId);
+        if (!linkedPO) return res.status(404).json({ message: "Purchase order not found" });
+        if (linkedPO.supplierId !== supplierId) return res.status(400).json({ message: "Purchase order does not belong to the selected supplier" });
+      }
+
+      // Overpayment validation + supplier consistency for regular payments
       if (paymentType === "regular") {
         const inv = await storage.getSupplierInvoice(supplierInvoiceId);
         if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+        if (inv.supplierId !== supplierId) return res.status(400).json({ message: "Invoice does not belong to the selected supplier" });
         const existingPays = await storage.getSupplierPaymentsByInvoice(supplierInvoiceId);
         const alreadyPaid = existingPays.reduce((sum, p) => sum + Number(p.amount), 0);
         const advance = inv.purchaseOrderId

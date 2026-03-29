@@ -811,30 +811,40 @@ export default function SupplyChain() {
     },
   });
 
+  const [grnWarehouseDialogPoId, setGrnWarehouseDialogPoId] = useState<string | null>(null);
+  const [grnSelectedWarehouseId, setGrnSelectedWarehouseId] = useState<string>("");
   const [creatingGrnPoId, setCreatingGrnPoId] = useState<string | null>(null);
+
   const createGrnFromPoMutation = useMutation({
-    mutationFn: async (poId: string) => {
+    mutationFn: async ({ poId, warehouseId }: { poId: string; warehouseId: string }) => {
       setCreatingGrnPoId(poId);
-      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`);
+      const token = localStorage.getItem("token");
+      const res = await fetch(`/api/grns/create-from-po/${poId}`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ warehouseId }),
+      });
       const data = await res.json();
-      if (!res.ok) throw Object.assign(new Error(data.message || "Failed"), data);
-      return data;
+      return { status: res.status, data };
     },
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      toast({ title: "Draft GRN created", description: `${data.grnNumber} created. Opening Inventory → GRN tab...` });
+    onSuccess: ({ status, data }: { status: number; data: any }) => {
       setCreatingGrnPoId(null);
-      navigate(`/inventory?tab=grn&highlightGrn=${data.id}`);
+      setGrnWarehouseDialogPoId(null);
+      if (status === 409) {
+        toast({ title: "Draft GRN already exists", description: `${data.existingGrnNumber} is already open. Find it in Inventory → GRN tab.`, variant: "destructive" });
+        navigate(`/inventory?tab=grn&highlightGrn=${data.existingGrnId}`);
+      } else if (status >= 400) {
+        toast({ title: "Error", description: data.message || "Failed to create GRN", variant: "destructive" });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+        toast({ title: "Draft GRN created", description: `${data.grnNumber} created. Opening Inventory → GRN tab...` });
+        navigate(`/inventory?tab=grn&highlightGrn=${data.id}`);
+      }
     },
     onError: (error: any) => {
       setCreatingGrnPoId(null);
-      if (error?.existingGrnNumber) {
-        toast({ title: "Draft GRN already exists", description: `${error.existingGrnNumber} is already open. Find it in Inventory → GRN tab.`, variant: "destructive" });
-        navigate(`/inventory?tab=grn&highlightGrn=${error.existingGrnId}`);
-      } else {
-        toast({ title: "Error", description: error.message || "Failed to create GRN", variant: "destructive" });
-      }
+      toast({ title: "Error", description: error.message || "Failed to create GRN", variant: "destructive" });
     },
   });
 
@@ -1353,7 +1363,7 @@ export default function SupplyChain() {
                                       className="text-xs text-emerald-600 dark:text-emerald-400 mr-1 p-0 h-auto"
                                       data-testid={`button-create-grn-${po.id}`}
                                       disabled={creatingGrnPoId === po.id}
-                                      onClick={() => createGrnFromPoMutation.mutate(po.id)}
+                                      onClick={() => { setGrnWarehouseDialogPoId(po.id); setGrnSelectedWarehouseId(warehouses?.[0]?.id || ""); }}
                                     >
                                       <PackagePlus className="w-3 h-3 mr-1" />
                                       {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}
@@ -1873,6 +1883,43 @@ export default function SupplyChain() {
               data-testid="button-submit-cancel-request"
             >
               {requestCancelMutation.isPending ? "Submitting..." : "Submit Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!grnWarehouseDialogPoId} onOpenChange={(open) => { if (!open) setGrnWarehouseDialogPoId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Select Receiving Warehouse</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-muted-foreground">Choose which warehouse will receive the goods for this purchase order.</p>
+            <div className="space-y-2">
+              <Label>Warehouse</Label>
+              <Select value={grnSelectedWarehouseId} onValueChange={setGrnSelectedWarehouseId}>
+                <SelectTrigger data-testid="select-grn-warehouse">
+                  <SelectValue placeholder="Select warehouse..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {(warehouses || []).map((w: any) => (
+                    <SelectItem key={w.id} value={w.id}>{w.name} — {w.location}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGrnWarehouseDialogPoId(null)}>Cancel</Button>
+            <Button
+              data-testid="button-confirm-grn-warehouse"
+              disabled={!grnSelectedWarehouseId || createGrnFromPoMutation.isPending}
+              onClick={() => {
+                if (grnWarehouseDialogPoId && grnSelectedWarehouseId)
+                  createGrnFromPoMutation.mutate({ poId: grnWarehouseDialogPoId, warehouseId: grnSelectedWarehouseId });
+              }}
+            >
+              {createGrnFromPoMutation.isPending ? "Creating..." : "Create Draft GRN"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2541,7 +2541,7 @@ export async function registerRoutes(
       const po = await storage.getPurchaseOrder(poId);
       if (!po) return res.status(404).json({ message: "Purchase order not found" });
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
-      if (!["approved", "shipped"].includes(po.status)) return res.status(400).json({ message: "PO must be approved or shipped to create a GRN" });
+      if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
 
       const existingGrns = await storage.getGRNsByPO(poId);
       const draftGrn = existingGrns.find((g: any) => g.status === "draft");
@@ -2562,13 +2562,13 @@ export async function registerRoutes(
       const productItems = poItems.filter((it: any) => it.productId);
       const itemTotal = productItems.reduce((sum: number, it: any) => sum + Number(it.totalCost), 0);
 
-      const warehouses = await storage.getWarehouses();
-      const defaultWarehouseId = warehouses.length > 0 ? warehouses[0].id : "";
+      const warehouseId = req.body?.warehouseId;
+      if (!warehouseId) return res.status(400).json({ message: "warehouseId is required to create a GRN" });
 
       const grn = await storage.createGRN({
         grnNumber,
         purchaseOrderId: poId,
-        warehouseId: defaultWarehouseId,
+        warehouseId,
         status: "draft",
         deliveryCost: null,
         totalAmount: String(itemTotal),
@@ -2604,7 +2604,7 @@ export async function registerRoutes(
       const po = await storage.getPurchaseOrder(req.body.purchaseOrderId);
       if (!po) return res.status(400).json({ message: "Purchase order not found" });
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
-      if (!["approved", "shipped"].includes(po.status)) return res.status(400).json({ message: "PO must be approved or shipped to create a GRN" });
+      if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
 
       const year = new Date().getFullYear();
       const allGrns = await storage.getGRNs();

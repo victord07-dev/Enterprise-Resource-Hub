@@ -2804,48 +2804,46 @@ export async function registerRoutes(
       const nextNum = yearChallans.length + 1;
       const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
 
-      const challan = await storage.createDeliveryChallan({
-        challanNumber,
-        orderId: order.id,
-        sourceType: "warehouse",
-        sourceId: pickupWarehouseId,
-        status: "draft",
-        createdBy: req.user.id,
-        notes: `Pickup confirmed for order ${order.orderNumber}`,
-      } as any);
-
-      for (const item of productItems) {
-        await storage.createDeliveryChallanItem({
-          challanId: challan.id,
-          productId: item.productId!,
-          description: item.description || null,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-        } as any);
-      }
-
+      let challanId: string;
       await db.transaction(async (tx) => {
+        const challanResult = await tx.execute(sql`
+          INSERT INTO delivery_challans (id, challan_number, order_id, source_type, source_id, status, created_by, notes, created_at)
+          VALUES (gen_random_uuid(), ${challanNumber}, ${order.id}, 'warehouse', ${pickupWarehouseId}, 'draft', ${req.user.id},
+                  ${`Pickup confirmed for order ${order.orderNumber}`}, now())
+          RETURNING id
+        `);
+        challanId = (challanResult.rows[0] as any).id;
+
+        for (const item of productItems) {
+          await tx.execute(sql`
+            INSERT INTO delivery_challan_items (id, challan_id, product_id, description, quantity, unit_price)
+            VALUES (gen_random_uuid(), ${challanId}, ${item.productId!}, ${item.description || null}, ${item.quantity}, ${item.unitPrice})
+          `);
+        }
+
         for (const item of productItems) {
           await addLedgerEntry(tx, {
             productId: item.productId!,
-            warehouseId: pickupWarehouseId,
+            warehouseId: pickupWarehouseId!,
             movementType: "out",
             quantity: item.quantity,
             referenceType: "challan",
-            referenceId: challan.id,
+            referenceId: challanId,
             notes: `Pickup of order ${order.orderNumber}`,
             createdBy: req.user.id,
           });
         }
-      });
 
-      await storage.updateDeliveryChallan(challan.id, {
-        status: "delivered",
-        dispatchDate: new Date(),
-        deliveryDate: new Date(),
-      });
+        await tx.execute(sql`
+          UPDATE delivery_challans
+          SET status = 'delivered', dispatch_date = now(), delivery_date = now()
+          WHERE id = ${challanId}
+        `);
 
-      await storage.updateSalesOrder(order.id, { status: "delivered" } as any);
+        await tx.execute(sql`
+          UPDATE sales_orders SET status = 'delivered' WHERE id = ${order.id}
+        `);
+      });
 
       await logAction(req.user.id, "confirm_pickup", "sales", `Pickup confirmed for order ${order.orderNumber}`);
 

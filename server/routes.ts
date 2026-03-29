@@ -2535,6 +2535,70 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/grns/create-from-po/:poId", authenticateToken, async (req: any, res) => {
+    try {
+      const { poId } = req.params;
+      const po = await storage.getPurchaseOrder(poId);
+      if (!po) return res.status(404).json({ message: "Purchase order not found" });
+      if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
+      if (!["approved", "shipped"].includes(po.status)) return res.status(400).json({ message: "PO must be approved or shipped to create a GRN" });
+
+      const existingGrns = await storage.getGRNsByPO(poId);
+      const draftGrn = existingGrns.find((g: any) => g.status === "draft");
+      if (draftGrn) {
+        return res.status(409).json({ message: "A draft GRN already exists for this PO", existingGrnId: draftGrn.id, existingGrnNumber: draftGrn.grnNumber });
+      }
+
+      const year = new Date().getFullYear();
+      const allGrns = await storage.getGRNs();
+      const yearGrns = allGrns.filter((g: any) => g.grnNumber.startsWith(`GRN-${year}`));
+      const maxNum = yearGrns.reduce((max: number, g: any) => {
+        const num = parseInt(g.grnNumber.split("-").pop() || "0", 10);
+        return num > max ? num : max;
+      }, 0);
+      const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+      const poItems = await storage.getPurchaseOrderItems(poId);
+      const productItems = poItems.filter((it: any) => it.productId);
+      const itemTotal = productItems.reduce((sum: number, it: any) => sum + Number(it.totalCost), 0);
+
+      const warehouses = await storage.getWarehouses();
+      const defaultWarehouseId = warehouses.length > 0 ? warehouses[0].id : "";
+
+      const grn = await storage.createGRN({
+        grnNumber,
+        purchaseOrderId: poId,
+        warehouseId: defaultWarehouseId,
+        status: "draft",
+        deliveryCost: null,
+        totalAmount: String(itemTotal),
+        receivedDate: new Date(),
+        notes: null,
+        createdBy: req.user.id,
+      } as any);
+
+      if (productItems.length > 0) {
+        for (const it of productItems) {
+          await storage.createGRNItem({
+            grnId: grn.id,
+            productId: it.productId!,
+            description: it.description || null,
+            orderedQuantity: it.quantity,
+            receivedQuantity: it.quantity,
+            buyingPrice: it.unitCost,
+            totalCost: it.totalCost,
+          } as any);
+        }
+      }
+
+      await logAction(req.user.id, "create", "grn", `Created draft GRN ${grnNumber} from PO ${po.poNumber}`);
+      res.status(201).json(grn);
+    } catch (error) {
+      console.error("Create GRN from PO error:", error);
+      res.status(500).json({ message: "Failed to create GRN from PO" });
+    }
+  });
+
   app.post("/api/grns", authenticateToken, async (req: any, res) => {
     try {
       const po = await storage.getPurchaseOrder(req.body.purchaseOrderId);
@@ -2662,6 +2726,36 @@ export async function registerRoutes(
       const items = await storage.getGRNItems(grn.id);
       if (items.length === 0) return res.status(400).json({ message: "GRN has no items to confirm" });
 
+      // Over-receive validation: ensure no item exceeds remaining PO quantity
+      const po = await storage.getPurchaseOrder(grn.purchaseOrderId);
+      if (po) {
+        const poItems = await storage.getPurchaseOrderItems(po.id);
+        const allGrnsForPO = await storage.getGRNsByPO(po.id);
+        const prevConfirmedGrns = allGrnsForPO.filter((g: any) => g.status === "confirmed");
+
+        const receivedPerProduct: Record<string, number> = {};
+        for (const cGrn of prevConfirmedGrns) {
+          const cGrnItems = await storage.getGRNItems(cGrn.id);
+          for (const ci of cGrnItems) {
+            receivedPerProduct[ci.productId] = (receivedPerProduct[ci.productId] || 0) + ci.receivedQuantity;
+          }
+        }
+
+        const overReceived: string[] = [];
+        for (const grnItem of items) {
+          const poItem = poItems.find((p: any) => p.productId === grnItem.productId);
+          if (!poItem) continue;
+          const alreadyReceived = receivedPerProduct[grnItem.productId] || 0;
+          const remaining = poItem.quantity - alreadyReceived;
+          if (grnItem.receivedQuantity > remaining) {
+            overReceived.push(`Product ${grnItem.productId}: trying to receive ${grnItem.receivedQuantity}, but only ${remaining} remaining on PO`);
+          }
+        }
+        if (overReceived.length > 0) {
+          return res.status(400).json({ message: "Over-receive detected", details: overReceived });
+        }
+      }
+
       const allStock = await storage.getInventoryStock();
 
       const costAggregates: Record<string, { totalQty: number; totalCost: number }> = {};
@@ -2709,12 +2803,13 @@ export async function registerRoutes(
         await tx.execute(sql`UPDATE goods_receipt_notes SET status = 'confirmed' WHERE id = ${grn.id}`);
       });
 
-      const po = await storage.getPurchaseOrder(grn.purchaseOrderId);
-      if (po) {
-        const poItems = await storage.getPurchaseOrderItems(po.id);
-        const allGrnsForPO = await storage.getGRNsByPO(po.id);
-        const confirmedGrns = allGrnsForPO.filter(g => g.status === "confirmed" || g.id === grn.id);
+      const poForStatus = await storage.getPurchaseOrder(grn.purchaseOrderId);
+      if (poForStatus) {
+        const poItems = await storage.getPurchaseOrderItems(poForStatus.id);
+        const allGrnsForPO = await storage.getGRNsByPO(poForStatus.id);
+        const confirmedGrns = allGrnsForPO.filter((g: any) => g.status === "confirmed" || g.id === grn.id);
 
+        let anyReceived = false;
         let allFullyReceived = true;
         for (const poItem of poItems) {
           if (!poItem.productId) continue;
@@ -2727,17 +2822,17 @@ export async function registerRoutes(
               }
             }
           }
+          if (totalReceived > 0) anyReceived = true;
           if (totalReceived < poItem.quantity) {
             allFullyReceived = false;
-            break;
           }
         }
 
         if (allFullyReceived) {
-          await storage.updatePurchaseOrder(po.id, { status: "received" } as any);
+          await storage.updatePurchaseOrder(poForStatus.id, { status: "received" } as any);
 
           const allPRs = await storage.getPurchaseRequests();
-          const linkedPR = allPRs.find((pr: any) => pr.purchaseOrderId === po.id);
+          const linkedPR = allPRs.find((pr: any) => pr.purchaseOrderId === poForStatus.id);
           if (linkedPR?.salesOrderId) {
             try {
               await checkAndAdvanceSalesOrderFromProcurement(linkedPR.salesOrderId, storage);
@@ -2745,6 +2840,8 @@ export async function registerRoutes(
               console.error("Failed to advance SO from procurement after GRN:", e);
             }
           }
+        } else if (anyReceived) {
+          await storage.updatePurchaseOrder(poForStatus.id, { status: "partial" } as any);
         }
       }
 

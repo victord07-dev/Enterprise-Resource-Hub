@@ -1,4 +1,5 @@
-import { useState, Fragment, useCallback, useEffect } from "react";
+import { useState, Fragment, useCallback, useEffect, useRef } from "react";
+import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,7 @@ const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Main
 
 export default function Inventory() {
   const { toast } = useToast();
+  const [location, navigate] = useLocation();
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: warehouses, isLoading: warehousesLoading } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
 
@@ -34,6 +36,8 @@ export default function Inventory() {
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
   const [activeTab, setActiveTab] = useState("products");
+
+  const urlParamsHandled = useRef(false);
   const [movementFilterProduct, setMovementFilterProduct] = useState("all");
   const [movementFilterWarehouse, setMovementFilterWarehouse] = useState("all");
   const [movementFilterType, setMovementFilterType] = useState("all");
@@ -370,13 +374,29 @@ export default function Inventory() {
   }, [highlightedGrnId]);
 
   useEffect(() => {
+    if (urlParamsHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    const highlightGrn = params.get("highlightGrn");
+    if (tab || highlightGrn) {
+      urlParamsHandled.current = true;
+      if (tab) setActiveTab(tab);
+      if (highlightGrn) {
+        setHighlightedGrnId(highlightGrn);
+        setExpandedGrnIds(prev => { const next = new Set(prev); next.add(highlightGrn); return next; });
+        navigate("/inventory", { replace: true });
+      }
+    }
+  }, [location]);
+
+  useEffect(() => {
     if (!highlightedChallanId) return;
     const t = setTimeout(() => setHighlightedChallanId(null), 3000);
     return () => clearTimeout(t);
   }, [highlightedChallanId]);
 
   const warehouseEligiblePOs = (purchaseOrders ?? []).filter(po =>
-    po.deliveryType === "warehouse" && ["approved", "shipped"].includes(po.status)
+    po.deliveryType === "warehouse" && ["approved", "shipped", "partial"].includes(po.status)
   );
 
   const supplierMap = new Map((suppliers ?? []).map(s => [s.id, s]));

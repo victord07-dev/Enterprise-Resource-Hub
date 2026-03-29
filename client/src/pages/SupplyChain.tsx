@@ -1,4 +1,5 @@
 import { useState, Fragment, useEffect, useMemo } from "react";
+import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,11 +11,11 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus } from "lucide-react";
 import { generatePurchaseOrderPDF } from "@/lib/purchase-order-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder } from "@shared/schema";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
 
 interface POLineItem {
   productId: string;
@@ -29,6 +30,7 @@ function StatusBadge({ status }: { status: string }) {
     pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-400",
     approved: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
     shipped: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
+    partial: "bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400",
     received: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
     cancelled: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
     cancellation_requested: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
@@ -36,6 +38,7 @@ function StatusBadge({ status }: { status: string }) {
   };
   const labels: Record<string, string> = {
     cancellation_requested: "Cancel Requested",
+    partial: "Partially Received",
   };
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${variants[status] || variants.pending}`}>
@@ -486,9 +489,36 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
     queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
   });
   const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  const { data: poGrns } = useQuery<GoodsReceiptNote[]>({
+    queryKey: ["/api/grns/by-po", poId],
+    queryFn: () => apiRequest("GET", `/api/grns/by-po/${poId}`).then(r => r.json()),
+  });
 
   const productMap = new Map<string, Product>();
   allProducts?.forEach(p => productMap.set(p.id, p));
+
+  const confirmedGrns = (poGrns ?? []).filter(g => g.status === "confirmed");
+  const hasReceiptData = confirmedGrns.length > 0;
+
+  const [grnItemsCache, setGrnItemsCache] = useState<Record<string, GoodsReceiptNoteItem[]>>({});
+  useEffect(() => {
+    confirmedGrns.forEach(async (g) => {
+      if (!grnItemsCache[g.id]) {
+        try {
+          const res = await apiRequest("GET", `/api/grns/${g.id}/items`);
+          const its = await res.json();
+          setGrnItemsCache(prev => ({ ...prev, [g.id]: Array.isArray(its) ? its : [] }));
+        } catch { setGrnItemsCache(prev => ({ ...prev, [g.id]: [] })); }
+      }
+    });
+  }, [confirmedGrns.length]);
+
+  const receivedPerProduct: Record<string, number> = {};
+  Object.values(grnItemsCache).forEach(gItems => {
+    gItems.forEach(gi => {
+      receivedPerProduct[gi.productId] = (receivedPerProduct[gi.productId] || 0) + gi.receivedQuantity;
+    });
+  });
 
   if (isLoading) {
     return <div className="p-4"><Skeleton className="h-12 w-full" /></div>;
@@ -527,7 +557,9 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
             <tr className="border-b">
               <th className="text-left p-2 font-medium text-muted-foreground text-xs">Product</th>
               <th className="text-left p-2 font-medium text-muted-foreground text-xs">Description</th>
-              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Qty</th>
+              <th className="text-center p-2 font-medium text-muted-foreground text-xs">Ordered</th>
+              {hasReceiptData && <th className="text-center p-2 font-medium text-muted-foreground text-xs">Received</th>}
+              {hasReceiptData && <th className="text-center p-2 font-medium text-muted-foreground text-xs">Outstanding</th>}
               <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
               <th className="text-right p-2 font-medium text-muted-foreground text-xs">Total</th>
             </tr>
@@ -535,11 +567,27 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
           <tbody>
             {items.map((item) => {
               const prod = item.productId ? productMap.get(item.productId) : null;
+              const received = item.productId ? (receivedPerProduct[item.productId] ?? 0) : 0;
+              const outstanding = Math.max(0, item.quantity - received);
               return (
                 <tr key={item.id} className="border-b last:border-0" data-testid={`row-po-item-${item.id}`}>
                   <td className="p-2 font-medium">{prod?.name || "—"}</td>
                   <td className="p-2 text-muted-foreground">{item.description || "—"}</td>
                   <td className="p-2 text-center">{item.quantity}</td>
+                  {hasReceiptData && (
+                    <td className="p-2 text-center">
+                      <span className={`font-medium ${received >= item.quantity ? "text-green-600 dark:text-green-400" : "text-orange-600 dark:text-orange-400"}`} data-testid={`text-po-item-received-${item.id}`}>
+                        {received}
+                      </span>
+                    </td>
+                  )}
+                  {hasReceiptData && (
+                    <td className="p-2 text-center">
+                      <span className={`font-medium ${outstanding === 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`} data-testid={`text-po-item-outstanding-${item.id}`}>
+                        {outstanding}
+                      </span>
+                    </td>
+                  )}
                   <td className="p-2 text-right">₹{Number(item.unitCost).toLocaleString()}</td>
                   <td className="p-2 text-right font-medium">₹{Number(item.totalCost).toLocaleString()}</td>
                 </tr>
@@ -548,7 +596,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
+              <td colSpan={hasReceiptData ? 6 : 4} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
               <td className="p-2 text-right font-semibold" data-testid={`text-po-items-total-${poId}`}>
                 ₹{items.reduce((sum, i) => sum + Number(i.totalCost), 0).toLocaleString()}
               </td>
@@ -620,6 +668,7 @@ function PRExpandedItems({ prId }: { prId: string }) {
 
 export default function SupplyChain() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const { data: suppliers, isLoading: suppliersLoading } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders, isLoading: poLoading } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
@@ -759,6 +808,33 @@ export default function SupplyChain() {
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
       setGeneratingChallanPoId(null);
+    },
+  });
+
+  const [creatingGrnPoId, setCreatingGrnPoId] = useState<string | null>(null);
+  const createGrnFromPoMutation = useMutation({
+    mutationFn: async (poId: string) => {
+      setCreatingGrnPoId(poId);
+      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`);
+      const data = await res.json();
+      if (!res.ok) throw Object.assign(new Error(data.message || "Failed"), data);
+      return data;
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "Draft GRN created", description: `${data.grnNumber} created. Opening Inventory → GRN tab...` });
+      setCreatingGrnPoId(null);
+      navigate(`/inventory?tab=grn&highlightGrn=${data.id}`);
+    },
+    onError: (error: any) => {
+      setCreatingGrnPoId(null);
+      if (error?.existingGrnNumber) {
+        toast({ title: "Draft GRN already exists", description: `${error.existingGrnNumber} is already open. Find it in Inventory → GRN tab.`, variant: "destructive" });
+        navigate(`/inventory?tab=grn&highlightGrn=${error.existingGrnId}`);
+      } else {
+        toast({ title: "Error", description: error.message || "Failed to create GRN", variant: "destructive" });
+      }
     },
   });
 
@@ -1270,10 +1346,18 @@ export default function SupplyChain() {
                               <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
                               <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center justify-end gap-1">
-                                  {(po.status === "approved" || po.status === "shipped") && po.deliveryType !== "direct_delivery" && (
-                                    <span className="text-xs text-muted-foreground mr-1" data-testid={`text-po-grn-hint-${po.id}`}>
-                                      Create GRN in Inventory
-                                    </span>
+                                  {(po.status === "approved" || po.status === "shipped" || po.status === "partial") && po.deliveryType !== "direct_delivery" && (
+                                    <Button
+                                      size="sm"
+                                      variant="link"
+                                      className="text-xs text-emerald-600 dark:text-emerald-400 mr-1 p-0 h-auto"
+                                      data-testid={`button-create-grn-${po.id}`}
+                                      disabled={creatingGrnPoId === po.id}
+                                      onClick={() => createGrnFromPoMutation.mutate(po.id)}
+                                    >
+                                      <PackagePlus className="w-3 h-3 mr-1" />
+                                      {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}
+                                    </Button>
                                   )}
                                   {(po.status === "approved" || po.status === "shipped") && po.deliveryType === "direct_delivery" && (
                                     <Button
@@ -1298,7 +1382,7 @@ export default function SupplyChain() {
                                       </Button>
                                     </>
                                   )}
-                                  {(po.status === "approved" || po.status === "shipped") && (
+                                  {(po.status === "approved" || po.status === "shipped" || po.status === "partial") && (
                                     <Button size="sm" variant="outline" className="text-red-600 border-red-300 dark:text-red-400 dark:border-red-700" data-testid={`button-request-cancel-po-${po.id}`} onClick={() => { setCancelPoId(po.id); setCancelReason(""); setCancelDialogOpen(true); }}>
                                       <Ban className="w-3 h-3 mr-1" /> Request Cancel
                                     </Button>
@@ -1308,7 +1392,7 @@ export default function SupplyChain() {
                                       <CheckCircle className="w-3 h-3 mr-1" /> Approve Cancel
                                     </Button>
                                   )}
-                                  {["approved", "shipped", "received", "cancellation_requested"].includes(po.status) && (
+                                  {["approved", "shipped", "partial", "received", "cancellation_requested"].includes(po.status) && (
                                     <Button size="icon" variant="ghost" data-testid={`button-download-po-${po.id}`} onClick={() => downloadPoPdf(po)} title="Download PDF" disabled={downloadingPoId === po.id}>
                                       <Download className={`w-4 h-4 ${downloadingPoId === po.id ? "animate-pulse" : ""}`} />
                                     </Button>

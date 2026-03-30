@@ -522,6 +522,60 @@ export const leaveRequests = pgTable("leave_requests", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Sales Invoices (GST-compliant, created from dispatched delivery challans)
+export const salesInvoices = pgTable("sales_invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceNumber: text("invoice_number").notNull().unique(),
+  invoiceDate: timestamp("invoice_date").notNull().defaultNow(),
+  customerId: varchar("customer_id").notNull(),
+  soId: varchar("so_id"),
+  challanId: varchar("challan_id").unique(),
+  customerType: text("customer_type").notNull().default("B2C"),
+  customerGSTIN: text("customer_gstin"),
+  isInterState: boolean("is_inter_state").notNull().default(false),
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
+  totalCgst: decimal("total_cgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalSgst: decimal("total_sgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalIgst: decimal("total_igst", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalTax: decimal("total_tax", { precision: 12, scale: 2 }).notNull(),
+  grandTotal: decimal("grand_total", { precision: 12, scale: 2 }).notNull(),
+  status: text("status").notNull().default("pending"),
+  dueDate: timestamp("due_date"),
+  notes: text("notes"),
+  createdBy: varchar("created_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const salesInvoiceItems = pgTable("sales_invoice_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceId: varchar("invoice_id").notNull(),
+  productId: varchar("product_id"),
+  description: text("description").notNull(),
+  qty: decimal("qty", { precision: 12, scale: 3 }).notNull(),
+  unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
+  hsnCode: text("hsn_code"),
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  taxableAmount: decimal("taxable_amount", { precision: 12, scale: 2 }).notNull(),
+  cgst: decimal("cgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  sgst: decimal("sgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  igst: decimal("igst", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull(),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull(),
+});
+
+export const customerPayments = pgTable("customer_payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceId: varchar("invoice_id").notNull(),
+  customerId: varchar("customer_id").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  paymentDate: timestamp("payment_date").notNull().defaultNow(),
+  method: text("method").notNull().default("bank_transfer"),
+  reference: text("reference"),
+  notes: text("notes"),
+  createdBy: varchar("created_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true });
@@ -563,6 +617,9 @@ export const insertNotificationSchema = createInsertSchema(notifications).omit({
 export const insertLeaveRequestSchema = createInsertSchema(leaveRequests).omit({ id: true, createdAt: true });
 export const insertSupplierInvoiceSchema = createInsertSchema(supplierInvoices).omit({ id: true, createdAt: true });
 export const insertSupplierPaymentSchema = createInsertSchema(supplierPayments).omit({ id: true, createdAt: true });
+export const insertSalesInvoiceSchema = createInsertSchema(salesInvoices).omit({ id: true, createdAt: true });
+export const insertSalesInvoiceItemSchema = createInsertSchema(salesInvoiceItems).omit({ id: true });
+export const insertCustomerPaymentSchema = createInsertSchema(customerPayments).omit({ id: true, createdAt: true });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertLead = z.infer<typeof insertLeadSchema>;
@@ -606,3 +663,6 @@ export type Notification = typeof notifications.$inferSelect;
 export type LeaveRequest = typeof leaveRequests.$inferSelect;
 export type SupplierInvoice = typeof supplierInvoices.$inferSelect;
 export type SupplierPayment = typeof supplierPayments.$inferSelect;
+export type SalesInvoice = typeof salesInvoices.$inferSelect;
+export type SalesInvoiceItem = typeof salesInvoiceItems.$inferSelect;
+export type CustomerPayment = typeof customerPayments.$inferSelect;

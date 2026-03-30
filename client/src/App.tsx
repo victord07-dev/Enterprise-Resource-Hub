@@ -30,6 +30,7 @@ import Kiosk from "@/pages/Kiosk";
 import Leads from "@/pages/Leads";
 import Products from "@/pages/Products";
 import MyPortal from "@/pages/MyPortal";
+import SalesInvoices from "@/pages/SalesInvoices";
 
 interface NotificationBellProps {
   open: boolean;
@@ -169,6 +170,7 @@ function Router() {
       <Route path="/field-staff" component={() => <ProtectedRoute component={FieldStaff} path="/field-staff" />} />
       <Route path="/reports" component={() => <ProtectedRoute component={Reports} path="/reports" />} />
       <Route path="/audit-trail" component={() => <ProtectedRoute component={AuditTrail} path="/audit-trail" />} />
+      <Route path="/sales-invoices" component={() => <ProtectedRoute component={SalesInvoices} path="/sales-invoices" />} />
       <Route component={NotFound} />
     </Switch>
   );

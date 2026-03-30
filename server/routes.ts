@@ -18,6 +18,7 @@ import {
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
   insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
   insertSupplierInvoiceSchema, insertSupplierPaymentSchema,
+  insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 
@@ -4743,6 +4744,238 @@ export async function registerRoutes(
       res.json({ rows, summary });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to generate AP aging report" });
+    }
+  });
+
+  // ─── Sales Invoices ────────────────────────────────────────────────────────
+
+  // GET all invoices
+  app.get("/api/sales-invoices", authenticateToken, async (req: any, res) => {
+    try {
+      const invoiceList = await storage.getSalesInvoices();
+      res.json(invoiceList);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch sales invoices" });
+    }
+  });
+
+  // GET single invoice with items and payments
+  app.get("/api/sales-invoices/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      const items = await storage.getSalesInvoiceItems(inv.id);
+      const pmts = await storage.getCustomerPayments(inv.id);
+      const totalPaid = pmts.reduce((s, p) => s + Number(p.amount), 0);
+      const balance = Number(inv.grandTotal) - totalPaid;
+      res.json({ ...inv, items, payments: pmts, totalPaid, balance });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch invoice" });
+    }
+  });
+
+  // POST create from challan
+  app.post("/api/sales-invoices/create-from-challan/:challanId", authenticateToken, async (req: any, res) => {
+    try {
+      const { challanId } = req.params;
+
+      // Load challan
+      const [challanRow] = await db.execute(sql`SELECT * FROM delivery_challans WHERE id = ${challanId} LIMIT 1`);
+      if (!challanRow) return res.status(404).json({ message: "Delivery challan not found" });
+      const challan = challanRow as any;
+
+      // Must be dispatched
+      if (challan.status !== "dispatched") {
+        return res.status(422).json({ message: "Invoice can only be created after the challan is fully dispatched" });
+      }
+
+      // Enforce one invoice per challan
+      const existing = await storage.getSalesInvoiceByChallan(challanId);
+      if (existing) {
+        return res.status(409).json({ message: `Invoice ${existing.invoiceNumber} already exists for this delivery challan`, invoiceId: existing.id });
+      }
+
+      // Load challan items
+      const challanItemRows = await db.execute(sql`SELECT * FROM delivery_challan_items WHERE challan_id = ${challanId}`);
+      const challanItems = challanItemRows as any[];
+
+      // Load customer
+      const [customerRow] = await db.execute(sql`SELECT * FROM customers WHERE id = ${challan.customer_id} LIMIT 1`);
+      const customer = customerRow as any;
+
+      // Determine B2B vs B2C
+      const customerGSTIN = customer?.gst_number || null;
+      const customerType = customerGSTIN ? "B2B" : "B2C";
+      const isInterState: boolean = req.body.isInterState ?? false;
+      const dueDate = req.body.dueDate ? new Date(req.body.dueDate) : null;
+      const notes = req.body.notes ?? null;
+
+      // Build line items with GST
+      const lineItems: Array<{
+        productId: string | null;
+        description: string;
+        qty: number;
+        unitPrice: number;
+        hsnCode: string | null;
+        gstRate: number;
+        taxableAmount: number;
+        cgst: number;
+        sgst: number;
+        igst: number;
+        taxAmount: number;
+        totalAmount: number;
+      }> = [];
+
+      for (const ci of challanItems) {
+        const qty = Number(ci.qty_dispatched ?? ci.qty_to_dispatch ?? ci.quantity ?? 0);
+        if (qty <= 0) continue;
+
+        // Look up product for HSN / GST rate
+        const [prodRow] = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
+        const prod = prodRow as any;
+        const unitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
+        const hsnCode: string | null = prod?.hsn_code ?? null;
+        const gstRate = Number(prod?.gst_rate ?? 0);
+        const taxableAmount = qty * unitPrice;
+        const tax = taxableAmount * gstRate / 100;
+        const cgst = isInterState ? 0 : tax / 2;
+        const sgst = isInterState ? 0 : tax / 2;
+        const igst = isInterState ? tax : 0;
+        const taxAmount = tax;
+        const totalAmount = taxableAmount + taxAmount;
+
+        lineItems.push({
+          productId: ci.product_id ?? null,
+          description: ci.description ?? prod?.name ?? "Product",
+          qty,
+          unitPrice,
+          hsnCode,
+          gstRate,
+          taxableAmount,
+          cgst,
+          sgst,
+          igst,
+          taxAmount,
+          totalAmount,
+        });
+      }
+
+      const subtotal = lineItems.reduce((s, i) => s + i.taxableAmount, 0);
+      const totalCgst = lineItems.reduce((s, i) => s + i.cgst, 0);
+      const totalSgst = lineItems.reduce((s, i) => s + i.sgst, 0);
+      const totalIgst = lineItems.reduce((s, i) => s + i.igst, 0);
+      const totalTax = lineItems.reduce((s, i) => s + i.taxAmount, 0);
+      const grandTotal = subtotal + totalTax;
+
+      const invoiceNumber = await storage.generateSalesInvoiceNumber();
+
+      const invoice = await storage.createSalesInvoice({
+        invoiceNumber,
+        invoiceDate: new Date(),
+        customerId: challan.customer_id,
+        soId: challan.order_id ?? null,
+        challanId,
+        customerType,
+        customerGSTIN,
+        isInterState,
+        subtotal: String(subtotal),
+        totalCgst: String(totalCgst),
+        totalSgst: String(totalSgst),
+        totalIgst: String(totalIgst),
+        totalTax: String(totalTax),
+        grandTotal: String(grandTotal),
+        status: "pending",
+        dueDate: dueDate ?? null,
+        notes,
+        createdBy: req.user.id,
+      });
+
+      for (const li of lineItems) {
+        await storage.createSalesInvoiceItem({
+          invoiceId: invoice.id,
+          productId: li.productId,
+          description: li.description,
+          qty: String(li.qty),
+          unitPrice: String(li.unitPrice),
+          hsnCode: li.hsnCode,
+          gstRate: String(li.gstRate),
+          taxableAmount: String(li.taxableAmount),
+          cgst: String(li.cgst),
+          sgst: String(li.sgst),
+          igst: String(li.igst),
+          taxAmount: String(li.taxAmount),
+          totalAmount: String(li.totalAmount),
+        });
+      }
+
+      await logAction(req.user.id, "CREATE", "SalesInvoice", `Invoice ${invoiceNumber} created from challan ${challan.challan_number}`);
+      res.status(201).json({ ...invoice, items: lineItems });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to create invoice from challan" });
+    }
+  });
+
+  // PATCH update invoice (status, dueDate, notes)
+  app.patch("/api/sales-invoices/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      const updated = await storage.updateSalesInvoice(req.params.id, req.body);
+      await logAction(req.user.id, "UPDATE", "SalesInvoice", `Invoice ${inv.invoiceNumber} updated`);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to update invoice" });
+    }
+  });
+
+  // ─── Customer Payments ──────────────────────────────────────────────────────
+
+  // GET payments for an invoice
+  app.get("/api/customer-payments", authenticateToken, async (req: any, res) => {
+    try {
+      const { invoiceId } = req.query as { invoiceId?: string };
+      const pmts = invoiceId
+        ? await storage.getCustomerPayments(invoiceId)
+        : await storage.getAllCustomerPayments();
+      res.json(pmts);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch customer payments" });
+    }
+  });
+
+  // POST record a customer payment
+  app.post("/api/customer-payments", authenticateToken, async (req: any, res) => {
+    try {
+      const { invoiceId, customerId, amount, paymentDate, method, reference, notes } = req.body;
+      if (!invoiceId || !amount) return res.status(400).json({ message: "invoiceId and amount are required" });
+
+      const inv = await storage.getSalesInvoice(invoiceId);
+      if (!inv) return res.status(404).json({ message: "Invoice not found" });
+
+      const pmt = await storage.createCustomerPayment({
+        invoiceId,
+        customerId: customerId ?? inv.customerId,
+        amount: String(amount),
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        method: method ?? "bank_transfer",
+        reference: reference ?? null,
+        notes: notes ?? null,
+        createdBy: req.user.id,
+      });
+
+      // Recalculate invoice status
+      const allPmts = await storage.getCustomerPayments(invoiceId);
+      const totalPaid = allPmts.reduce((s, p) => s + Number(p.amount), 0);
+      const grandTotal = Number(inv.grandTotal);
+      let status = "pending";
+      if (totalPaid >= grandTotal) status = "paid";
+      else if (totalPaid > 0) status = "partial_paid";
+      await storage.updateSalesInvoice(invoiceId, { status } as any);
+
+      await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${amount} for invoice ${inv.invoiceNumber}`);
+      res.status(201).json(pmt);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to record payment" });
     }
   });
 

@@ -15,6 +15,7 @@ import {
   UserPlus,
   Box,
   User,
+  FileText,
 } from "lucide-react";
 import {
   Sidebar,
@@ -41,6 +42,7 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Inventory", url: "/inventory", icon: Package },
   { title: "Supply Chain", url: "/supply-chain", icon: Truck },
   { title: "Field Staff", url: "/field-staff", icon: MapPin },
+  { title: "Sales Invoices", url: "/sales-invoices", icon: FileText },
   { title: "Accounts", url: "/accounts", icon: CreditCard },
   { title: "Employees", url: "/employees", icon: Users },
   { title: "Reports", url: "/reports", icon: BarChart3 },
@@ -51,9 +53,9 @@ const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
   field_staff: ["/my-portal", "/field-staff"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/reports"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/sales-invoices", "/reports"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
-  accountant: ["/my-portal", "/accounts", "/sales", "/reports"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/reports"],
 };
 
 const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };

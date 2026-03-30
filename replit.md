@@ -32,6 +32,7 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
 - **PO Management:** Auto-generated PO numbers, dynamic supplier filtering based on product catalog, and a cancellation workflow.
 - **In-App Notifications:** Real-time user alerts for system events (e.g., expense approval, payroll disbursement, leave request status) with unread counts and a dedicated section in My Portal.
 - **Role-Based Access:** Dynamic sidebar navigation and route protection based on user roles, redirecting non-admin users to their `My Portal` dashboard.
+- **Sales Invoices (GST-Compliant AR):** Full accounts-receivable invoicing generated from dispatched delivery challans. Features: one invoice per challan enforced (409), INV-YYZZ-NNNN sequential numbering by financial year, B2B (GSTIN) / B2C classification, intra-state (CGST+SGST) and inter-state (IGST) splits per line item, HSN codes, subtotal/total-tax/grand-total breakdown, and payment tracking (pending → partial_paid → paid) with auto-status recalculation. New tables: `sales_invoices`, `sales_invoice_items`, `customer_payments`.
 
 ## External Dependencies
 - **Database:** PostgreSQL.

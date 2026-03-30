@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -269,6 +269,29 @@ export interface IStorage {
   createSupplierPayment(data: Omit<SupplierPayment, "id" | "createdAt">): Promise<SupplierPayment>;
   updateSupplierPayment(id: string, data: Partial<Omit<SupplierPayment, "id" | "createdAt">>): Promise<SupplierPayment | undefined>;
   deleteSupplierPayment(id: string): Promise<boolean>;
+
+  // Sales Invoices
+  getSalesInvoices(): Promise<SalesInvoice[]>;
+  getSalesInvoice(id: string): Promise<SalesInvoice | undefined>;
+  getSalesInvoiceByChallan(challanId: string): Promise<SalesInvoice | undefined>;
+  getSalesInvoicesByCustomer(customerId: string): Promise<SalesInvoice[]>;
+  createSalesInvoice(data: Omit<SalesInvoice, "id" | "createdAt">): Promise<SalesInvoice>;
+  updateSalesInvoice(id: string, data: Partial<Omit<SalesInvoice, "id" | "createdAt">>): Promise<SalesInvoice | undefined>;
+  deleteSalesInvoice(id: string): Promise<boolean>;
+
+  // Sales Invoice Items
+  getSalesInvoiceItems(invoiceId: string): Promise<SalesInvoiceItem[]>;
+  createSalesInvoiceItem(data: Omit<SalesInvoiceItem, "id">): Promise<SalesInvoiceItem>;
+  deleteSalesInvoiceItems(invoiceId: string): Promise<boolean>;
+
+  // Customer Payments
+  getCustomerPayments(invoiceId: string): Promise<CustomerPayment[]>;
+  getAllCustomerPayments(): Promise<CustomerPayment[]>;
+  createCustomerPayment(data: Omit<CustomerPayment, "id" | "createdAt">): Promise<CustomerPayment>;
+  deleteCustomerPayment(id: string): Promise<boolean>;
+
+  // Invoice Number Generation
+  generateSalesInvoiceNumber(): Promise<string>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1205,6 +1228,90 @@ export class DatabaseStorage implements IStorage {
   async deleteSupplierPayment(id: string): Promise<boolean> {
     await db.delete(supplierPayments).where(eq(supplierPayments.id, id));
     return true;
+  }
+
+  // Sales Invoices
+  async getSalesInvoices(): Promise<SalesInvoice[]> {
+    return db.select().from(salesInvoices).orderBy(desc(salesInvoices.createdAt));
+  }
+
+  async getSalesInvoice(id: string): Promise<SalesInvoice | undefined> {
+    const [inv] = await db.select().from(salesInvoices).where(eq(salesInvoices.id, id));
+    return inv;
+  }
+
+  async getSalesInvoiceByChallan(challanId: string): Promise<SalesInvoice | undefined> {
+    const [inv] = await db.select().from(salesInvoices).where(eq(salesInvoices.challanId, challanId));
+    return inv;
+  }
+
+  async getSalesInvoicesByCustomer(customerId: string): Promise<SalesInvoice[]> {
+    return db.select().from(salesInvoices).where(eq(salesInvoices.customerId, customerId)).orderBy(desc(salesInvoices.createdAt));
+  }
+
+  async createSalesInvoice(data: Omit<SalesInvoice, "id" | "createdAt">): Promise<SalesInvoice> {
+    const [inv] = await db.insert(salesInvoices).values(data as any).returning();
+    return inv;
+  }
+
+  async updateSalesInvoice(id: string, data: Partial<Omit<SalesInvoice, "id" | "createdAt">>): Promise<SalesInvoice | undefined> {
+    const [updated] = await db.update(salesInvoices).set(data as any).where(eq(salesInvoices.id, id)).returning();
+    return updated;
+  }
+
+  async deleteSalesInvoice(id: string): Promise<boolean> {
+    await db.delete(salesInvoices).where(eq(salesInvoices.id, id));
+    return true;
+  }
+
+  // Sales Invoice Items
+  async getSalesInvoiceItems(invoiceId: string): Promise<SalesInvoiceItem[]> {
+    return db.select().from(salesInvoiceItems).where(eq(salesInvoiceItems.invoiceId, invoiceId));
+  }
+
+  async createSalesInvoiceItem(data: Omit<SalesInvoiceItem, "id">): Promise<SalesInvoiceItem> {
+    const [item] = await db.insert(salesInvoiceItems).values(data as any).returning();
+    return item;
+  }
+
+  async deleteSalesInvoiceItems(invoiceId: string): Promise<boolean> {
+    await db.delete(salesInvoiceItems).where(eq(salesInvoiceItems.invoiceId, invoiceId));
+    return true;
+  }
+
+  // Customer Payments
+  async getCustomerPayments(invoiceId: string): Promise<CustomerPayment[]> {
+    return db.select().from(customerPayments).where(eq(customerPayments.invoiceId, invoiceId)).orderBy(desc(customerPayments.createdAt));
+  }
+
+  async getAllCustomerPayments(): Promise<CustomerPayment[]> {
+    return db.select().from(customerPayments).orderBy(desc(customerPayments.createdAt));
+  }
+
+  async createCustomerPayment(data: Omit<CustomerPayment, "id" | "createdAt">): Promise<CustomerPayment> {
+    const [pmt] = await db.insert(customerPayments).values(data as any).returning();
+    return pmt;
+  }
+
+  async deleteCustomerPayment(id: string): Promise<boolean> {
+    await db.delete(customerPayments).where(eq(customerPayments.id, id));
+    return true;
+  }
+
+  async generateSalesInvoiceNumber(): Promise<string> {
+    const now = new Date();
+    const month = now.getMonth(); // 0-indexed, April = 3
+    const year = now.getFullYear();
+    const fyStart = month >= 3 ? year : year - 1;
+    const fyEnd = fyStart + 1;
+    const fyCode = `${String(fyStart).slice(-2)}${String(fyEnd).slice(-2)}`;
+    const prefix = `INV-${fyCode}-`;
+    const [result] = await db.execute(sql`
+      SELECT COUNT(*) as count FROM sales_invoices
+      WHERE invoice_number LIKE ${prefix + '%'}
+    `);
+    const count = Number((result as any)?.count ?? 0);
+    return `${prefix}${String(count + 1).padStart(4, "0")}`;
   }
 
   // Dashboard

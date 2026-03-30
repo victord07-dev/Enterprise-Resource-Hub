@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, Fragment } from "react";
+import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -346,6 +347,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
 }
 
 export default function Sales() {
+  const [, navigate] = useLocation();
   const { toast } = useToast();
   const { data: currentUser } = useCurrentUser();
   const isReadOnly = currentUser?.role === "accountant";
@@ -983,7 +985,9 @@ export default function Sales() {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
       if (existing) {
-        toast({ title: "Draft challan already exists", description: `${challan?.challanNumber || "Existing draft"} — Update it in Inventory → Delivery Challans.` });
+        toast({ title: "Draft challan already exists", description: `${challan?.challanNumber || "Existing draft"} — Opening Inventory → Delivery Challans.` });
+        setDispatchDialogOpen(false);
+        setTimeout(() => navigate("/inventory?tab=challans"), 300);
       } else {
         toast({ title: "Dispatch challan created", description: `${challan.challanNumber} — Go to Inventory → Delivery Challans to dispatch.` });
       }
@@ -2113,9 +2117,9 @@ export default function Sales() {
             <Button variant="outline" onClick={() => setDispatchDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-dispatch-challan"
-              disabled={createFromSOMutation.isPending || !dispatchForm.sourceId || dispatchSummary.every(i => i.qtyRemaining === 0)}
+              disabled={createFromSOMutation.isPending || dispatchSummary.every(i => i.qtyRemaining === 0)}
               onClick={() => {
-                if (!dispatchOrderId || !dispatchForm.sourceId) return;
+                if (!dispatchOrderId) return;
                 createFromSOMutation.mutate({ orderId: dispatchOrderId, data: dispatchForm });
               }}
             >

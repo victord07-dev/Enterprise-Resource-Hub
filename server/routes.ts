@@ -2618,7 +2618,7 @@ export async function registerRoutes(
           quantity: remaining,
           unitPrice: it.unitPrice,
           qtyOrdered: String(it.quantity),
-          qtyReserved: String(it.quantity),
+          qtyReserved: String(remaining),
           qtyToDispatch: String(remaining),
           qtyDispatched: "0",
         } as any);
@@ -2649,10 +2649,11 @@ export async function registerRoutes(
         if (!existing) continue;
         const qtyToDispatch = Number(update.qtyToDispatch ?? update.quantity ?? 0);
         if (qtyToDispatch <= 0) return res.status(400).json({ message: "qtyToDispatch must be greater than 0" });
-        const maxDispatch = Number((existing as any).qtyOrdered ?? existing.quantity);
+        const qtyReserved = Number((existing as any).qtyReserved ?? (existing as any).qtyOrdered ?? existing.quantity);
         const alreadyDispatched = Number((existing as any).qtyDispatched ?? 0);
-        if (qtyToDispatch > maxDispatch - alreadyDispatched) {
-          return res.status(400).json({ message: `qtyToDispatch (${qtyToDispatch}) exceeds remaining quantity (${maxDispatch - alreadyDispatched})` });
+        const maxAllowed = qtyReserved - alreadyDispatched;
+        if (qtyToDispatch > maxAllowed) {
+          return res.status(400).json({ message: `qtyToDispatch (${qtyToDispatch}) exceeds remaining reserved quantity (${maxAllowed})` });
         }
         const updated = await storage.updateDeliveryChallanItem(existing.id, { qtyToDispatch: String(qtyToDispatch) } as any);
         updatedItems.push(updated);
@@ -2712,14 +2713,14 @@ export async function registerRoutes(
       const dispatchQtys: Record<string, number> = {};
       for (const item of items) {
         const qty = Number((item as any).qtyToDispatch ?? item.quantity);
-        const maxAllowed = Number((item as any).qtyOrdered ?? item.quantity);
+        const qtyReserved = Number((item as any).qtyReserved ?? (item as any).qtyOrdered ?? item.quantity);
         const alreadyDispatched = Number((item as any).qtyDispatched ?? 0);
-        const remaining = maxAllowed - alreadyDispatched;
+        const remaining = qtyReserved - alreadyDispatched;
         if (qty <= 0) {
           return res.status(400).json({ message: `qtyToDispatch must be greater than 0 for all items` });
         }
         if (qty > remaining) {
-          return res.status(400).json({ message: `qtyToDispatch (${qty}) exceeds remaining quantity (${remaining}) for item` });
+          return res.status(400).json({ message: `qtyToDispatch (${qty}) exceeds remaining reserved quantity (${remaining}) for item` });
         }
         dispatchQtys[item.id] = qty;
       }

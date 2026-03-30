@@ -755,6 +755,10 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
+      // Strip client-provided totals — server recomputes these authoritatively when items are saved
+      delete body.subtotal;
+      delete body.totalTax;
+      delete body.totalAmount;
       const parsed = insertSalesOrderSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createSalesOrder(parsed.data as any);
@@ -772,6 +776,10 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
+      // Strip client-provided totals — server is the authority; recomputes below if discount/delivery changes
+      delete body.subtotal;
+      delete body.totalTax;
+      delete body.totalAmount;
       const previousOrder = await storage.getSalesOrder(req.params.id);
       let updated = await storage.updateSalesOrder(req.params.id, body);
       if (!updated) return res.status(404).json({ message: "Sales order not found" });

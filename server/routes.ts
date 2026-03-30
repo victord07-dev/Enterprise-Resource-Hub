@@ -4761,10 +4761,7 @@ export async function registerRoutes(
 
       const summary = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 };
 
-      // Only include non-paid invoices (paid invoices have no outstanding balance)
-      const nonPaidInvoices = allInvoices.filter(inv => inv.status !== "paid");
-
-      const rows = nonPaidInvoices.map(inv => {
+      const rows = allInvoices.map(inv => {
         const customer = customerMap.get(inv.customerId);
 
         const totalPaid = allPayments

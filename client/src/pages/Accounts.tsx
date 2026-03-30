@@ -9,9 +9,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, FileText, CreditCard, IndianRupee, TrendingUp, Pencil, Trash2, Building2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Invoice, Payment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
+import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -38,8 +38,8 @@ export default function Accounts() {
   const { toast } = useToast();
 
   // ── AR Queries ────────────────────────────────────────────────────────────
-  const { data: invoices, isLoading: invoicesLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
-  const { data: payments, isLoading: paymentsLoading } = useQuery<Payment[]>({ queryKey: ["/api/payments"] });
+  const { data: salesInvoices, isLoading: invoicesLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
+  const { data: customerPayments, isLoading: paymentsLoading } = useQuery<CustomerPayment[]>({ queryKey: ["/api/customer-payments"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
   // ── AP Queries ────────────────────────────────────────────────────────────
@@ -49,9 +49,29 @@ export default function Accounts() {
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
 
-  // ── AR Summary ────────────────────────────────────────────────────────────
-  const totalRevenue = payments?.reduce((sum, p) => sum + Number(p.amount), 0) ?? 0;
-  const pendingAmount = invoices?.filter((i) => i.status === "unpaid").reduce((sum, i) => sum + Number(i.amount), 0) ?? 0;
+  // ── AR Summary (from sales_invoices + customer_payments) ─────────────────
+  const customerMap = useMemo(() => new Map((customers ?? []).map(c => [c.id, c])), [customers]);
+
+  const paidPerSalesInvoice = useMemo(() => {
+    const map: Record<string, number> = {};
+    (customerPayments ?? []).forEach(p => {
+      map[p.invoiceId] = (map[p.invoiceId] || 0) + Number(p.amount);
+    });
+    return map;
+  }, [customerPayments]);
+
+  const arSummary = useMemo(() => {
+    let totalReceivable = 0, totalCollected = 0, totalOutstanding = 0;
+    (salesInvoices ?? []).forEach(inv => {
+      const grand = Number(inv.grandTotal);
+      const paid = paidPerSalesInvoice[inv.id] ?? 0;
+      totalReceivable += grand;
+      totalCollected += Math.min(grand, paid);
+      const bal = Math.max(0, grand - paid);
+      if (bal > 0) totalOutstanding += bal;
+    });
+    return { totalReceivable, totalCollected, totalOutstanding };
+  }, [salesInvoices, paidPerSalesInvoice]);
 
   // ── AP Computed values ────────────────────────────────────────────────────
   const supplierMap = useMemo(() => new Map((suppliers ?? []).map(s => [s.id, s])), [suppliers]);
@@ -84,13 +104,8 @@ export default function Accounts() {
   }, [supplierInvoices, supplierPayments, paidPerInvoice, poMap]);
 
   // ── AR State ──────────────────────────────────────────────────────────────
-  const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
-  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
-  const [invoiceForm, setInvoiceForm] = useState({ invoiceNumber: "", customerId: "", amount: "", status: "unpaid", dueDate: "" });
-
-  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
-  const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
-  const [paymentForm, setPaymentForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "" });
+  const [arPayDialogOpen, setArPayDialogOpen] = useState(false);
+  const [arPayForm, setArPayForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
 
   // ── AP State ──────────────────────────────────────────────────────────────
   const [siDialogOpen, setSiDialogOpen] = useState(false);
@@ -145,60 +160,22 @@ export default function Accounts() {
   }, [selectedSI, paidPerInvoice, poMap]);
 
   // ── AR Mutations ──────────────────────────────────────────────────────────
-  const invoiceMutation = useMutation({
+  const arPayMutation = useMutation({
     mutationFn: async (data: any) => {
-      if (editingInvoice) {
-        await apiRequest("PATCH", `/api/invoices/${editingInvoice.id}`, data);
-      } else {
-        await apiRequest("POST", "/api/invoices", data);
+      const res = await apiRequest("POST", "/api/customer-payments", data);
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.message || "Failed to record payment");
       }
+      return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      toast({ title: editingInvoice ? "Invoice updated" : "Invoice created" });
-      setInvoiceDialogOpen(false);
-      setEditingInvoice(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const deleteInvoiceMutation = useMutation({
-    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/invoices/${id}`); },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      toast({ title: "Invoice deleted" });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const paymentMutation = useMutation({
-    mutationFn: async (data: any) => {
-      if (editingPayment) {
-        await apiRequest("PATCH", `/api/payments/${editingPayment.id}`, data);
-      } else {
-        await apiRequest("POST", "/api/payments", data);
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      toast({ title: editingPayment ? "Payment updated" : "Payment recorded" });
-      setPaymentDialogOpen(false);
-      setEditingPayment(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const deletePaymentMutation = useMutation({
-    mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/payments/${id}`); },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/payments"] });
-      toast({ title: "Payment deleted" });
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customer-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports/ar-aging"] });
+      toast({ title: "Payment recorded successfully" });
+      setArPayDialogOpen(false);
+      setArPayForm({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -273,39 +250,9 @@ export default function Accounts() {
   });
 
   // ── AR helpers ────────────────────────────────────────────────────────────
-  const openNewInvoice = () => {
-    setEditingInvoice(null);
-    setInvoiceForm({ invoiceNumber: "", customerId: "", amount: "", status: "unpaid", dueDate: "" });
-    setInvoiceDialogOpen(true);
-  };
-
-  const openEditInvoice = (inv: Invoice) => {
-    setEditingInvoice(inv);
-    setInvoiceForm({
-      invoiceNumber: inv.invoiceNumber,
-      customerId: inv.customerId,
-      amount: String(inv.amount),
-      status: inv.status,
-      dueDate: inv.dueDate ? new Date(inv.dueDate).toISOString().split("T")[0] : "",
-    });
-    setInvoiceDialogOpen(true);
-  };
-
-  const openNewPayment = () => {
-    setEditingPayment(null);
-    setPaymentForm({ invoiceId: "", amount: "", method: "bank_transfer", reference: "" });
-    setPaymentDialogOpen(true);
-  };
-
-  const openEditPayment = (pay: Payment) => {
-    setEditingPayment(pay);
-    setPaymentForm({
-      invoiceId: pay.invoiceId || "",
-      amount: String(pay.amount),
-      method: pay.method,
-      reference: pay.reference || "",
-    });
-    setPaymentDialogOpen(true);
+  const openArPayDialog = (invoiceId?: string) => {
+    setArPayForm({ invoiceId: invoiceId ?? "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
+    setArPayDialogOpen(true);
   };
 
   return (
@@ -316,11 +263,7 @@ export default function Accounts() {
           <p className="text-muted-foreground text-sm mt-1">Manage invoices, payments, and finances</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button data-testid="button-new-invoice" onClick={openNewInvoice}>
-            <Plus className="w-4 h-4 mr-2" />
-            New Invoice
-          </Button>
-          <Button variant="outline" data-testid="button-record-payment" onClick={openNewPayment}>
+          <Button variant="outline" data-testid="button-record-ar-payment" onClick={() => openArPayDialog()}>
             <CreditCard className="w-4 h-4 mr-2" />
             Record Payment
           </Button>
@@ -334,7 +277,7 @@ export default function Accounts() {
               <FileText className="w-5 h-5 text-blue-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{invoices?.length ?? 0}</p>
+              <p className="text-2xl font-bold">{salesInvoices?.length ?? 0}</p>
               <p className="text-xs text-muted-foreground">AR Invoices</p>
             </div>
           </CardContent>
@@ -342,33 +285,33 @@ export default function Accounts() {
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center">
-              <CreditCard className="w-5 h-5 text-emerald-500" />
+              <TrendingUp className="w-5 h-5 text-emerald-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">{payments?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">AR Payments</p>
+              <p className="text-2xl font-bold">₹{arSummary.totalReceivable.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</p>
+              <p className="text-xs text-muted-foreground">Total Receivable</p>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
-              <TrendingUp className="w-5 h-5 text-green-500" />
+              <CheckCircle2 className="w-5 h-5 text-green-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">₹{totalRevenue.toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground">Total Revenue</p>
+              <p className="text-2xl font-bold">₹{arSummary.totalCollected.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</p>
+              <p className="text-xs text-muted-foreground">Collected</p>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
-              <IndianRupee className="w-5 h-5 text-red-500" />
+              <AlertCircle className="w-5 h-5 text-red-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold">₹{pendingAmount.toLocaleString()}</p>
-              <p className="text-xs text-muted-foreground">AR Pending</p>
+              <p className="text-2xl font-bold">₹{arSummary.totalOutstanding.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</p>
+              <p className="text-xs text-muted-foreground">Outstanding</p>
             </div>
           </CardContent>
         </Card>
@@ -384,58 +327,73 @@ export default function Accounts() {
 
         {/* ── AR: Invoices ───────────────────────────────────────────────── */}
         <TabsContent value="invoices" className="space-y-4">
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="Search invoices..." className="pl-9" data-testid="input-search-invoices" />
-            </div>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{salesInvoices?.length ?? 0} GST invoice(s) — created automatically from dispatched delivery challans</p>
           </div>
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b">
+                    <tr className="border-b bg-muted/40">
                       <th className="text-left p-3 font-medium text-muted-foreground">Invoice #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Customer</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Due Date</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Total</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Collected</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Balance</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {invoicesLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 6 }).map((_, j) => (
-                            <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                          {Array.from({ length: 10 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
                       ))
-                    ) : invoices && invoices.length > 0 ? (
-                      invoices.map((inv) => (
-                        <tr key={inv.id} className="border-b last:border-0" data-testid={`row-invoice-${inv.id}`}>
-                          <td className="p-3 font-medium">{inv.invoiceNumber}</td>
-                          <td className="p-3 text-muted-foreground">{new Date(inv.issuedDate).toLocaleDateString()}</td>
-                          <td className="p-3 text-muted-foreground">{inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}</td>
-                          <td className="p-3"><StatusBadge status={inv.status} /></td>
-                          <td className="p-3 text-right font-medium">₹{Number(inv.amount).toLocaleString()}</td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-invoice-${inv.id}`} onClick={() => openEditInvoice(inv)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-invoice-${inv.id}`} onClick={() => { if (confirm("Delete this invoice?")) deleteInvoiceMutation.mutate(inv.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                    ) : salesInvoices && salesInvoices.length > 0 ? (
+                      salesInvoices.map((inv) => {
+                        const customer = customerMap.get(inv.customerId);
+                        const paid = paidPerSalesInvoice[inv.id] ?? 0;
+                        const balance = Math.max(0, Number(inv.grandTotal) - paid);
+                        const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
+                        return (
+                          <tr key={inv.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors" data-testid={`row-invoice-${inv.id}`}>
+                            <td className="p-3 font-mono text-xs font-medium">{inv.invoiceNumber}</td>
+                            <td className="p-3 font-medium">{customer?.name ?? "—"}</td>
+                            <td className="p-3">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${inv.customerType === "B2B" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300" : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
+                                {inv.customerType}
+                              </span>
+                            </td>
+                            <td className="p-3 text-muted-foreground">{new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                            <td className={`p-3 ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
+                              {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                            <td className="p-3 text-right font-medium">₹{Number(inv.grandTotal).toLocaleString()}</td>
+                            <td className="p-3 text-right text-emerald-600 dark:text-emerald-400">₹{paid.toLocaleString()}</td>
+                            <td className={`p-3 text-right font-semibold ${balance > 0 ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>₹{balance.toLocaleString()}</td>
+                            <td className="p-3"><StatusBadge status={inv.status} /></td>
+                            <td className="p-3 text-right">
+                              {inv.status !== "paid" && (
+                                <Button size="sm" variant="outline" data-testid={`button-pay-invoice-${inv.id}`} onClick={() => openArPayDialog(inv.id)}>
+                                  <CreditCard className="w-3 h-3 mr-1" />
+                                  Pay
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
                     ) : (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-muted-foreground">No invoices found.</td>
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">No invoices found. Invoices are generated from dispatched delivery challans.</td>
                       </tr>
                     )}
                   </tbody>
@@ -447,43 +405,45 @@ export default function Accounts() {
 
         {/* ── AR: Payments ───────────────────────────────────────────────── */}
         <TabsContent value="payments" className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{customerPayments?.length ?? 0} payment(s) received</p>
+            <Button variant="outline" size="sm" data-testid="button-record-payment-tab" onClick={() => openArPayDialog()}>
+              <Plus className="w-4 h-4 mr-2" />
+              Record Payment
+            </Button>
+          </div>
           <Card>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b">
+                    <tr className="border-b bg-muted/40">
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Customer</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Invoice #</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Method</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Reference</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {paymentsLoading ? (
                       <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
-                    ) : payments && payments.length > 0 ? (
-                      payments.map((pay) => (
-                        <tr key={pay.id} className="border-b last:border-0" data-testid={`row-payment-${pay.id}`}>
-                          <td className="p-3 text-muted-foreground">{new Date(pay.paymentDate).toLocaleDateString()}</td>
-                          <td className="p-3 capitalize">{pay.method.replace(/_/g, " ")}</td>
-                          <td className="p-3 text-muted-foreground">{pay.reference || "—"}</td>
-                          <td className="p-3"><StatusBadge status={pay.status} /></td>
-                          <td className="p-3 text-right font-medium">₹{Number(pay.amount).toLocaleString()}</td>
-                          <td className="p-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button size="icon" variant="ghost" data-testid={`button-edit-payment-${pay.id}`} onClick={() => openEditPayment(pay)}>
-                                <Pencil className="w-4 h-4" />
-                              </Button>
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-payment-${pay.id}`} onClick={() => { if (confirm("Delete this payment?")) deletePaymentMutation.mutate(pay.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
+                    ) : customerPayments && customerPayments.length > 0 ? (
+                      customerPayments.map((pay) => {
+                        const customer = customerMap.get(pay.customerId);
+                        const invoice = salesInvoices?.find(i => i.id === pay.invoiceId);
+                        return (
+                          <tr key={pay.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors" data-testid={`row-payment-${pay.id}`}>
+                            <td className="p-3 text-muted-foreground">{new Date(pay.paymentDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                            <td className="p-3 font-medium">{customer?.name ?? "—"}</td>
+                            <td className="p-3 font-mono text-xs">{invoice?.invoiceNumber ?? "—"}</td>
+                            <td className="p-3 capitalize">{pay.method.replace(/_/g, " ")}</td>
+                            <td className="p-3 text-muted-foreground">{pay.reference || "—"}</td>
+                            <td className="p-3 text-right font-medium text-emerald-600 dark:text-emerald-400">₹{Number(pay.amount).toLocaleString()}</td>
+                          </tr>
+                        );
+                      })
                     ) : (
                       <tr>
                         <td colSpan={6} className="p-8 text-center text-muted-foreground">No payments recorded.</td>
@@ -676,105 +636,82 @@ export default function Accounts() {
         </TabsContent>
       </Tabs>
 
-      {/* ── AR: Invoice Dialog ────────────────────────────────────────────── */}
-      <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
+      {/* ── AR: Record Customer Payment Dialog ────────────────────────────── */}
+      <Dialog open={arPayDialogOpen} onOpenChange={setArPayDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingInvoice ? "Edit Invoice" : "New Invoice"}</DialogTitle>
+            <DialogTitle>Record Customer Payment</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="invNumber">Invoice Number</Label>
-              <Input id="invNumber" data-testid="input-invoice-number" value={invoiceForm.invoiceNumber} onChange={(e) => setInvoiceForm({ ...invoiceForm, invoiceNumber: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invCustomer">Customer</Label>
-              <Select value={invoiceForm.customerId} onValueChange={(v) => setInvoiceForm({ ...invoiceForm, customerId: v })}>
-                <SelectTrigger data-testid="select-invoice-customer">
-                  <SelectValue placeholder="Select customer" />
-                </SelectTrigger>
-                <SelectContent>
-                  {customers?.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invAmount">Amount</Label>
-              <Input id="invAmount" type="number" data-testid="input-invoice-amount" value={invoiceForm.amount} onChange={(e) => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invStatus">Status</Label>
-              <Select value={invoiceForm.status} onValueChange={(v) => setInvoiceForm({ ...invoiceForm, status: v })}>
-                <SelectTrigger data-testid="select-invoice-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["unpaid", "paid", "partial", "overdue"].map((s) => (
-                    <SelectItem key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="invDueDate">Due Date</Label>
-              <Input id="invDueDate" type="date" data-testid="input-invoice-due-date" value={invoiceForm.dueDate} onChange={(e) => setInvoiceForm({ ...invoiceForm, dueDate: e.target.value })} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button data-testid="button-submit-invoice" disabled={invoiceMutation.isPending} onClick={() => invoiceMutation.mutate(invoiceForm)}>
-              {invoiceMutation.isPending ? "Saving..." : editingInvoice ? "Update" : "Create"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── AR: Payment Dialog ────────────────────────────────────────────── */}
-      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{editingPayment ? "Edit Payment" : "Record Payment"}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="payInvoice">Invoice</Label>
-              <Select value={paymentForm.invoiceId} onValueChange={(v) => setPaymentForm({ ...paymentForm, invoiceId: v })}>
-                <SelectTrigger data-testid="select-payment-invoice">
+              <Label>Invoice *</Label>
+              <Select value={arPayForm.invoiceId} onValueChange={(v) => setArPayForm({ ...arPayForm, invoiceId: v })}>
+                <SelectTrigger data-testid="select-ar-payment-invoice">
                   <SelectValue placeholder="Select invoice" />
                 </SelectTrigger>
                 <SelectContent>
-                  {invoices?.map((inv) => (
-                    <SelectItem key={inv.id} value={inv.id}>{inv.invoiceNumber}</SelectItem>
-                  ))}
+                  {(salesInvoices ?? []).filter(i => i.status !== "paid").map((inv) => {
+                    const cust = customerMap.get(inv.customerId);
+                    const balance = Math.max(0, Number(inv.grandTotal) - (paidPerSalesInvoice[inv.id] ?? 0));
+                    return (
+                      <SelectItem key={inv.id} value={inv.id}>
+                        {inv.invoiceNumber} — {cust?.name ?? "?"} — ₹{balance.toLocaleString()} due
+                      </SelectItem>
+                    );
+                  })}
                 </SelectContent>
               </Select>
+              {arPayForm.invoiceId && (() => {
+                const inv = salesInvoices?.find(i => i.id === arPayForm.invoiceId);
+                const balance = inv ? Math.max(0, Number(inv.grandTotal) - (paidPerSalesInvoice[inv.id] ?? 0)) : 0;
+                return (
+                  <div className="p-3 bg-muted/50 rounded-md text-sm flex justify-between">
+                    <span className="text-muted-foreground">Outstanding Balance</span>
+                    <span className="font-semibold text-red-600 dark:text-red-400">₹{balance.toLocaleString()}</span>
+                  </div>
+                );
+              })()}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="payAmount">Amount</Label>
-              <Input id="payAmount" type="number" data-testid="input-payment-amount" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
+              <Label>Amount (₹) *</Label>
+              <Input type="number" data-testid="input-ar-payment-amount" value={arPayForm.amount} onChange={(e) => setArPayForm({ ...arPayForm, amount: e.target.value })} placeholder="0" />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="payMethod">Method</Label>
-              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v })}>
-                <SelectTrigger data-testid="select-payment-method">
+              <Label>Payment Method</Label>
+              <Select value={arPayForm.method} onValueChange={(v) => setArPayForm({ ...arPayForm, method: v })}>
+                <SelectTrigger data-testid="select-ar-payment-method">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {["bank_transfer", "cash", "cheque", "upi", "card"].map((m) => (
-                    <SelectItem key={m} value={m}>{m.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase())}</SelectItem>
+                    <SelectItem key={m} value={m}>{m.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase())}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="payReference">Reference</Label>
-              <Input id="payReference" data-testid="input-payment-reference" value={paymentForm.reference} onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })} />
+              <Label>Payment Date</Label>
+              <Input type="date" data-testid="input-ar-payment-date" value={arPayForm.paymentDate} onChange={(e) => setArPayForm({ ...arPayForm, paymentDate: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Reference / UTR</Label>
+              <Input data-testid="input-ar-payment-reference" value={arPayForm.reference} onChange={(e) => setArPayForm({ ...arPayForm, reference: e.target.value })} placeholder="NEFT/UPI reference, cheque number, etc." />
             </div>
           </div>
           <DialogFooter>
-            <Button data-testid="button-submit-payment" disabled={paymentMutation.isPending} onClick={() => paymentMutation.mutate(paymentForm)}>
-              {paymentMutation.isPending ? "Saving..." : editingPayment ? "Update" : "Record"}
+            <Button variant="outline" onClick={() => setArPayDialogOpen(false)}>Cancel</Button>
+            <Button
+              data-testid="button-submit-ar-payment"
+              disabled={arPayMutation.isPending || !arPayForm.invoiceId || !arPayForm.amount}
+              onClick={() => arPayMutation.mutate({
+                invoiceId: arPayForm.invoiceId,
+                amount: arPayForm.amount,
+                method: arPayForm.method,
+                paymentDate: arPayForm.paymentDate,
+                reference: arPayForm.reference || null,
+              })}
+            >
+              {arPayMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>

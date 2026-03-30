@@ -4747,6 +4747,81 @@ export async function registerRoutes(
     }
   });
 
+  // AR Aging Report
+  app.get("/api/reports/ar-aging", authenticateToken, async (req: any, res) => {
+    try {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const allInvoices = await storage.getSalesInvoices();
+      const allPayments = await storage.getAllCustomerPayments();
+      const allCustomers = await storage.getCustomers();
+
+      const customerMap = new Map(allCustomers.map(c => [c.id, c]));
+
+      const summary = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 };
+
+      const rows = allInvoices.map(inv => {
+        const customer = customerMap.get(inv.customerId);
+
+        const totalPaid = allPayments
+          .filter(p => p.invoiceId === inv.id)
+          .reduce((sum, p) => sum + Number(p.amount), 0);
+
+        const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
+
+        const dueDate = inv.dueDate ? new Date(inv.dueDate) : null;
+        let daysOverdue = 0;
+        let bucket = "current";
+
+        if (dueDate) {
+          dueDate.setHours(0, 0, 0, 0);
+          const diffMs = today.getTime() - dueDate.getTime();
+          if (diffMs > 0) {
+            daysOverdue = Math.floor(diffMs / 86400000);
+            if (daysOverdue <= 30) bucket = "1-30";
+            else if (daysOverdue <= 60) bucket = "31-60";
+            else if (daysOverdue <= 90) bucket = "61-90";
+            else bucket = "90+";
+          }
+        }
+
+        if (balance > 0) {
+          summary.totalOutstanding += balance;
+          if (bucket === "current") summary.current += balance;
+          else if (bucket === "1-30") summary.days1_30 += balance;
+          else if (bucket === "31-60") summary.days31_60 += balance;
+          else if (bucket === "61-90") summary.days61_90 += balance;
+          else summary.days90plus += balance;
+        }
+
+        return {
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          customerId: inv.customerId,
+          customerName: customer?.name ?? "Unknown",
+          customerType: inv.customerType,
+          customerGSTIN: inv.customerGSTIN,
+          invoiceDate: inv.invoiceDate,
+          dueDate: inv.dueDate,
+          grandTotal: Number(inv.grandTotal),
+          totalPaid,
+          balance,
+          daysOverdue,
+          bucket,
+          status: inv.status,
+        };
+      });
+
+      // Sort by daysOverdue descending
+      rows.sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+      res.json({ rows, summary });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to generate AR aging report" });
+    }
+  });
+
   // ─── Sales Invoices ────────────────────────────────────────────────────────
 
   // GET all invoices

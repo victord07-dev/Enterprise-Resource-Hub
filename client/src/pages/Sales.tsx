@@ -1115,29 +1115,50 @@ export default function Sales() {
                                   )}
 
                                   {(() => {
-                                    const orderSubtotal = expandedOrderItems.reduce((s, it) => s + Number(it.totalPrice || 0), 0);
-                                    const orderTax = expandedOrderItems.reduce((s, it) => s + Number((it as any).taxAmount || 0), 0);
+                                    // Use server-computed totals as authoritative source of truth
+                                    const serverSubtotal = Number((order as any).subtotal) || 0;
+                                    const serverTotalTax = Number((order as any).totalTax) || 0;
+                                    // Fallback: derive from items if server fields are zero (pre-migration orders)
+                                    const derivedSubtotal = expandedOrderItems.reduce((s, it) => s + Number(it.totalPrice || 0), 0);
+                                    const derivedTax = expandedOrderItems.reduce((s, it) => s + Number((it as any).taxAmount || 0), 0);
+                                    const orderSubtotal = serverSubtotal > 0 ? serverSubtotal : derivedSubtotal;
+                                    const orderTax = serverTotalTax > 0 ? serverTotalTax : derivedTax;
                                     const orderDisc = order.discountType && order.discountValue
                                       ? (order.discountType === "percentage" ? orderSubtotal * Number(order.discountValue) / 100 : Math.min(Number(order.discountValue), orderSubtotal))
                                       : 0;
+                                    const deliveryCostNum = Number((order as any).deliveryCost) || 0;
                                     return (
-                                      <div className="text-xs space-y-0.5 pt-1">
-                                        {order.discountType && order.discountValue && (
+                                      <div className="text-xs space-y-0.5 pt-1 border-t mt-2">
+                                        <div className="flex justify-between text-muted-foreground" data-testid={`text-order-subtotal-${order.id}`}>
+                                          <span>Subtotal (excl. GST)</span>
+                                          <span>₹{orderSubtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                        </div>
+                                        {orderDisc > 0 && (
                                           <div className="flex justify-between text-muted-foreground">
                                             <span>Discount ({order.discountType === "percentage" ? `${Number(order.discountValue)}%` : "fixed"})</span>
-                                            <span className="text-red-600 dark:text-red-400">- ₹{orderDisc.toLocaleString()}</span>
+                                            <span className="text-red-600 dark:text-red-400">- ₹{orderDisc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                           </div>
                                         )}
                                         {orderTax > 0 && (
-                                          <div className="flex justify-between text-blue-600 dark:text-blue-400">
+                                          <div className="flex justify-between text-blue-600 dark:text-blue-400" data-testid={`text-order-gst-${order.id}`}>
                                             <span>Total GST</span>
                                             <span>+ ₹{orderTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                           </div>
                                         )}
-                                        {(order as any).warehouseId && warehouses && (
+                                        {deliveryCostNum > 0 && (
                                           <div className="flex justify-between text-muted-foreground">
-                                            <span>Warehouse</span>
-                                            <span>{warehouses.find(w => w.id === (order as any).warehouseId)?.name || "—"}</span>
+                                            <span>Delivery Cost</span>
+                                            <span>+ ₹{deliveryCostNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                          </div>
+                                        )}
+                                        <div className="flex justify-between font-semibold border-t pt-0.5" data-testid={`text-order-grand-total-${order.id}`}>
+                                          <span>Grand Total</span>
+                                          <span>₹{Number(order.totalAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                        </div>
+                                        {(order as any).warehouseId && warehouses && (
+                                          <div className="flex justify-between text-muted-foreground pt-0.5">
+                                            <span>Fulfillment Warehouse</span>
+                                            <span className="font-medium">{warehouses.find(w => w.id === (order as any).warehouseId)?.name || "—"}</span>
                                           </div>
                                         )}
                                       </div>

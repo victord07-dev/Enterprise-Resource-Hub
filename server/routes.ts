@@ -880,10 +880,34 @@ export async function registerRoutes(
       await storage.deleteSalesOrderItems(req.params.id);
       const created = [];
       for (const item of items) {
-        const parsed = insertSalesOrderItemSchema.parse({ ...item, orderId: req.params.id });
+        const qty = Number(item.quantity) || 0;
+        const unitPrice = Number(item.unitPrice) || 0;
+        const gstRate = Number(item.gstRate) || 0;
+        const serverTaxAmount = parseFloat((qty * unitPrice * gstRate / 100).toFixed(2));
+        const parsed = insertSalesOrderItemSchema.parse({
+          ...item,
+          orderId: req.params.id,
+          taxAmount: serverTaxAmount.toString(),
+        });
         const c = await storage.createSalesOrderItem(parsed);
         created.push(c);
       }
+
+      // Recompute order-level totals from saved items (authoritative server calculation)
+      const order = await storage.getSalesOrder(req.params.id);
+      if (order) {
+        const subtotal = created.reduce((sum, it) => sum + Number(it.quantity) * Number(it.unitPrice), 0);
+        const totalTax = created.reduce((sum, it) => sum + Number(it.taxAmount || 0), 0);
+        const discount = Number((order as any).discount) || 0;
+        const deliveryCost = Number((order as any).deliveryCost) || 0;
+        const totalAmount = subtotal - discount + totalTax + deliveryCost;
+        await storage.updateSalesOrder(req.params.id, {
+          subtotal: subtotal.toFixed(2) as any,
+          totalTax: totalTax.toFixed(2) as any,
+          totalAmount: totalAmount.toFixed(2) as any,
+        } as any);
+      }
+
       res.status(201).json(created);
     } catch (error: any) {
       if (error?.name === "ZodError") return res.status(400).json({ message: "Invalid item data", errors: error.errors });
@@ -2022,7 +2046,8 @@ export async function registerRoutes(
       const allOrders = await storage.getSalesOrders();
       const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status));
 
-      const result: Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string }> }> = {};
+      // result[productId].orders stores all reservations with optional warehouseId for scoping
+      const result: Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string; warehouseId: string | null }> }> = {};
 
       for (const order of activeOrders) {
         const orderItems = await storage.getSalesOrderItems(order.id);
@@ -2039,6 +2064,8 @@ export async function registerRoutes(
           }
         }
 
+        const orderWarehouseId = (order as any).warehouseId ?? null;
+
         for (const item of productItems) {
           const pid = item.productId!;
           const dispatched = challanItemsMap[pid] || 0;
@@ -2053,32 +2080,57 @@ export async function registerRoutes(
             quantity: reserved,
             expectedDeliveryDate: (order as any).expectedDeliveryDate ? new Date((order as any).expectedDeliveryDate).toISOString() : null,
             reservationStatus: order.status,
+            warehouseId: orderWarehouseId,
           });
         }
       }
 
+      // Fetch physical stock with per-warehouse breakdown for warehouse-aware capping
       const allStock = await storage.getInventoryStock();
+      // stockByProduct: total across all warehouses
       const stockByProduct: Record<string, number> = {};
+      // stockByProductAndWarehouse: per-warehouse physical stock
+      const stockByProductAndWarehouse: Record<string, Record<string, number>> = {};
       for (const s of allStock) {
         stockByProduct[s.productId] = (stockByProduct[s.productId] || 0) + (s.quantity ?? 0);
+        if (s.warehouseId) {
+          if (!stockByProductAndWarehouse[s.productId]) stockByProductAndWarehouse[s.productId] = {};
+          stockByProductAndWarehouse[s.productId][s.warehouseId] = (stockByProductAndWarehouse[s.productId][s.warehouseId] || 0) + (s.quantity ?? 0);
+        }
       }
 
       for (const pid of Object.keys(result)) {
-        const physicalStock = stockByProduct[pid] || 0;
-        if (result[pid].total > physicalStock) {
-          const ratio = physicalStock > 0 ? physicalStock / result[pid].total : 0;
-          let remaining = physicalStock;
-          for (const orderEntry of result[pid].orders) {
-            const capped = Math.min(Math.floor(orderEntry.quantity * ratio), remaining);
-            orderEntry.quantity = capped;
+        const totalPhysical = stockByProduct[pid] || 0;
+        const warehousePhysical = stockByProductAndWarehouse[pid] || {};
+
+        // Separate warehouse-scoped and global reservations
+        const warehouseOrders = result[pid].orders.filter(o => o.warehouseId !== null);
+        const globalOrders = result[pid].orders.filter(o => o.warehouseId === null);
+
+        // Cap warehouse-scoped reservations against their specific warehouse stock
+        for (const o of warehouseOrders) {
+          const wStock = warehousePhysical[o.warehouseId!] || 0;
+          o.quantity = Math.min(o.quantity, wStock);
+        }
+
+        // Cap global reservations against total remaining stock (after warehouse-specific allocations)
+        const totalWarehouseReserved = warehouseOrders.reduce((s, o) => s + o.quantity, 0);
+        const globalPool = Math.max(0, totalPhysical - totalWarehouseReserved);
+        const totalGlobalReserved = globalOrders.reduce((s, o) => s + o.quantity, 0);
+        if (totalGlobalReserved > globalPool && globalPool >= 0) {
+          const ratio = globalPool > 0 ? globalPool / totalGlobalReserved : 0;
+          let remaining = globalPool;
+          for (const o of globalOrders) {
+            const capped = Math.min(Math.floor(o.quantity * ratio), remaining);
+            o.quantity = capped;
             remaining -= capped;
           }
-          if (remaining > 0 && result[pid].orders.length > 0) {
-            result[pid].orders[0].quantity += remaining;
-          }
-          result[pid].total = physicalStock;
-          result[pid].orders = result[pid].orders.filter(o => o.quantity > 0);
+          if (remaining > 0 && globalOrders.length > 0) globalOrders[0].quantity += remaining;
         }
+
+        const allOrders = [...warehouseOrders, ...globalOrders].filter(o => o.quantity > 0);
+        result[pid].orders = allOrders;
+        result[pid].total = allOrders.reduce((s, o) => s + o.quantity, 0);
       }
 
       res.json(result);

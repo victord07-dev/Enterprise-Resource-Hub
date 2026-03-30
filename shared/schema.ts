@@ -85,7 +85,7 @@ export const salesOrders = pgTable("sales_orders", {
   deliveryMethod: text("delivery_method"),
   deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
   deliveryAddress: text("delivery_address"),
-  warehouseId: varchar("warehouse_id"),
+  warehouseId: varchar("warehouse_id").references(() => warehouses.id),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {

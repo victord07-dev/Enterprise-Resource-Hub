@@ -216,6 +216,7 @@ export default function Inventory() {
   const [expandedChallanIds, setExpandedChallanIds] = useState<Set<string>>(new Set());
   const [highlightedChallanId, setHighlightedChallanId] = useState<string | null>(null);
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
+  const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
@@ -350,6 +351,28 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       toast({ title: "Challan delivered" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateChallanItemQtyMutation = useMutation({
+    mutationFn: async ({ challanId, itemId, qtyToDispatch }: { challanId: string; itemId: string; qtyToDispatch: number }) => {
+      const res = await apiRequest("PATCH", `/api/delivery-challans/${challanId}/items`, { items: [{ id: itemId, qtyToDispatch }] });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to update quantity");
+      }
+      return res.json();
+    },
+    onSuccess: (_data, { challanId }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      fetch(`/api/delivery-challans/${challanId}/items`, { headers })
+        .then(r => r.json())
+        .then(items => setChallanItemsMap(prev => ({ ...prev, [challanId]: items })));
+      toast({ title: "Quantity updated" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1328,6 +1351,13 @@ export default function Inventory() {
                                           <tbody>
                                             {items.map((item) => {
                                               const product = products?.find(p => p.id === item.productId);
+                                              const isDraft = challan.status === "draft";
+                                              const qtyOrdered = (item as any).qtyOrdered != null ? Number((item as any).qtyOrdered) : item.quantity;
+                                              const qtyDispatched = (item as any).qtyDispatched != null ? Number((item as any).qtyDispatched) : 0;
+                                              const qtyToDispatch = (item as any).qtyToDispatch != null ? Number((item as any).qtyToDispatch) : Number(item.quantity);
+                                              const editKey = `${challan.id}-${item.id}`;
+                                              const editVal = challanItemQtyEdits[editKey];
+                                              const displayVal = editVal !== undefined ? editVal : String(qtyToDispatch);
                                               return (
                                                 <tr key={item.id} className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
                                                   <td className="py-1.5">
@@ -1337,10 +1367,32 @@ export default function Inventory() {
                                                       {item.description && <span className="text-muted-foreground font-normal ml-1">({item.description})</span>}
                                                     </span>
                                                   </td>
-                                                  <td className="py-1.5 text-center text-muted-foreground">{(item as any).qtyOrdered != null ? Number((item as any).qtyOrdered) : item.quantity}</td>
+                                                  <td className="py-1.5 text-center text-muted-foreground">{qtyOrdered}</td>
                                                   <td className="py-1.5 text-center text-muted-foreground">{(item as any).qtyReserved != null ? Number((item as any).qtyReserved) : "—"}</td>
-                                                  <td className="py-1.5 text-center font-medium">{(item as any).qtyToDispatch != null ? Number((item as any).qtyToDispatch) : item.quantity}</td>
-                                                  <td className="py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{(item as any).qtyDispatched != null ? Number((item as any).qtyDispatched) : "—"}</td>
+                                                  <td className="py-1.5 text-center font-medium">
+                                                    {isDraft ? (
+                                                      <input
+                                                        type="number"
+                                                        min={1}
+                                                        max={qtyOrdered - qtyDispatched}
+                                                        value={displayVal}
+                                                        onChange={e => setChallanItemQtyEdits(prev => ({ ...prev, [editKey]: e.target.value }))}
+                                                        onBlur={() => {
+                                                          const parsed = parseInt(displayVal, 10);
+                                                          const max = qtyOrdered - qtyDispatched;
+                                                          if (!isNaN(parsed) && parsed > 0 && parsed <= max && parsed !== qtyToDispatch) {
+                                                            updateChallanItemQtyMutation.mutate({ challanId: challan.id, itemId: item.id, qtyToDispatch: parsed });
+                                                          }
+                                                          setChallanItemQtyEdits(prev => { const n = { ...prev }; delete n[editKey]; return n; });
+                                                        }}
+                                                        data-testid={`input-qty-to-dispatch-${item.id}`}
+                                                        className="w-16 text-center border rounded px-1 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                                                      />
+                                                    ) : (
+                                                      qtyToDispatch
+                                                    )}
+                                                  </td>
+                                                  <td className="py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{qtyDispatched || "—"}</td>
                                                   <td className="py-1.5 text-right text-muted-foreground">{item.unitPrice ? `₹${Number(item.unitPrice).toLocaleString()}` : "—"}</td>
                                                 </tr>
                                               );

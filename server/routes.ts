@@ -65,7 +65,7 @@ async function notifyEmployee(employeeId: string, type: string, title: string, m
 }
 
 async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
-  const reservedStatuses = ["confirmed", "procurement", "ready_to_ship"];
+  const reservedStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
   const allOrders = await storage.getSalesOrders();
   const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status) && o.id !== excludeOrderId);
 
@@ -76,18 +76,19 @@ async function calculateReservedStockForOtherOrders(excludeOrderId: string, stor
     if (productItems.length === 0) continue;
 
     const challans = await storage.getDeliveryChallansByOrder(order.id);
-    const challanItemsMap: Record<string, number> = {};
+    const dispatchedMap: Record<string, number> = {};
     for (const challan of challans) {
-      if (!["dispatched", "delivered"].includes(challan.status)) continue;
+      if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
       const cItems = await storage.getDeliveryChallanItems(challan.id);
       for (const ci of cItems) {
-        challanItemsMap[ci.productId] = (challanItemsMap[ci.productId] || 0) + ci.quantity;
+        const qty = Number((ci as any).qtyDispatched ?? ci.quantity);
+        dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + qty;
       }
     }
 
     for (const item of productItems) {
       const pid = item.productId!;
-      const dispatched = challanItemsMap[pid] || 0;
+      const dispatched = dispatchedMap[pid] || 0;
       const res = Math.max(0, item.quantity - dispatched);
       if (res > 0) {
         reserved[pid] = (reserved[pid] || 0) + res;
@@ -2079,7 +2080,7 @@ export async function registerRoutes(
   // ======================== RESERVED STOCK ========================
   app.get("/api/inventory/reserved-stock", authenticateToken, async (_req, res) => {
     try {
-      const reservedStatuses = ["confirmed", "procurement", "ready_to_ship"];
+      const reservedStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
       const allOrders = await storage.getSalesOrders();
       const activeOrders = allOrders.filter(o => reservedStatuses.includes(o.status));
 
@@ -2092,12 +2093,13 @@ export async function registerRoutes(
         if (productItems.length === 0) continue;
 
         const challans = await storage.getDeliveryChallansByOrder(order.id);
-        const challanItemsMap: Record<string, number> = {};
+        const dispatchedMap: Record<string, number> = {};
         for (const challan of challans) {
-          if (!["dispatched", "delivered"].includes(challan.status)) continue;
+          if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
           const cItems = await storage.getDeliveryChallanItems(challan.id);
           for (const ci of cItems) {
-            challanItemsMap[ci.productId] = (challanItemsMap[ci.productId] || 0) + ci.quantity;
+            const qty = Number((ci as any).qtyDispatched ?? ci.quantity);
+            dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + qty;
           }
         }
 
@@ -2105,7 +2107,7 @@ export async function registerRoutes(
 
         for (const item of productItems) {
           const pid = item.productId!;
-          const dispatched = challanItemsMap[pid] || 0;
+          const dispatched = dispatchedMap[pid] || 0;
           const reserved = Math.max(0, item.quantity - dispatched);
           if (reserved <= 0) continue;
 
@@ -2539,7 +2541,8 @@ export async function registerRoutes(
       const allChallans = await storage.getDeliveryChallans();
       const existingDraft = allChallans.find((c: any) => c.orderId === soId && c.status === "draft");
       if (existingDraft) {
-        return res.status(409).json({ message: "A draft challan already exists for this order", challanId: existingDraft.id });
+        const draftItems = await storage.getDeliveryChallanItems(existingDraft.id);
+        return res.status(409).json({ message: "A draft challan already exists for this order", challan: { ...existingDraft, items: draftItems } });
       }
 
       const orderItems = await storage.getSalesOrderItems(soId);
@@ -2566,9 +2569,20 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All items have already been dispatched" });
       }
 
-      const { sourceType, sourceId, vehicleNumber, driverName, notes, deliveryAddress } = req.body;
+      let { sourceType, sourceId, vehicleNumber, driverName, notes, deliveryAddress } = req.body;
       if (!sourceType || !sourceId) {
-        return res.status(400).json({ message: "sourceType and sourceId are required" });
+        if (order.warehouseId) {
+          sourceType = "warehouse";
+          sourceId = order.warehouseId;
+        } else {
+          const allWarehouses = await storage.getWarehouses();
+          if (allWarehouses.length > 0) {
+            sourceType = "warehouse";
+            sourceId = allWarehouses[0].id;
+          } else {
+            return res.status(400).json({ message: "sourceType and sourceId are required, and no default warehouse found" });
+          }
+        }
       }
 
       const year = new Date().getFullYear();
@@ -2634,7 +2648,7 @@ export async function registerRoutes(
         const existing = challanItems.find(ci => ci.id === update.id);
         if (!existing) continue;
         const qtyToDispatch = Number(update.qtyToDispatch ?? update.quantity ?? 0);
-        if (qtyToDispatch < 0) return res.status(400).json({ message: "qtyToDispatch cannot be negative" });
+        if (qtyToDispatch <= 0) return res.status(400).json({ message: "qtyToDispatch must be greater than 0" });
         const maxDispatch = Number((existing as any).qtyOrdered ?? existing.quantity);
         const alreadyDispatched = Number((existing as any).qtyDispatched ?? 0);
         if (qtyToDispatch > maxDispatch - alreadyDispatched) {
@@ -2693,27 +2707,41 @@ export async function registerRoutes(
       if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be dispatched" });
 
       const items = await storage.getDeliveryChallanItems(challan.id);
+      if (items.length === 0) return res.status(400).json({ message: "Challan has no items" });
 
       const dispatchQtys: Record<string, number> = {};
       for (const item of items) {
         const qty = Number((item as any).qtyToDispatch ?? item.quantity);
-        if (qty <= 0) return res.status(400).json({ message: `qtyToDispatch must be > 0 for all items` });
-        dispatchQtys[item.id] = qty;
-      }
-
-      if (challan.sourceType === "warehouse") {
-        for (const item of items) {
-          const qty = dispatchQtys[item.id];
-          const available = await getAvailableStock(item.productId, challan.sourceId);
-          if (qty > available) {
-            return res.status(400).json({ message: `Insufficient stock for product. Available: ${available}, Required: ${qty}` });
-          }
+        const maxAllowed = Number((item as any).qtyOrdered ?? item.quantity);
+        const alreadyDispatched = Number((item as any).qtyDispatched ?? 0);
+        const remaining = maxAllowed - alreadyDispatched;
+        if (qty <= 0) {
+          return res.status(400).json({ message: `qtyToDispatch must be greater than 0 for all items` });
         }
+        if (qty > remaining) {
+          return res.status(400).json({ message: `qtyToDispatch (${qty}) exceeds remaining quantity (${remaining}) for item` });
+        }
+        dispatchQtys[item.id] = qty;
       }
 
       const batchId = crypto.randomUUID();
 
       await db.transaction(async (tx) => {
+        if (challan.sourceType === "warehouse") {
+          for (const item of items) {
+            const qty = dispatchQtys[item.id];
+            const [stockRow] = await tx.execute(sql`
+              SELECT quantity FROM inventory_stock
+              WHERE product_id = ${item.productId} AND warehouse_id = ${challan.sourceId}
+              LIMIT 1
+            `);
+            const currentStock = stockRow ? Number((stockRow as any).quantity ?? 0) : 0;
+            if (qty > currentStock) {
+              throw new Error(`Insufficient stock for product. Available: ${currentStock}, Required: ${qty}`);
+            }
+          }
+        }
+
         if (challan.sourceType === "warehouse") {
           for (const item of items) {
             const qty = dispatchQtys[item.id];
@@ -2758,9 +2786,10 @@ export async function registerRoutes(
       }
 
       res.json(updated);
-    } catch (error) {
+    } catch (error: any) {
       console.error("dispatch error:", error);
-      res.status(500).json({ message: "Failed to dispatch challan" });
+      const msg = error?.message || "Failed to dispatch challan";
+      res.status(msg.startsWith("Insufficient") ? 400 : 500).json({ message: msg });
     }
   });
 

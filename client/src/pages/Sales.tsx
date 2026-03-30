@@ -391,6 +391,7 @@ export default function Sales() {
   const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "" });
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
+  const [orderDispatchSummaryMap, setOrderDispatchSummaryMap] = useState<Record<string, Array<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }>>>({});
 
   const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
   const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
@@ -405,16 +406,26 @@ export default function Sales() {
     }
     try {
       const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
-      const [itemsRes, challansRes] = await Promise.all([
+      const order = orders?.find(o => o.id === orderId);
+      const isDispatchEligible = order && ["confirmed", "procurement", "ready_to_ship", "partial", "dispatched", "delivered", "installed", "completed"].includes(order.status);
+      const fetches: Promise<any>[] = [
         fetch(`/api/sales-orders/${orderId}/items`, { headers }),
         fetch(`/api/delivery-challans/by-order/${orderId}`, { headers }),
-      ]);
-      const [itemsData, challansData] = await Promise.all([itemsRes.json(), challansRes.json()]);
+      ];
+      if (isDispatchEligible) {
+        fetches.push(fetch(`/api/sales-orders/${orderId}/dispatch-summary`, { headers }));
+      }
+      const results = await Promise.all(fetches);
+      const [itemsData, challansData] = await Promise.all([results[0].json(), results[1].json()]);
       setExpandedOrderItems(itemsData);
       setOrderChallansMap(prev => ({ ...prev, [orderId]: Array.isArray(challansData) ? challansData : [] }));
+      if (isDispatchEligible && results[2]) {
+        const summaryData = await results[2].json();
+        setOrderDispatchSummaryMap(prev => ({ ...prev, [orderId]: Array.isArray(summaryData.items) ? summaryData.items : [] }));
+      }
       setExpandedOrderId(orderId);
     } catch { setExpandedOrderId(null); }
-  }, [expandedOrderId]);
+  }, [expandedOrderId, orders]);
 
   const toggleQuoteExpand = useCallback(async (quoteId: string) => {
     if (expandedQuoteId === quoteId) {
@@ -959,16 +970,23 @@ export default function Sales() {
   const createFromSOMutation = useMutation({
     mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
       const res = await apiRequest("POST", `/api/delivery-challans/create-from-so/${orderId}`, data);
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || "Failed to create challan");
+      const body = await res.json();
+      if (res.status === 409) {
+        return { existing: true, challan: body.challan };
       }
-      return res.json();
+      if (!res.ok) {
+        throw new Error(body.message || "Failed to create challan");
+      }
+      return { existing: false, challan: body };
     },
-    onSuccess: (challan: any) => {
+    onSuccess: ({ existing, challan }: { existing: boolean; challan: any }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
-      toast({ title: "Dispatch challan created", description: `${challan.challanNumber} — Go to Inventory → Delivery Challans to dispatch.` });
+      if (existing) {
+        toast({ title: "Draft challan already exists", description: `${challan?.challanNumber || "Existing draft"} — Update it in Inventory → Delivery Challans.` });
+      } else {
+        toast({ title: "Dispatch challan created", description: `${challan.challanNumber} — Go to Inventory → Delivery Challans to dispatch.` });
+      }
       setDispatchDialogOpen(false);
       if (expandedOrderId) {
         const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
@@ -1281,6 +1299,36 @@ export default function Sales() {
                                   {order.paymentTerms && (
                                     <div className="text-xs text-muted-foreground">
                                       Payment Terms: {order.paymentTerms}
+                                    </div>
+                                  )}
+
+                                  {(orderDispatchSummaryMap[order.id] || []).length > 0 && (orderDispatchSummaryMap[order.id] || []).some(i => i.qtyOrdered > 0) && (
+                                    <div className="border-t pt-3 space-y-2">
+                                      <h4 className="text-xs font-semibold flex items-center gap-2">
+                                        <Truck className="w-3 h-3 text-muted-foreground" /> Dispatch Progress
+                                      </h4>
+                                      <div className="rounded-md border overflow-hidden">
+                                        <table className="w-full text-xs">
+                                          <thead>
+                                            <tr className="bg-muted/40 border-b">
+                                              <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
+                                              <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Ordered</th>
+                                              <th className="text-center px-3 py-1.5 font-medium text-green-600 dark:text-green-400">Dispatched</th>
+                                              <th className="text-center px-3 py-1.5 font-medium text-blue-600 dark:text-blue-400">Remaining</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {(orderDispatchSummaryMap[order.id] || []).map((item, i) => (
+                                              <tr key={i} className="border-b last:border-0">
+                                                <td className="px-3 py-1.5 font-medium">{item.description || item.productId}</td>
+                                                <td className="px-3 py-1.5 text-center text-muted-foreground">{item.qtyOrdered}</td>
+                                                <td className="px-3 py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{item.qtyDispatched}</td>
+                                                <td className="px-3 py-1.5 text-center font-semibold text-blue-600 dark:text-blue-400">{item.qtyRemaining}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
                                     </div>
                                   )}
 

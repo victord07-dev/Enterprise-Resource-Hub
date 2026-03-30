@@ -151,8 +151,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
         item.unitPrice = Number(prod.unitPrice);
         item.description = prod.name;
         item.itemType = prod.type;
-        item.gstRate = Number((prod as any).gstRate || 0);
-        item.hsnCode = (prod as any).hsnCode || "";
+        item.gstRate = Number(prod.gstRate || 0);
+        item.hsnCode = prod.hsnCode || "";
         const lineTotal = item.quantity * Number(prod.unitPrice);
         item.totalPrice = lineTotal;
         item.taxAmount = lineTotal * item.gstRate / 100;
@@ -238,7 +238,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             <Label className="text-xs text-muted-foreground">Description</Label>
             <Input className="h-8 text-xs" value={item.description} onChange={(e) => updateItem(i, "description", e.target.value)} placeholder="Item description" data-testid={`input-item-desc-${i}`} />
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <div>
               <Label className="text-xs text-muted-foreground">Qty</Label>
               <Input className="h-8 text-xs" type="number" min="1" value={item.quantity} onChange={(e) => updateItem(i, "quantity", parseInt(e.target.value) || 0)} data-testid={`input-item-qty-${i}`} />
@@ -260,18 +260,21 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label className="text-xs text-muted-foreground">Total (₹)</Label>
-              <Input className="h-8 text-xs bg-muted" readOnly value={item.totalPrice.toLocaleString()} data-testid={`input-item-total-${i}`} />
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+            <div className="bg-muted/40 rounded px-2 py-1">
+              <span className="block text-[10px] mb-0.5">Item Amount</span>
+              <span className="font-medium text-foreground" data-testid={`text-item-amount-${i}`}>₹{item.totalPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            <div className="bg-blue-50 dark:bg-blue-950/30 rounded px-2 py-1">
+              <span className="block text-[10px] mb-0.5">+ GST ({item.gstRate}%)</span>
+              <span className="font-medium text-blue-600 dark:text-blue-400" data-testid={`text-item-tax-${i}`}>₹{item.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            <div className="bg-green-50 dark:bg-green-950/30 rounded px-2 py-1">
+              <span className="block text-[10px] mb-0.5">= Item Total (incl. GST)</span>
+              <span className="font-semibold text-green-700 dark:text-green-400" data-testid={`input-item-total-${i}`}>₹{(item.totalPrice + item.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
-          {item.taxAmount > 0 && (
-            <div className="flex justify-end">
-              <span className="text-[10px] text-muted-foreground">
-                GST ({item.gstRate}%): ₹{item.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-          )}
         </div>
       ))}
 
@@ -819,7 +822,7 @@ export default function Sales() {
       deliveryMethod: (order as any).deliveryMethod || "pickup",
       deliveryCost: (order as any).deliveryCost ? String((order as any).deliveryCost) : "",
       deliveryAddress: (order as any).deliveryAddress || "",
-      warehouseId: (order as any).warehouseId || "",
+      warehouseId: order.warehouseId || "",
     });
     setOrderDiscount({
       discountType: order.discountType || "none",
@@ -838,9 +841,9 @@ export default function Sales() {
           quantity: it.quantity,
           unitPrice: Number(it.unitPrice),
           totalPrice: Number(it.totalPrice),
-          gstRate: Number((it as any).gstRate || 0),
-          hsnCode: (it as any).hsnCode || "",
-          taxAmount: Number((it as any).taxAmount || 0),
+          gstRate: Number(it.gstRate || 0),
+          hsnCode: it.hsnCode || "",
+          taxAmount: Number(it.taxAmount || 0),
         })));
       } else {
         setOrderItems([emptyLineItem()]);
@@ -1101,11 +1104,11 @@ export default function Sales() {
                                             <td className="py-1.5">{it.description || "—"}</td>
                                             <td className="py-1.5 text-right">{it.quantity}</td>
                                             <td className="py-1.5 text-right">₹{Number(it.unitPrice).toLocaleString()}</td>
-                                            <td className="py-1.5 text-right text-muted-foreground">{Number((it as any).gstRate || 0)}%</td>
+                                            <td className="py-1.5 text-right text-muted-foreground">{Number(it.gstRate || 0)}%</td>
                                             <td className="py-1.5 text-right text-blue-600 dark:text-blue-400">
-                                              {Number((it as any).taxAmount || 0) > 0 ? `₹${Number((it as any).taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                                              {Number(it.taxAmount || 0) > 0 ? `₹${Number(it.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                                             </td>
-                                            <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number((it as any).taxAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                            <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number(it.taxAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                           </tr>
                                         ))}
                                       </tbody>
@@ -1116,11 +1119,11 @@ export default function Sales() {
 
                                   {(() => {
                                     // Use server-computed totals as authoritative source of truth
-                                    const serverSubtotal = Number((order as any).subtotal) || 0;
-                                    const serverTotalTax = Number((order as any).totalTax) || 0;
+                                    const serverSubtotal = Number(order.subtotal) || 0;
+                                    const serverTotalTax = Number(order.totalTax) || 0;
                                     // Fallback: derive from items if server fields are zero (pre-migration orders)
                                     const derivedSubtotal = expandedOrderItems.reduce((s, it) => s + Number(it.totalPrice || 0), 0);
-                                    const derivedTax = expandedOrderItems.reduce((s, it) => s + Number((it as any).taxAmount || 0), 0);
+                                    const derivedTax = expandedOrderItems.reduce((s, it) => s + Number(it.taxAmount || 0), 0);
                                     const orderSubtotal = serverSubtotal > 0 ? serverSubtotal : derivedSubtotal;
                                     const orderTax = serverTotalTax > 0 ? serverTotalTax : derivedTax;
                                     const orderDisc = order.discountType && order.discountValue
@@ -1155,10 +1158,10 @@ export default function Sales() {
                                           <span>Grand Total</span>
                                           <span>₹{Number(order.totalAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                         </div>
-                                        {(order as any).warehouseId && warehouses && (
+                                        {order.warehouseId && warehouses && (
                                           <div className="flex justify-between text-muted-foreground pt-0.5">
                                             <span>Fulfillment Warehouse</span>
-                                            <span className="font-medium">{warehouses.find(w => w.id === (order as any).warehouseId)?.name || "—"}</span>
+                                            <span className="font-medium">{warehouses.find(w => w.id === order.warehouseId)?.name || "—"}</span>
                                           </div>
                                         )}
                                       </div>

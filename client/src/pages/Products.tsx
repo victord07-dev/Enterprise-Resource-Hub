@@ -113,8 +113,8 @@ export default function Products() {
       unit: p.unit,
       minStockLevel: String(p.minStockLevel),
       type: p.type || "product",
-      hsnCode: (p as any).hsnCode || "",
-      gstRate: (p as any).gstRate ? String((p as any).gstRate) : "18",
+      hsnCode: p.hsnCode || "",
+      gstRate: p.gstRate ? String(p.gstRate) : "18",
     });
     setProductDialogOpen(true);
   };
@@ -198,12 +198,12 @@ export default function Products() {
                     </td>
                     {!isServiceTab && (
                       <td className="p-3 text-muted-foreground text-xs" data-testid={`text-item-hsn-${item.id}`}>
-                        {(item as any).hsnCode || "—"}
+                        {item.hsnCode || "—"}
                       </td>
                     )}
                     <td className="p-3 text-right" data-testid={`text-item-gst-${item.id}`}>
                       <Badge variant="outline" className="no-default-active-elevate text-xs">
-                        {Number((item as any).gstRate || 0)}%
+                        {Number(item.gstRate || 0)}%
                       </Badge>
                     </td>
                     <td className="p-3 text-right font-medium" data-testid={`text-item-price-${item.id}`}>

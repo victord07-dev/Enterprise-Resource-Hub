@@ -898,19 +898,19 @@ export async function registerRoutes(
       if (order) {
         const subtotal = created.reduce((sum, it) => sum + Number(it.quantity) * Number(it.unitPrice), 0);
         const totalTax = created.reduce((sum, it) => sum + Number(it.taxAmount || 0), 0);
-        const discountType = (order as any).discountType as string | null;
-        const discountValue = Number((order as any).discountValue) || 0;
+        const discountType = order.discountType;
+        const discountValue = Number(order.discountValue) || 0;
         const discount = discountType === "percentage"
           ? subtotal * discountValue / 100
           : discountType === "fixed"
           ? Math.min(discountValue, subtotal)
           : 0;
-        const deliveryCost = Number((order as any).deliveryCost) || 0;
+        const deliveryCost = Number(order.deliveryCost) || 0;
         const totalAmount = subtotal - discount + totalTax + deliveryCost;
         await storage.updateSalesOrder(req.params.id, {
-          subtotal: subtotal.toFixed(2) as any,
-          totalTax: totalTax.toFixed(2) as any,
-          totalAmount: totalAmount.toFixed(2) as any,
+          subtotal: subtotal.toFixed(2),
+          totalTax: totalTax.toFixed(2),
+          totalAmount: totalAmount.toFixed(2),
         } as any);
       }
 
@@ -2070,7 +2070,7 @@ export async function registerRoutes(
           }
         }
 
-        const orderWarehouseId = (order as any).warehouseId ?? null;
+        const orderWarehouseId = order.warehouseId ?? null;
 
         for (const item of productItems) {
           const pid = item.productId!;

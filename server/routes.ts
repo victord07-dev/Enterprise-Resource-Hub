@@ -2734,6 +2734,13 @@ export async function registerRoutes(
       const batchId = crypto.randomUUID();
 
       await db.transaction(async (tx) => {
+        const [lockedChallan] = await tx.execute(sql`
+          SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
+        `);
+        if (!lockedChallan || (lockedChallan as any).status !== "draft") {
+          throw new Error("Challan is no longer in draft status — concurrent dispatch may have already occurred");
+        }
+
         if (challan.sourceType === "warehouse") {
           for (const item of items) {
             const qty = dispatchQtys[item.id];

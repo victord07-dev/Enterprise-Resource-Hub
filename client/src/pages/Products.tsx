@@ -29,6 +29,7 @@ export default function Products() {
   const [productForm, setProductForm] = useState({
     name: "", sku: "", category: "Solar Panels", description: "",
     unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
+    hsnCode: "", gstRate: "18",
   });
 
   const productsOnly = allProducts?.filter(p => p.type !== "service") ?? [];
@@ -88,11 +89,13 @@ export default function Products() {
       setProductForm({
         name: "", sku: `SVC-${Date.now().toString(36).toUpperCase()}`, category: "Installation", description: "",
         unitPrice: "", brand: "", unit: "service", minStockLevel: "0", type: "service",
+        hsnCode: "", gstRate: "18",
       });
     } else {
       setProductForm({
         name: "", sku: "", category: "Solar Panels", description: "",
         unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
+        hsnCode: "", gstRate: "18",
       });
     }
     setProductDialogOpen(true);
@@ -110,6 +113,8 @@ export default function Products() {
       unit: p.unit,
       minStockLevel: String(p.minStockLevel),
       type: p.type || "product",
+      hsnCode: (p as any).hsnCode || "",
+      gstRate: (p as any).gstRate ? String((p as any).gstRate) : "18",
     });
     setProductDialogOpen(true);
   };
@@ -140,6 +145,8 @@ export default function Products() {
       ...productForm,
       minStockLevel: Number(productForm.minStockLevel),
       brand: productForm.brand || null,
+      hsnCode: productForm.hsnCode || null,
+      gstRate: productForm.gstRate || "0",
     };
     if (data.type === "service" && !data.sku) {
       data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
@@ -158,6 +165,8 @@ export default function Products() {
                 {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>}
                 <th className="text-left p-3 font-medium text-muted-foreground">Brand</th>
                 <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
+                {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">HSN</th>}
+                <th className="text-right p-3 font-medium text-muted-foreground">GST %</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">{isServiceTab ? "Service Charge (₹)" : "Selling Price (₹)"}</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
@@ -167,7 +176,7 @@ export default function Products() {
               {productsLoading ? (
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i} className="border-b">
-                    {Array.from({ length: isServiceTab ? 6 : 7 }).map((_, j) => (
+                    {Array.from({ length: isServiceTab ? 7 : 9 }).map((_, j) => (
                       <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                     ))}
                   </tr>
@@ -185,6 +194,16 @@ export default function Products() {
                     <td className="p-3">
                       <Badge variant="secondary" className="no-default-active-elevate" data-testid={`badge-item-category-${item.id}`}>
                         {item.category}
+                      </Badge>
+                    </td>
+                    {!isServiceTab && (
+                      <td className="p-3 text-muted-foreground text-xs" data-testid={`text-item-hsn-${item.id}`}>
+                        {(item as any).hsnCode || "—"}
+                      </td>
+                    )}
+                    <td className="p-3 text-right" data-testid={`text-item-gst-${item.id}`}>
+                      <Badge variant="outline" className="no-default-active-elevate text-xs">
+                        {Number((item as any).gstRate || 0)}%
                       </Badge>
                     </td>
                     <td className="p-3 text-right font-medium" data-testid={`text-item-price-${item.id}`}>
@@ -209,7 +228,7 @@ export default function Products() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={isServiceTab ? 6 : 7} className="p-8 text-center text-muted-foreground">
+                  <td colSpan={isServiceTab ? 7 : 9} className="p-8 text-center text-muted-foreground">
                     {searchQuery
                       ? `No ${isServiceTab ? "services" : "products"} match your search.`
                       : `No ${isServiceTab ? "services" : "products"} found. Add your first ${isServiceTab ? "service" : "product"}.`}
@@ -392,6 +411,27 @@ export default function Products() {
             <div className="space-y-2">
               <Label htmlFor="prodSellingPrice">{isService ? "Service Charge (₹)" : "Selling Price (₹)"}</Label>
               <Input id="prodSellingPrice" type="number" data-testid="input-product-selling-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="prodGstRate">GST Rate</Label>
+                <Select value={productForm.gstRate} onValueChange={(v) => setProductForm({ ...productForm, gstRate: v })}>
+                  <SelectTrigger data-testid="select-product-gst-rate">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["0", "5", "12", "18", "28"].map((r) => (
+                      <SelectItem key={r} value={r}>{r}%</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {!isService && (
+                <div className="space-y-2">
+                  <Label htmlFor="prodHsn">HSN Code</Label>
+                  <Input id="prodHsn" data-testid="input-product-hsn" value={productForm.hsnCode} onChange={(e) => setProductForm({ ...productForm, hsnCode: e.target.value })} placeholder="e.g. 85414011" />
+                </div>
+              )}
             </div>
             {!isService && (
               <div className="grid grid-cols-2 gap-4">

@@ -24,6 +24,9 @@ interface LineItem {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+  gstRate: number;
+  hsnCode: string;
+  taxAmount: number;
 }
 
 const ORDER_STATUSES = [
@@ -111,7 +114,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function emptyLineItem(): LineItem {
-  return { itemType: "product", productId: "", description: "", quantity: 1, unitPrice: 0, totalPrice: 0 };
+  return { itemType: "product", productId: "", description: "", quantity: 1, unitPrice: 0, totalPrice: 0, gstRate: 0, hsnCode: "", taxAmount: 0 };
 }
 
 interface DiscountState {
@@ -148,19 +151,31 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
         item.unitPrice = Number(prod.unitPrice);
         item.description = prod.name;
         item.itemType = prod.type;
-        item.totalPrice = item.quantity * Number(prod.unitPrice);
+        item.gstRate = Number((prod as any).gstRate || 0);
+        item.hsnCode = (prod as any).hsnCode || "";
+        const lineTotal = item.quantity * Number(prod.unitPrice);
+        item.totalPrice = lineTotal;
+        item.taxAmount = lineTotal * item.gstRate / 100;
       }
     }
     if (field === "quantity" || field === "unitPrice") {
       const qty = field === "quantity" ? Number(value) : item.quantity;
       const price = field === "unitPrice" ? Number(value) : item.unitPrice;
       item.totalPrice = qty * price;
+      item.taxAmount = item.totalPrice * item.gstRate / 100;
+    }
+    if (field === "gstRate") {
+      item.gstRate = Number(value);
+      item.taxAmount = item.totalPrice * Number(value) / 100;
     }
     if (field === "itemType") {
       item.productId = "";
       item.description = "";
       item.unitPrice = 0;
       item.totalPrice = 0;
+      item.gstRate = 0;
+      item.hsnCode = "";
+      item.taxAmount = 0;
     }
     updated[index] = item;
     onChange(updated);
@@ -170,8 +185,9 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   const removeItem = (index: number) => onChange(items.filter((_, i) => i !== index));
 
   const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
+  const totalTax = items.reduce((sum, it) => sum + (it.taxAmount || 0), 0);
   const discountAmount = discount ? calculateDiscount(subtotal, discount) : 0;
-  const netTotal = subtotal - discountAmount;
+  const netTotal = subtotal - discountAmount + totalTax;
 
   return (
     <div className="space-y-3">
@@ -222,7 +238,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             <Label className="text-xs text-muted-foreground">Description</Label>
             <Input className="h-8 text-xs" value={item.description} onChange={(e) => updateItem(i, "description", e.target.value)} placeholder="Item description" data-testid={`input-item-desc-${i}`} />
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <div>
               <Label className="text-xs text-muted-foreground">Qty</Label>
               <Input className="h-8 text-xs" type="number" min="1" value={item.quantity} onChange={(e) => updateItem(i, "quantity", parseInt(e.target.value) || 0)} data-testid={`input-item-qty-${i}`} />
@@ -232,10 +248,30 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <Input className="h-8 text-xs" type="number" min="0" step="0.01" value={item.unitPrice} onChange={(e) => updateItem(i, "unitPrice", parseFloat(e.target.value) || 0)} data-testid={`input-item-price-${i}`} />
             </div>
             <div>
+              <Label className="text-xs text-muted-foreground">GST %</Label>
+              <Select value={String(item.gstRate)} onValueChange={(v) => updateItem(i, "gstRate", v)}>
+                <SelectTrigger className="h-8 text-xs" data-testid={`select-item-gst-${i}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["0", "5", "12", "18", "28"].map((r) => (
+                    <SelectItem key={r} value={r}>{r}%</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label className="text-xs text-muted-foreground">Total (₹)</Label>
               <Input className="h-8 text-xs bg-muted" readOnly value={item.totalPrice.toLocaleString()} data-testid={`input-item-total-${i}`} />
             </div>
           </div>
+          {item.taxAmount > 0 && (
+            <div className="flex justify-end">
+              <span className="text-[10px] text-muted-foreground">
+                GST ({item.gstRate}%): ₹{item.taxAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          )}
         </div>
       ))}
 
@@ -280,7 +316,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       {items.length > 0 && (
         <div className="border-t pt-2 space-y-1">
           <div className="flex justify-between text-sm text-muted-foreground">
-            <span>Subtotal</span>
+            <span>Subtotal (excl. GST)</span>
             <span data-testid="text-subtotal">₹{subtotal.toLocaleString()}</span>
           </div>
           {discount && discountAmount > 0 && (
@@ -289,9 +325,15 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <span data-testid="text-discount-amount">- ₹{discountAmount.toLocaleString()}</span>
             </div>
           )}
+          {totalTax > 0 && (
+            <div className="flex justify-between text-sm text-blue-600 dark:text-blue-400">
+              <span>Total GST</span>
+              <span data-testid="text-total-gst">+ ₹{totalTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm font-semibold border-t pt-1">
-            <span>Net Total</span>
-            <span data-testid="text-line-items-total">₹{netTotal.toLocaleString()}</span>
+            <span>Grand Total</span>
+            <span data-testid="text-line-items-total">₹{netTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
         </div>
       )}
@@ -312,7 +354,7 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
 
@@ -394,17 +436,23 @@ export default function Sales() {
 
   const getNetTotal = (items: LineItem[], discount: DiscountState, deliveryCost?: number) => {
     const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
+    const tax = items.reduce((s, it) => s + (it.taxAmount || 0), 0);
     const discountAmt = calculateDiscount(subtotal, discount);
-    return subtotal - discountAmt + (deliveryCost || 0);
+    return subtotal - discountAmt + tax + (deliveryCost || 0);
   };
 
   const orderMutation = useMutation({
     mutationFn: async (data: any) => {
       const deliveryCostNum = data.deliveryMethod === "delivery" && data.deliveryCost ? Number(data.deliveryCost) : 0;
-      const totalAmount = String(getNetTotal(orderItems, orderDiscount, deliveryCostNum));
+      const itemSubtotal = orderItems.reduce((s, it) => s + (it.totalPrice || 0), 0);
+      const itemTotalTax = orderItems.reduce((s, it) => s + (it.taxAmount || 0), 0);
+      const discountAmt = calculateDiscount(itemSubtotal, orderDiscount);
+      const totalAmount = String(itemSubtotal - discountAmt + itemTotalTax + deliveryCostNum);
       const orderData = {
         ...data,
         totalAmount,
+        subtotal: String(itemSubtotal),
+        totalTax: String(itemTotalTax),
         discountType: orderDiscount.discountType === "none" ? null : orderDiscount.discountType,
         discountValue: orderDiscount.discountType === "none" ? null : String(orderDiscount.discountValue),
         paymentTerms: data.paymentTerms || null,
@@ -413,6 +461,7 @@ export default function Sales() {
         deliveryMethod: data.deliveryMethod || null,
         deliveryCost: data.deliveryMethod === "delivery" && data.deliveryCost ? String(data.deliveryCost) : null,
         deliveryAddress: data.deliveryMethod === "delivery" ? data.deliveryAddress || null : null,
+        warehouseId: data.warehouseId || null,
       };
       let orderId: string;
       if (editingOrder) {
@@ -433,6 +482,9 @@ export default function Sales() {
             quantity: it.quantity,
             unitPrice: String(it.unitPrice),
             totalPrice: String(it.totalPrice),
+            gstRate: String(it.gstRate || 0),
+            hsnCode: it.hsnCode || null,
+            taxAmount: String(it.taxAmount || 0),
           })),
         });
       }
@@ -748,7 +800,7 @@ export default function Sales() {
   const openNewOrder = () => {
     setEditingOrder(null);
     const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
+    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderDialogOpen(true);
@@ -767,6 +819,7 @@ export default function Sales() {
       deliveryMethod: (order as any).deliveryMethod || "pickup",
       deliveryCost: (order as any).deliveryCost ? String((order as any).deliveryCost) : "",
       deliveryAddress: (order as any).deliveryAddress || "",
+      warehouseId: (order as any).warehouseId || "",
     });
     setOrderDiscount({
       discountType: order.discountType || "none",
@@ -785,6 +838,9 @@ export default function Sales() {
           quantity: it.quantity,
           unitPrice: Number(it.unitPrice),
           totalPrice: Number(it.totalPrice),
+          gstRate: Number((it as any).gstRate || 0),
+          hsnCode: (it as any).hsnCode || "",
+          taxAmount: Number((it as any).taxAmount || 0),
         })));
       } else {
         setOrderItems([emptyLineItem()]);
@@ -1028,6 +1084,8 @@ export default function Sales() {
                                           <th className="text-left py-1 font-medium">Description</th>
                                           <th className="text-right py-1 font-medium">Qty</th>
                                           <th className="text-right py-1 font-medium">Unit Price</th>
+                                          <th className="text-right py-1 font-medium">GST%</th>
+                                          <th className="text-right py-1 font-medium">Tax</th>
                                           <th className="text-right py-1 font-medium">Total</th>
                                         </tr>
                                       </thead>
@@ -1043,6 +1101,10 @@ export default function Sales() {
                                             <td className="py-1.5">{it.description || "—"}</td>
                                             <td className="py-1.5 text-right">{it.quantity}</td>
                                             <td className="py-1.5 text-right">₹{Number(it.unitPrice).toLocaleString()}</td>
+                                            <td className="py-1.5 text-right text-muted-foreground">{Number((it as any).gstRate || 0)}%</td>
+                                            <td className="py-1.5 text-right text-blue-600 dark:text-blue-400">
+                                              {Number((it as any).taxAmount || 0) > 0 ? `₹${Number((it as any).taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                                            </td>
                                             <td className="py-1.5 text-right font-medium">₹{Number(it.totalPrice).toLocaleString()}</td>
                                           </tr>
                                         ))}
@@ -1052,11 +1114,35 @@ export default function Sales() {
                                     <p className="text-xs text-muted-foreground">No line items for this order.</p>
                                   )}
 
-                                  {order.discountType && order.discountValue && (
-                                    <div className="text-xs text-muted-foreground">
-                                      Discount: {order.discountType === "percentage" ? `${Number(order.discountValue)}%` : `₹${Number(order.discountValue).toLocaleString()}`}
-                                    </div>
-                                  )}
+                                  {(() => {
+                                    const orderSubtotal = expandedOrderItems.reduce((s, it) => s + Number(it.totalPrice || 0), 0);
+                                    const orderTax = expandedOrderItems.reduce((s, it) => s + Number((it as any).taxAmount || 0), 0);
+                                    const orderDisc = order.discountType && order.discountValue
+                                      ? (order.discountType === "percentage" ? orderSubtotal * Number(order.discountValue) / 100 : Math.min(Number(order.discountValue), orderSubtotal))
+                                      : 0;
+                                    return (
+                                      <div className="text-xs space-y-0.5 pt-1">
+                                        {order.discountType && order.discountValue && (
+                                          <div className="flex justify-between text-muted-foreground">
+                                            <span>Discount ({order.discountType === "percentage" ? `${Number(order.discountValue)}%` : "fixed"})</span>
+                                            <span className="text-red-600 dark:text-red-400">- ₹{orderDisc.toLocaleString()}</span>
+                                          </div>
+                                        )}
+                                        {orderTax > 0 && (
+                                          <div className="flex justify-between text-blue-600 dark:text-blue-400">
+                                            <span>Total GST</span>
+                                            <span>+ ₹{orderTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                          </div>
+                                        )}
+                                        {(order as any).warehouseId && warehouses && (
+                                          <div className="flex justify-between text-muted-foreground">
+                                            <span>Warehouse</span>
+                                            <span>{warehouses.find(w => w.id === (order as any).warehouseId)?.name || "—"}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
 
                                   {(order as any).deliveryMethod === "delivery" && (
                                     <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md mt-2" data-testid={`text-order-delivery-info-${order.id}`}>
@@ -1662,6 +1748,22 @@ export default function Sales() {
                 </div>
               )}
             </div>
+            {warehouses && warehouses.length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="orderWarehouse">Fulfillment Warehouse <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Select value={orderForm.warehouseId || "none"} onValueChange={(v) => setOrderForm({ ...orderForm, warehouseId: v === "none" ? "" : v })}>
+                  <SelectTrigger data-testid="select-order-warehouse">
+                    <SelectValue placeholder="Any warehouse" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Any warehouse</SelectItem>
+                    {warehouses.map((w) => (
+                      <SelectItem key={w.id} value={w.id}>{w.name}{w.location ? ` — ${w.location}` : ""}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} />
           </div>
           <DialogFooter>

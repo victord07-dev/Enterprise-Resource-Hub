@@ -48,6 +48,8 @@ export const products = pgTable("products", {
   unit: text("unit").notNull().default("pcs"),
   minStockLevel: integer("min_stock_level").notNull().default(10),
   type: text("type").notNull().default("product"),
+  hsnCode: text("hsn_code"),
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
 });
 
 export const warehouses = pgTable("warehouses", {
@@ -70,6 +72,8 @@ export const salesOrders = pgTable("sales_orders", {
   customerId: varchar("customer_id").notNull(),
   status: text("status").notNull().default("pending"),
   totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalTax: decimal("total_tax", { precision: 12, scale: 2 }).notNull().default("0"),
   orderDate: timestamp("order_date").notNull().defaultNow(),
   notes: text("notes"),
   discountType: text("discount_type"),
@@ -81,6 +85,7 @@ export const salesOrders = pgTable("sales_orders", {
   deliveryMethod: text("delivery_method"),
   deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
   deliveryAddress: text("delivery_address"),
+  warehouseId: varchar("warehouse_id"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -92,6 +97,9 @@ export const salesOrderItems = pgTable("sales_order_items", {
   quantity: integer("quantity").notNull(),
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
   totalPrice: decimal("total_price", { precision: 12, scale: 2 }).notNull(),
+  hsnCode: text("hsn_code"),
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const quotations = pgTable("quotations", {

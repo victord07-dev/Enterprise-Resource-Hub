@@ -1352,9 +1352,9 @@ export default function Inventory() {
                                             {items.map((item) => {
                                               const product = products?.find(p => p.id === item.productId);
                                               const isDraft = challan.status === "draft";
-                                              const qtyOrdered = (item as any).qtyOrdered != null ? Number((item as any).qtyOrdered) : item.quantity;
-                                              const qtyDispatched = (item as any).qtyDispatched != null ? Number((item as any).qtyDispatched) : 0;
-                                              const qtyToDispatch = (item as any).qtyToDispatch != null ? Number((item as any).qtyToDispatch) : Number(item.quantity);
+                                              const qtyOrdered = item.qtyOrdered != null ? Number(item.qtyOrdered) : item.quantity;
+                                              const qtyDispatched = item.qtyDispatched != null ? Number(item.qtyDispatched) : 0;
+                                              const qtyToDispatch = item.qtyToDispatch != null ? Number(item.qtyToDispatch) : Number(item.quantity);
                                               const editKey = `${challan.id}-${item.id}`;
                                               const editVal = challanItemQtyEdits[editKey];
                                               const displayVal = editVal !== undefined ? editVal : String(qtyToDispatch);
@@ -1368,7 +1368,7 @@ export default function Inventory() {
                                                     </span>
                                                   </td>
                                                   <td className="py-1.5 text-center text-muted-foreground">{qtyOrdered}</td>
-                                                  <td className="py-1.5 text-center text-muted-foreground">{(item as any).qtyReserved != null ? Number((item as any).qtyReserved) : "—"}</td>
+                                                  <td className="py-1.5 text-center text-muted-foreground">{item.qtyReserved != null ? Number(item.qtyReserved) : "—"}</td>
                                                   <td className="py-1.5 text-center font-medium">
                                                     {isDraft ? (
                                                       <input

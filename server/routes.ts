@@ -81,7 +81,7 @@ async function calculateReservedStockForOtherOrders(excludeOrderId: string, stor
       if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
       const cItems = await storage.getDeliveryChallanItems(challan.id);
       for (const ci of cItems) {
-        const qty = Number((ci as any).qtyDispatched ?? ci.quantity);
+        const qty = Number(ci.qtyDispatched ?? ci.quantity);
         dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + qty;
       }
     }
@@ -221,11 +221,11 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
     for (const ci of challanItems) {
       if (!ci.productId) continue;
       if (["dispatched", "delivered"].includes(challan.status)) {
-        const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+        const dispatched = Number(ci.qtyDispatched ?? ci.quantity);
         dispatchedQty[ci.productId] = (dispatchedQty[ci.productId] || 0) + dispatched;
       }
       if (challan.status === "delivered") {
-        const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+        const dispatched = Number(ci.qtyDispatched ?? ci.quantity);
         deliveredQty[ci.productId] = (deliveredQty[ci.productId] || 0) + dispatched;
       }
     }
@@ -2098,7 +2098,7 @@ export async function registerRoutes(
           if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
           const cItems = await storage.getDeliveryChallanItems(challan.id);
           for (const ci of cItems) {
-            const qty = Number((ci as any).qtyDispatched ?? ci.quantity);
+            const qty = Number(ci.qtyDispatched ?? ci.quantity);
             dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + qty;
           }
         }
@@ -2406,6 +2406,14 @@ export async function registerRoutes(
         }
       }
 
+      if (challanData.orderId) {
+        const allChallansCheck = await storage.getDeliveryChallans();
+        const existingDraft = allChallansCheck.find((c: any) => c.orderId === challanData.orderId && c.status === "draft");
+        if (existingDraft) {
+          return res.status(409).json({ message: "A draft challan already exists for this order", challanId: existingDraft.id });
+        }
+      }
+
       const year = new Date().getFullYear();
       const allChallans = await storage.getDeliveryChallans();
       const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
@@ -2556,7 +2564,7 @@ export async function registerRoutes(
       for (const challan of soChallans) {
         const cItems = await storage.getDeliveryChallanItems(challan.id);
         for (const ci of cItems) {
-          const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+          const dispatched = Number(ci.qtyDispatched ?? ci.quantity);
           dispatchedSoFar[ci.productId] = (dispatchedSoFar[ci.productId] || 0) + dispatched;
         }
       }
@@ -2569,18 +2577,18 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All items have already been dispatched" });
       }
 
-      let { sourceType, sourceId, vehicleNumber, driverName, notes, deliveryAddress } = req.body;
-      if (!sourceType || !sourceId) {
+      const { vehicleNumber, driverName, notes, deliveryAddress } = req.body;
+      const sourceType = "warehouse";
+      let sourceId: string = req.body.sourceId || "";
+      if (!sourceId) {
         if (order.warehouseId) {
-          sourceType = "warehouse";
           sourceId = order.warehouseId;
         } else {
           const allWarehouses = await storage.getWarehouses();
           if (allWarehouses.length > 0) {
-            sourceType = "warehouse";
             sourceId = allWarehouses[0].id;
           } else {
-            return res.status(400).json({ message: "sourceType and sourceId are required, and no default warehouse found" });
+            return res.status(400).json({ message: "No warehouse configured for dispatch" });
           }
         }
       }
@@ -2649,8 +2657,8 @@ export async function registerRoutes(
         if (!existing) continue;
         const qtyToDispatch = Number(update.qtyToDispatch ?? update.quantity ?? 0);
         if (qtyToDispatch <= 0) return res.status(400).json({ message: "qtyToDispatch must be greater than 0" });
-        const qtyReserved = Number((existing as any).qtyReserved ?? (existing as any).qtyOrdered ?? existing.quantity);
-        const alreadyDispatched = Number((existing as any).qtyDispatched ?? 0);
+        const qtyReserved = Number(existing.qtyReserved ?? existing.qtyOrdered ?? existing.quantity);
+        const alreadyDispatched = Number(existing.qtyDispatched ?? 0);
         const maxAllowed = qtyReserved - alreadyDispatched;
         if (qtyToDispatch > maxAllowed) {
           return res.status(400).json({ message: `qtyToDispatch (${qtyToDispatch}) exceeds remaining reserved quantity (${maxAllowed})` });
@@ -2682,7 +2690,7 @@ export async function registerRoutes(
         if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
         const cItems = await storage.getDeliveryChallanItems(challan.id);
         for (const ci of cItems) {
-          const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+          const dispatched = Number(ci.qtyDispatched ?? ci.quantity);
           dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + dispatched;
         }
       }
@@ -2712,9 +2720,9 @@ export async function registerRoutes(
 
       const dispatchQtys: Record<string, number> = {};
       for (const item of items) {
-        const qty = Number((item as any).qtyToDispatch ?? item.quantity);
-        const qtyReserved = Number((item as any).qtyReserved ?? (item as any).qtyOrdered ?? item.quantity);
-        const alreadyDispatched = Number((item as any).qtyDispatched ?? 0);
+        const qty = Number(item.qtyToDispatch ?? item.quantity);
+        const qtyReserved = Number(item.qtyReserved ?? item.qtyOrdered ?? item.quantity);
+        const alreadyDispatched = Number(item.qtyDispatched ?? 0);
         const remaining = qtyReserved - alreadyDispatched;
         if (qty <= 0) {
           return res.status(400).json({ message: `qtyToDispatch must be greater than 0 for all items` });
@@ -2762,7 +2770,7 @@ export async function registerRoutes(
 
         for (const item of items) {
           const qty = dispatchQtys[item.id];
-          const prevDispatched = Number((item as any).qtyDispatched ?? 0);
+          const prevDispatched = Number(item.qtyDispatched ?? 0);
           await tx.execute(sql`
             UPDATE delivery_challan_items
             SET qty_dispatched = ${prevDispatched + qty}

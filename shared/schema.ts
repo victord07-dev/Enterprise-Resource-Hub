@@ -377,11 +377,13 @@ export const deliveryChallans = pgTable("delivery_challans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   challanNumber: text("challan_number").notNull().unique(),
   orderId: varchar("order_id").notNull(),
+  customerId: varchar("customer_id"),
   sourceType: text("source_type").notNull(),
   sourceId: varchar("source_id").notNull(),
   status: text("status").notNull().default("draft"),
   dispatchDate: timestamp("dispatch_date"),
   deliveryDate: timestamp("delivery_date"),
+  dispatchBatchId: varchar("dispatch_batch_id"),
   vehicleNumber: text("vehicle_number"),
   driverName: text("driver_name"),
   notes: text("notes"),
@@ -397,6 +399,10 @@ export const deliveryChallanItems = pgTable("delivery_challan_items", {
   description: text("description"),
   quantity: integer("quantity").notNull(),
   unitPrice: decimal("unit_price", { precision: 12, scale: 2 }),
+  qtyOrdered: decimal("qty_ordered", { precision: 12, scale: 2 }),
+  qtyReserved: decimal("qty_reserved", { precision: 12, scale: 2 }),
+  qtyToDispatch: decimal("qty_to_dispatch", { precision: 12, scale: 2 }),
+  qtyDispatched: decimal("qty_dispatched", { precision: 12, scale: 2 }).default("0"),
 });
 
 export const purchaseRequests = pgTable("purchase_requests", {

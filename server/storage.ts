@@ -1015,6 +1015,11 @@ export class DatabaseStorage implements IStorage {
     return created;
   }
 
+  async updateDeliveryChallanItem(itemId: string, data: Partial<Omit<DeliveryChallanItem, "id">>): Promise<DeliveryChallanItem | undefined> {
+    const [updated] = await db.update(deliveryChallanItems).set(data).where(eq(deliveryChallanItems.id, itemId)).returning();
+    return updated;
+  }
+
   async deleteDeliveryChallanItems(challanId: string): Promise<boolean> {
     await db.delete(deliveryChallanItems).where(eq(deliveryChallanItems.challanId, challanId));
     return true;

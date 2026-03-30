@@ -31,7 +31,7 @@ interface LineItem {
 
 const ORDER_STATUSES = [
   "pending", "awaiting_payment", "confirmed", "procurement",
-  "ready_to_ship", "dispatched", "shipped", "delivered",
+  "ready_to_ship", "partial", "dispatched", "shipped", "delivered",
   "installed", "completed", "cancelled"
 ];
 
@@ -94,6 +94,7 @@ function StatusBadge({ status }: { status: string }) {
     confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
     procurement: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
     ready_to_ship: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-400",
+    partial: "bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400",
     dispatched: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
     shipped: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-400",
     delivered: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
@@ -390,6 +391,12 @@ export default function Sales() {
   const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "" });
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
+
+  const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
+  const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
+  const [dispatchSummary, setDispatchSummary] = useState<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }[]>([]);
+  const [dispatchForm, setDispatchForm] = useState({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+  const [dispatchSummaryLoading, setDispatchSummaryLoading] = useState(false);
 
   const toggleOrderExpand = useCallback(async (orderId: string) => {
     if (expandedOrderId === orderId) {
@@ -928,7 +935,52 @@ export default function Sales() {
     return suppliers?.find(s => s.id === sourceId)?.name || sourceId;
   };
 
-  const CHALLAN_VIEW_ELIGIBLE = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
+  const CHALLAN_VIEW_ELIGIBLE = ["confirmed", "procurement", "ready_to_ship", "partial", "dispatched", "shipped", "delivered", "installed", "completed"];
+  const CHALLAN_CREATE_ELIGIBLE = ["confirmed", "procurement", "ready_to_ship", "partial"];
+
+  const openDispatchDialog = async (orderId: string) => {
+    setDispatchOrderId(orderId);
+    setDispatchForm({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+    setDispatchSummary([]);
+    setDispatchDialogOpen(true);
+    setDispatchSummaryLoading(true);
+    try {
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const res = await fetch(`/api/sales-orders/${orderId}/dispatch-summary`, { headers });
+      const data = await res.json();
+      setDispatchSummary(Array.isArray(data.items) ? data.items : []);
+    } catch {
+      setDispatchSummary([]);
+    } finally {
+      setDispatchSummaryLoading(false);
+    }
+  };
+
+  const createFromSOMutation = useMutation({
+    mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/create-from-so/${orderId}`, data);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || "Failed to create challan");
+      }
+      return res.json();
+    },
+    onSuccess: (challan: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      toast({ title: "Dispatch challan created", description: `${challan.challanNumber} — Go to Inventory → Delivery Challans to dispatch.` });
+      setDispatchDialogOpen(false);
+      if (expandedOrderId) {
+        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        fetch(`/api/delivery-challans/by-order/${expandedOrderId}`, { headers })
+          .then(r => r.json())
+          .then(d => setOrderChallansMap(prev => ({ ...prev, [expandedOrderId]: Array.isArray(d) ? d : [] })));
+      }
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
 
   const downloadQuotePDF = async (q: Quotation) => {
     try {
@@ -1190,18 +1242,10 @@ export default function Sales() {
                                       <span className="text-amber-600 dark:text-amber-400 font-medium" data-testid={`text-order-balance-${order.id}`}>Balance: ₹{(Number(order.totalAmount) - Number(order.paidAmount || 0)).toLocaleString()}</span>
                                     </div>
                                     <div className="flex items-center gap-2 ml-auto" onClick={(e) => e.stopPropagation()}>
-                                      {CHALLAN_VIEW_ELIGIBLE.includes(order.status) && (
-                                        (orderChallansMap[order.id] || []).length > 0 ? (
-                                          <Button size="sm" variant="outline" data-testid={`button-view-challan-${order.id}`} onClick={() => {}}>
-                                            <Eye className="w-3 h-3 mr-1" /> View Challan
-                                          </Button>
-                                        ) : (
-                                          <Button size="sm" variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 dark:border-amber-600" data-testid={`button-request-challan-${order.id}`} onClick={() => {
-                                            toast({ title: "Challan Requested", description: "The disbursement team has been notified. Create the challan from the Inventory module." });
-                                          }}>
-                                            <Bell className="w-3 h-3 mr-1" /> Request Challan
-                                          </Button>
-                                        )
+                                      {CHALLAN_CREATE_ELIGIBLE.includes(order.status) && !isReadOnly && (
+                                        <Button size="sm" variant="outline" className="border-blue-400 text-blue-600 dark:text-blue-400 dark:border-blue-600" data-testid={`button-create-dispatch-challan-${order.id}`} onClick={() => openDispatchDialog(order.id)}>
+                                          <Truck className="w-3 h-3 mr-1" /> Create Dispatch Challan
+                                        </Button>
                                       )}
                                       {!isReadOnly && (
                                         <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
@@ -1930,6 +1974,104 @@ export default function Sales() {
               }}
             >
               {recordPaymentMutation.isPending ? "Recording..." : "Record Payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dispatchDialogOpen} onOpenChange={setDispatchDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create Dispatch Challan</DialogTitle>
+            <DialogDescription>Create a delivery challan from this sales order to dispatch remaining items</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {dispatchSummaryLoading ? (
+              <div className="space-y-2">{[1,2].map(i => <div key={i} className="h-8 bg-muted animate-pulse rounded" />)}</div>
+            ) : dispatchSummary.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground">Items to dispatch</p>
+                <div className="border rounded-md overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-muted/50 border-b">
+                        <th className="text-left px-3 py-2 font-medium">Product</th>
+                        <th className="text-center px-3 py-2 font-medium">Ordered</th>
+                        <th className="text-center px-3 py-2 font-medium">Dispatched</th>
+                        <th className="text-center px-3 py-2 font-medium text-blue-600 dark:text-blue-400">Remaining</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dispatchSummary.map((item, i) => (
+                        <tr key={i} className="border-b last:border-0">
+                          <td className="px-3 py-2">{item.description || item.productId}</td>
+                          <td className="px-3 py-2 text-center">{item.qtyOrdered}</td>
+                          <td className="px-3 py-2 text-center text-green-600 dark:text-green-400">{item.qtyDispatched}</td>
+                          <td className="px-3 py-2 text-center font-medium text-blue-600 dark:text-blue-400">{item.qtyRemaining}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">All items have already been dispatched.</p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Source Type</Label>
+                <Select value={dispatchForm.sourceType} onValueChange={v => setDispatchForm({ ...dispatchForm, sourceType: v, sourceId: "" })}>
+                  <SelectTrigger data-testid="select-dispatch-source-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="warehouse">Warehouse</SelectItem>
+                    <SelectItem value="supplier">Supplier</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>{dispatchForm.sourceType === "warehouse" ? "Warehouse" : "Supplier"}</Label>
+                <Select value={dispatchForm.sourceId} onValueChange={v => setDispatchForm({ ...dispatchForm, sourceId: v })}>
+                  <SelectTrigger data-testid="select-dispatch-source-id">
+                    <SelectValue placeholder="Select..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {dispatchForm.sourceType === "warehouse"
+                      ? (warehouses ?? []).map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)
+                      : (suppliers ?? []).map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)
+                    }
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="dispatchVehicle">Vehicle No. (optional)</Label>
+                <Input id="dispatchVehicle" data-testid="input-dispatch-vehicle" value={dispatchForm.vehicleNumber} onChange={e => setDispatchForm({ ...dispatchForm, vehicleNumber: e.target.value })} placeholder="e.g. MH12AB1234" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="dispatchDriver">Driver (optional)</Label>
+                <Input id="dispatchDriver" data-testid="input-dispatch-driver" value={dispatchForm.driverName} onChange={e => setDispatchForm({ ...dispatchForm, driverName: e.target.value })} placeholder="Driver name" />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="dispatchNotes">Notes (optional)</Label>
+              <Input id="dispatchNotes" data-testid="input-dispatch-notes" value={dispatchForm.notes} onChange={e => setDispatchForm({ ...dispatchForm, notes: e.target.value })} placeholder="Any special instructions" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDispatchDialogOpen(false)}>Cancel</Button>
+            <Button
+              data-testid="button-submit-dispatch-challan"
+              disabled={createFromSOMutation.isPending || !dispatchForm.sourceId || dispatchSummary.every(i => i.qtyRemaining === 0)}
+              onClick={() => {
+                if (!dispatchOrderId || !dispatchForm.sourceId) return;
+                createFromSOMutation.mutate({ orderId: dispatchOrderId, data: dispatchForm });
+              }}
+            >
+              {createFromSOMutation.isPending ? "Creating..." : "Create Challan"}
             </Button>
           </DialogFooter>
         </DialogContent>

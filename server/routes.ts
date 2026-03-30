@@ -220,21 +220,26 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
     for (const ci of challanItems) {
       if (!ci.productId) continue;
       if (["dispatched", "delivered"].includes(challan.status)) {
-        dispatchedQty[ci.productId] = (dispatchedQty[ci.productId] || 0) + ci.quantity;
+        const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+        dispatchedQty[ci.productId] = (dispatchedQty[ci.productId] || 0) + dispatched;
       }
       if (challan.status === "delivered") {
-        deliveredQty[ci.productId] = (deliveredQty[ci.productId] || 0) + ci.quantity;
+        const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+        deliveredQty[ci.productId] = (deliveredQty[ci.productId] || 0) + dispatched;
       }
     }
   }
 
   const allDispatched = productItems.every(it => (dispatchedQty[it.productId!] || 0) >= it.quantity);
+  const anyDispatched = productItems.some(it => (dispatchedQty[it.productId!] || 0) > 0);
   const allDelivered = productItems.every(it => (deliveredQty[it.productId!] || 0) >= it.quantity);
 
-  if (allDelivered && ["dispatched", "shipped", "ready_to_ship"].includes(order.status)) {
+  if (allDelivered && ["dispatched", "partial", "shipped", "ready_to_ship", "confirmed"].includes(order.status)) {
     await storage.updateSalesOrder(orderId, { status: "delivered" } as any);
-  } else if (allDispatched && order.status === "ready_to_ship") {
+  } else if (allDispatched && ["ready_to_ship", "confirmed", "partial"].includes(order.status)) {
     await storage.updateSalesOrder(orderId, { status: "dispatched" } as any);
+  } else if (anyDispatched && ["ready_to_ship", "confirmed"].includes(order.status)) {
+    await storage.updateSalesOrder(orderId, { status: "partial" } as any);
   }
 }
 
@@ -2520,6 +2525,167 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/delivery-challans/create-from-so/:soId", authenticateToken, async (req: any, res) => {
+    try {
+      const { soId } = req.params;
+      const order = await storage.getSalesOrder(soId);
+      if (!order) return res.status(404).json({ message: "Sales order not found" });
+
+      const eligibleStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
+      if (!eligibleStatuses.includes(order.status)) {
+        return res.status(400).json({ message: "Sales order is not in a dispatchable state" });
+      }
+
+      const allChallans = await storage.getDeliveryChallans();
+      const existingDraft = allChallans.find((c: any) => c.orderId === soId && c.status === "draft");
+      if (existingDraft) {
+        return res.status(409).json({ message: "A draft challan already exists for this order", challanId: existingDraft.id });
+      }
+
+      const orderItems = await storage.getSalesOrderItems(soId);
+      const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+      if (productItems.length === 0) {
+        return res.status(400).json({ message: "Order has no product line items" });
+      }
+
+      const dispatchedSoFar: Record<string, number> = {};
+      const soChallans = allChallans.filter((c: any) => c.orderId === soId && !["cancelled", "draft"].includes(c.status));
+      for (const challan of soChallans) {
+        const cItems = await storage.getDeliveryChallanItems(challan.id);
+        for (const ci of cItems) {
+          const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+          dispatchedSoFar[ci.productId] = (dispatchedSoFar[ci.productId] || 0) + dispatched;
+        }
+      }
+
+      const pendingItems = productItems.filter(it => {
+        const remaining = it.quantity - (dispatchedSoFar[it.productId!] || 0);
+        return remaining > 0;
+      });
+      if (pendingItems.length === 0) {
+        return res.status(400).json({ message: "All items have already been dispatched" });
+      }
+
+      const { sourceType, sourceId, vehicleNumber, driverName, notes, deliveryAddress } = req.body;
+      if (!sourceType || !sourceId) {
+        return res.status(400).json({ message: "sourceType and sourceId are required" });
+      }
+
+      const year = new Date().getFullYear();
+      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
+      const nextNum = yearChallans.length + 1;
+      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+
+      const challanAddr = deliveryAddress || (order as any).deliveryAddress || null;
+      const challan = await storage.createDeliveryChallan({
+        challanNumber,
+        orderId: soId,
+        customerId: (order as any).customerId || null,
+        sourceType,
+        sourceId,
+        status: "draft",
+        vehicleNumber: vehicleNumber || null,
+        driverName: driverName || null,
+        notes: notes || null,
+        deliveryAddress: challanAddr,
+        dispatchBatchId: null,
+        dispatchDate: null,
+        deliveryDate: null,
+        createdBy: req.user.id,
+      } as any);
+
+      const createdItems = [];
+      for (const it of pendingItems) {
+        const remaining = it.quantity - (dispatchedSoFar[it.productId!] || 0);
+        const ci = await storage.createDeliveryChallanItem({
+          challanId: challan.id,
+          productId: it.productId!,
+          description: it.description || null,
+          quantity: remaining,
+          unitPrice: it.unitPrice,
+          qtyOrdered: String(it.quantity),
+          qtyReserved: String(it.quantity),
+          qtyToDispatch: String(remaining),
+          qtyDispatched: "0",
+        } as any);
+        createdItems.push(ci);
+      }
+
+      res.status(201).json({ ...challan, items: createdItems });
+    } catch (error) {
+      console.error("create-from-so error:", error);
+      res.status(500).json({ message: "Failed to create challan from sales order" });
+    }
+  });
+
+  app.patch("/api/delivery-challans/:id/items", authenticateToken, async (req: any, res) => {
+    try {
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (challan.status !== "draft") return res.status(400).json({ message: "Can only update items on draft challans" });
+
+      const { items } = req.body;
+      if (!Array.isArray(items)) return res.status(400).json({ message: "items must be an array" });
+
+      const challanItems = await storage.getDeliveryChallanItems(challan.id);
+      const updatedItems = [];
+
+      for (const update of items) {
+        const existing = challanItems.find(ci => ci.id === update.id);
+        if (!existing) continue;
+        const qtyToDispatch = Number(update.qtyToDispatch ?? update.quantity ?? 0);
+        if (qtyToDispatch < 0) return res.status(400).json({ message: "qtyToDispatch cannot be negative" });
+        const maxDispatch = Number((existing as any).qtyOrdered ?? existing.quantity);
+        const alreadyDispatched = Number((existing as any).qtyDispatched ?? 0);
+        if (qtyToDispatch > maxDispatch - alreadyDispatched) {
+          return res.status(400).json({ message: `qtyToDispatch (${qtyToDispatch}) exceeds remaining quantity (${maxDispatch - alreadyDispatched})` });
+        }
+        const updated = await storage.updateDeliveryChallanItem(existing.id, { qtyToDispatch: String(qtyToDispatch) } as any);
+        updatedItems.push(updated);
+      }
+
+      res.json(updatedItems);
+    } catch (error) {
+      console.error("patch challan items error:", error);
+      res.status(500).json({ message: "Failed to update challan items" });
+    }
+  });
+
+  app.get("/api/sales-orders/:id/dispatch-summary", authenticateToken, async (req: any, res) => {
+    try {
+      const order = await storage.getSalesOrder(req.params.id);
+      if (!order) return res.status(404).json({ message: "Sales order not found" });
+
+      const orderItems = await storage.getSalesOrderItems(req.params.id);
+      const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+
+      const allChallans = await storage.getDeliveryChallans();
+      const soChallans = allChallans.filter((c: any) => c.orderId === req.params.id && c.status !== "cancelled");
+
+      const dispatchedMap: Record<string, number> = {};
+      for (const challan of soChallans) {
+        if (!["dispatched", "delivered", "partial"].includes(challan.status)) continue;
+        const cItems = await storage.getDeliveryChallanItems(challan.id);
+        for (const ci of cItems) {
+          const dispatched = Number((ci as any).qtyDispatched ?? ci.quantity);
+          dispatchedMap[ci.productId] = (dispatchedMap[ci.productId] || 0) + dispatched;
+        }
+      }
+
+      const summary = productItems.map(it => ({
+        productId: it.productId,
+        description: it.description,
+        qtyOrdered: it.quantity,
+        qtyDispatched: dispatchedMap[it.productId!] || 0,
+        qtyRemaining: Math.max(0, it.quantity - (dispatchedMap[it.productId!] || 0)),
+      }));
+
+      res.json({ orderId: req.params.id, orderNumber: (order as any).orderNumber, items: summary });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch dispatch summary" });
+    }
+  });
+
   app.post("/api/delivery-challans/:id/dispatch", authenticateToken, async (req: any, res) => {
     try {
       const challan = await storage.getDeliveryChallan(req.params.id);
@@ -2528,32 +2694,56 @@ export async function registerRoutes(
 
       const items = await storage.getDeliveryChallanItems(challan.id);
 
+      const dispatchQtys: Record<string, number> = {};
+      for (const item of items) {
+        const qty = Number((item as any).qtyToDispatch ?? item.quantity);
+        if (qty <= 0) return res.status(400).json({ message: `qtyToDispatch must be > 0 for all items` });
+        dispatchQtys[item.id] = qty;
+      }
+
       if (challan.sourceType === "warehouse") {
         for (const item of items) {
+          const qty = dispatchQtys[item.id];
           const available = await getAvailableStock(item.productId, challan.sourceId);
-          if (item.quantity > available) {
-            return res.status(400).json({ message: `Insufficient stock for product. Available: ${available}, Required: ${item.quantity}` });
+          if (qty > available) {
+            return res.status(400).json({ message: `Insufficient stock for product. Available: ${available}, Required: ${qty}` });
           }
         }
       }
 
+      const batchId = crypto.randomUUID();
+
       await db.transaction(async (tx) => {
         if (challan.sourceType === "warehouse") {
           for (const item of items) {
+            const qty = dispatchQtys[item.id];
             await addLedgerEntry(tx, {
               productId: item.productId,
               warehouseId: challan.sourceId,
               movementType: "out",
-              quantity: item.quantity,
+              quantity: qty,
               referenceType: "challan",
               referenceId: challan.id,
-              notes: `Dispatched via challan ${challan.challanNumber}`,
+              notes: `Dispatched via challan ${challan.challanNumber} (batch ${batchId})`,
               createdBy: req.user.id,
             });
           }
         }
+
+        for (const item of items) {
+          const qty = dispatchQtys[item.id];
+          const prevDispatched = Number((item as any).qtyDispatched ?? 0);
+          await tx.execute(sql`
+            UPDATE delivery_challan_items
+            SET qty_dispatched = ${prevDispatched + qty}
+            WHERE id = ${item.id}
+          `);
+        }
+
         await tx.execute(sql`
-          UPDATE delivery_challans SET status = 'dispatched', dispatch_date = now() WHERE id = ${challan.id}
+          UPDATE delivery_challans
+          SET status = 'dispatched', dispatch_date = now(), dispatch_batch_id = ${batchId}
+          WHERE id = ${challan.id}
         `);
       });
 
@@ -2569,6 +2759,7 @@ export async function registerRoutes(
 
       res.json(updated);
     } catch (error) {
+      console.error("dispatch error:", error);
       res.status(500).json({ message: "Failed to dispatch challan" });
     }
   });

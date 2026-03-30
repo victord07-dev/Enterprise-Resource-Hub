@@ -1313,23 +1313,40 @@ export default function Inventory() {
                                     )}
                                     <p className="text-xs font-medium text-muted-foreground mb-2">Line Items</p>
                                     {items.length > 0 ? (
-                                      <div className="space-y-1">
-                                        {items.map((item) => {
-                                          const product = products?.find(p => p.id === item.productId);
-                                          return (
-                                            <div key={item.id} className="flex items-center justify-between gap-4 text-sm" data-testid={`text-challan-item-${item.id}`}>
-                                              <span className="flex items-center gap-2">
-                                                <Package className="w-3.5 h-3.5 text-muted-foreground" />
-                                                <span className="font-medium">{product?.name || item.productId}</span>
-                                                {item.description && <span className="text-muted-foreground text-xs">({item.description})</span>}
-                                              </span>
-                                              <span className="flex items-center gap-4 text-muted-foreground">
-                                                <span>Qty: {item.quantity}</span>
-                                                {item.unitPrice && <span>@ ₹{Number(item.unitPrice).toLocaleString()}</span>}
-                                              </span>
-                                            </div>
-                                          );
-                                        })}
+                                      <div className="overflow-x-auto">
+                                        <table className="w-full text-xs">
+                                          <thead>
+                                            <tr className="border-b">
+                                              <th className="text-left py-1.5 font-medium text-muted-foreground">Product</th>
+                                              <th className="text-center py-1.5 font-medium text-muted-foreground">Ordered</th>
+                                              <th className="text-center py-1.5 font-medium text-muted-foreground">Reserved</th>
+                                              <th className="text-center py-1.5 font-medium text-muted-foreground">To Dispatch</th>
+                                              <th className="text-center py-1.5 font-medium text-green-600 dark:text-green-400">Dispatched</th>
+                                              <th className="text-right py-1.5 font-medium text-muted-foreground">Unit Price</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {items.map((item) => {
+                                              const product = products?.find(p => p.id === item.productId);
+                                              return (
+                                                <tr key={item.id} className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
+                                                  <td className="py-1.5">
+                                                    <span className="flex items-center gap-1.5 font-medium">
+                                                      <Package className="w-3 h-3 text-muted-foreground" />
+                                                      {product?.name || item.productId}
+                                                      {item.description && <span className="text-muted-foreground font-normal ml-1">({item.description})</span>}
+                                                    </span>
+                                                  </td>
+                                                  <td className="py-1.5 text-center text-muted-foreground">{(item as any).qtyOrdered != null ? Number((item as any).qtyOrdered) : item.quantity}</td>
+                                                  <td className="py-1.5 text-center text-muted-foreground">{(item as any).qtyReserved != null ? Number((item as any).qtyReserved) : "—"}</td>
+                                                  <td className="py-1.5 text-center font-medium">{(item as any).qtyToDispatch != null ? Number((item as any).qtyToDispatch) : item.quantity}</td>
+                                                  <td className="py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{(item as any).qtyDispatched != null ? Number((item as any).qtyDispatched) : "—"}</td>
+                                                  <td className="py-1.5 text-right text-muted-foreground">{item.unitPrice ? `₹${Number(item.unitPrice).toLocaleString()}` : "—"}</td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
                                       </div>
                                     ) : (
                                       <p className="text-sm text-muted-foreground">Loading items...</p>

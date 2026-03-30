@@ -206,6 +206,7 @@ export interface IStorage {
   // Delivery Challan Items
   getDeliveryChallanItems(challanId: string): Promise<DeliveryChallanItem[]>;
   createDeliveryChallanItem(data: Omit<DeliveryChallanItem, "id">): Promise<DeliveryChallanItem>;
+  updateDeliveryChallanItem(itemId: string, data: Partial<Omit<DeliveryChallanItem, "id">>): Promise<DeliveryChallanItem | undefined>;
   deleteDeliveryChallanItems(challanId: string): Promise<boolean>;
 
   // Purchase Requests

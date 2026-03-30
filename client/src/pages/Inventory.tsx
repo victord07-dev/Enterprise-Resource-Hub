@@ -1378,13 +1378,14 @@ export default function Inventory() {
                                                         value={displayVal}
                                                         onChange={e => setChallanItemQtyEdits(prev => ({ ...prev, [editKey]: e.target.value }))}
                                                         onBlur={() => {
-                                                          const parsed = parseInt(displayVal, 10);
+                                                          const parsed = parseFloat(displayVal);
                                                           const max = qtyOrdered - qtyDispatched;
                                                           if (!isNaN(parsed) && parsed > 0 && parsed <= max && parsed !== qtyToDispatch) {
                                                             updateChallanItemQtyMutation.mutate({ challanId: challan.id, itemId: item.id, qtyToDispatch: parsed });
                                                           }
                                                           setChallanItemQtyEdits(prev => { const n = { ...prev }; delete n[editKey]; return n; });
                                                         }}
+                                                        step="any"
                                                         data-testid={`input-qty-to-dispatch-${item.id}`}
                                                         className="w-16 text-center border rounded px-1 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary"
                                                       />

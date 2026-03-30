@@ -2622,12 +2622,12 @@ export async function registerRoutes(
           productId: it.productId!,
           description: it.description || null,
           quantity: remaining,
-          unitPrice: it.unitPrice,
+          unitPrice: it.unitPrice ?? null,
           qtyOrdered: String(it.quantity),
           qtyReserved: String(remaining),
           qtyToDispatch: String(remaining),
           qtyDispatched: "0",
-        } as any);
+        });
         createdItems.push(ci);
       }
 
@@ -2661,7 +2661,7 @@ export async function registerRoutes(
         if (qtyToDispatch > maxAllowed) {
           return res.status(400).json({ message: `qtyToDispatch (${qtyToDispatch}) exceeds remaining reserved quantity (${maxAllowed})` });
         }
-        const updated = await storage.updateDeliveryChallanItem(existing.id, { qtyToDispatch: String(qtyToDispatch) } as any);
+        const updated = await storage.updateDeliveryChallanItem(existing.id, { qtyToDispatch: String(qtyToDispatch) });
         updatedItems.push(updated);
       }
 

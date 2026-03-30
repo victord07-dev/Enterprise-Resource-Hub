@@ -235,11 +235,11 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
   const anyDispatched = productItems.some(it => (dispatchedQty[it.productId!] || 0) > 0);
   const allDelivered = productItems.every(it => (deliveredQty[it.productId!] || 0) >= it.quantity);
 
-  if (allDelivered && ["dispatched", "partial", "shipped", "ready_to_ship", "confirmed"].includes(order.status)) {
+  if (allDelivered && ["dispatched", "partial", "shipped", "ready_to_ship", "confirmed", "procurement"].includes(order.status)) {
     await storage.updateSalesOrder(orderId, { status: "delivered" } as any);
-  } else if (allDispatched && ["ready_to_ship", "confirmed", "partial"].includes(order.status)) {
+  } else if (allDispatched && ["ready_to_ship", "confirmed", "partial", "procurement"].includes(order.status)) {
     await storage.updateSalesOrder(orderId, { status: "dispatched" } as any);
-  } else if (anyDispatched && ["ready_to_ship", "confirmed"].includes(order.status)) {
+  } else if (anyDispatched && ["ready_to_ship", "confirmed", "procurement"].includes(order.status)) {
     await storage.updateSalesOrder(orderId, { status: "partial" } as any);
   }
 }
@@ -2735,6 +2735,7 @@ export async function registerRoutes(
               SELECT quantity FROM inventory_stock
               WHERE product_id = ${item.productId} AND warehouse_id = ${challan.sourceId}
               LIMIT 1
+              FOR UPDATE
             `);
             const currentStock = stockRow ? Number((stockRow as any).quantity ?? 0) : 0;
             if (qty > currentStock) {

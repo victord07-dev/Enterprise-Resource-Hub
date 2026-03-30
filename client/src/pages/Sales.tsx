@@ -971,7 +971,12 @@ export default function Sales() {
 
   const createFromSOMutation = useMutation({
     mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
-      const res = await apiRequest("POST", `/api/delivery-challans/create-from-so/${orderId}`, data);
+      const token = localStorage.getItem("token");
+      const res = await fetch(`/api/delivery-challans/create-from-so/${orderId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(data),
+      });
       const body = await res.json();
       if (res.status === 409) {
         return { existing: true, challan: body.challan };

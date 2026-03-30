@@ -898,7 +898,13 @@ export async function registerRoutes(
       if (order) {
         const subtotal = created.reduce((sum, it) => sum + Number(it.quantity) * Number(it.unitPrice), 0);
         const totalTax = created.reduce((sum, it) => sum + Number(it.taxAmount || 0), 0);
-        const discount = Number((order as any).discount) || 0;
+        const discountType = (order as any).discountType as string | null;
+        const discountValue = Number((order as any).discountValue) || 0;
+        const discount = discountType === "percentage"
+          ? subtotal * discountValue / 100
+          : discountType === "fixed"
+          ? Math.min(discountValue, subtotal)
+          : 0;
         const deliveryCost = Number((order as any).deliveryCost) || 0;
         const totalAmount = subtotal - discount + totalTax + deliveryCost;
         await storage.updateSalesOrder(req.params.id, {
@@ -2107,17 +2113,33 @@ export async function registerRoutes(
         const warehouseOrders = result[pid].orders.filter(o => o.warehouseId !== null);
         const globalOrders = result[pid].orders.filter(o => o.warehouseId === null);
 
-        // Cap warehouse-scoped reservations against their specific warehouse stock
+        // Group warehouse-scoped orders by warehouse and cap each group against its warehouse stock
+        const byWarehouse: Record<string, typeof warehouseOrders> = {};
         for (const o of warehouseOrders) {
-          const wStock = warehousePhysical[o.warehouseId!] || 0;
-          o.quantity = Math.min(o.quantity, wStock);
+          if (!byWarehouse[o.warehouseId!]) byWarehouse[o.warehouseId!] = [];
+          byWarehouse[o.warehouseId!].push(o);
+        }
+        let totalWarehouseReserved = 0;
+        for (const [wid, wOrders] of Object.entries(byWarehouse)) {
+          const wStock = warehousePhysical[wid] || 0;
+          const wTotal = wOrders.reduce((s, o) => s + o.quantity, 0);
+          if (wTotal > wStock) {
+            const ratio = wStock > 0 ? wStock / wTotal : 0;
+            let remaining = wStock;
+            for (const o of wOrders) {
+              const capped = Math.min(Math.floor(o.quantity * ratio), remaining);
+              o.quantity = capped;
+              remaining -= capped;
+            }
+            if (remaining > 0 && wOrders.length > 0) wOrders[0].quantity += remaining;
+          }
+          totalWarehouseReserved += wOrders.reduce((s, o) => s + o.quantity, 0);
         }
 
-        // Cap global reservations against total remaining stock (after warehouse-specific allocations)
-        const totalWarehouseReserved = warehouseOrders.reduce((s, o) => s + o.quantity, 0);
+        // Cap global reservations against remaining stock after warehouse allocations
         const globalPool = Math.max(0, totalPhysical - totalWarehouseReserved);
         const totalGlobalReserved = globalOrders.reduce((s, o) => s + o.quantity, 0);
-        if (totalGlobalReserved > globalPool && globalPool >= 0) {
+        if (totalGlobalReserved > globalPool) {
           const ratio = globalPool > 0 ? globalPool / totalGlobalReserved : 0;
           let remaining = globalPool;
           for (const o of globalOrders) {

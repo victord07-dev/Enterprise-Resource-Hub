@@ -1085,8 +1085,8 @@ export default function Sales() {
                                           <th className="text-right py-1 font-medium">Qty</th>
                                           <th className="text-right py-1 font-medium">Unit Price</th>
                                           <th className="text-right py-1 font-medium">GST%</th>
-                                          <th className="text-right py-1 font-medium">Tax</th>
-                                          <th className="text-right py-1 font-medium">Total</th>
+                                          <th className="text-right py-1 font-medium">Tax (GST)</th>
+                                          <th className="text-right py-1 font-medium">Item Total (incl. GST)</th>
                                         </tr>
                                       </thead>
                                       <tbody>
@@ -1105,7 +1105,7 @@ export default function Sales() {
                                             <td className="py-1.5 text-right text-blue-600 dark:text-blue-400">
                                               {Number((it as any).taxAmount || 0) > 0 ? `₹${Number((it as any).taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                                             </td>
-                                            <td className="py-1.5 text-right font-medium">₹{Number(it.totalPrice).toLocaleString()}</td>
+                                            <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number((it as any).taxAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                           </tr>
                                         ))}
                                       </tbody>

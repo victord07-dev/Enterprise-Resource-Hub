@@ -437,6 +437,7 @@ function ARAgingTab() {
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">Collected</th>
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("balance")}>Balance<SortIcon k="balance" /></th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("daysOverdue")}>Days Overdue<SortIcon k="daysOverdue" /></th>
+                    <th className="px-4 py-3 text-center font-medium text-muted-foreground">Status</th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Bucket</th>
                   </tr>
                 </thead>
@@ -479,6 +480,15 @@ function ARAgingTab() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                          row.status === "paid" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                          : row.status === "partial_paid" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                          : "bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300"
+                        }`}>
+                          {row.status === "paid" ? "Paid" : row.status === "partial_paid" ? "Partial" : "Pending"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
                         <Badge className={`text-xs font-medium border-0 ${bucketBadge[row.bucket]}`}>
                           {bucketLabel[row.bucket]}
                         </Badge>
@@ -493,7 +503,7 @@ function ARAgingTab() {
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.grandTotal, 0))}</td>
                       <td className="px-4 py-3 text-right text-emerald-600 dark:text-emerald-400">{fmt(filtered.reduce((s, r) => s + r.totalPaid, 0))}</td>
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.balance, 0))}</td>
-                      <td colSpan={2} />
+                      <td colSpan={3} />
                     </tr>
                   </tfoot>
                 )}

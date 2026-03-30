@@ -2075,33 +2075,8 @@ export default function Sales() {
               <p className="text-sm text-muted-foreground">All items have already been dispatched.</p>
             )}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label>Source Type</Label>
-                <Select value={dispatchForm.sourceType} onValueChange={v => setDispatchForm({ ...dispatchForm, sourceType: v, sourceId: "" })}>
-                  <SelectTrigger data-testid="select-dispatch-source-type">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="warehouse">Warehouse</SelectItem>
-                    <SelectItem value="supplier">Supplier</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label>{dispatchForm.sourceType === "warehouse" ? "Warehouse" : "Supplier"}</Label>
-                <Select value={dispatchForm.sourceId} onValueChange={v => setDispatchForm({ ...dispatchForm, sourceId: v })}>
-                  <SelectTrigger data-testid="select-dispatch-source-id">
-                    <SelectValue placeholder="Select..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {dispatchForm.sourceType === "warehouse"
-                      ? (warehouses ?? []).map(w => <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>)
-                      : (suppliers ?? []).map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)
-                    }
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="rounded-md bg-muted/50 border px-3 py-2 text-xs text-muted-foreground">
+              Source warehouse is automatically derived from the sales order's assigned warehouse.
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">

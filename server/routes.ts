@@ -2579,17 +2579,15 @@ export async function registerRoutes(
 
       const { vehicleNumber, driverName, notes, deliveryAddress } = req.body;
       const sourceType = "warehouse";
-      let sourceId: string = req.body.sourceId || "";
-      if (!sourceId) {
-        if (order.warehouseId) {
-          sourceId = order.warehouseId;
+      let sourceId: string;
+      if (order.warehouseId) {
+        sourceId = order.warehouseId;
+      } else {
+        const allWarehouses = await storage.getWarehouses();
+        if (allWarehouses.length > 0) {
+          sourceId = allWarehouses[0].id;
         } else {
-          const allWarehouses = await storage.getWarehouses();
-          if (allWarehouses.length > 0) {
-            sourceId = allWarehouses[0].id;
-          } else {
-            return res.status(400).json({ message: "No warehouse configured for dispatch" });
-          }
+          return res.status(400).json({ message: "No warehouse configured for dispatch" });
         }
       }
 

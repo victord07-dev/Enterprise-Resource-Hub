@@ -773,9 +773,27 @@ export async function registerRoutes(
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
       const previousOrder = await storage.getSalesOrder(req.params.id);
-      const updated = await storage.updateSalesOrder(req.params.id, body);
+      let updated = await storage.updateSalesOrder(req.params.id, body);
       if (!updated) return res.status(404).json({ message: "Sales order not found" });
       await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
+
+      // Recompute order totals if discount or delivery fields changed to keep stored totals consistent
+      const totalsAffectingFields = ["discountType", "discountValue", "deliveryCost"];
+      if (totalsAffectingFields.some(f => f in req.body)) {
+        try {
+          const items = await storage.getSalesOrderItems(updated.id);
+          if (items.length > 0) {
+            const subtotal = items.reduce((s, it) => s + Number(it.quantity) * Number(it.unitPrice), 0);
+            const totalTax = items.reduce((s, it) => s + Number(it.taxAmount || 0), 0);
+            const dType = updated.discountType;
+            const dValue = Number(updated.discountValue) || 0;
+            const discount = dType === "percentage" ? subtotal * dValue / 100 : dType === "fixed" ? Math.min(dValue, subtotal) : 0;
+            const deliveryCost = Number(updated.deliveryCost) || 0;
+            const totalAmount = subtotal - discount + totalTax + deliveryCost;
+            updated = await storage.updateSalesOrder(updated.id, { subtotal: subtotal.toFixed(2), totalTax: totalTax.toFixed(2), totalAmount: totalAmount.toFixed(2) } as any) || updated;
+          }
+        } catch { /* non-fatal: log suppressed */ }
+      }
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
         try {

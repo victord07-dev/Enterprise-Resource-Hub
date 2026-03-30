@@ -47,7 +47,7 @@ export default function Inventory() {
 
   const { data: stockMovements, isLoading: movementsLoading } = useQuery<StockMovement[]>({ queryKey: ["/api/stock-movements"] });
   const { data: inventoryStockData } = useQuery<InventoryStock[]>({ queryKey: ["/api/inventory-stock"] });
-  const { data: reservedStockData } = useQuery<Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string }> }>>({ queryKey: ["/api/inventory/reserved-stock"] });
+  const { data: reservedStockData } = useQuery<Record<string, { total: number; orders: Array<{ orderId: string; orderNumber: string; quantity: number; expectedDeliveryDate: string | null; reservationStatus: string; warehouseId: string | null }> }>>({ queryKey: ["/api/inventory/reserved-stock"] });
   const { data: incomingStockData } = useQuery<Record<string, { total: number; orders: Array<{ poId: string; poNumber: string; quantity: number; expectedDate: string | null }> }>>({ queryKey: ["/api/inventory/incoming-stock"] });
 
   const [expandedProductIds, setExpandedProductIds] = useState<Set<string>>(new Set());

@@ -308,9 +308,13 @@ function APAgingTab() {
   );
 }
 
+type ARSortKey = "daysOverdue" | "dueDate" | "balance" | "customerName" | "invoiceNumber";
+
 function ARAgingTab() {
   const [customerFilter, setCustomerFilter] = useState<string>("all");
   const [showPaid, setShowPaid] = useState(false);
+  const [sortKey, setSortKey] = useState<ARSortKey>("daysOverdue");
+  const [sortAsc, setSortAsc] = useState(false);
 
   const { data, isLoading } = useQuery<ARAgingResponse>({
     queryKey: ["/api/reports/ar-aging"],
@@ -335,7 +339,27 @@ function ARAgingTab() {
       { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
     );
 
-  const filtered = customerFiltered.filter(r => showPaid || r.balance > 0);
+  const baseFiltered = customerFiltered.filter(r => showPaid || r.balance > 0);
+
+  const filtered = [...baseFiltered].sort((a, b) => {
+    let cmp = 0;
+    if (sortKey === "daysOverdue") cmp = a.daysOverdue - b.daysOverdue;
+    else if (sortKey === "dueDate") cmp = (a.dueDate ?? "").localeCompare(b.dueDate ?? "");
+    else if (sortKey === "balance") cmp = a.balance - b.balance;
+    else if (sortKey === "customerName") cmp = a.customerName.localeCompare(b.customerName);
+    else if (sortKey === "invoiceNumber") cmp = a.invoiceNumber.localeCompare(b.invoiceNumber);
+    return sortAsc ? cmp : -cmp;
+  });
+
+  const handleSort = (key: ARSortKey) => {
+    if (sortKey === key) setSortAsc(p => !p);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const SortIcon = ({ k }: { k: ARSortKey }) => {
+    if (sortKey !== k) return <span className="ml-1 text-muted-foreground/40">↕</span>;
+    return <span className="ml-1">{sortAsc ? "↑" : "↓"}</span>;
+  };
 
   const summaryCards = [
     { label: "Total Outstanding", value: summary.totalOutstanding, bucket: "90+", icon: AlertCircle, iconClass: "text-red-500" },
@@ -404,15 +428,15 @@ function ARAgingTab() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/40">
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Customer</th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Invoice #</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("customerName")}>Customer<SortIcon k="customerName" /></th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("invoiceNumber")}>Invoice #<SortIcon k="invoiceNumber" /></th>
                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">Type</th>
                     <th className="px-4 py-3 text-left font-medium text-muted-foreground">Invoice Date</th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Due Date</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("dueDate")}>Due Date<SortIcon k="dueDate" /></th>
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">Total</th>
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">Collected</th>
-                    <th className="px-4 py-3 text-right font-medium text-muted-foreground">Balance</th>
-                    <th className="px-4 py-3 text-center font-medium text-muted-foreground">Days Overdue</th>
+                    <th className="px-4 py-3 text-right font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("balance")}>Balance<SortIcon k="balance" /></th>
+                    <th className="px-4 py-3 text-center font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("daysOverdue")}>Days Overdue<SortIcon k="daysOverdue" /></th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Bucket</th>
                   </tr>
                 </thead>
@@ -446,8 +470,10 @@ function ARAgingTab() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        {row.daysOverdue === 0 ? (
-                          <span className="text-muted-foreground text-xs">Not due</span>
+                        {row.daysOverdue < 0 ? (
+                          <span className="text-emerald-600 dark:text-emerald-400 text-xs">In {Math.abs(row.daysOverdue)}d</span>
+                        ) : row.daysOverdue === 0 ? (
+                          <span className="text-yellow-600 dark:text-yellow-400 text-xs font-medium">Due today</span>
                         ) : (
                           <span className={`font-medium ${bucketColor[row.bucket]}`}>{row.daysOverdue}d</span>
                         )}

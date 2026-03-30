@@ -379,7 +379,16 @@ export default function Accounts() {
                             <td className="p-3 text-right font-medium">₹{Number(inv.grandTotal).toLocaleString()}</td>
                             <td className="p-3 text-right text-emerald-600 dark:text-emerald-400">₹{paid.toLocaleString()}</td>
                             <td className={`p-3 text-right font-semibold ${balance > 0 ? "text-red-600 dark:text-red-400" : "text-muted-foreground"}`}>₹{balance.toLocaleString()}</td>
-                            <td className="p-3"><StatusBadge status={inv.status} /></td>
+                            <td className="p-3">
+                              <div className="flex flex-col gap-1">
+                                <StatusBadge status={inv.status} />
+                                {isOverdue && balance > 0 && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 w-fit">
+                                    Overdue
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="p-3 text-right">
                               {inv.status !== "paid" && (
                                 <Button size="sm" variant="outline" data-testid={`button-pay-invoice-${inv.id}`} onClick={() => openArPayDialog(inv.id)}>

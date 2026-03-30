@@ -4761,7 +4761,10 @@ export async function registerRoutes(
 
       const summary = { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 };
 
-      const rows = allInvoices.map(inv => {
+      // Only include non-paid invoices (paid invoices have no outstanding balance)
+      const nonPaidInvoices = allInvoices.filter(inv => inv.status !== "paid");
+
+      const rows = nonPaidInvoices.map(inv => {
         const customer = customerMap.get(inv.customerId);
 
         const totalPaid = allPayments
@@ -4771,19 +4774,22 @@ export async function registerRoutes(
         const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
 
         const dueDate = inv.dueDate ? new Date(inv.dueDate) : null;
+        // daysOverdue: negative = not yet due (current), positive = overdue
         let daysOverdue = 0;
         let bucket = "current";
 
         if (dueDate) {
           dueDate.setHours(0, 0, 0, 0);
           const diffMs = today.getTime() - dueDate.getTime();
+          // diffMs positive = past due, negative = future due
+          daysOverdue = Math.floor(diffMs / 86400000); // can be negative for future dates
           if (diffMs > 0) {
-            daysOverdue = Math.floor(diffMs / 86400000);
             if (daysOverdue <= 30) bucket = "1-30";
             else if (daysOverdue <= 60) bucket = "31-60";
             else if (daysOverdue <= 90) bucket = "61-90";
             else bucket = "90+";
           }
+          // daysOverdue <= 0 stays as "current"
         }
 
         if (balance > 0) {
@@ -4813,7 +4819,7 @@ export async function registerRoutes(
         };
       });
 
-      // Sort by daysOverdue descending
+      // Sort by daysOverdue descending (most overdue first, future due at bottom)
       rows.sort((a, b) => b.daysOverdue - a.daysOverdue);
 
       res.json({ rows, summary });

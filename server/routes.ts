@@ -792,7 +792,7 @@ export async function registerRoutes(
             const totalAmount = subtotal - discount + totalTax + deliveryCost;
             updated = await storage.updateSalesOrder(updated.id, { subtotal: subtotal.toFixed(2), totalTax: totalTax.toFixed(2), totalAmount: totalAmount.toFixed(2) } as any) || updated;
           }
-        } catch { /* non-fatal: log suppressed */ }
+        } catch (err) { console.error("Non-fatal: failed to recompute SO totals after discount/delivery patch:", err); }
       }
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {

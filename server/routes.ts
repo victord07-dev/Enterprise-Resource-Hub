@@ -4780,7 +4780,8 @@ export async function registerRoutes(
       const { challanId } = req.params;
 
       // Load challan
-      const [challanRow] = await db.execute(sql`SELECT * FROM delivery_challans WHERE id = ${challanId} LIMIT 1`);
+      const challanResult = await db.execute(sql`SELECT * FROM delivery_challans WHERE id = ${challanId} LIMIT 1`);
+      const challanRow = challanResult.rows[0];
       if (!challanRow) return res.status(404).json({ message: "Delivery challan not found" });
       const challan = challanRow as any;
 
@@ -4796,12 +4797,22 @@ export async function registerRoutes(
       }
 
       // Load challan items
-      const challanItemRows = await db.execute(sql`SELECT * FROM delivery_challan_items WHERE challan_id = ${challanId}`);
-      const challanItems = challanItemRows as any[];
+      const challanItemResult = await db.execute(sql`SELECT * FROM delivery_challan_items WHERE challan_id = ${challanId}`);
+      const challanItems = challanItemResult.rows as any[];
+
+      // Resolve customerId — challan may have it directly or it may be on the linked SO
+      let resolvedCustomerId: string = challan.customer_id;
+      if (!resolvedCustomerId && challan.order_id) {
+        const soResult = await db.execute(sql`SELECT customer_id FROM sales_orders WHERE id = ${challan.order_id} LIMIT 1`);
+        resolvedCustomerId = (soResult.rows[0] as any)?.customer_id ?? null;
+      }
+      if (!resolvedCustomerId) {
+        return res.status(422).json({ message: "Could not determine customer for this challan" });
+      }
 
       // Load customer
-      const [customerRow] = await db.execute(sql`SELECT * FROM customers WHERE id = ${challan.customer_id} LIMIT 1`);
-      const customer = customerRow as any;
+      const customerResult = await db.execute(sql`SELECT * FROM customers WHERE id = ${resolvedCustomerId} LIMIT 1`);
+      const customer = customerResult.rows[0] as any;
 
       // Determine B2B vs B2C
       const customerGSTIN = customer?.gst_number || null;
@@ -4827,12 +4838,16 @@ export async function registerRoutes(
       }> = [];
 
       for (const ci of challanItems) {
-        const qty = Number(ci.qty_dispatched ?? ci.qty_to_dispatch ?? ci.quantity ?? 0);
+        // Use qtyDispatched if > 0, else qtyToDispatch if > 0, else fall back to quantity (legacy/seeded data)
+        const qtyDispatched = Number(ci.qty_dispatched ?? 0);
+        const qtyToDispatch = Number(ci.qty_to_dispatch ?? 0);
+        const qtyFallback = Number(ci.quantity ?? 0);
+        const qty = qtyDispatched > 0 ? qtyDispatched : qtyToDispatch > 0 ? qtyToDispatch : qtyFallback;
         if (qty <= 0) continue;
 
         // Look up product for HSN / GST rate
-        const [prodRow] = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
-        const prod = prodRow as any;
+        const prodResult = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
+        const prod = prodResult.rows[0] as any;
         const unitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
         const hsnCode: string | null = prod?.hsn_code ?? null;
         const gstRate = Number(prod?.gst_rate ?? 0);
@@ -4872,7 +4887,7 @@ export async function registerRoutes(
       const invoice = await storage.createSalesInvoice({
         invoiceNumber,
         invoiceDate: new Date(),
-        customerId: challan.customer_id,
+        customerId: resolvedCustomerId,
         soId: challan.order_id ?? null,
         challanId,
         customerType,

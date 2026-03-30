@@ -1306,11 +1306,11 @@ export class DatabaseStorage implements IStorage {
     const fyEnd = fyStart + 1;
     const fyCode = `${String(fyStart).slice(-2)}${String(fyEnd).slice(-2)}`;
     const prefix = `INV-${fyCode}-`;
-    const [result] = await db.execute(sql`
+    const countResult = await db.execute(sql`
       SELECT COUNT(*) as count FROM sales_invoices
       WHERE invoice_number LIKE ${prefix + '%'}
     `);
-    const count = Number((result as any)?.count ?? 0);
+    const count = Number((countResult.rows[0] as any)?.count ?? 0);
     return `${prefix}${String(count + 1).padStart(4, "0")}`;
   }
 

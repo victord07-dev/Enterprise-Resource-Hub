@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,9 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -108,6 +109,8 @@ export default function Accounts() {
   const [arPayForm, setArPayForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
 
   // ── AP State ──────────────────────────────────────────────────────────────
+  const [expandedSiIds, setExpandedSiIds] = useState<Set<string>>(new Set());
+  const toggleSiExpanded = (id: string) => setExpandedSiIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [siDialogOpen, setSiDialogOpen] = useState(false);
   const [siForm, setSiForm] = useState({
     supplierId: "", purchaseOrderId: "", grnId: "", invoiceNumber: "",
@@ -517,6 +520,7 @@ export default function Accounts() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b">
+                      <th className="w-8 p-3"></th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Invoice #</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
@@ -532,7 +536,7 @@ export default function Accounts() {
                     {siLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 9 }).map((_, j) => (
+                          {Array.from({ length: 10 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
@@ -543,30 +547,47 @@ export default function Accounts() {
                         const paid = (paidPerInvoice[inv.id] ?? 0) + advance;
                         const balance = Number(inv.totalAmount) - paid;
                         const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
+                        const isExpanded = expandedSiIds.has(inv.id);
                         return (
-                          <tr key={inv.id} className="border-b last:border-0" data-testid={`row-supplier-invoice-${inv.id}`}>
-                            <td className="p-3 font-medium">{supplierMap.get(inv.supplierId)?.name ?? "—"}</td>
-                            <td className="p-3">{inv.invoiceNumber}</td>
-                            <td className="p-3 text-muted-foreground">{new Date(inv.invoiceDate).toLocaleDateString()}</td>
-                            <td className={`p-3 ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
-                              {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}
-                            </td>
-                            <td className="p-3 text-right font-medium">₹{Number(inv.totalAmount).toLocaleString()}</td>
-                            <td className="p-3 text-right text-green-600 dark:text-green-400">₹{paid.toLocaleString()}</td>
-                            <td className="p-3 text-right font-semibold">₹{Math.max(0, balance).toLocaleString()}</td>
-                            <td className="p-3"><StatusBadge status={inv.status} /></td>
-                            <td className="p-3 text-right">
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-invoice-${inv.id}`}
-                                onClick={() => { if (confirm("Delete this supplier invoice and its payments?")) deleteSiMutation.mutate(inv.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </td>
-                          </tr>
+                          <Fragment key={inv.id}>
+                            <tr className="border-b last:border-0" data-testid={`row-supplier-invoice-${inv.id}`}>
+                              <td className="p-3">
+                                <button onClick={() => toggleSiExpanded(inv.id)} className="text-muted-foreground" data-testid={`button-expand-si-${inv.id}`}>
+                                  {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                </button>
+                              </td>
+                              <td className="p-3 font-medium">{supplierMap.get(inv.supplierId)?.name ?? "—"}</td>
+                              <td className="p-3">{inv.invoiceNumber}</td>
+                              <td className="p-3 text-muted-foreground">{new Date(inv.invoiceDate).toLocaleDateString()}</td>
+                              <td className={`p-3 ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
+                                {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}
+                              </td>
+                              <td className="p-3 text-right font-medium">₹{Number(inv.totalAmount).toLocaleString()}</td>
+                              <td className="p-3 text-right text-green-600 dark:text-green-400">₹{paid.toLocaleString()}</td>
+                              <td className="p-3 text-right font-semibold">₹{Math.max(0, balance).toLocaleString()}</td>
+                              <td className="p-3"><StatusBadge status={inv.status} /></td>
+                              <td className="p-3 text-right">
+                                <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-invoice-${inv.id}`}
+                                  onClick={() => { if (confirm("Delete this supplier invoice and its payments?")) deleteSiMutation.mutate(inv.id); }}>
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr key={`${inv.id}-attach`} className="border-b last:border-0">
+                                <td colSpan={10} className="p-0">
+                                  <div className="bg-muted/30 px-6 py-4 ml-8">
+                                    <AttachmentsPanel entityType="supplier_invoice" entityId={inv.id} module="accounts" />
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })
                     ) : (
                       <tr>
-                        <td colSpan={9} className="p-8 text-center text-muted-foreground">No supplier invoices found.</td>
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">No supplier invoices found.</td>
                       </tr>
                     )}
                   </tbody>

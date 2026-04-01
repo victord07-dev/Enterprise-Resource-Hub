@@ -440,6 +440,8 @@ export const goodsReceiptNotes = pgTable("goods_receipt_notes", {
   totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   receivedDate: timestamp("received_date").notNull().defaultNow(),
   notes: text("notes"),
+  supplierChallanNumber: text("supplier_challan_number"),
+  supplierChallanDate: timestamp("supplier_challan_date"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -657,6 +659,28 @@ export type DeliveryChallan = typeof deliveryChallans.$inferSelect;
 export type DeliveryChallanItem = typeof deliveryChallanItems.$inferSelect;
 export type PurchaseRequest = typeof purchaseRequests.$inferSelect;
 export type PurchaseRequestItem = typeof purchaseRequestItems.$inferSelect;
+
+export const attachments = pgTable("attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  entityType: text("entity_type").notNull(),
+  entityId: varchar("entity_id").notNull(),
+  module: text("module").notNull().default("inventory"),
+  documentType: text("document_type").notNull().default("other"),
+  fileUrl: text("file_url").notNull(),
+  fileName: text("file_name").notNull(),
+  fileType: text("file_type").notNull(),
+  fileSize: integer("file_size").notNull(),
+  fileHash: text("file_hash").notNull(),
+  uploadedBy: varchar("uploaded_by").notNull(),
+  isDeleted: boolean("is_deleted").notNull().default(false),
+  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertAttachmentSchema = createInsertSchema(attachments).omit({ id: true, createdAt: true, isDeleted: true, deletedAt: true });
+export type InsertAttachment = z.infer<typeof insertAttachmentSchema>;
+export type Attachment = typeof attachments.$inferSelect;
+
 export type GoodsReceiptNote = typeof goodsReceiptNotes.$inferSelect;
 export type GoodsReceiptNoteItem = typeof goodsReceiptNoteItems.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;

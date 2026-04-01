@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -292,6 +292,12 @@ export interface IStorage {
 
   // Invoice Number Generation
   generateSalesInvoiceNumber(): Promise<string>;
+
+  // Attachments
+  getAttachments(entityType: string, entityId: string): Promise<Attachment[]>;
+  createAttachment(data: Omit<Attachment, "id" | "createdAt" | "isDeleted" | "deletedAt">): Promise<Attachment>;
+  getAttachmentByHash(entityType: string, entityId: string, fileHash: string): Promise<Attachment | undefined>;
+  softDeleteAttachment(id: string): Promise<Attachment | undefined>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1312,6 +1318,32 @@ export class DatabaseStorage implements IStorage {
     `);
     const count = Number((countResult.rows[0] as any)?.count ?? 0);
     return `${prefix}${String(count + 1).padStart(4, "0")}`;
+  }
+
+  // Attachments
+  async getAttachments(entityType: string, entityId: string): Promise<Attachment[]> {
+    return await db.select().from(attachments)
+      .where(and(eq(attachments.entityType, entityType), eq(attachments.entityId, entityId), eq(attachments.isDeleted, false)))
+      .orderBy(desc(attachments.createdAt));
+  }
+
+  async createAttachment(data: Omit<Attachment, "id" | "createdAt" | "isDeleted" | "deletedAt">): Promise<Attachment> {
+    const [created] = await db.insert(attachments).values(data).returning();
+    return created;
+  }
+
+  async getAttachmentByHash(entityType: string, entityId: string, fileHash: string): Promise<Attachment | undefined> {
+    const [found] = await db.select().from(attachments)
+      .where(and(eq(attachments.entityType, entityType), eq(attachments.entityId, entityId), eq(attachments.fileHash, fileHash), eq(attachments.isDeleted, false)));
+    return found;
+  }
+
+  async softDeleteAttachment(id: string): Promise<Attachment | undefined> {
+    const [updated] = await db.update(attachments)
+      .set({ isDeleted: true, deletedAt: new Date() })
+      .where(eq(attachments.id, id))
+      .returning();
+    return updated;
   }
 
   // Dashboard

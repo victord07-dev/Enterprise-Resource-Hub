@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -383,7 +384,7 @@ export default function Inventory() {
   const { data: grns, isLoading: grnsLoading } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
 
   const [grnDialogOpen, setGrnDialogOpen] = useState(false);
-  const [grnForm, setGrnForm] = useState({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "" });
+  const [grnForm, setGrnForm] = useState({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "", supplierChallanNumber: "", supplierChallanDate: "" });
   const [grnLineItems, setGrnLineItems] = useState<Array<{ productId: string; description: string; orderedQuantity: number; receivedQuantity: number; buyingPrice: number }>>([]);
   const [grnFilterStatus, setGrnFilterStatus] = useState("all");
   const [expandedGrnIds, setExpandedGrnIds] = useState<Set<string>>(new Set());
@@ -467,7 +468,7 @@ export default function Inventory() {
   };
 
   const openCreateGrn = () => {
-    setGrnForm({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "" });
+    setGrnForm({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "", supplierChallanNumber: "", supplierChallanDate: "" });
     setGrnLineItems([]);
     setGrnDialogOpen(true);
   };
@@ -1457,6 +1458,7 @@ export default function Inventory() {
                       <th className="text-left p-3 font-medium text-muted-foreground">GRN #</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">PO #</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Supp. Challan</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Warehouse</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Received Date</th>
@@ -1469,7 +1471,7 @@ export default function Inventory() {
                     {grnsLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 10 }).map((_, j) => (
+                          {Array.from({ length: 11 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                           ))}
                         </tr>
@@ -1496,6 +1498,11 @@ export default function Inventory() {
                               <td className="p-3 font-medium" data-testid={`text-grn-number-${grn.id}`}>{grn.grnNumber}</td>
                               <td className="p-3 text-muted-foreground" data-testid={`text-grn-po-${grn.id}`}>{po?.poNumber || "—"}</td>
                               <td className="p-3 text-muted-foreground">{supplier?.name || "—"}</td>
+                              <td className="p-3 text-muted-foreground" data-testid={`text-grn-challan-${grn.id}`}>
+                                {(grn as any).supplierChallanNumber ? (
+                                  <span className="font-medium text-foreground">{(grn as any).supplierChallanNumber}</span>
+                                ) : "—"}
+                              </td>
                               <td className="p-3 text-muted-foreground">{wh?.name || "—"}</td>
                               <td className="p-3" data-testid={`badge-grn-status-${grn.id}`}>
                                 {grn.status === "draft" && (
@@ -1537,39 +1544,54 @@ export default function Inventory() {
                             </tr>
                             {isExpanded && (
                               <tr key={`${grn.id}-items`} className="border-b last:border-0">
-                                <td colSpan={10} className="p-0">
-                                  <div className="bg-muted/30 px-6 py-3 ml-8">
-                                    <p className="text-xs font-medium text-muted-foreground mb-2">Received Items</p>
-                                    {items.length > 0 ? (
-                                      <table className="w-full text-xs">
-                                        <thead>
-                                          <tr className="border-b">
-                                            <th className="text-left py-1 font-medium text-muted-foreground">Product</th>
-                                            <th className="text-center py-1 font-medium text-muted-foreground">Ordered Qty</th>
-                                            <th className="text-center py-1 font-medium text-muted-foreground">Received Qty</th>
-                                            <th className="text-right py-1 font-medium text-muted-foreground">Buying Price</th>
-                                            <th className="text-right py-1 font-medium text-muted-foreground">Total Cost</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {items.map(item => {
-                                            const prod = productMap.get(item.productId);
-                                            return (
-                                              <tr key={item.id} className="border-b last:border-0" data-testid={`text-grn-item-${item.id}`}>
-                                                <td className="py-1.5">{prod?.name || item.description || item.productId}</td>
-                                                <td className="py-1.5 text-center">{item.orderedQuantity}</td>
-                                                <td className="py-1.5 text-center font-medium">{item.receivedQuantity}</td>
-                                                <td className="py-1.5 text-right">₹{Number(item.buyingPrice).toLocaleString("en-IN")}</td>
-                                                <td className="py-1.5 text-right font-medium">₹{Number(item.totalCost).toLocaleString("en-IN")}</td>
-                                              </tr>
-                                            );
-                                          })}
-                                        </tbody>
-                                      </table>
-                                    ) : (
-                                      <p className="text-sm text-muted-foreground">Loading items...</p>
+                                <td colSpan={11} className="p-0">
+                                  <div className="bg-muted/30 px-6 py-3 ml-8 space-y-4">
+                                    {((grn as any).supplierChallanNumber || (grn as any).supplierChallanDate) && (
+                                      <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                                        {(grn as any).supplierChallanNumber && (
+                                          <span>Supplier Challan No.: <strong className="text-foreground">{(grn as any).supplierChallanNumber}</strong></span>
+                                        )}
+                                        {(grn as any).supplierChallanDate && (
+                                          <span>Challan Date: <strong className="text-foreground">{new Date((grn as any).supplierChallanDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</strong></span>
+                                        )}
+                                      </div>
                                     )}
-                                    {grn.notes && <p className="text-xs text-muted-foreground mt-2">Notes: {grn.notes}</p>}
+                                    <div>
+                                      <p className="text-xs font-medium text-muted-foreground mb-2">Received Items</p>
+                                      {items.length > 0 ? (
+                                        <table className="w-full text-xs">
+                                          <thead>
+                                            <tr className="border-b">
+                                              <th className="text-left py-1 font-medium text-muted-foreground">Product</th>
+                                              <th className="text-center py-1 font-medium text-muted-foreground">Ordered Qty</th>
+                                              <th className="text-center py-1 font-medium text-muted-foreground">Received Qty</th>
+                                              <th className="text-right py-1 font-medium text-muted-foreground">Buying Price</th>
+                                              <th className="text-right py-1 font-medium text-muted-foreground">Total Cost</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {items.map(item => {
+                                              const prod = productMap.get(item.productId);
+                                              return (
+                                                <tr key={item.id} className="border-b last:border-0" data-testid={`text-grn-item-${item.id}`}>
+                                                  <td className="py-1.5">{prod?.name || item.description || item.productId}</td>
+                                                  <td className="py-1.5 text-center">{item.orderedQuantity}</td>
+                                                  <td className="py-1.5 text-center font-medium">{item.receivedQuantity}</td>
+                                                  <td className="py-1.5 text-right">₹{Number(item.buyingPrice).toLocaleString("en-IN")}</td>
+                                                  <td className="py-1.5 text-right font-medium">₹{Number(item.totalCost).toLocaleString("en-IN")}</td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      ) : (
+                                        <p className="text-sm text-muted-foreground">Loading items...</p>
+                                      )}
+                                      {grn.notes && <p className="text-xs text-muted-foreground mt-2">Notes: {grn.notes}</p>}
+                                    </div>
+                                    <div className="border-t pt-3">
+                                      <AttachmentsPanel entityType="grn" entityId={grn.id} module="inventory" />
+                                    </div>
                                   </div>
                                 </td>
                               </tr>
@@ -1579,7 +1601,7 @@ export default function Inventory() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
                           <FileText className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
                           <p className="font-medium">No Goods Receipt Notes found</p>
                           <p className="text-sm mt-1">Create a GRN to receive goods from a Purchase Order into a warehouse.</p>
@@ -1649,6 +1671,29 @@ export default function Inventory() {
                   value={grnForm.deliveryCost}
                   onChange={(e) => setGrnForm({ ...grnForm, deliveryCost: e.target.value })}
                   placeholder="₹0"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="grnSupplierChallanNumber">Supplier Challan No. (optional)</Label>
+                <Input
+                  id="grnSupplierChallanNumber"
+                  data-testid="input-grn-supplier-challan-number"
+                  value={grnForm.supplierChallanNumber}
+                  onChange={(e) => setGrnForm({ ...grnForm, supplierChallanNumber: e.target.value })}
+                  placeholder="e.g. DC/2024/001"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="grnSupplierChallanDate">Supplier Challan Date (optional)</Label>
+                <Input
+                  id="grnSupplierChallanDate"
+                  type="date"
+                  data-testid="input-grn-supplier-challan-date"
+                  value={grnForm.supplierChallanDate}
+                  onChange={(e) => setGrnForm({ ...grnForm, supplierChallanDate: e.target.value })}
                 />
               </div>
             </div>

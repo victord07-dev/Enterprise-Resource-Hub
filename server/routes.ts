@@ -2,7 +2,7 @@ import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage } from "./storage";
 import { db } from "./db";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
@@ -19,8 +19,10 @@ import {
   insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
   insertSupplierInvoiceSchema, insertSupplierPaymentSchema,
   insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
+  insertAttachmentSchema, attachments as attachmentsTable,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
+import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
 
@@ -5069,6 +5071,109 @@ export async function registerRoutes(
       res.status(201).json(pmt);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to record payment" });
+    }
+  });
+
+  // ── Attachments ────────────────────────────────────────────────────────────
+  const objectStorage = new ObjectStorageService();
+
+  const ALLOWED_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/jpg"];
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+  // Step 1: validate + get signed upload URL
+  app.post("/api/attachments/request-upload", authenticateToken, async (req: any, res) => {
+    try {
+      const { entityType, entityId, documentType, fileName, fileType, fileSize, fileHash, module: mod } = req.body;
+      if (!entityType || !entityId || !fileName || !fileType || !fileSize || !fileHash) {
+        return res.status(400).json({ message: "entityType, entityId, fileName, fileType, fileSize, fileHash are required" });
+      }
+      if (!ALLOWED_FILE_TYPES.includes(fileType)) {
+        return res.status(400).json({ message: "Only PDF, JPG, and PNG files are allowed" });
+      }
+      if (Number(fileSize) > MAX_FILE_SIZE) {
+        return res.status(400).json({ message: "File size must not exceed 10 MB" });
+      }
+
+      // Validate entity exists
+      if (entityType === "grn") {
+        const grn = await storage.getGRN(entityId);
+        if (!grn) return res.status(404).json({ message: "GRN not found" });
+      } else if (entityType === "supplier_invoice") {
+        const inv = await storage.getSupplierInvoice(entityId);
+        if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else {
+        return res.status(400).json({ message: "Invalid entityType" });
+      }
+
+      // Check for duplicate hash
+      const existing = await storage.getAttachmentByHash(entityType, entityId, fileHash);
+      if (existing) return res.status(409).json({ message: "This file has already been uploaded for this record" });
+
+      const uploadURL = await objectStorage.getObjectEntityUploadURL();
+      const objectPath = objectStorage.normalizeObjectEntityPath(uploadURL);
+
+      res.json({ uploadURL, objectPath, documentType: documentType || "other", module: mod || "inventory" });
+    } catch (err: any) {
+      console.error("Attachment request-upload error:", err);
+      res.status(500).json({ message: "Failed to generate upload URL" });
+    }
+  });
+
+  // Step 2: confirm attachment after upload
+  app.post("/api/attachments/confirm", authenticateToken, async (req: any, res) => {
+    try {
+      const { entityType, entityId, documentType, fileName, fileType, fileSize, fileHash, objectPath, module: mod } = req.body;
+      if (!entityType || !entityId || !fileName || !fileType || !fileSize || !fileHash || !objectPath) {
+        return res.status(400).json({ message: "All fields are required" });
+      }
+
+      // Re-check duplicate (race condition safety)
+      const existing = await storage.getAttachmentByHash(entityType, entityId, fileHash);
+      if (existing) return res.status(409).json({ message: "This file has already been uploaded for this record" });
+
+      const attachment = await storage.createAttachment({
+        entityType,
+        entityId,
+        module: mod || "inventory",
+        documentType: documentType || "other",
+        fileUrl: objectPath,
+        fileName,
+        fileType,
+        fileSize: Number(fileSize),
+        fileHash,
+        uploadedBy: req.user.id,
+      });
+
+      res.status(201).json(attachment);
+    } catch (err: any) {
+      console.error("Attachment confirm error:", err);
+      res.status(500).json({ message: "Failed to save attachment" });
+    }
+  });
+
+  app.get("/api/attachments/:entityType/:entityId", authenticateToken, async (req: any, res) => {
+    try {
+      const { entityType, entityId } = req.params;
+      const items = await storage.getAttachments(entityType, entityId);
+      res.json(items);
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to fetch attachments" });
+    }
+  });
+
+  app.delete("/api/attachments/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [found] = await db.select().from(attachmentsTable).where(eq(attachmentsTable.id, id));
+      if (!found || found.isDeleted) return res.status(404).json({ message: "Attachment not found" });
+      if (found.uploadedBy !== req.user.id && req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only the uploader or an admin can delete this attachment" });
+      }
+      await storage.softDeleteAttachment(id);
+      res.json({ message: "Attachment deleted" });
+    } catch (err: any) {
+      console.error("Attachment delete error:", err);
+      res.status(500).json({ message: "Failed to delete attachment" });
     }
   });
 

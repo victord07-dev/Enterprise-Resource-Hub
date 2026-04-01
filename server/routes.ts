@@ -249,6 +249,84 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
   }
 }
 
+// ─── FIFO Lot Engine ───────────────────────────────────────────────────────
+const FLOOR_MARGIN = 0.05; // 5% minimum margin
+
+async function computeFifoLots(productId: string): Promise<Array<{
+  grnId: string;
+  grnNumber: string;
+  lotDate: Date | null;
+  remainingQty: number;
+  landedCost: number;
+  floorPrice: number;
+}>> {
+  // Step 1: confirmed GRN lots for this product, oldest first
+  const grnRes = await db.execute(sql`
+    SELECT
+      gi.grn_id,
+      grn.grn_number,
+      grn.received_date,
+      gi.received_quantity::numeric   AS received_qty,
+      gi.buying_price::numeric        AS buying_price,
+      COALESCE(grn.delivery_cost::numeric, 0) AS delivery_cost,
+      GREATEST(
+        (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
+           FROM goods_receipt_note_items i2 WHERE i2.grn_id = grn.id),
+        1
+      ) AS total_grn_qty
+    FROM goods_receipt_note_items gi
+    JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+    WHERE gi.product_id = ${productId}
+      AND grn.status = 'confirmed'
+    ORDER BY grn.received_date ASC, grn.id ASC
+  `);
+
+  // Step 2: net dispatched quantity (out minus RETURN_IN)
+  const netRes = await db.execute(sql`
+    SELECT
+      COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric          AS total_out,
+      COALESCE(SUM(CASE WHEN movement_type = 'RETURN_IN' THEN quantity ELSE 0 END), 0)::numeric     AS total_return
+    FROM stock_movements
+    WHERE product_id = ${productId}
+  `);
+  const nr = netRes.rows[0] as any;
+  let toDeplete = Math.max(0, Number(nr.total_out) - Number(nr.total_return));
+
+  // Step 3: FIFO assignment
+  const lots: Array<{ grnId: string; grnNumber: string; lotDate: Date | null; remainingQty: number; landedCost: number; floorPrice: number }> = [];
+
+  for (const row of grnRes.rows as any[]) {
+    const receivedQty   = Number(row.received_qty);
+    const buyingPrice   = Number(row.buying_price ?? 0);
+    const deliveryCost  = Number(row.delivery_cost ?? 0);
+    const totalGrnQty   = Number(row.total_grn_qty ?? receivedQty) || 1;
+    const landedCost    = buyingPrice + deliveryCost / totalGrnQty;
+    const floorPrice    = parseFloat((landedCost * (1 + FLOOR_MARGIN)).toFixed(2));
+
+    let lotRemaining: number;
+    if (toDeplete >= receivedQty) {
+      toDeplete -= receivedQty;
+      lotRemaining = 0;
+    } else {
+      lotRemaining = receivedQty - toDeplete;
+      toDeplete = 0;
+    }
+
+    if (lotRemaining > 0) {
+      lots.push({
+        grnId:        row.grn_id,
+        grnNumber:    row.grn_number,
+        lotDate:      row.received_date ? new Date(row.received_date) : null,
+        remainingQty: parseFloat(lotRemaining.toFixed(3)),
+        landedCost:   parseFloat(landedCost.toFixed(2)),
+        floorPrice,
+      });
+    }
+  }
+
+  return lots;
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -1644,6 +1722,14 @@ export async function registerRoutes(
       }
       const updated = await storage.updateSupplierProduct(req.params.id, filtered);
       if (!updated) return res.status(404).json({ message: "Supplier product not found" });
+      // Flag product for pricing review when supplier price changes
+      if (filtered.supplierPrice !== undefined) {
+        try {
+          await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${updated.productId}`);
+        } catch (e) {
+          console.error("Failed to set needsPricingReview:", e);
+        }
+      }
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update supplier product" });
@@ -3209,6 +3295,54 @@ export async function registerRoutes(
       }
 
       await logAction(req.user.id, "confirm", "grn", `Confirmed GRN ${grn.grnNumber}`);
+
+      // Auto-create daily price sheets for products received in this GRN
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const uniqueProductIds = [...new Set(items.filter((i: any) => i.productId).map((i: any) => i.productId as string))];
+        for (const pid of uniqueProductIds) {
+          const existing = await storage.getDailyPriceSheetByProductDate(pid, today);
+          if (existing) continue;
+          const lots = await computeFifoLots(pid);
+          if (lots.length === 0) continue;
+          const totalRemainingQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+          const blendedLandedCost = totalRemainingQty > 0
+            ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemainingQty
+            : 0;
+          const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
+          const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
+          const prodR = await db.execute(sql`SELECT cost_price FROM products WHERE id = ${pid} LIMIT 1`);
+          const prodRow = prodR.rows[0] as any;
+          const blendedInventoryPrice = prodRow?.cost_price ? parseFloat(prodRow.cost_price) : blendedLandedCost;
+          const sheet = await storage.createDailyPriceSheet({
+            productId: pid,
+            sheetDate: today,
+            status: "draft",
+            proposedPrice: null,
+            blendedInventoryPrice: blendedInventoryPrice.toFixed(2),
+            globalFloorPrice: globalFloorPrice.toFixed(2),
+            strictFloorPrice: strictFloorPrice.toFixed(2),
+            overrideRequired: false,
+            overrideReason: null,
+            rejectionNotes: null,
+            notes: `Auto-created after GRN ${grn.grnNumber}`,
+            createdBy: req.user.id,
+            confirmedBy: null,
+          });
+          await storage.upsertDailyPriceSheetLots(sheet.id, lots.map(l => ({
+            sheetId: sheet.id,
+            grnId: l.grnId,
+            grnNumber: l.grnNumber,
+            lotDate: l.lotDate,
+            remainingQty: l.remainingQty.toFixed(3),
+            landedCost: l.landedCost.toFixed(2),
+            floorPrice: l.floorPrice.toFixed(2),
+            proposedPrice: null,
+          })));
+        }
+      } catch (pricingErr) {
+        console.error("Failed to auto-create price sheets from GRN:", pricingErr);
+      }
 
       const updated = await storage.getGRN(grn.id);
       res.json(updated);
@@ -5667,6 +5801,215 @@ export async function registerRoutes(
       res.json(cn);
     } catch (err: unknown) {
       res.status(500).json({ message: "Failed to fetch credit note" });
+    }
+  });
+
+  // ─── Daily Pricing Engine ─────────────────────────────────────────────────
+
+  // GET effective-price MUST be before /:id to avoid route conflict
+  app.get("/api/daily-price-sheets/effective-price", authenticateToken, async (req: any, res) => {
+    try {
+      const { productId, date } = req.query as { productId?: string; date?: string };
+      if (!productId) return res.status(400).json({ message: "productId is required" });
+      const d = date || new Date().toISOString().slice(0, 10);
+      const result = await storage.getEffectivePriceForProduct(productId, d);
+      if (!result) return res.status(404).json({ message: "Product not found" });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get effective price" });
+    }
+  });
+
+  app.get("/api/daily-price-sheets", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const { productId, sheetDate, status } = req.query as { productId?: string; sheetDate?: string; status?: string };
+      const sheets = await storage.getDailyPriceSheets({ productId, sheetDate, status });
+      const allProducts = await storage.getProducts();
+      const prodMap = new Map(allProducts.map(p => [p.id, p]));
+      const result = sheets.map(s => ({
+        ...s,
+        productName: prodMap.get(s.productId)?.name ?? null,
+        productSku:  prodMap.get(s.productId)?.sku ?? null,
+        needsPricingReview: prodMap.get(s.productId)?.needsPricingReview ?? false,
+      }));
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch price sheets" });
+    }
+  });
+
+  app.post("/api/daily-price-sheets", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const { productId, sheetDate, notes, proposedPrice, overrideReason } = req.body;
+      if (!productId || !sheetDate) return res.status(400).json({ message: "productId and sheetDate are required" });
+
+      const existing = await storage.getDailyPriceSheetByProductDate(productId, sheetDate);
+      if (existing) return res.status(409).json({ message: "A price sheet already exists for this product on this date", sheetId: existing.id });
+
+      const lots = await computeFifoLots(productId);
+      const totalRemainingQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+      const blendedLandedCost = totalRemainingQty > 0
+        ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemainingQty
+        : 0;
+      const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
+      const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
+
+      const prodR = await db.execute(sql`SELECT cost_price FROM products WHERE id = ${productId} LIMIT 1`);
+      const prodRow = prodR.rows[0] as any;
+      const blendedInventoryPrice = prodRow?.cost_price ? parseFloat(prodRow.cost_price) : blendedLandedCost;
+
+      const proposedPriceNum = proposedPrice != null ? parseFloat(proposedPrice) : null;
+      const overrideRequired  = proposedPriceNum != null
+        ? lots.some(l => proposedPriceNum < l.floorPrice)
+        : false;
+
+      const sheet = await storage.createDailyPriceSheet({
+        productId,
+        sheetDate,
+        status: "draft",
+        proposedPrice:         proposedPriceNum != null ? proposedPriceNum.toFixed(2) : null,
+        blendedInventoryPrice: blendedInventoryPrice.toFixed(2),
+        globalFloorPrice:      globalFloorPrice.toFixed(2),
+        strictFloorPrice:      strictFloorPrice.toFixed(2),
+        overrideRequired,
+        overrideReason:   overrideReason || null,
+        rejectionNotes:   null,
+        notes:            notes || null,
+        createdBy:        req.user.id,
+        confirmedBy:      null,
+      });
+
+      await storage.upsertDailyPriceSheetLots(sheet.id, lots.map(l => ({
+        sheetId:       sheet.id,
+        grnId:         l.grnId,
+        grnNumber:     l.grnNumber,
+        lotDate:       l.lotDate,
+        remainingQty:  l.remainingQty.toFixed(3),
+        landedCost:    l.landedCost.toFixed(2),
+        floorPrice:    l.floorPrice.toFixed(2),
+        proposedPrice: proposedPriceNum != null ? proposedPriceNum.toFixed(2) : null,
+      })));
+
+      const sheetLots = await storage.getDailyPriceSheetLots(sheet.id);
+      await logAction(req.user.id, "CREATE", "DailyPriceSheet", `Created price sheet for product ${productId} on ${sheetDate}`);
+      res.status(201).json({ ...sheet, lots: sheetLots });
+    } catch (err) {
+      console.error("Create price sheet error:", err);
+      res.status(500).json({ message: "Failed to create price sheet" });
+    }
+  });
+
+  app.get("/api/daily-price-sheets/:id", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const sheet = await storage.getDailyPriceSheet(req.params.id);
+      if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      const lots = await storage.getDailyPriceSheetLots(sheet.id);
+      const prodR = await db.execute(sql`SELECT name, sku, needs_pricing_review FROM products WHERE id = ${sheet.productId} LIMIT 1`);
+      const prodRow = prodR.rows[0] as any;
+      res.json({ ...sheet, lots, productName: prodRow?.name ?? null, productSku: prodRow?.sku ?? null });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch price sheet" });
+    }
+  });
+
+  app.patch("/api/daily-price-sheets/:id", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const sheet = await storage.getDailyPriceSheet(req.params.id);
+      if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      if (!["draft", "rejected"].includes(sheet.status)) return res.status(409).json({ message: "Can only edit draft or rejected sheets" });
+
+      const { proposedPrice, overrideReason, notes, lots: lotsInput } = req.body;
+      const existingLots = await storage.getDailyPriceSheetLots(sheet.id);
+
+      let overrideRequired = sheet.overrideRequired;
+      if (proposedPrice !== undefined) {
+        const pp = parseFloat(proposedPrice);
+        overrideRequired = existingLots.some(l => pp < parseFloat(l.floorPrice));
+      }
+
+      const update: Record<string, any> = { overrideRequired, rejectionNotes: null };
+      if (proposedPrice !== undefined) update.proposedPrice = parseFloat(proposedPrice).toFixed(2);
+      if (overrideReason !== undefined) update.overrideReason = overrideReason;
+      if (notes !== undefined) update.notes = notes;
+
+      if (Array.isArray(lotsInput)) {
+        for (const li of lotsInput) {
+          if (li.id && li.proposedPrice !== undefined) {
+            await db.execute(sql`
+              UPDATE daily_price_sheet_lots SET proposed_price = ${li.proposedPrice}
+              WHERE id = ${li.id} AND sheet_id = ${sheet.id}
+            `);
+          }
+        }
+      }
+
+      const updated = await storage.updateDailyPriceSheet(sheet.id, update);
+      const updatedLots = await storage.getDailyPriceSheetLots(sheet.id);
+      res.json({ ...updated, lots: updatedLots });
+    } catch (err) {
+      console.error("Patch price sheet error:", err);
+      res.status(500).json({ message: "Failed to update price sheet" });
+    }
+  });
+
+  app.post("/api/daily-price-sheets/:id/submit", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const sheet = await storage.getDailyPriceSheet(req.params.id);
+      if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      if (!["draft", "rejected"].includes(sheet.status)) return res.status(409).json({ message: "Only draft or rejected sheets can be submitted" });
+      if (!sheet.proposedPrice) return res.status(400).json({ message: "proposedPrice must be set before submitting" });
+
+      const lots = await storage.getDailyPriceSheetLots(sheet.id);
+      const pp = parseFloat(sheet.proposedPrice);
+      const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
+      if (overrideRequired && !sheet.overrideReason) {
+        return res.status(400).json({ message: "overrideReason is required when proposed price is below floor for any lot" });
+      }
+
+      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "submitted", overrideRequired });
+      await logAction(req.user.id, "SUBMIT", "DailyPriceSheet", `Submitted price sheet ${sheet.id} for product ${sheet.productId}`);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to submit price sheet" });
+    }
+  });
+
+  app.post("/api/daily-price-sheets/:id/confirm", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const sheet = await storage.getDailyPriceSheet(req.params.id);
+      if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be confirmed" });
+      if (!sheet.proposedPrice) return res.status(400).json({ message: "proposedPrice must be set before confirming" });
+
+      const lots = await storage.getDailyPriceSheetLots(sheet.id);
+      const pp = parseFloat(sheet.proposedPrice);
+      const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
+      if (overrideRequired && !sheet.overrideReason) {
+        return res.status(400).json({ message: "overrideReason is required when confirmed price is below floor" });
+      }
+
+      // NOTE: product.unitPrice is intentionally NOT overwritten — this sheet is pricing reference only
+      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "confirmed", confirmedBy: req.user.id });
+      await db.execute(sql`UPDATE products SET needs_pricing_review = false WHERE id = ${sheet.productId}`);
+      await logAction(req.user.id, "CONFIRM", "DailyPriceSheet", `Confirmed price sheet ${sheet.id} — product ${sheet.productId} @ ₹${sheet.proposedPrice}`);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to confirm price sheet" });
+    }
+  });
+
+  app.post("/api/daily-price-sheets/:id/reject", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const sheet = await storage.getDailyPriceSheet(req.params.id);
+      if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be rejected" });
+
+      const { rejectionNotes } = req.body;
+      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "rejected", rejectionNotes: rejectionNotes || null });
+      await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId}`);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to reject price sheet" });
     }
   });
 

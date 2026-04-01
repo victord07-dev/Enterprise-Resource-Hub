@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -320,6 +320,16 @@ export interface IStorage {
 
   // Invoice credited amount helper
   recomputeInvoiceCreditedAmount(invoiceId: string): Promise<SalesInvoice | undefined>;
+
+  // Daily Price Sheets
+  getDailyPriceSheets(filters?: { productId?: string; sheetDate?: string; status?: string }): Promise<DailyPriceSheet[]>;
+  getDailyPriceSheet(id: string): Promise<DailyPriceSheet | undefined>;
+  getDailyPriceSheetByProductDate(productId: string, sheetDate: string): Promise<DailyPriceSheet | undefined>;
+  createDailyPriceSheet(data: Omit<DailyPriceSheet, "id" | "createdAt">): Promise<DailyPriceSheet>;
+  updateDailyPriceSheet(id: string, data: Partial<Omit<DailyPriceSheet, "id" | "createdAt">>): Promise<DailyPriceSheet | undefined>;
+  getDailyPriceSheetLots(sheetId: string): Promise<DailyPriceSheetLot[]>;
+  upsertDailyPriceSheetLots(sheetId: string, lots: Omit<DailyPriceSheetLot, "id">[]): Promise<DailyPriceSheetLot[]>;
+  getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string; sheetDate: string; noConfirmedPrice?: boolean } | null>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1455,6 +1465,67 @@ export class DatabaseStorage implements IStorage {
     if (netOutstanding <= 0) newStatus = "paid";
     else if (totalPaid > 0 || totalCredited > 0) newStatus = "partial_paid";
     return this.updateSalesInvoice(invoiceId, { creditedAmount: String(totalCredited), status: newStatus });
+  }
+
+  // Daily Price Sheets
+  async getDailyPriceSheets(filters?: { productId?: string; sheetDate?: string; status?: string }): Promise<DailyPriceSheet[]> {
+    let result = await db.select().from(dailyPriceSheets).orderBy(desc(dailyPriceSheets.createdAt));
+    if (filters?.productId) result = result.filter(s => s.productId === filters.productId);
+    if (filters?.sheetDate) result = result.filter(s => s.sheetDate === filters.sheetDate);
+    if (filters?.status) result = result.filter(s => s.status === filters.status);
+    return result;
+  }
+
+  async getDailyPriceSheet(id: string): Promise<DailyPriceSheet | undefined> {
+    const [sheet] = await db.select().from(dailyPriceSheets).where(eq(dailyPriceSheets.id, id));
+    return sheet;
+  }
+
+  async getDailyPriceSheetByProductDate(productId: string, sheetDate: string): Promise<DailyPriceSheet | undefined> {
+    const [sheet] = await db.select().from(dailyPriceSheets)
+      .where(and(eq(dailyPriceSheets.productId, productId), eq(dailyPriceSheets.sheetDate, sheetDate)));
+    return sheet;
+  }
+
+  async createDailyPriceSheet(data: Omit<DailyPriceSheet, "id" | "createdAt">): Promise<DailyPriceSheet> {
+    const [sheet] = await db.insert(dailyPriceSheets).values(data as any).returning();
+    return sheet;
+  }
+
+  async updateDailyPriceSheet(id: string, data: Partial<Omit<DailyPriceSheet, "id" | "createdAt">>): Promise<DailyPriceSheet | undefined> {
+    const [sheet] = await db.update(dailyPriceSheets).set(data as any).where(eq(dailyPriceSheets.id, id)).returning();
+    return sheet;
+  }
+
+  async getDailyPriceSheetLots(sheetId: string): Promise<DailyPriceSheetLot[]> {
+    return db.select().from(dailyPriceSheetLots).where(eq(dailyPriceSheetLots.sheetId, sheetId));
+  }
+
+  async upsertDailyPriceSheetLots(sheetId: string, lots: Omit<DailyPriceSheetLot, "id">[]): Promise<DailyPriceSheetLot[]> {
+    await db.delete(dailyPriceSheetLots).where(eq(dailyPriceSheetLots.sheetId, sheetId));
+    if (lots.length === 0) return [];
+    return db.insert(dailyPriceSheetLots).values(lots as any).returning();
+  }
+
+  async getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string; sheetDate: string; noConfirmedPrice?: boolean } | null> {
+    const dateObj = new Date(date);
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(dateObj);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().slice(0, 10);
+      const [sheet] = await db.select().from(dailyPriceSheets)
+        .where(and(
+          eq(dailyPriceSheets.productId, productId),
+          eq(dailyPriceSheets.sheetDate, dateStr),
+          eq(dailyPriceSheets.status, "confirmed")
+        ));
+      if (sheet && sheet.proposedPrice) {
+        return { effectivePrice: sheet.proposedPrice, sheetDate: dateStr };
+      }
+    }
+    const [prod] = await db.select().from(products).where(eq(products.id, productId));
+    if (!prod) return null;
+    return { effectivePrice: prod.unitPrice, sheetDate: date, noConfirmedPrice: true };
   }
 
   // Dashboard

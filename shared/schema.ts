@@ -50,6 +50,7 @@ export const products = pgTable("products", {
   type: text("type").notNull().default("product"),
   hsnCode: text("hsn_code"),
   gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  needsPricingReview: boolean("needs_pricing_review").notNull().default(false),
 });
 
 export const warehouses = pgTable("warehouses", {
@@ -578,6 +579,43 @@ export const customerPayments = pgTable("customer_payments", {
   createdBy: varchar("created_by"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// Daily Price Sheets — one per product per day, flows through draft→submitted→confirmed/rejected
+export const dailyPriceSheets = pgTable("daily_price_sheets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productId: varchar("product_id").notNull(),
+  sheetDate: text("sheet_date").notNull(),
+  status: text("status").notNull().default("draft"),
+  proposedPrice: decimal("proposed_price", { precision: 12, scale: 2 }),
+  blendedInventoryPrice: decimal("blended_inventory_price", { precision: 12, scale: 2 }),
+  globalFloorPrice: decimal("global_floor_price", { precision: 12, scale: 2 }),
+  strictFloorPrice: decimal("strict_floor_price", { precision: 12, scale: 2 }),
+  overrideRequired: boolean("override_required").notNull().default(false),
+  overrideReason: text("override_reason"),
+  rejectionNotes: text("rejection_notes"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull(),
+  confirmedBy: varchar("confirmed_by"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const dailyPriceSheetLots = pgTable("daily_price_sheet_lots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sheetId: varchar("sheet_id").notNull(),
+  grnId: varchar("grn_id"),
+  grnNumber: text("grn_number"),
+  lotDate: timestamp("lot_date"),
+  remainingQty: decimal("remaining_qty", { precision: 12, scale: 3 }).notNull(),
+  landedCost: decimal("landed_cost", { precision: 12, scale: 2 }).notNull(),
+  floorPrice: decimal("floor_price", { precision: 12, scale: 2 }).notNull(),
+  proposedPrice: decimal("proposed_price", { precision: 12, scale: 2 }),
+});
+
+export const insertDailyPriceSheetSchema = createInsertSchema(dailyPriceSheets).omit({ id: true, createdAt: true });
+export const insertDailyPriceSheetLotSchema = createInsertSchema(dailyPriceSheetLots).omit({ id: true });
+export type DailyPriceSheet = typeof dailyPriceSheets.$inferSelect;
+export type DailyPriceSheetLot = typeof dailyPriceSheetLots.$inferSelect;
+export type InsertDailyPriceSheet = z.infer<typeof insertDailyPriceSheetSchema>;
 
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const loginSchema = z.object({ username: z.string().min(1), password: z.string().min(1) });

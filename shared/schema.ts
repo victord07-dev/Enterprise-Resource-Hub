@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -675,7 +675,9 @@ export const attachments = pgTable("attachments", {
   isDeleted: boolean("is_deleted").notNull().default(false),
   deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (table) => ({
+  entityIdx: index("attachments_entity_idx").on(table.entityType, table.entityId),
+}));
 
 export const insertAttachmentSchema = createInsertSchema(attachments).omit({ id: true, createdAt: true, isDeleted: true, deletedAt: true });
 export type InsertAttachment = z.infer<typeof insertAttachmentSchema>;

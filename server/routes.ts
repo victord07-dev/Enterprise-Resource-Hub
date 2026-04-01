@@ -5127,6 +5127,25 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All fields are required" });
       }
 
+      // Validate file type and size (re-check at save time)
+      if (!["application/pdf", "image/jpeg", "image/png", "image/jpg"].includes(fileType)) {
+        return res.status(400).json({ message: "Only PDF, JPG, and PNG files are allowed" });
+      }
+      if (Number(fileSize) > MAX_FILE_SIZE) {
+        return res.status(400).json({ message: "File size must not exceed 10 MB" });
+      }
+
+      // Validate entity exists (prevent orphan records)
+      if (entityType === "grn") {
+        const grn = await storage.getGRN(entityId);
+        if (!grn) return res.status(404).json({ message: "GRN not found" });
+      } else if (entityType === "supplier_invoice") {
+        const inv = await storage.getSupplierInvoice(entityId);
+        if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else {
+        return res.status(400).json({ message: "Invalid entityType" });
+      }
+
       // Re-check duplicate (race condition safety)
       const existing = await storage.getAttachmentByHash(entityType, entityId, fileHash);
       if (existing) return res.status(409).json({ message: "This file has already been uploaded for this record" });

@@ -1,19 +1,17 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Paperclip, Upload, Trash2, Download, FileText, Image, X } from "lucide-react";
+import { Paperclip, Upload, Download, FileText, X } from "lucide-react";
+import { getUser } from "@/lib/auth";
 import type { Attachment } from "@shared/schema";
 
 interface AttachmentsPanelProps {
   entityType: "grn" | "supplier_invoice";
   entityId: string;
   module?: "inventory" | "accounts" | "sales";
-  currentUserId?: string;
-  currentUserRole?: string;
 }
 
 const DOC_TYPE_LABELS: Record<string, { label: string; variant: string }> = {
@@ -29,11 +27,12 @@ async function computeSHA256(file: File): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-export default function AttachmentsPanel({ entityType, entityId, module: mod = "inventory", currentUserId, currentUserRole }: AttachmentsPanelProps) {
+export default function AttachmentsPanel({ entityType, entityId, module: mod = "inventory" }: AttachmentsPanelProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [docType, setDocType] = useState<"challan" | "invoice" | "other">("other");
+  const currentUser = getUser();
 
   const { data: attachments, isLoading } = useQuery<Attachment[]>({
     queryKey: ["/api/attachments", entityType, entityId],
@@ -128,7 +127,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
   };
 
   const canDelete = (att: Attachment) =>
-    currentUserId === att.uploadedBy || currentUserRole === "admin";
+    !!currentUser && (currentUser.id === att.uploadedBy || currentUser.role === "admin");
 
   const isImage = (fileType: string) => fileType.startsWith("image/");
 

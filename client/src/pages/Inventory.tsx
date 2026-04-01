@@ -1499,8 +1499,8 @@ export default function Inventory() {
                               <td className="p-3 text-muted-foreground" data-testid={`text-grn-po-${grn.id}`}>{po?.poNumber || "—"}</td>
                               <td className="p-3 text-muted-foreground">{supplier?.name || "—"}</td>
                               <td className="p-3 text-muted-foreground" data-testid={`text-grn-challan-${grn.id}`}>
-                                {(grn as any).supplierChallanNumber ? (
-                                  <span className="font-medium text-foreground">{(grn as any).supplierChallanNumber}</span>
+                                {grn.supplierChallanNumber ? (
+                                  <span className="font-medium text-foreground">{grn.supplierChallanNumber}</span>
                                 ) : "—"}
                               </td>
                               <td className="p-3 text-muted-foreground">{wh?.name || "—"}</td>
@@ -1546,13 +1546,13 @@ export default function Inventory() {
                               <tr key={`${grn.id}-items`} className="border-b last:border-0">
                                 <td colSpan={11} className="p-0">
                                   <div className="bg-muted/30 px-6 py-3 ml-8 space-y-4">
-                                    {((grn as any).supplierChallanNumber || (grn as any).supplierChallanDate) && (
+                                    {(grn.supplierChallanNumber || grn.supplierChallanDate) && (
                                       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                                        {(grn as any).supplierChallanNumber && (
-                                          <span>Supplier Challan No.: <strong className="text-foreground">{(grn as any).supplierChallanNumber}</strong></span>
+                                        {grn.supplierChallanNumber && (
+                                          <span>Supplier Challan No.: <strong className="text-foreground">{grn.supplierChallanNumber}</strong></span>
                                         )}
-                                        {(grn as any).supplierChallanDate && (
-                                          <span>Challan Date: <strong className="text-foreground">{new Date((grn as any).supplierChallanDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</strong></span>
+                                        {grn.supplierChallanDate && (
+                                          <span>Challan Date: <strong className="text-foreground">{new Date(grn.supplierChallanDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</strong></span>
                                         )}
                                       </div>
                                     )}

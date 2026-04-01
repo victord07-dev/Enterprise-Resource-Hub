@@ -5881,6 +5881,9 @@ export async function registerRoutes(
       const blendedInventoryPrice = blendedLandedCost;
 
       const proposedPriceNum = proposedPrice != null ? parseFloat(proposedPrice) : null;
+      if (proposedPriceNum !== null && (isNaN(proposedPriceNum) || proposedPriceNum < 0)) {
+        return res.status(400).json({ message: "proposedPrice must be a non-negative number" });
+      }
       const overrideRequired  = proposedPriceNum != null
         ? lots.some(l => proposedPriceNum < l.floorPrice)
         : false;
@@ -5942,6 +5945,10 @@ export async function registerRoutes(
 
       const { proposedPrice, overrideReason, notes, lots: lotsInput } = req.body;
 
+      if (proposedPrice !== undefined) {
+        const pp = parseFloat(proposedPrice);
+        if (isNaN(pp) || pp < 0) return res.status(400).json({ message: "proposedPrice must be a non-negative number" });
+      }
       const update: Record<string, any> = { rejectionNotes: null };
       if (proposedPrice !== undefined) update.proposedPrice = parseFloat(proposedPrice).toFixed(2);
       if (overrideReason !== undefined) update.overrideReason = overrideReason;

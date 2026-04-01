@@ -2959,10 +2959,13 @@ export async function registerRoutes(
       }, 0);
       const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
 
+      const rawDate = req.body.supplierChallanDate;
       const body = {
         ...req.body,
         grnNumber,
         createdBy: req.user.id,
+        supplierChallanDate: rawDate && rawDate !== "" ? new Date(rawDate) : undefined,
+        supplierChallanNumber: req.body.supplierChallanNumber || undefined,
       };
 
       const parsed = insertGoodsReceiptNoteSchema.safeParse(body);
@@ -2983,7 +2986,14 @@ export async function registerRoutes(
       if (!grn) return res.status(404).json({ message: "GRN not found" });
       if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be updated" });
 
-      const updated = await storage.updateGRN(req.params.id, req.body);
+      const rawDate = req.body.supplierChallanDate;
+      const body = {
+        ...req.body,
+        supplierChallanDate: rawDate && rawDate !== "" ? new Date(rawDate) : undefined,
+        supplierChallanNumber: req.body.supplierChallanNumber || undefined,
+      };
+
+      const updated = await storage.updateGRN(req.params.id, body);
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update GRN" });
@@ -5094,7 +5104,18 @@ export async function registerRoutes(
   });
 
   // Primary single-step upload endpoint
-  app.post("/api/attachments", authenticateToken, upload.single("file"), async (req: any, res) => {
+  app.post("/api/attachments", authenticateToken, (req: any, res: any, next: any) => {
+    upload.single("file")(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) {
+        const msg = err.code === "LIMIT_FILE_SIZE" ? "File size must not exceed 10 MB" : err.message;
+        return res.status(400).json({ message: msg });
+      }
+      if (err instanceof Error) {
+        return res.status(400).json({ message: err.message });
+      }
+      next();
+    });
+  }, async (req: any, res) => {
     try {
       const file = req.file;
       if (!file) return res.status(400).json({ message: "No file provided" });

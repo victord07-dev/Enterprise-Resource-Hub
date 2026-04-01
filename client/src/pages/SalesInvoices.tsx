@@ -13,9 +13,10 @@ import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
 import {
-  FileText, Plus, Eye, IndianRupee, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, CreditCard, Building2, User, Search
+  FileText, Plus, IndianRupee, CheckCircle2, Clock, AlertCircle,
+  ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw
 } from "lucide-react";
 import type { SalesInvoice, SalesInvoiceItem, CustomerPayment, DeliveryChallan, Customer } from "@shared/schema";
 
@@ -34,6 +35,36 @@ type InvoiceWithExtras = SalesInvoice & {
   payments: CustomerPayment[];
   totalPaid: number;
   balance: number;
+};
+
+type SalesReturnItem = {
+  id: string;
+  productId: string | null;
+  description: string;
+  qtySold: string;
+  qtyAlreadyReturned: string;
+  qtyReturned: string;
+  unitPrice: string;
+  hsnCode: string | null;
+  gstRate: string;
+  taxableAmount: string;
+  cgst: string;
+  sgst: string;
+  igst: string;
+  taxAmount: string;
+  totalAmount: string;
+};
+
+type SalesReturn = {
+  id: string;
+  returnNumber: string;
+  invoiceId: string;
+  status: string;
+  returnType: string;
+  reason: string | null;
+  returnDate: string;
+  items: SalesReturnItem[];
+  creditNote?: { creditNoteNumber: string; grandTotal: string } | null;
 };
 
 // ─── Create from Challan Dialog ──────────────────────────────────────────────
@@ -282,6 +313,292 @@ function RecordPaymentDialog({
   );
 }
 
+// ─── Sales Return Dialog ──────────────────────────────────────────────────────
+function SalesReturnDialog({
+  invoice,
+  open,
+  onClose,
+}: {
+  invoice: InvoiceWithExtras;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [salesReturn, setSalesReturn] = useState<SalesReturn | null>(null);
+  const [returnType, setReturnType] = useState("customer_rejection");
+  const [reason, setReason] = useState("");
+  const [qtys, setQtys] = useState<Record<string, string>>({});
+  const [processed, setProcessed] = useState(false);
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      apiRequest("POST", `/api/sales-returns/create-from-invoice/${invoice.id}`, {}),
+    onSuccess: (sr: any) => {
+      setSalesReturn(sr);
+      const initQtys: Record<string, string> = {};
+      (sr.items ?? []).forEach((item: SalesReturnItem) => {
+        initQtys[item.id] = "0";
+      });
+      setQtys(initQtys);
+    },
+    onError: async (err: any) => {
+      let msg = "Failed to create return";
+      try { const b = await err.response?.json?.(); msg = b?.message ?? msg; } catch {}
+      toast({ title: "Error", description: msg, variant: "destructive" });
+    },
+  });
+
+  const processMut = useMutation({
+    mutationFn: async () => {
+      if (!salesReturn) throw new Error("No return to process");
+      await apiRequest("PATCH", `/api/sales-returns/${salesReturn.id}`, {
+        reason: reason || undefined,
+        returnType,
+        items: salesReturn.items.map((item) => ({
+          id: item.id,
+          qtyReturned: parseFloat(qtys[item.id] ?? "0"),
+        })),
+      });
+      return apiRequest("POST", `/api/sales-returns/${salesReturn.id}/process`, {});
+    },
+    onSuccess: (result: any) => {
+      setProcessed(true);
+      setSalesReturn((prev) => prev ? { ...prev, status: "processed", creditNote: result?.creditNote } : prev);
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices", invoice.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/credit-notes"] });
+      toast({
+        title: "Return Processed",
+        description: `Credit Note ${result?.creditNote?.creditNoteNumber ?? ""} issued`,
+      });
+    },
+    onError: async (err: any) => {
+      let msg = "Failed to process return";
+      try { const b = await err.response?.json?.(); msg = b?.message ?? msg; } catch {}
+      toast({ title: "Error", description: msg, variant: "destructive" });
+    },
+  });
+
+  function computePreview() {
+    if (!salesReturn) return { subtotal: 0, tax: 0, total: 0 };
+    const isInterState = invoice.isInterState;
+    let subtotal = 0, tax = 0;
+    for (const item of salesReturn.items) {
+      const qty = parseFloat(qtys[item.id] ?? "0");
+      if (qty <= 0) continue;
+      const taxable = qty * Number(item.unitPrice);
+      const itemTax = taxable * Number(item.gstRate) / 100;
+      subtotal += taxable;
+      tax += itemTax;
+    }
+    return { subtotal, tax, total: subtotal + tax, isInterState };
+  }
+
+  const preview = computePreview();
+
+  function handleClose() {
+    setSalesReturn(null);
+    setReturnType("customer_rejection");
+    setReason("");
+    setQtys({});
+    setProcessed(false);
+    onClose();
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <RotateCcw className="w-4 h-4" />
+            Sales Return — {invoice.invoiceNumber}
+          </DialogTitle>
+        </DialogHeader>
+
+        <ScrollArea className="flex-1 overflow-auto">
+          <div className="space-y-4 p-1 pr-3">
+            {!salesReturn && !createMut.isPending && (
+              <div className="rounded-lg bg-muted/40 p-4 text-center space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Create a return draft to begin selecting items and quantities.
+                </p>
+                <Button
+                  onClick={() => createMut.mutate()}
+                  data-testid="button-init-return"
+                >
+                  <RotateCcw className="w-4 h-4 mr-2" /> Initiate Return
+                </Button>
+              </div>
+            )}
+
+            {createMut.isPending && (
+              <div className="p-4 text-center text-sm text-muted-foreground">Creating return draft…</div>
+            )}
+
+            {salesReturn && (
+              <>
+                {/* Return details */}
+                {!processed && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label>Return Type *</Label>
+                      <Select value={returnType} onValueChange={setReturnType}>
+                        <SelectTrigger data-testid="select-return-type">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="customer_rejection">Customer Rejection</SelectItem>
+                          <SelectItem value="damage">Damage</SelectItem>
+                          <SelectItem value="excess">Excess / Over-delivery</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Reason (optional)</Label>
+                      <Input
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                        placeholder="Brief description…"
+                        data-testid="input-return-reason"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Processed credit note info */}
+                {processed && salesReturn.creditNote && (
+                  <div className="rounded-lg bg-green-50 border border-green-200 p-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-green-800">Return Processed</p>
+                      <p className="text-xs text-green-700">Credit Note: {salesReturn.creditNote.creditNoteNumber}</p>
+                    </div>
+                    <Badge className="bg-green-100 text-green-800 border-green-200">
+                      {fmt(salesReturn.creditNote.grandTotal)}
+                    </Badge>
+                  </div>
+                )}
+
+                {/* Items table */}
+                <div>
+                  <h3 className="text-sm font-semibold mb-2">Returnable Items</h3>
+                  <div className="rounded-lg border overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/50">
+                          <TableHead className="text-xs">Product</TableHead>
+                          <TableHead className="text-xs text-right">Sold</TableHead>
+                          <TableHead className="text-xs text-right">Already Returned</TableHead>
+                          <TableHead className="text-xs text-right">Returnable</TableHead>
+                          <TableHead className="text-xs text-right">Return Qty</TableHead>
+                          <TableHead className="text-xs text-right">Unit Price</TableHead>
+                          <TableHead className="text-xs text-right">GST%</TableHead>
+                          <TableHead className="text-xs text-right">Credit</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {salesReturn.items.map((item, idx) => {
+                          const maxQty = Number(item.qtySold) - Number(item.qtyAlreadyReturned);
+                          const qty = parseFloat(qtys[item.id] ?? "0");
+                          const credit = qty > 0
+                            ? (qty * Number(item.unitPrice)) * (1 + Number(item.gstRate) / 100)
+                            : 0;
+                          return (
+                            <TableRow key={item.id} data-testid={`row-return-item-${idx}`}>
+                              <TableCell className="text-sm font-medium">{item.description}</TableCell>
+                              <TableCell className="text-sm text-right">{Number(item.qtySold)}</TableCell>
+                              <TableCell className="text-sm text-right text-orange-600">{Number(item.qtyAlreadyReturned)}</TableCell>
+                              <TableCell className="text-sm text-right font-medium">{maxQty}</TableCell>
+                              <TableCell className="text-right">
+                                {processed ? (
+                                  <span className="text-sm font-medium">{Number(item.qtyReturned)}</span>
+                                ) : (
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    max={maxQty}
+                                    step={1}
+                                    value={qtys[item.id] ?? "0"}
+                                    onChange={(e) => setQtys((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                                    className="w-20 h-7 text-sm text-right"
+                                    disabled={maxQty <= 0}
+                                    data-testid={`input-return-qty-${idx}`}
+                                  />
+                                )}
+                              </TableCell>
+                              <TableCell className="text-sm text-right">{fmt(item.unitPrice)}</TableCell>
+                              <TableCell className="text-sm text-right">{Number(item.gstRate)}%</TableCell>
+                              <TableCell className="text-sm text-right font-medium text-blue-700">
+                                {credit > 0 ? fmt(credit) : "—"}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                {/* Summary footer */}
+                {!processed && (
+                  <Card className="bg-muted/30">
+                    <CardContent className="p-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Subtotal (Taxable)</span>
+                        <span>{fmt(preview.subtotal)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">GST Reversal</span>
+                        <span className="text-blue-700">−{fmt(preview.tax)}</span>
+                      </div>
+                      <Separator />
+                      <div className="flex justify-between font-bold text-base">
+                        <span>Total Credit Note Value</span>
+                        <span className="text-primary">{fmt(preview.total)}</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Attachments (after processing) */}
+                {processed && (
+                  <div>
+                    <h3 className="text-sm font-semibold mb-2">Attachments (Return Proof / Documents)</h3>
+                    <AttachmentsPanel
+                      entityType="sales_return"
+                      entityId={salesReturn.id}
+                      module="sales"
+                      allowedDocTypes={["return_proof", "customer_doc", "other"]}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </ScrollArea>
+
+        <DialogFooter className="border-t pt-3">
+          <Button variant="outline" onClick={handleClose} data-testid="button-cancel-return">
+            {processed ? "Close" : "Cancel"}
+          </Button>
+          {salesReturn && !processed && (
+            <Button
+              onClick={() => processMut.mutate()}
+              disabled={processMut.isPending || !Object.values(qtys).some((q) => parseFloat(q) > 0)}
+              data-testid="button-process-return"
+            >
+              {processMut.isPending ? (
+                <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Processing…</>
+              ) : (
+                <><RotateCcw className="w-4 h-4 mr-2" /> Process Return</>
+              )}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Invoice Detail Panel ────────────────────────────────────────────────────
 function InvoiceDetailPanel({
   invoiceId,
@@ -292,6 +609,7 @@ function InvoiceDetailPanel({
 }) {
   const { toast } = useToast();
   const [payOpen, setPayOpen] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
 
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
     queryKey: ["/api/sales-invoices", invoiceId],
@@ -299,6 +617,12 @@ function InvoiceDetailPanel({
       headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
     }).then((r) => r.json()),
     enabled: !!invoiceId,
+  });
+
+  // Fetch credit notes for this invoice
+  const { data: creditNotes = [] } = useQuery<any[]>({
+    queryKey: ["/api/credit-notes"],
+    select: (cns) => cns.filter((cn: any) => cn.invoiceId === invoiceId),
   });
 
   if (isLoading || !inv) return <div className="p-6 text-muted-foreground text-sm">Loading invoice…</div>;
@@ -310,8 +634,10 @@ function InvoiceDetailPanel({
   const totalIgst = Number(inv.totalIgst);
   const totalTax = Number(inv.totalTax);
   const grandTotal = Number(inv.grandTotal);
+  const creditedAmount = Number(inv.creditedAmount ?? 0);
   const isInterState = inv.isInterState;
   const isB2B = inv.customerType === "B2B";
+  const netBalance = Math.max(0, grandTotal - (inv.totalPaid ?? 0) - creditedAmount);
 
   return (
     <div className="p-6 space-y-6">
@@ -435,15 +761,61 @@ function InvoiceDetailPanel({
         </CardContent>
       </Card>
 
+      {/* Credit Notes section */}
+      {creditNotes.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold mb-2">Credit Notes</h3>
+          <div className="rounded-lg border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50">
+                  <TableHead className="text-xs">Credit Note #</TableHead>
+                  <TableHead className="text-xs text-right">Subtotal</TableHead>
+                  <TableHead className="text-xs text-right">GST</TableHead>
+                  <TableHead className="text-xs text-right">Total Credit</TableHead>
+                  <TableHead className="text-xs">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {creditNotes.map((cn: any, idx: number) => (
+                  <TableRow key={cn.id} data-testid={`row-credit-note-${idx}`}>
+                    <TableCell className="text-sm font-mono font-medium text-blue-700">{cn.creditNoteNumber}</TableCell>
+                    <TableCell className="text-sm text-right">{fmt(cn.subtotal)}</TableCell>
+                    <TableCell className="text-sm text-right">{fmt(cn.taxAmount)}</TableCell>
+                    <TableCell className="text-sm text-right font-semibold text-green-700">{fmt(cn.grandTotal)}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs capitalize">{cn.status}</Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {creditedAmount > 0 && (
+            <div className="mt-2 flex items-center justify-between rounded-lg bg-blue-50 border border-blue-100 p-3 text-sm">
+              <span className="text-muted-foreground">Total Credits Applied</span>
+              <span className="font-semibold text-blue-700">{fmt(creditedAmount)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Payment Tracking */}
       <div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-semibold">Payment History</h3>
-          {inv.status !== "paid" && (
-            <Button size="sm" variant="outline" onClick={() => setPayOpen(true)} data-testid="button-add-payment">
-              <CreditCard className="w-4 h-4 mr-1" /> Record Payment
-            </Button>
-          )}
+          <div className="flex gap-2">
+            {inv.status !== "paid" && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => setReturnOpen(true)} data-testid="button-create-return">
+                  <RotateCcw className="w-3 h-3 mr-1" /> Create Return
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setPayOpen(true)} data-testid="button-add-payment">
+                  <CreditCard className="w-4 h-4 mr-1" /> Record Payment
+                </Button>
+              </>
+            )}
+          </div>
         </div>
 
         {(inv.payments ?? []).length === 0 ? (
@@ -478,14 +850,23 @@ function InvoiceDetailPanel({
           <span className="text-muted-foreground">Total Paid</span>
           <span className="font-medium text-green-700">{fmt(inv.totalPaid)}</span>
         </div>
+        {creditedAmount > 0 && (
+          <div className="mt-1 flex items-center justify-between rounded-lg bg-muted/40 p-3 text-sm">
+            <span className="text-muted-foreground">Credits Applied</span>
+            <span className="font-medium text-blue-700">{fmt(creditedAmount)}</span>
+          </div>
+        )}
         <div className="mt-1 flex items-center justify-between rounded-lg bg-muted/40 p-3 text-sm">
           <span className="text-muted-foreground">Balance Due</span>
-          <span className={`font-semibold ${inv.balance > 0 ? "text-orange-600" : "text-green-600"}`}>{fmt(inv.balance)}</span>
+          <span className={`font-semibold ${netBalance > 0 ? "text-orange-600" : "text-green-600"}`}>{fmt(netBalance)}</span>
         </div>
       </div>
 
       {payOpen && (
         <RecordPaymentDialog invoice={inv} open={payOpen} onClose={() => { setPayOpen(false); }} />
+      )}
+      {returnOpen && (
+        <SalesReturnDialog invoice={inv} open={returnOpen} onClose={() => { setReturnOpen(false); }} />
       )}
     </div>
   );
@@ -580,6 +961,7 @@ export default function SalesInvoices() {
               {filtered.map((inv) => {
                 const customer = customers.find((c) => c.id === inv.customerId);
                 const isSelected = selectedId === inv.id;
+                const creditedAmount = Number((inv as any).creditedAmount ?? 0);
                 return (
                   <button
                     key={inv.id}
@@ -595,6 +977,11 @@ export default function SalesInvoices() {
                           <Badge variant="outline" className="text-xs">
                             {inv.customerType}
                           </Badge>
+                          {creditedAmount > 0 && (
+                            <Badge className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                              <RotateCcw className="w-2.5 h-2.5 mr-0.5" />CN
+                            </Badge>
+                          )}
                         </div>
                         <p className="text-sm text-muted-foreground mt-0.5 truncate">{customer?.name ?? "—"}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
@@ -625,7 +1012,7 @@ export default function SalesInvoices() {
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-muted-foreground">
             <FileText className="w-12 h-12 mb-3 opacity-20" />
             <p className="text-sm">Select an invoice to view details</p>
-            <p className="text-xs mt-1">including GST breakdown and payment history</p>
+            <p className="text-xs mt-1">including GST breakdown, payment history, and returns</p>
           </div>
         )}
       </div>

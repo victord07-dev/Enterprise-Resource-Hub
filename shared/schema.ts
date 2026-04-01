@@ -541,6 +541,7 @@ export const salesInvoices = pgTable("sales_invoices", {
   totalIgst: decimal("total_igst", { precision: 12, scale: 2 }).notNull().default("0"),
   totalTax: decimal("total_tax", { precision: 12, scale: 2 }).notNull(),
   grandTotal: decimal("grand_total", { precision: 12, scale: 2 }).notNull(),
+  creditedAmount: decimal("credited_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   status: text("status").notNull().default("pending"),
   dueDate: timestamp("due_date"),
   notes: text("notes"),
@@ -692,3 +693,68 @@ export type SupplierPayment = typeof supplierPayments.$inferSelect;
 export type SalesInvoice = typeof salesInvoices.$inferSelect;
 export type SalesInvoiceItem = typeof salesInvoiceItems.$inferSelect;
 export type CustomerPayment = typeof customerPayments.$inferSelect;
+
+// Sales Returns
+export const salesReturns = pgTable("sales_returns", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  returnNumber: text("return_number").notNull().unique(),
+  invoiceId: varchar("invoice_id").notNull(),
+  challanId: varchar("challan_id"),
+  soId: varchar("so_id"),
+  customerId: varchar("customer_id").notNull(),
+  warehouseId: varchar("warehouse_id"),
+  status: text("status").notNull().default("draft"),
+  returnType: text("return_type").notNull().default("customer_rejection"),
+  reason: text("reason"),
+  returnDate: timestamp("return_date").notNull().defaultNow(),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const salesReturnItems = pgTable("sales_return_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  salesReturnId: varchar("sales_return_id").notNull(),
+  productId: varchar("product_id"),
+  description: text("description").notNull(),
+  qtySold: decimal("qty_sold", { precision: 12, scale: 3 }).notNull(),
+  qtyAlreadyReturned: decimal("qty_already_returned", { precision: 12, scale: 3 }).notNull().default("0"),
+  qtyReturned: decimal("qty_returned", { precision: 12, scale: 3 }).notNull().default("0"),
+  unitPrice: decimal("unit_price", { precision: 12, scale: 2 }).notNull(),
+  hsnCode: text("hsn_code"),
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  taxableAmount: decimal("taxable_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  cgst: decimal("cgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  sgst: decimal("sgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  igst: decimal("igst", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+});
+
+export const creditNotes = pgTable("credit_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  creditNoteNumber: text("credit_note_number").notNull().unique(),
+  invoiceId: varchar("invoice_id").notNull(),
+  salesReturnId: varchar("sales_return_id").notNull(),
+  customerId: varchar("customer_id").notNull(),
+  isInterState: boolean("is_inter_state").notNull().default(false),
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
+  totalCgst: decimal("total_cgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalSgst: decimal("total_sgst", { precision: 12, scale: 2 }).notNull().default("0"),
+  totalIgst: decimal("total_igst", { precision: 12, scale: 2 }).notNull().default("0"),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull(),
+  grandTotal: decimal("grand_total", { precision: 12, scale: 2 }).notNull(),
+  status: text("status").notNull().default("issued"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSalesReturnSchema = createInsertSchema(salesReturns).omit({ id: true, createdAt: true });
+export const insertSalesReturnItemSchema = createInsertSchema(salesReturnItems).omit({ id: true });
+export const insertCreditNoteSchema = createInsertSchema(creditNotes).omit({ id: true, createdAt: true });
+
+export type SalesReturn = typeof salesReturns.$inferSelect;
+export type SalesReturnItem = typeof salesReturnItems.$inferSelect;
+export type CreditNote = typeof creditNotes.$inferSelect;
+export type InsertSalesReturn = z.infer<typeof insertSalesReturnSchema>;
+export type InsertSalesReturnItem = z.infer<typeof insertSalesReturnItemSchema>;
+export type InsertCreditNote = z.infer<typeof insertCreditNoteSchema>;

@@ -5132,6 +5132,9 @@ export async function registerRoutes(
       } else if (entityType === "supplier_invoice") {
         const inv = await storage.getSupplierInvoice(entityId);
         if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else if (entityType === "sales_return") {
+        const sr = await storage.getSalesReturn(entityId);
+        if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5198,6 +5201,9 @@ export async function registerRoutes(
       } else if (entityType === "supplier_invoice") {
         const inv = await storage.getSupplierInvoice(entityId);
         if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else if (entityType === "sales_return") {
+        const sr = await storage.getSalesReturn(entityId);
+        if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5239,6 +5245,9 @@ export async function registerRoutes(
       } else if (entityType === "supplier_invoice") {
         const inv = await storage.getSupplierInvoice(entityId);
         if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else if (entityType === "sales_return") {
+        const sr = await storage.getSalesReturn(entityId);
+        if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5306,6 +5315,301 @@ export async function registerRoutes(
     } catch (err: unknown) {
       console.error("Attachment delete error:", err);
       res.status(500).json({ message: "Failed to delete attachment" });
+    }
+  });
+
+  // ─── Sales Returns ─────────────────────────────────────────────────────────
+
+  // GET all sales returns
+  app.get("/api/sales-returns", authenticateToken, async (req: any, res) => {
+    try {
+      const returns = await storage.getSalesReturns();
+      res.json(returns);
+    } catch (err: unknown) {
+      res.status(500).json({ message: "Failed to fetch sales returns" });
+    }
+  });
+
+  // GET single sales return with items
+  app.get("/api/sales-returns/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const sr = await storage.getSalesReturn(req.params.id);
+      if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      const items = await storage.getSalesReturnItems(sr.id);
+      const cns = await storage.getCreditNotesByInvoice(sr.invoiceId);
+      const creditNote = cns.find((cn) => cn.salesReturnId === sr.id) ?? null;
+      res.json({ ...sr, items, creditNote });
+    } catch (err: unknown) {
+      res.status(500).json({ message: "Failed to fetch sales return" });
+    }
+  });
+
+  // POST create a sales return from an invoice (draft)
+  app.post("/api/sales-returns/create-from-invoice/:invoiceId", authenticateToken, async (req: any, res) => {
+    try {
+      const invoice = await storage.getSalesInvoice(req.params.invoiceId);
+      if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+      const invItems = await storage.getSalesInvoiceItems(req.params.invoiceId);
+      const productItems = invItems.filter((item) => item.productId != null);
+      if (productItems.length === 0) {
+        return res.status(400).json({ message: "No returnable product items found on this invoice" });
+      }
+
+      // Get all products to check type
+      const allProducts = await storage.getProducts();
+      const productMap = new Map(allProducts.map((p) => [p.id, p]));
+
+      // Filter out service products
+      const returnableItems = productItems.filter((item) => {
+        const prod = productMap.get(item.productId!);
+        return !prod || (prod as any).type !== "service";
+      });
+
+      if (returnableItems.length === 0) {
+        return res.status(400).json({ message: "All items are services and cannot be returned" });
+      }
+
+      // Generate return number
+      const existingReturns = await storage.getSalesReturns();
+      const now = new Date();
+      const year = now.getFullYear();
+      const maxNum = existingReturns
+        .filter((r) => r.returnNumber.startsWith(`RET-${year}-`))
+        .reduce((max, r) => {
+          const num = parseInt(r.returnNumber.split("-")[2] ?? "0");
+          return num > max ? num : max;
+        }, 0);
+      const returnNumber = `RET-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+
+      const sr = await storage.createSalesReturn({
+        returnNumber,
+        invoiceId: invoice.id,
+        challanId: invoice.challanId ?? null,
+        soId: invoice.soId ?? null,
+        customerId: invoice.customerId,
+        warehouseId: null,
+        status: "draft",
+        returnType: "customer_rejection",
+        reason: null,
+        returnDate: new Date(),
+        createdBy: req.user.id,
+      });
+
+      // Compute qtyAlreadyReturned per invoice item from prior processed returns
+      const priorReturns = await storage.getSalesReturnsByInvoice(invoice.id);
+      const processedReturns = priorReturns.filter((r) => r.status === "processed" && r.id !== sr.id);
+      const alreadyReturnedMap = new Map<string, number>();
+      for (const pr of processedReturns) {
+        const prItems = await storage.getSalesReturnItems(pr.id);
+        for (const pri of prItems) {
+          if (pri.productId) {
+            const prev = alreadyReturnedMap.get(pri.productId) ?? 0;
+            alreadyReturnedMap.set(pri.productId, prev + Number(pri.qtyReturned));
+          }
+        }
+      }
+
+      // Create return items
+      for (const item of returnableItems) {
+        const qtyAlreadyReturned = alreadyReturnedMap.get(item.productId!) ?? 0;
+        await storage.createSalesReturnItem({
+          salesReturnId: sr.id,
+          productId: item.productId ?? null,
+          description: item.description,
+          qtySold: item.qty,
+          qtyAlreadyReturned: String(qtyAlreadyReturned),
+          qtyReturned: "0",
+          unitPrice: item.unitPrice,
+          hsnCode: item.hsnCode ?? null,
+          gstRate: item.gstRate,
+          taxableAmount: "0",
+          cgst: "0",
+          sgst: "0",
+          igst: "0",
+          taxAmount: "0",
+          totalAmount: "0",
+        });
+      }
+
+      const items = await storage.getSalesReturnItems(sr.id);
+      await logAction(req.user.id, "CREATE", "SalesReturn", `Created sales return ${returnNumber} from invoice ${invoice.invoiceNumber}`);
+      res.status(201).json({ ...sr, items });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to create sales return";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  // PATCH update draft return (qty, reason, returnType, returnDate)
+  app.patch("/api/sales-returns/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const sr = await storage.getSalesReturn(req.params.id);
+      if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      if (sr.status !== "draft") return res.status(409).json({ message: "Only draft returns can be updated" });
+
+      const { reason, returnType, returnDate, items: itemUpdates } = req.body;
+      await storage.updateSalesReturn(sr.id, {
+        reason: reason ?? sr.reason,
+        returnType: returnType ?? sr.returnType,
+        returnDate: returnDate ? new Date(returnDate) : sr.returnDate,
+      });
+
+      if (Array.isArray(itemUpdates)) {
+        for (const iu of itemUpdates) {
+          if (iu.id && typeof iu.qtyReturned !== "undefined") {
+            await storage.updateSalesReturnItem(iu.id, { qtyReturned: String(iu.qtyReturned) });
+          }
+        }
+      }
+
+      const updated = await storage.getSalesReturn(sr.id);
+      const items = await storage.getSalesReturnItems(sr.id);
+      res.json({ ...updated, items });
+    } catch (err: unknown) {
+      res.status(500).json({ message: "Failed to update sales return" });
+    }
+  });
+
+  // POST process a sales return (atomic transaction)
+  app.post("/api/sales-returns/:id/process", authenticateToken, async (req: any, res) => {
+    try {
+      const sr = await storage.getSalesReturn(req.params.id);
+      if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      if (sr.status !== "draft") return res.status(409).json({ message: "This return has already been processed" });
+
+      const items = await storage.getSalesReturnItems(sr.id);
+      const invoice = await storage.getSalesInvoice(sr.invoiceId);
+      if (!invoice) return res.status(404).json({ message: "Associated invoice not found" });
+
+      // Validate qty bounds
+      for (const item of items) {
+        const qtyReturned = Number(item.qtyReturned);
+        const maxReturnable = Number(item.qtySold) - Number(item.qtyAlreadyReturned);
+        if (qtyReturned < 0) return res.status(400).json({ message: `Invalid return qty for item: ${item.description}` });
+        if (qtyReturned > maxReturnable) {
+          return res.status(400).json({ message: `Return qty (${qtyReturned}) exceeds remaining returnable qty (${maxReturnable}) for: ${item.description}` });
+        }
+      }
+      const returnItems = items.filter((i) => Number(i.qtyReturned) > 0);
+      if (returnItems.length === 0) {
+        return res.status(400).json({ message: "At least one item must have a return qty > 0" });
+      }
+
+      // Get product info for service/stock-tracked check
+      const allProducts = await storage.getProducts();
+      const productMap = new Map(allProducts.map((p) => [p.id, p]));
+
+      const isInterState = invoice.isInterState;
+
+      // Compute per-item GST and totals
+      let cnSubtotal = 0;
+      let cnTotalCgst = 0;
+      let cnTotalSgst = 0;
+      let cnTotalIgst = 0;
+      const computedItems: Array<{ item: typeof items[0]; taxableAmt: number; cgst: number; sgst: number; igst: number; tax: number; total: number }> = [];
+
+      for (const item of returnItems) {
+        const qtyReturned = Number(item.qtyReturned);
+        const unitPrice = Number(item.unitPrice);
+        const gstRate = Number(item.gstRate);
+        const taxableAmt = qtyReturned * unitPrice;
+        const totalTax = taxableAmt * gstRate / 100;
+        const cgst = isInterState ? 0 : totalTax / 2;
+        const sgst = isInterState ? 0 : totalTax / 2;
+        const igst = isInterState ? totalTax : 0;
+        const total = taxableAmt + totalTax;
+        cnSubtotal += taxableAmt;
+        cnTotalCgst += cgst;
+        cnTotalSgst += sgst;
+        cnTotalIgst += igst;
+        computedItems.push({ item, taxableAmt, cgst, sgst, igst, tax: totalTax, total });
+      }
+      const cnTaxAmount = cnTotalCgst + cnTotalSgst + cnTotalIgst;
+      const cnGrandTotal = cnSubtotal + cnTaxAmount;
+
+      // Atomic operations — all DB writes
+      // Step 1: Update return item computed fields
+      for (const ci of computedItems) {
+        await storage.updateSalesReturnItem(ci.item.id, {
+          taxableAmount: String(ci.taxableAmt.toFixed(2)),
+          cgst: String(ci.cgst.toFixed(2)),
+          sgst: String(ci.sgst.toFixed(2)),
+          igst: String(ci.igst.toFixed(2)),
+          taxAmount: String(ci.tax.toFixed(2)),
+          totalAmount: String(ci.total.toFixed(2)),
+        });
+      }
+
+      // Step 2: Stock ledger entries (RETURN_IN) for stock-tracked products only
+      for (const ci of computedItems) {
+        if (!ci.item.productId) continue;
+        const prod = productMap.get(ci.item.productId);
+        if (!prod) continue;
+        if ((prod as any).type === "service") continue;
+        const qtyReturned = Number(ci.item.qtyReturned);
+        await storage.createStockMovement({
+          productId: ci.item.productId,
+          warehouseId: sr.warehouseId ?? null,
+          movementType: "RETURN_IN",
+          quantity: qtyReturned,
+          referenceType: "SALES_RETURN",
+          referenceId: sr.id,
+          notes: `Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`,
+          createdBy: req.user.id,
+        } as any);
+      }
+
+      // Step 3: Create Credit Note
+      const creditNoteNumber = await storage.generateCreditNoteNumber();
+      const creditNote = await storage.createCreditNote({
+        creditNoteNumber,
+        invoiceId: sr.invoiceId,
+        salesReturnId: sr.id,
+        customerId: sr.customerId,
+        isInterState,
+        subtotal: String(cnSubtotal.toFixed(2)),
+        totalCgst: String(cnTotalCgst.toFixed(2)),
+        totalSgst: String(cnTotalSgst.toFixed(2)),
+        totalIgst: String(cnTotalIgst.toFixed(2)),
+        taxAmount: String(cnTaxAmount.toFixed(2)),
+        grandTotal: String(cnGrandTotal.toFixed(2)),
+        status: "issued",
+        createdBy: req.user.id,
+      });
+
+      // Step 4: Update invoice creditedAmount and recompute status
+      await storage.recomputeInvoiceCreditedAmount(sr.invoiceId);
+
+      // Step 5: Mark return processed
+      const processed = await storage.updateSalesReturn(sr.id, { status: "processed" });
+
+      await logAction(req.user.id, "UPDATE", "SalesReturn", `Processed sales return ${sr.returnNumber} — credit note ${creditNoteNumber} issued`);
+      res.json({ ...processed, creditNote });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to process sales return";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  // ─── Credit Notes ──────────────────────────────────────────────────────────
+
+  app.get("/api/credit-notes", authenticateToken, async (req: any, res) => {
+    try {
+      const cns = await storage.getCreditNotes();
+      res.json(cns);
+    } catch (err: unknown) {
+      res.status(500).json({ message: "Failed to fetch credit notes" });
+    }
+  });
+
+  app.get("/api/credit-notes/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const cn = await storage.getCreditNote(req.params.id);
+      if (!cn) return res.status(404).json({ message: "Credit note not found" });
+      res.json(cn);
+    } catch (err: unknown) {
+      res.status(500).json({ message: "Failed to fetch credit note" });
     }
   });
 

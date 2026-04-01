@@ -3,11 +3,11 @@ import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -298,6 +298,28 @@ export interface IStorage {
   createAttachment(data: Omit<Attachment, "id" | "createdAt" | "isDeleted" | "deletedAt">): Promise<Attachment>;
   getAttachmentByHash(entityType: string, entityId: string, fileHash: string): Promise<Attachment | undefined>;
   softDeleteAttachment(id: string): Promise<Attachment | undefined>;
+
+  // Sales Returns
+  getSalesReturns(): Promise<SalesReturn[]>;
+  getSalesReturn(id: string): Promise<SalesReturn | undefined>;
+  getSalesReturnsByInvoice(invoiceId: string): Promise<SalesReturn[]>;
+  createSalesReturn(data: Omit<SalesReturn, "id" | "createdAt">): Promise<SalesReturn>;
+  updateSalesReturn(id: string, data: Partial<Omit<SalesReturn, "id" | "createdAt">>): Promise<SalesReturn | undefined>;
+
+  // Sales Return Items
+  getSalesReturnItems(salesReturnId: string): Promise<SalesReturnItem[]>;
+  createSalesReturnItem(data: Omit<SalesReturnItem, "id">): Promise<SalesReturnItem>;
+  updateSalesReturnItem(id: string, data: Partial<Omit<SalesReturnItem, "id">>): Promise<SalesReturnItem | undefined>;
+
+  // Credit Notes
+  getCreditNotes(): Promise<CreditNote[]>;
+  getCreditNote(id: string): Promise<CreditNote | undefined>;
+  getCreditNotesByInvoice(invoiceId: string): Promise<CreditNote[]>;
+  createCreditNote(data: Omit<CreditNote, "id" | "createdAt">): Promise<CreditNote>;
+  generateCreditNoteNumber(): Promise<string>;
+
+  // Invoice credited amount helper
+  recomputeInvoiceCreditedAmount(invoiceId: string): Promise<SalesInvoice | undefined>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1344,6 +1366,95 @@ export class DatabaseStorage implements IStorage {
       .where(eq(attachments.id, id))
       .returning();
     return updated;
+  }
+
+  // Sales Returns
+  async getSalesReturns(): Promise<SalesReturn[]> {
+    return db.select().from(salesReturns).orderBy(desc(salesReturns.createdAt));
+  }
+
+  async getSalesReturn(id: string): Promise<SalesReturn | undefined> {
+    const [sr] = await db.select().from(salesReturns).where(eq(salesReturns.id, id));
+    return sr;
+  }
+
+  async getSalesReturnsByInvoice(invoiceId: string): Promise<SalesReturn[]> {
+    return db.select().from(salesReturns).where(eq(salesReturns.invoiceId, invoiceId)).orderBy(desc(salesReturns.createdAt));
+  }
+
+  async createSalesReturn(data: Omit<SalesReturn, "id" | "createdAt">): Promise<SalesReturn> {
+    const [sr] = await db.insert(salesReturns).values(data as any).returning();
+    return sr;
+  }
+
+  async updateSalesReturn(id: string, data: Partial<Omit<SalesReturn, "id" | "createdAt">>): Promise<SalesReturn | undefined> {
+    const [updated] = await db.update(salesReturns).set(data as any).where(eq(salesReturns.id, id)).returning();
+    return updated;
+  }
+
+  // Sales Return Items
+  async getSalesReturnItems(salesReturnId: string): Promise<SalesReturnItem[]> {
+    return db.select().from(salesReturnItems).where(eq(salesReturnItems.salesReturnId, salesReturnId));
+  }
+
+  async createSalesReturnItem(data: Omit<SalesReturnItem, "id">): Promise<SalesReturnItem> {
+    const [item] = await db.insert(salesReturnItems).values(data as any).returning();
+    return item;
+  }
+
+  async updateSalesReturnItem(id: string, data: Partial<Omit<SalesReturnItem, "id">>): Promise<SalesReturnItem | undefined> {
+    const [updated] = await db.update(salesReturnItems).set(data as any).where(eq(salesReturnItems.id, id)).returning();
+    return updated;
+  }
+
+  // Credit Notes
+  async getCreditNotes(): Promise<CreditNote[]> {
+    return db.select().from(creditNotes).orderBy(desc(creditNotes.createdAt));
+  }
+
+  async getCreditNote(id: string): Promise<CreditNote | undefined> {
+    const [cn] = await db.select().from(creditNotes).where(eq(creditNotes.id, id));
+    return cn;
+  }
+
+  async getCreditNotesByInvoice(invoiceId: string): Promise<CreditNote[]> {
+    return db.select().from(creditNotes).where(eq(creditNotes.invoiceId, invoiceId)).orderBy(desc(creditNotes.createdAt));
+  }
+
+  async createCreditNote(data: Omit<CreditNote, "id" | "createdAt">): Promise<CreditNote> {
+    const [cn] = await db.insert(creditNotes).values(data as any).returning();
+    return cn;
+  }
+
+  async generateCreditNoteNumber(): Promise<string> {
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+    const fyStart = month >= 3 ? year : year - 1;
+    const fyEnd = fyStart + 1;
+    const fyCode = `${String(fyStart).slice(-2)}${String(fyEnd).slice(-2)}`;
+    const prefix = `CN-${fyCode}-`;
+    const countResult = await db.execute(sql`
+      SELECT COUNT(*) as count FROM credit_notes
+      WHERE credit_note_number LIKE ${prefix + '%'}
+    `);
+    const count = Number((countResult.rows[0] as any)?.count ?? 0);
+    return `${prefix}${String(count + 1).padStart(4, "0")}`;
+  }
+
+  async recomputeInvoiceCreditedAmount(invoiceId: string): Promise<SalesInvoice | undefined> {
+    const inv = await this.getSalesInvoice(invoiceId);
+    if (!inv) return undefined;
+    const cns = await this.getCreditNotesByInvoice(invoiceId);
+    const totalCredited = cns.reduce((sum, cn) => sum + Number(cn.grandTotal), 0);
+    const payments = await this.getCustomerPayments(invoiceId);
+    const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const grandTotal = Number(inv.grandTotal);
+    const netOutstanding = grandTotal - totalPaid - totalCredited;
+    let newStatus = "pending";
+    if (netOutstanding <= 0) newStatus = "paid";
+    else if (totalPaid > 0 || totalCredited > 0) newStatus = "partial_paid";
+    return this.updateSalesInvoice(invoiceId, { creditedAmount: String(totalCredited), status: newStatus });
   }
 
   // Dashboard

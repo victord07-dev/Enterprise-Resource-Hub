@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
@@ -42,6 +42,7 @@ export default function Accounts() {
   const { data: salesInvoices, isLoading: invoicesLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customerPayments, isLoading: paymentsLoading } = useQuery<CustomerPayment[]>({ queryKey: ["/api/customer-payments"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  const { data: creditNotes = [] } = useQuery<any[]>({ queryKey: ["/api/credit-notes"] });
 
   // ── AP Queries ────────────────────────────────────────────────────────────
   const { data: supplierInvoices, isLoading: siLoading } = useQuery<SupplierInvoice[]>({ queryKey: ["/api/supplier-invoices"] });
@@ -62,16 +63,18 @@ export default function Accounts() {
   }, [customerPayments]);
 
   const arSummary = useMemo(() => {
-    let totalReceivable = 0, totalCollected = 0, totalOutstanding = 0;
+    let totalReceivable = 0, totalCollected = 0, totalOutstanding = 0, totalCredited = 0;
     (salesInvoices ?? []).forEach(inv => {
       const grand = Number(inv.grandTotal);
       const paid = paidPerSalesInvoice[inv.id] ?? 0;
+      const credited = Number((inv as any).creditedAmount ?? 0);
       totalReceivable += grand;
       totalCollected += Math.min(grand, paid);
-      const bal = Math.max(0, grand - paid);
+      totalCredited += credited;
+      const bal = Math.max(0, grand - paid - credited);
       if (bal > 0) totalOutstanding += bal;
     });
-    return { totalReceivable, totalCollected, totalOutstanding };
+    return { totalReceivable, totalCollected, totalOutstanding, totalCredited };
   }, [salesInvoices, paidPerSalesInvoice]);
 
   // ── AP Computed values ────────────────────────────────────────────────────
@@ -324,6 +327,7 @@ export default function Accounts() {
         <TabsList>
           <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>
           <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
+          <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>
           <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>
           <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>
         </TabsList>
@@ -364,11 +368,19 @@ export default function Accounts() {
                       salesInvoices.map((inv) => {
                         const customer = customerMap.get(inv.customerId);
                         const paid = paidPerSalesInvoice[inv.id] ?? 0;
-                        const balance = Math.max(0, Number(inv.grandTotal) - paid);
+                        const credited = Number((inv as any).creditedAmount ?? 0);
+                        const balance = Math.max(0, Number(inv.grandTotal) - paid - credited);
                         const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
                         return (
                           <tr key={inv.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors" data-testid={`row-invoice-${inv.id}`}>
-                            <td className="p-3 font-mono text-xs font-medium">{inv.invoiceNumber}</td>
+                            <td className="p-3 font-mono text-xs font-medium">
+                              <span>{inv.invoiceNumber}</span>
+                              {credited > 0 && (
+                                <span className="ml-1 inline-flex items-center px-1 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                                  <RotateCcw className="w-2.5 h-2.5 mr-0.5" />CN
+                                </span>
+                              )}
+                            </td>
                             <td className="p-3 font-medium">{customer?.name ?? "—"}</td>
                             <td className="p-3">
                               <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${inv.customerType === "B2B" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300" : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
@@ -460,6 +472,70 @@ export default function Accounts() {
                       <tr>
                         <td colSpan={6} className="p-8 text-center text-muted-foreground">No payments recorded.</td>
                       </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Credit Notes ───────────────────────────────────────────────── */}
+        <TabsContent value="credit-notes" className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">{creditNotes.length} credit note(s) issued from sales returns</p>
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Credit Note #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Invoice #</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Customer</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Subtotal</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">GST</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Total Credit</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {creditNotes.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="p-8 text-center text-muted-foreground">No credit notes issued yet.</td>
+                      </tr>
+                    ) : (
+                      creditNotes.map((cn: any) => {
+                        const customer = customerMap.get(cn.customerId);
+                        return (
+                          <tr key={cn.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors" data-testid={`row-credit-note-${cn.id}`}>
+                            <td className="p-3 font-mono text-xs font-medium text-blue-700 dark:text-blue-400">
+                              <span className="flex items-center gap-1">
+                                <RotateCcw className="w-3 h-3" />{cn.creditNoteNumber}
+                              </span>
+                            </td>
+                            <td className="p-3 font-mono text-xs text-muted-foreground">{cn.invoiceId ?? "—"}</td>
+                            <td className="p-3 font-medium">{customer?.name ?? "—"}</td>
+                            <td className="p-3">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${cn.isInterState ? "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-300" : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"}`}>
+                                {cn.isInterState ? "Inter-State" : "Intra-State"}
+                              </span>
+                            </td>
+                            <td className="p-3 text-muted-foreground">
+                              {cn.createdAt ? new Date(cn.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                            <td className="p-3 text-right">₹{Number(cn.subtotal).toLocaleString()}</td>
+                            <td className="p-3 text-right text-blue-600 dark:text-blue-400">₹{Number(cn.taxAmount).toLocaleString()}</td>
+                            <td className="p-3 text-right font-semibold text-green-700 dark:text-green-400">₹{Number(cn.grandTotal).toLocaleString()}</td>
+                            <td className="p-3">
+                              <StatusBadge status={cn.status} />
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

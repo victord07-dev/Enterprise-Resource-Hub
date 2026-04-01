@@ -44,3 +44,4 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
 - **Mapping:** Leaflet.js with OpenStreetMap.
 - **PDF Generation:** jsPDF.
 - **Object Storage:** Replit Object Storage.
+- **Sales Returns & Credit Notes:** Full sales return workflow with GST reversal, stock ledger RETURN_IN entries, and CN-YYFYEND-NNNN numbered credit notes. Returns linked to invoice with qty validation, return type, reason, and AttachmentsPanel. `creditedAmount` tracked on invoices; AR outstanding net of credits. Credit Notes tab in Accounts page.

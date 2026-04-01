@@ -5820,9 +5820,15 @@ export async function registerRoutes(
   // ─── Daily Pricing Engine ─────────────────────────────────────────────────
 
   // GET effective-prices-today: batch endpoint returns map of productId → effective price + margin data
+  // Includes ALL products (even those with no confirmed sheet) so the UI can show warnings for every product
   app.get("/api/daily-price-sheets/effective-prices-today", authenticateToken, async (req: any, res) => {
     try {
       const today = new Date().toISOString().slice(0, 10);
+      // Fetch all products of type 'product'
+      const allProducts = await db.execute(sql`
+        SELECT id, unit_price FROM products WHERE type = 'product'
+      `);
+      // Fetch confirmed sheets (7-day window) for FIFO pricing
       const result = await db.execute(sql`
         SELECT DISTINCT ON (dps.product_id)
           dps.product_id,
@@ -5840,13 +5846,26 @@ export async function registerRoutes(
       `);
       const priceMap: Record<string, {
         effectivePrice: string;
-        sheetDate: string;
+        sheetDate: string | null;
         noConfirmedPrice: boolean;
         hasConfirmedToday: boolean;
         blendedInventoryPrice: string | null;
         globalFloorPrice: string | null;
         strictFloorPrice: string | null;
       }> = {};
+      // Seed all products with noConfirmedPrice=true as baseline
+      for (const prod of allProducts.rows as any[]) {
+        priceMap[prod.id] = {
+          effectivePrice: prod.unit_price ?? "0",
+          sheetDate: null,
+          noConfirmedPrice: true,
+          hasConfirmedToday: false,
+          blendedInventoryPrice: null,
+          globalFloorPrice: null,
+          strictFloorPrice: null,
+        };
+      }
+      // Overlay confirmed sheet data where it exists
       for (const row of result.rows as any[]) {
         const sheetDateStr = typeof row.sheet_date === "string"
           ? row.sheet_date.slice(0, 10)

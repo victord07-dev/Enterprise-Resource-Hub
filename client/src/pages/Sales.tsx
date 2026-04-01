@@ -135,7 +135,7 @@ function calculateDiscount(subtotal: number, discount: DiscountState): number {
 
 type EffectivePriceEntry = {
   effectivePrice: string;
-  sheetDate: string;
+  sheetDate: string | null;
   noConfirmedPrice: boolean;
   hasConfirmedToday: boolean;
   blendedInventoryPrice: string | null;
@@ -166,7 +166,13 @@ function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry 
           </span>
         )}
       </div>
-      {!ep.hasConfirmedToday && (
+      {ep.noConfirmedPrice && (
+        <div className="flex items-center gap-1 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 px-1.5 py-0.5 rounded text-[10px]">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          No confirmed price sheet — using product list price
+        </div>
+      )}
+      {!ep.noConfirmedPrice && !ep.hasConfirmedToday && (
         <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded text-[10px]">
           <AlertTriangle className="w-3 h-3 shrink-0" />
           No confirmed price sheet for today — using last confirmed ({ep.sheetDate})
@@ -361,7 +367,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                 >
                   <BarChart3 className="w-3 h-3" />
                   {isOpen ? "Hide" : "Show"} Margin Simulation
-                  {!ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet today" />}
+                  {ep.noConfirmedPrice && <AlertTriangle className="w-3 h-3 text-red-500 ml-0.5" title="No confirmed price sheet exists" />}
+                  {!ep.noConfirmedPrice && !ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet for today" />}
                 </button>
                 {isOpen && <MarginSimPanel item={item} ep={ep} />}
               </div>

@@ -1279,12 +1279,15 @@ export default function Sales() {
                                           <th className="text-right py-1 font-medium">GST%</th>
                                           <th className="text-right py-1 font-medium">Tax (GST)</th>
                                           <th className="text-right py-1 font-medium">Item Total (incl. GST)</th>
-                                          {canSeePricing && <th className="text-right py-1 font-medium">Est. Margin</th>}
+                                          {canSeePricing && ["partial", "dispatched", "delivered", "installed", "completed"].includes(order.status) && (
+                                            <th className="text-right py-1 font-medium">Est. Margin</th>
+                                          )}
                                         </tr>
                                       </thead>
                                       <tbody>
                                         {expandedOrderItems.map((it) => {
-                                          const lotMargin = orderLotMarginsMap[order.id]?.find(m => m.itemId === it.id);
+                                          const showMarginCol = canSeePricing && ["partial", "dispatched", "delivered", "installed", "completed"].includes(order.status);
+                                          const lotMargin = showMarginCol ? orderLotMarginsMap[order.id]?.find(m => m.itemId === it.id) : undefined;
                                           return (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
@@ -1301,10 +1304,10 @@ export default function Sales() {
                                               {Number(it.taxAmount || 0) > 0 ? `₹${Number(it.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                                             </td>
                                             <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number(it.taxAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                            {canSeePricing && (
+                                            {showMarginCol && (
                                               <td className="py-1.5 text-right">
                                                 {lotMargin && lotMargin.estimatedMarginPct !== null ? (
-                                                  <span className={`font-medium ${lotMargin.estimatedMarginPct < 5 ? "text-red-600 dark:text-red-400" : lotMargin.estimatedMarginPct < 15 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`} title={`FIFO blended cost: ₹${lotMargin.blendedCost?.toLocaleString() ?? "—"}`}>
+                                                  <span className={`font-medium ${lotMargin.estimatedMarginPct < 5 ? "text-red-600 dark:text-red-400" : lotMargin.estimatedMarginPct < 15 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`} title={`FIFO cost @ dispatch: ₹${lotMargin.blendedCost?.toLocaleString() ?? "—"}`}>
                                                     {lotMargin.estimatedMarginPct.toFixed(1)}%
                                                   </span>
                                                 ) : it.itemType === "product" ? (

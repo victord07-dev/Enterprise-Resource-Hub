@@ -1005,22 +1005,34 @@ export async function registerRoutes(
     }
   });
 
-  // GET lot margin estimates for dispatched sales order line items
+  // GET dispatch-time FIFO lot margin estimates for sales order line items
   // Restricted to pricing roles — exposes cost/margin data
   app.get("/api/sales-orders/:id/lot-margins", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req, res) => {
     try {
       const orderId = req.params.id;
       const items = await storage.getSalesOrderItems(orderId);
 
-      // Determine effective dispatch date: latest dispatch_date across dispatched challans for this order
+      // Get dispatched challans for this order (must exist for margin to be meaningful)
       const challanRes = await db.execute(sql`
-        SELECT MAX(dispatch_date) AS last_dispatch
-        FROM delivery_challans
+        SELECT id, dispatch_date FROM delivery_challans
         WHERE order_id = ${orderId} AND status = 'dispatched' AND dispatch_date IS NOT NULL
+        ORDER BY dispatch_date ASC
       `);
-      const lastDispatch: Date = (challanRes.rows as any[])[0]?.last_dispatch
-        ? new Date((challanRes.rows as any[])[0].last_dispatch)
-        : new Date();
+      const dispatchedChallans = challanRes.rows as any[];
+
+      if (dispatchedChallans.length === 0) {
+        // No dispatched challans — margin is not computable at dispatch time
+        return res.json(items.map(it => ({
+          itemId: it.id,
+          productId: it.itemType === "product" ? it.productId : null,
+          blendedCost: null,
+          estimatedMarginPct: null,
+        })));
+      }
+
+      // Earliest dispatch date = the "as of" point for this order's FIFO state.
+      // All 'out' movements with created_at < dispatchDate are "prior" dispatches from other orders.
+      const firstDispatchDate = new Date(dispatchedChallans[0].dispatch_date);
 
       const result: any[] = [];
       for (const item of items) {
@@ -1030,37 +1042,92 @@ export async function registerRoutes(
         }
         let blendedCost: number | null = null;
         let estimatedMarginPct: number | null = null;
+
         try {
-          // Use GRN lots confirmed at or before dispatch date for dispatch-time cost estimation (FIFO-aware)
-          const lotsRes = await db.execute(sql`
+          // Step 1: GRN lots confirmed at or before dispatch date, FIFO ordered (oldest first)
+          const grnRes = await db.execute(sql`
             SELECT
-              gi.received_quantity AS qty,
-              CAST(gi.buying_price AS numeric) AS cost,
-              COALESCE(
-                CAST(g.delivery_cost AS numeric) / NULLIF(
-                  (SELECT SUM(i2.received_quantity) FROM goods_receipt_note_items i2 WHERE i2.grn_id = g.id AND i2.received_quantity > 0),
-                  0
-                ),
-                0
-              ) AS apportioned_delivery
-            FROM goods_receipt_notes g
-            JOIN goods_receipt_note_items gi ON gi.grn_id = g.id
+              gi.received_quantity::numeric                           AS qty,
+              gi.buying_price::numeric                               AS buying_price,
+              COALESCE(g.delivery_cost::numeric, 0)                  AS delivery_cost,
+              GREATEST(
+                (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
+                 FROM goods_receipt_note_items i2 WHERE i2.grn_id = g.id),
+                1
+              )                                                      AS total_grn_qty
+            FROM goods_receipt_note_items gi
+            JOIN goods_receipt_notes g ON g.id = gi.grn_id
             WHERE gi.product_id = ${item.productId}
               AND g.status = 'confirmed'
-              AND g.received_date <= ${lastDispatch.toISOString()}
-            ORDER BY g.received_date ASC
+              AND g.received_date <= ${firstDispatchDate.toISOString()}
+            ORDER BY g.received_date ASC, g.id ASC
           `);
 
-          const lotList = (lotsRes.rows as any[]).map(l => ({
-            qty: Number(l.qty),
-            landedCost: Number(l.cost) + Number(l.apportioned_delivery || 0),
-          })).filter(l => l.qty > 0 && l.landedCost > 0);
+          // Step 2: Prior net out movements = stock dispatched BEFORE this order's first dispatch.
+          // Using created_at < firstDispatchDate excludes this order's own challan movements.
+          const priorRes = await db.execute(sql`
+            SELECT
+              COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
+              COALESCE(SUM(CASE
+                WHEN movement_type = 'RETURN_IN' THEN quantity
+                WHEN movement_type = 'in' AND reference_type = 'SALES_RETURN' THEN quantity
+                ELSE 0
+              END), 0)::numeric AS total_return
+            FROM stock_movements
+            WHERE product_id = ${item.productId}
+              AND created_at < ${firstDispatchDate.toISOString()}
+          `);
+          const priorNet = Math.max(
+            0,
+            Number((priorRes.rows[0] as any)?.total_out ?? 0) -
+            Number((priorRes.rows[0] as any)?.total_return ?? 0)
+          );
 
-          const totalQty = lotList.reduce((s, l) => s + l.qty, 0);
-          if (totalQty > 0) {
-            blendedCost = parseFloat(
-              (lotList.reduce((s, l) => s + l.landedCost * l.qty, 0) / totalQty).toFixed(2)
-            );
+          // Step 3: FIFO depletion — consume prior out from earliest GRN lots
+          let toDeplete = priorNet;
+          const availableLots: Array<{ landedCost: number; qty: number }> = [];
+          for (const row of grnRes.rows as any[]) {
+            const receivedQty = Number(row.qty);
+            const landedCost = Number(row.buying_price) + Number(row.delivery_cost) / Number(row.total_grn_qty);
+            let remaining: number;
+            if (toDeplete >= receivedQty) {
+              toDeplete -= receivedQty;
+              remaining = 0;
+            } else {
+              remaining = receivedQty - toDeplete;
+              toDeplete = 0;
+            }
+            if (remaining > 0 && landedCost > 0) {
+              availableLots.push({ landedCost, qty: remaining });
+            }
+          }
+
+          // Step 4: Consume this order's quantity from available lots in FIFO order
+          let qtyToConsume = item.quantity;
+          let totalCostConsumed = 0;
+          let totalQtyConsumed = 0;
+          for (const lot of availableLots) {
+            if (qtyToConsume <= 0) break;
+            const qtyFromLot = Math.min(lot.qty, qtyToConsume);
+            totalCostConsumed += qtyFromLot * lot.landedCost;
+            totalQtyConsumed += qtyFromLot;
+            qtyToConsume -= qtyFromLot;
+          }
+          // Fallback for remaining qty not covered by FIFO lots (negative stock / data gaps):
+          // use blended average of all available lots at dispatch time
+          if (qtyToConsume > 0 && availableLots.length > 0) {
+            const allLotTotalQty = availableLots.reduce((s, l) => s + l.qty, 0);
+            const allLotBlended = allLotTotalQty > 0
+              ? availableLots.reduce((s, l) => s + l.landedCost * l.qty, 0) / allLotTotalQty
+              : 0;
+            if (allLotBlended > 0) {
+              totalCostConsumed += qtyToConsume * allLotBlended;
+              totalQtyConsumed += qtyToConsume;
+            }
+          }
+
+          if (totalQtyConsumed > 0) {
+            blendedCost = parseFloat((totalCostConsumed / totalQtyConsumed).toFixed(2));
             const unitPrice = Number(item.unitPrice);
             if (unitPrice > 0) {
               estimatedMarginPct = parseFloat(((unitPrice - blendedCost) / unitPrice * 100).toFixed(2));

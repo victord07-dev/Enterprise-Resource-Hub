@@ -597,7 +597,7 @@ export const dailyPriceSheets = pgTable("daily_price_sheets", {
   createdBy: varchar("created_by").notNull(),
   confirmedBy: varchar("confirmed_by"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [uniqueIndex("daily_price_sheets_product_date_uniq").on(t.productId, t.sheetDate)]);
 
 export const dailyPriceSheetLots = pgTable("daily_price_sheet_lots", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

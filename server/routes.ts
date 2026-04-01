@@ -5113,7 +5113,7 @@ export async function registerRoutes(
       const objectPath = objectStorage.normalizeObjectEntityPath(uploadURL);
 
       res.json({ uploadURL, objectPath, documentType: documentType || "other", module: mod || "inventory" });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Attachment request-upload error:", err);
       res.status(500).json({ message: "Failed to generate upload URL" });
     }
@@ -5164,9 +5164,25 @@ export async function registerRoutes(
       });
 
       res.status(201).json(attachment);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Attachment confirm error:", err);
       res.status(500).json({ message: "Failed to save attachment" });
+    }
+  });
+
+  app.get("/api/attachments/file/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [found] = await db.select().from(attachmentsTable).where(eq(attachmentsTable.id, id));
+      if (!found || found.isDeleted) return res.status(404).json({ message: "Attachment not found" });
+      const objectStorage = new ObjectStorageService();
+      const objectFile = await objectStorage.getObjectEntityFile(found.fileUrl);
+      res.setHeader("Content-Type", found.fileType);
+      res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(found.fileName)}"`);
+      await objectStorage.downloadObject(objectFile, res);
+    } catch (err: unknown) {
+      console.error("Attachment download error:", err);
+      res.status(500).json({ message: "Failed to serve attachment" });
     }
   });
 
@@ -5175,7 +5191,7 @@ export async function registerRoutes(
       const { entityType, entityId } = req.params;
       const items = await storage.getAttachments(entityType, entityId);
       res.json(items);
-    } catch (err: any) {
+    } catch (err: unknown) {
       res.status(500).json({ message: "Failed to fetch attachments" });
     }
   });
@@ -5190,7 +5206,7 @@ export async function registerRoutes(
       }
       await storage.softDeleteAttachment(id);
       res.json({ message: "Attachment deleted" });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Attachment delete error:", err);
       res.status(500).json({ message: "Failed to delete attachment" });
     }

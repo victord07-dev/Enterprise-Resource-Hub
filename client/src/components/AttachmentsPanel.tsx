@@ -1,11 +1,11 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, FileText, X } from "lucide-react";
-import { getUser } from "@/lib/auth";
+import { getUser, getToken } from "@/lib/auth";
 import type { Attachment } from "@shared/schema";
 
 interface AttachmentsPanelProps {
@@ -25,6 +25,55 @@ async function computeSHA256(file: File): Promise<string> {
   const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function AttachmentImage({ attachmentId, fileName }: { attachmentId: string; fileName: string }) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    const token = getToken();
+    fetch(`/api/attachments/file/${attachmentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(res => {
+        if (!res.ok) throw new Error("Failed to load");
+        return res.blob();
+      })
+      .then(blob => {
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => setError(true));
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [attachmentId]);
+
+  if (error || !blobUrl) {
+    return <FileText className="w-8 h-8 text-muted-foreground flex-shrink-0" />;
+  }
+  return (
+    <img
+      src={blobUrl}
+      alt={fileName}
+      className="w-10 h-10 object-cover rounded border flex-shrink-0"
+    />
+  );
+}
+
+async function downloadAttachment(attachmentId: string, fileName: string) {
+  const token = getToken();
+  const res = await fetch(`/api/attachments/file/${attachmentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to download");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function AttachmentsPanel({ entityType, entityId, module: mod = "inventory" }: AttachmentsPanelProps) {
@@ -75,7 +124,6 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
     try {
       const fileHash = await computeSHA256(file);
 
-      // Step 1: Request signed upload URL
       const reqRes = await apiRequest("POST", "/api/attachments/request-upload", {
         entityType,
         entityId,
@@ -92,7 +140,6 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
       }
       const { uploadURL, objectPath } = await reqRes.json();
 
-      // Step 2: Upload file directly to GCS
       const uploadRes = await fetch(uploadURL, {
         method: "PUT",
         headers: { "Content-Type": file.type },
@@ -100,7 +147,6 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
       });
       if (!uploadRes.ok) throw new Error("Failed to upload file to storage");
 
-      // Step 3: Confirm attachment record
       const confirmRes = await apiRequest("POST", "/api/attachments/confirm", {
         entityType,
         entityId,
@@ -119,8 +165,9 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
 
       queryClient.invalidateQueries({ queryKey: ["/api/attachments", entityType, entityId] });
       toast({ title: "File attached", description: file.name });
-    } catch (err: any) {
-      toast({ title: "Upload failed", description: err.message || "Unknown error", variant: "destructive" });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      toast({ title: "Upload failed", description: message, variant: "destructive" });
     } finally {
       setUploading(false);
     }
@@ -141,7 +188,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
         <div className="flex items-center gap-2">
           <select
             value={docType}
-            onChange={e => setDocType(e.target.value as any)}
+            onChange={e => setDocType(e.target.value as "challan" | "invoice" | "other")}
             className="text-xs border rounded px-2 py-1 bg-background text-foreground h-7"
             data-testid="select-attachment-doc-type"
           >
@@ -180,18 +227,9 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
             return (
               <div key={att.id} className="flex items-center gap-2 p-2 rounded-md border bg-background" data-testid={`row-attachment-${att.id}`}>
                 {isImage(att.fileType) ? (
-                  <a href={`/objects/${att.fileUrl.replace(/^\/objects\//, "")}`} target="_blank" rel="noreferrer">
-                    <img
-                      src={`/objects/${att.fileUrl.replace(/^\/objects\//, "")}`}
-                      alt={att.fileName}
-                      className="w-10 h-10 object-cover rounded border flex-shrink-0"
-                      onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
-                    />
-                  </a>
+                  <AttachmentImage attachmentId={att.id} fileName={att.fileName} />
                 ) : (
-                  <a href={`/objects/${att.fileUrl.replace(/^\/objects\//, "")}`} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground flex-shrink-0">
-                    <FileText className="w-8 h-8" />
-                  </a>
+                  <FileText className="w-8 h-8 text-muted-foreground flex-shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -203,17 +241,21 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
                   </p>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <a
-                    href={`/objects/${att.fileUrl.replace(/^\/objects\//, "")}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    download={att.fileName}
-                    data-testid={`link-download-attachment-${att.id}`}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="w-7 h-7"
+                    onClick={async () => {
+                      try {
+                        await downloadAttachment(att.id, att.fileName);
+                      } catch {
+                        toast({ title: "Download failed", variant: "destructive" });
+                      }
+                    }}
+                    data-testid={`button-download-attachment-${att.id}`}
                   >
-                    <Button size="icon" variant="ghost" className="w-7 h-7">
-                      <Download className="w-3.5 h-3.5" />
-                    </Button>
-                  </a>
+                    <Download className="w-3.5 h-3.5" />
+                  </Button>
                   {canDelete(att) && (
                     <Button
                       size="icon"

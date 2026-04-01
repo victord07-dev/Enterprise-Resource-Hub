@@ -1740,12 +1740,9 @@ export async function registerRoutes(
       const updated = await storage.updateSupplierProduct(req.params.id, filtered);
       if (!updated) return res.status(404).json({ message: "Supplier product not found" });
       // Flag product for pricing review when supplier price changes
+      // Not wrapped in try/catch — failure here surfaces as HTTP 500 so state can't silently drift
       if (filtered.supplierPrice !== undefined) {
-        try {
-          await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${updated.productId}`);
-        } catch (e) {
-          console.error("Failed to set needsPricingReview:", e);
-        }
+        await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${updated.productId}`);
       }
       res.json(updated);
     } catch (error) {
@@ -5912,7 +5909,7 @@ export async function registerRoutes(
         remainingQty:  l.remainingQty.toFixed(3),
         landedCost:    l.landedCost.toFixed(2),
         floorPrice:    l.floorPrice.toFixed(2),
-        proposedPrice: proposedPriceNum != null ? proposedPriceNum.toFixed(2) : null,
+        proposedPrice: null,  // never pre-fill from sheet; user sets lot price explicitly via PATCH
       })));
 
       const sheetLots = await storage.getDailyPriceSheetLots(sheet.id);

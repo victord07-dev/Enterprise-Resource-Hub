@@ -3328,9 +3328,8 @@ export async function registerRoutes(
             : 0;
           const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
           const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
-          const prodR = await db.execute(sql`SELECT cost_price FROM products WHERE id = ${pid} LIMIT 1`);
-          const prodRow = prodR.rows[0] as any;
-          const blendedInventoryPrice = prodRow?.cost_price ? parseFloat(prodRow.cost_price) : blendedLandedCost;
+          // blendedInventoryPrice always comes from FIFO lot engine, never from product.costPrice (WAC)
+          const blendedInventoryPrice = blendedLandedCost;
           const sheet = await storage.createDailyPriceSheet({
             productId: pid,
             sheetDate: today,
@@ -5878,9 +5877,8 @@ export async function registerRoutes(
       const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
       const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
 
-      const prodR = await db.execute(sql`SELECT cost_price FROM products WHERE id = ${productId} LIMIT 1`);
-      const prodRow = prodR.rows[0] as any;
-      const blendedInventoryPrice = prodRow?.cost_price ? parseFloat(prodRow.cost_price) : blendedLandedCost;
+      // blendedInventoryPrice always comes from FIFO lot engine, never from product.costPrice (WAC)
+      const blendedInventoryPrice = blendedLandedCost;
 
       const proposedPriceNum = proposedPrice != null ? parseFloat(proposedPrice) : null;
       const overrideRequired  = proposedPriceNum != null

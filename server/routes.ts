@@ -730,6 +730,17 @@ export async function registerRoutes(
 
   app.patch("/api/products/:id", authenticateToken, async (req: any, res) => {
     try {
+      // Block unitPrice edits when a confirmed daily price sheet exists for today
+      if (req.body.unitPrice !== undefined) {
+        const today = new Date().toISOString().slice(0, 10);
+        const existingSheet = await storage.getDailyPriceSheetByProductDate(req.params.id, today);
+        if (existingSheet && existingSheet.status === "confirmed") {
+          return res.status(409).json({
+            message: "Cannot manually edit unitPrice while a confirmed daily price sheet exists for today. Use the pricing workflow instead.",
+            sheetId: existingSheet.id,
+          });
+        }
+      }
       const updated = await storage.updateProduct(req.params.id, req.body);
       if (!updated) return res.status(404).json({ message: "Product not found" });
       await logAction(req.user.id, "update", "products", `Updated product ${updated.name}`);
@@ -5998,12 +6009,20 @@ export async function registerRoutes(
       const lots = await storage.getDailyPriceSheetLots(sheet.id);
       const pp = parseFloat(sheet.proposedPrice);
       const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
-      if (overrideRequired && !sheet.overrideReason) {
-        return res.status(400).json({ message: "overrideReason is required when confirmed price is below floor" });
+      // Accept overrideReason from request body (highest priority) or previously stored value
+      const bodyOverrideReason = (req.body?.overrideReason ?? undefined) as string | undefined;
+      const effectiveOverrideReason = bodyOverrideReason || sheet.overrideReason;
+      if (overrideRequired && !effectiveOverrideReason) {
+        return res.status(400).json({ message: "overrideReason is required in request body when proposed price is below floor for any lot" });
       }
 
       // NOTE: product.unitPrice is intentionally NOT overwritten — this sheet is pricing reference only
-      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "confirmed", confirmedBy: req.user.id });
+      const confirmUpdate: Record<string, any> = { status: "confirmed", confirmedBy: req.user.id };
+      if (bodyOverrideReason) {
+        confirmUpdate.overrideReason = bodyOverrideReason;
+        confirmUpdate.overrideRequired = true;
+      }
+      const updated = await storage.updateDailyPriceSheet(sheet.id, confirmUpdate);
       await db.execute(sql`UPDATE products SET needs_pricing_review = false WHERE id = ${sheet.productId}`);
       await logAction(req.user.id, "CONFIRM", "DailyPriceSheet", `Confirmed price sheet ${sheet.id} — product ${sheet.productId} @ ₹${sheet.proposedPrice}`);
       res.json(updated);
@@ -6018,7 +6037,7 @@ export async function registerRoutes(
       if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
       if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be rejected" });
 
-      const { rejectionNotes } = req.body;
+      const rejectionNotes = req.body?.rejectionNotes;
       // Return to draft with rejection notes — submitter must revise and resubmit
       const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "draft", rejectionNotes: rejectionNotes || null });
       await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId} — returned to draft`);

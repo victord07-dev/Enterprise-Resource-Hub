@@ -5071,14 +5071,8 @@ export async function registerRoutes(
         createdBy: req.user.id,
       });
 
-      // Recalculate invoice status
-      const allPmts = await storage.getCustomerPayments(invoiceId);
-      const totalPaid = allPmts.reduce((s, p) => s + Number(p.amount), 0);
-      const grandTotal = Number(inv.grandTotal);
-      let status = "pending";
-      if (totalPaid >= grandTotal) status = "paid";
-      else if (totalPaid > 0) status = "partial_paid";
-      await storage.updateSalesInvoice(invoiceId, { status } as any);
+      // Recompute invoice status accounting for both payments and credit notes
+      await storage.recomputeInvoiceCreditedAmount(invoiceId);
 
       await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${amount} for invoice ${inv.invoiceNumber}`);
       res.status(201).json(pmt);
@@ -5322,15 +5316,18 @@ export async function registerRoutes(
 
   // ─── Sales Returns ─────────────────────────────────────────────────────────
 
-  // GET all sales returns (with customer name)
+  // GET all sales returns (with customer name + invoice number)
   app.get("/api/sales-returns", authenticateToken, async (req: any, res) => {
     try {
       const returns = await storage.getSalesReturns();
       const allCustomers = await storage.getCustomers();
+      const allInvoices = await storage.getSalesInvoices();
       const customerLookup = new Map(allCustomers.map((c) => [c.id, c.name]));
+      const invoiceLookup = new Map(allInvoices.map((i) => [i.id, i.invoiceNumber]));
       const result = returns.map((sr) => ({
         ...sr,
         customerName: customerLookup.get(sr.customerId) ?? null,
+        invoiceNumber: invoiceLookup.get(sr.invoiceId) ?? null,
       }));
       res.json(result);
     } catch (err: unknown) {
@@ -5371,7 +5368,7 @@ export async function registerRoutes(
       // Filter out service products
       const returnableItems = productItems.filter((item) => {
         const prod = productMap.get(item.productId!);
-        return !prod || (prod as any).type !== "service";
+        return !prod || prod.type !== "service";
       });
 
       if (returnableItems.length === 0) {
@@ -5404,25 +5401,26 @@ export async function registerRoutes(
         createdBy: req.user.id,
       });
 
-      // Compute qtyAlreadyReturned per invoice item from prior processed returns
+      // Compute qtyAlreadyReturned per invoice LINE ITEM (not per productId) from prior processed returns
       const priorReturns = await storage.getSalesReturnsByInvoice(invoice.id);
       const processedReturns = priorReturns.filter((r) => r.status === "processed" && r.id !== sr.id);
-      const alreadyReturnedMap = new Map<string, number>();
+      const alreadyReturnedByInvoiceItem = new Map<string, number>();
       for (const pr of processedReturns) {
         const prItems = await storage.getSalesReturnItems(pr.id);
         for (const pri of prItems) {
-          if (pri.productId) {
-            const prev = alreadyReturnedMap.get(pri.productId) ?? 0;
-            alreadyReturnedMap.set(pri.productId, prev + Number(pri.qtyReturned));
+          if (pri.invoiceItemId) {
+            const prev = alreadyReturnedByInvoiceItem.get(pri.invoiceItemId) ?? 0;
+            alreadyReturnedByInvoiceItem.set(pri.invoiceItemId, prev + Number(pri.qtyReturned));
           }
         }
       }
 
-      // Create return items
+      // Create return items (one per invoice line, tracked by invoiceItemId)
       for (const item of returnableItems) {
-        const qtyAlreadyReturned = alreadyReturnedMap.get(item.productId!) ?? 0;
+        const qtyAlreadyReturned = alreadyReturnedByInvoiceItem.get(item.id) ?? 0;
         await storage.createSalesReturnItem({
           salesReturnId: sr.id,
+          invoiceItemId: item.id,
           productId: item.productId ?? null,
           description: item.description,
           qtySold: item.qty,
@@ -5571,52 +5569,45 @@ export async function registerRoutes(
             .where(eq(salesReturnItems.id, ci.item.id));
         }
 
-        // Step 2: Stock ledger RETURN_IN for stock-tracked products only
+        // Step 2: Stock ledger RETURN_IN for stock-tracked products only (raw SQL to avoid type coercion)
         for (const ci of computedItems) {
           if (!ci.isStockTracked || !ci.item.productId) continue;
-          await tx.insert(stockMovements).values({
-            productId: ci.item.productId,
-            warehouseId: sr.warehouseId ?? null,
-            movementType: "RETURN_IN",
-            quantity: Number(ci.item.qtyReturned),
-            referenceType: "SALES_RETURN",
-            referenceId: sr.id,
-            notes: `Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`,
-            createdBy: req.user.id,
-          });
+          const qty = Math.round(Number(ci.item.qtyReturned));
+          await tx.execute(sql`
+            INSERT INTO stock_movements (id, product_id, warehouse_id, movement_type, quantity, reference_type, reference_id, notes, created_by, created_at)
+            VALUES (gen_random_uuid(), ${ci.item.productId}, ${sr.warehouseId ?? null}, ${"RETURN_IN"}, ${qty},
+                    ${"SALES_RETURN"}, ${sr.id}, ${`Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`}, ${req.user.id}, now())
+          `);
         }
 
-        // Step 3: Create Credit Note
-        const [cn] = await tx.insert(creditNotes).values({
-          creditNoteNumber,
-          invoiceId: sr.invoiceId,
-          salesReturnId: sr.id,
-          customerId: sr.customerId,
-          isInterState,
-          subtotal: cnSubtotal.toFixed(2),
-          totalCgst: cnTotalCgst.toFixed(2),
-          totalSgst: cnTotalSgst.toFixed(2),
-          totalIgst: cnTotalIgst.toFixed(2),
-          taxAmount: cnTaxAmount.toFixed(2),
-          grandTotal: cnGrandTotal.toFixed(2),
-          status: "issued",
-          createdBy: req.user.id,
-        } as any).returning();
-        creditNote = cn;
+        // Step 3: Create Credit Note (raw SQL to avoid decimal type coercion issues)
+        const cnResult = await tx.execute(sql`
+          INSERT INTO credit_notes (id, credit_note_number, invoice_id, sales_return_id, customer_id, is_inter_state,
+            subtotal, total_cgst, total_sgst, total_igst, tax_amount, grand_total, status, created_by, created_at)
+          VALUES (gen_random_uuid(), ${creditNoteNumber}, ${sr.invoiceId}, ${sr.id}, ${sr.customerId}, ${isInterState},
+                  ${cnSubtotal.toFixed(2)}, ${cnTotalCgst.toFixed(2)}, ${cnTotalSgst.toFixed(2)}, ${cnTotalIgst.toFixed(2)},
+                  ${cnTaxAmount.toFixed(2)}, ${cnGrandTotal.toFixed(2)}, ${"issued"}, ${req.user.id}, now())
+          RETURNING *
+        `);
+        creditNote = cnResult.rows[0];
 
-        // Step 4: Recompute invoice creditedAmount and status
-        // Sum all credit notes for this invoice (including the one just created)
-        const allCNs = await tx.select().from(creditNotes).where(eq(creditNotes.invoiceId, sr.invoiceId));
-        const totalCredited = allCNs.reduce((s, c) => s + Number(c.grandTotal), 0);
+        // Step 4: Recompute invoice creditedAmount and status (query all CNs within tx)
+        const allCNsResult = await tx.execute(sql`
+          SELECT grand_total FROM credit_notes WHERE invoice_id = ${sr.invoiceId}
+        `);
+        const totalCredited = (allCNsResult.rows as { grand_total: string }[])
+          .reduce((s, c) => s + Number(c.grand_total), 0);
         const totalPaidResult = await storage.getCustomerPayments(sr.invoiceId);
         const totalPaid = totalPaidResult.reduce((s, p) => s + Number(p.amount), 0);
         const grandTotal = Number(invoice.grandTotal);
         const netOutstanding = grandTotal - totalPaid - totalCredited;
         const newStatus = netOutstanding <= 0 ? "paid" : totalPaid + totalCredited > 0 ? "partial_paid" : "pending";
 
-        await tx.update(salesInvoices)
-          .set({ creditedAmount: totalCredited.toFixed(2), status: newStatus } as any)
-          .where(eq(salesInvoices.id, sr.invoiceId));
+        await tx.execute(sql`
+          UPDATE sales_invoices
+          SET credited_amount = ${totalCredited.toFixed(2)}, status = ${newStatus}
+          WHERE id = ${sr.invoiceId}
+        `);
 
         // Step 5: Mark return processed
         await tx.update(salesReturns)

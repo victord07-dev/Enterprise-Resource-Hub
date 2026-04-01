@@ -714,6 +714,7 @@ export const salesReturns = pgTable("sales_returns", {
 export const salesReturnItems = pgTable("sales_return_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   salesReturnId: varchar("sales_return_id").notNull(),
+  invoiceItemId: varchar("invoice_item_id"),
   productId: varchar("product_id"),
   description: text("description").notNull(),
   qtySold: decimal("qty_sold", { precision: 12, scale: 3 }).notNull(),

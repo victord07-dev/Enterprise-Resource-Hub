@@ -804,15 +804,13 @@ function InvoiceDetailPanel({
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-semibold">Payment History</h3>
           <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setReturnOpen(true)} data-testid="button-create-return">
+              <RotateCcw className="w-3 h-3 mr-1" /> Create Return
+            </Button>
             {inv.status !== "paid" && (
-              <>
-                <Button size="sm" variant="outline" onClick={() => setReturnOpen(true)} data-testid="button-create-return">
-                  <RotateCcw className="w-3 h-3 mr-1" /> Create Return
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setPayOpen(true)} data-testid="button-add-payment">
-                  <CreditCard className="w-4 h-4 mr-1" /> Record Payment
-                </Button>
-              </>
+              <Button size="sm" variant="outline" onClick={() => setPayOpen(true)} data-testid="button-add-payment">
+                <CreditCard className="w-4 h-4 mr-1" /> Record Payment
+              </Button>
             )}
           </div>
         </div>
@@ -871,14 +869,36 @@ function InvoiceDetailPanel({
   );
 }
 
+// ─── Sales Return status badge ────────────────────────────────────────────────
+function returnStatusBadge(status: string) {
+  if (status === "processed") return <Badge className="bg-green-100 text-green-800 border-green-200">Processed</Badge>;
+  if (status === "draft") return <Badge className="bg-gray-100 text-gray-700 border-gray-200">Draft</Badge>;
+  return <Badge className="bg-orange-100 text-orange-800 border-orange-200">{status}</Badge>;
+}
+
+type SalesReturnSummary = {
+  id: string;
+  returnNumber: string;
+  invoiceId: string;
+  invoiceNumber?: string;
+  customerName?: string;
+  returnType: string;
+  reason: string | null;
+  status: string;
+  grandTotal: string | null;
+  createdAt: string;
+};
+
 // ─── Main Page ───────────────────────────────────────────────────────────────
 export default function SalesInvoices() {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [activeView, setActiveView] = useState<"invoices" | "returns">("invoices");
 
   const { data: invoices = [], isLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customers = [] } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  const { data: allReturns = [], isLoading: returnsLoading } = useQuery<SalesReturnSummary[]>({ queryKey: ["/api/sales-returns"] });
 
   const filtered = invoices.filter((inv) => {
     const q = search.toLowerCase();
@@ -896,7 +916,77 @@ export default function SalesInvoices() {
   const totalPaid = invoices.filter((i) => i.status === "paid").reduce((s, i) => s + Number(i.grandTotal), 0);
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* Page-level tab bar */}
+      <div className="flex items-center gap-1 px-6 pt-4 pb-0 border-b bg-background">
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === "invoices" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+          onClick={() => setActiveView("invoices")}
+          data-testid="tab-invoices"
+        >
+          <FileText className="w-4 h-4 inline mr-1.5 -mt-0.5" />Invoices
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === "returns" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+          onClick={() => setActiveView("returns")}
+          data-testid="tab-returns"
+        >
+          <RotateCcw className="w-4 h-4 inline mr-1.5 -mt-0.5" />Sales Returns
+          {allReturns.length > 0 && (
+            <span className="ml-1.5 bg-muted text-muted-foreground text-xs rounded-full px-1.5 py-0.5">{allReturns.length}</span>
+          )}
+        </button>
+      </div>
+
+      {activeView === "returns" ? (
+        /* ── Sales Returns view ────────────────────────── */
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <div className="px-6 py-4 border-b bg-muted/30 flex items-center justify-between">
+            <h2 className="font-semibold text-sm">All Sales Returns &amp; Credit Notes</h2>
+            <span className="text-xs text-muted-foreground">{allReturns.length} return{allReturns.length !== 1 ? "s" : ""}</span>
+          </div>
+          <ScrollArea className="flex-1">
+            {returnsLoading ? (
+              <div className="p-8 text-center text-muted-foreground text-sm">Loading returns…</div>
+            ) : allReturns.length === 0 ? (
+              <div className="p-8 text-center text-muted-foreground text-sm">No sales returns recorded yet.</div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/50">
+                    <TableHead className="text-xs">Return #</TableHead>
+                    <TableHead className="text-xs">Invoice #</TableHead>
+                    <TableHead className="text-xs">Customer</TableHead>
+                    <TableHead className="text-xs">Type</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                    <TableHead className="text-xs text-right">Credit Value</TableHead>
+                    <TableHead className="text-xs">Date</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {allReturns.map((ret) => (
+                    <TableRow key={ret.id} data-testid={`row-return-${ret.id}`}>
+                      <TableCell className="font-mono text-xs font-semibold">{ret.returnNumber}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">{ret.invoiceNumber ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{ret.customerName ?? "—"}</TableCell>
+                      <TableCell className="text-xs capitalize">{ret.returnType?.replace(/_/g, " ")}</TableCell>
+                      <TableCell>{returnStatusBadge(ret.status)}</TableCell>
+                      <TableCell className="text-right font-medium text-sm">
+                        {ret.grandTotal ? fmt(ret.grandTotal) : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {ret.createdAt ? new Date(ret.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </ScrollArea>
+        </div>
+      ) : (
+      /* ── Invoices two-pane view ─────────────────────── */
+      <div className="flex flex-1 overflow-hidden">
       {/* List pane */}
       <div className="flex flex-col flex-1 min-w-0 border-r">
         {/* Header */}
@@ -1017,6 +1107,8 @@ export default function SalesInvoices() {
       </div>
 
       {createOpen && <CreateInvoiceDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
+      </div>
+      )}
     </div>
   );
 }

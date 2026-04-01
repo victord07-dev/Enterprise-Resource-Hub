@@ -1,0 +1,231 @@
+Perfect — now that #20 (attachments + GRN compliance) is in place, here is your UPDATED #21 (Sales Return) fully aligned with:
+
+✅ Attachments system
+✅ GST (HSN + split tax)
+✅ Inventory ledger
+✅ AR (invoice + payments)
+✅ Your existing architecture (no redesign)
+🔁 #21 — Sales Return (Final Production Version)
+
+(GST + Ledger + Credit Note + Attachments + AR Safe)
+
+What & Why
+
+Handle customer returns by correctly reversing:
+
+stock (via ledger)
+revenue (via credit note)
+GST (tax reversal)
+receivables (invoice adjustment)
+
+👉 This ensures audit-ready + GST-compliant + financially correct system
+
+Done looks like
+Sales Return created from Sales Invoice
+Supports:
+partial returns
+multiple returns per invoice
+On processing:
+stock increases via ledger (RETURN_IN)
+GST reversed per item
+Credit Note generated
+Invoice updates:
+outstandingAmount
+status
+Attachments supported:
+return photos
+customer documents
+Full audit trail (who, when, what)
+Out of scope
+refunds (bank integration)
+warranty/repair flows
+🧱 SCHEMA
+1. Sales Return
+SalesReturn {
+  id
+
+  invoiceId
+  challanId
+  soId
+
+  customerId
+
+  status: "draft" | "processed"
+
+  reason
+  returnDate
+
+  createdBy
+  createdAt
+}
+2. Sales Return Items
+SalesReturnItem {
+  id
+
+  salesReturnId
+  productId
+
+  qtySold
+  qtyAlreadyReturned
+  qtyReturned
+
+  unitPrice
+
+  hsnCode
+  gstRate
+
+  cgst
+  sgst
+  igst
+
+  taxAmount
+  totalAmount
+}
+3. Credit Note (GST Document)
+CreditNote {
+  id
+
+  creditNoteNumber   // CN-2026-0001
+
+  invoiceId
+  salesReturnId
+
+  customerId
+
+  invoiceDate
+  createdAt
+
+  subtotal
+  taxAmount
+  totalAmount
+
+  status: "issued" | "adjusted"
+}
+4. Attachments (REUSE FROM #20)
+attachments {
+  entity_type: "sales_return"
+  entity_id
+  module: "sales"
+
+  document_type: "return_proof" | "customer_doc"
+
+  file_url
+  file_name
+}
+🔌 BACKEND APIs
+POST /api/sales-returns/create-from-invoice/:invoiceId
+POST /api/sales-returns/:id/process
+GET  /api/sales-returns
+
+(GET/POST/DELETE attachments already exist from #20)
+⚙️ CORE LOGIC
+1. Create Sales Return
+fetch invoice
+copy items
+qtySold = invoice qty
+qtyAlreadyReturned = previous returns
+qtyReturned = 0 (editable)
+2. VALIDATION (CRITICAL)
+qtyReturned ≤ (qtySold − qtyAlreadyReturned)
+qtyReturned > 0
+3. PROCESS RETURN (ATOMIC TRANSACTION)
+🔹 Step 1 — Inventory (Ledger)
+addLedgerEntry({
+  type: "RETURN_IN",
+  quantityChange: +qtyReturned,
+  referenceType: "SALES_RETURN",
+  referenceId
+})
+
+👉 Stock increases
+
+🔹 Step 2 — GST Reversal
+itemAmount = qtyReturned × unitPrice
+tax = itemAmount × gstRate / 100
+Split:
+if (sameState) {
+  cgst = tax / 2
+  sgst = tax / 2
+} else {
+  igst = tax
+}
+
+👉 MUST match original invoice logic
+
+🔹 Step 3 — Create Credit Note
+subtotal = sum(itemAmount)
+taxAmount = sum(tax)
+total = subtotal + tax
+
+👉 This is your legal GST adjustment document
+
+🔹 Step 4 — Update Invoice (AR SAFE LOGIC)
+Case A — Not fully paid
+invoice.outstandingAmount -= total
+Case B — Already paid
+overpaid = paidAmount - newInvoiceTotal
+
+👉 Handle as:
+
+customer_credit_balance
+🔹 Step 5 — Update Invoice Status
+no balance → adjusted
+partial → partial
+🔁 PARTIAL RETURN SUPPORT
+Sold: 100
+Return 1: 20
+Return 2: 30
+Remaining: 50
+📊 SALES ORDER UPDATE
+
+Track:
+
+qtyReturned per item
+
+👉 Enables:
+
+net sales
+reporting
+margin calculation
+🖥️ UI REQUIREMENTS
+Sales Invoice Page
+Button: Create Return
+Sales Return Screen
+Product | Sold | Already Returned | Return Qty | Price | GST | Total
+Summary Section
+Subtotal
+GST Reversal
+Total Credit
+Attachments Panel
+upload:
+return photos
+damaged goods proof
+🔁 FINAL FLOW
+Invoice
+   ↓
+Create Sales Return
+   ↓
+Validate
+   ↓
+Process Return (Transaction)
+   ↓
+Stock Added Back (Ledger)
+   ↓
+Credit Note Generated
+   ↓
+Invoice Updated
+⚠️ KEY RULES
+❌ Never edit invoice directly
+✅ Always create credit note
+✅ Always use ledger
+✅ GST must match original invoice
+✅ Attachments optional but supported
+🧠 EDGE CASES (IMPORTANT)
+1. Multiple returns per invoice ✔
+2. Return after full payment ✔
+3. Mixed GST items ✔
+4. Partial line returns ✔
+5. Attachment support ✔
+💬 ONE-LINE SUMMARY
+
+Sales Return = reverse stock + reverse GST + issue credit note + adjust receivable

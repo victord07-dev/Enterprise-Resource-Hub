@@ -1,0 +1,202 @@
+This is a very strong plan from Replit AI — honestly close to what a real ERP team would implement.
+
+👉 I’ll give you a senior-level review with:
+
+✅ what is perfect
+⚠️ what must be corrected
+🔥 what to add (critical for production)
+✅ FINAL VERDICT
+
+✔ Structure is correct
+✔ Flow is correct
+✔ GST handling is correct
+✔ Ledger usage is correct
+✔ AR integration is mostly correct
+
+👉 You can proceed — but apply the fixes below
+
+🧠 WHAT IS EXCELLENT (KEEP AS-IS)
+🔹 1. creditedAmount approach ✔
+creditedAmount (on invoice)
+
+👉 This is VERY smart
+
+Why:
+
+keeps payments untouched ✔
+clean AR logic ✔
+avoids recalculation bugs ✔
+🔹 2. Atomic transaction ✔
+process → ledger → credit note → invoice update
+
+👉 This is mandatory and correctly planned
+
+🔹 3. GST split logic ✔
+CGST/SGST vs IGST ✔
+copied from original invoice ✔
+
+👉 This is exactly how GST compliance works
+
+🔹 4. Partial returns ✔
+multiple returns per invoice ✔
+qty tracking ✔
+🔹 5. Attachments integration ✔
+entity_type = sales_return
+
+👉 Perfect reuse of #20
+
+⚠️ CRITICAL FIXES (DON’T SKIP)
+🔴 1. MOVEMENT TYPE IS WRONG
+
+You wrote:
+
+movementType = "in"
+
+👉 ❌ This is too generic
+
+✅ Fix:
+movementType = "RETURN_IN"
+
+👉 Why:
+
+distinguishes from GRN
+audit clarity
+reporting accuracy
+🔴 2. SERVICE ITEMS MUST BE BLOCKED
+
+You wrote:
+
+Return of service line items — out of scope
+
+👉 Good — but MUST enforce in backend
+
+✅ Add validation:
+if (product.type === "service") {
+  throw Error("Service items cannot be returned")
+}
+🔴 3. INVENTORY VALIDATION MISSING
+
+Before adding stock:
+
+👉 Ensure product is inventory-tracked
+
+✅ Add:
+if (!product.isStockTracked) skip ledger
+🔴 4. INVOICE STATUS LOGIC IS INCOMPLETE
+
+You wrote:
+
+if outstanding = 0 → adjusted
+❗ Problem:
+
+You are mixing:
+
+payment status
+credit status
+✅ Correct logic:
+netOutstanding = totalAmount - paidAmount - creditedAmount
+Then:
+if netOutstanding == 0 → settled
+if paid > 0 → partial_paid
+if credited > 0 → partially_adjusted
+
+👉 Or keep simpler:
+
+status = pending / partial_paid / paid
++ show creditedAmount separately
+🔴 5. CREDIT NOTE NUMBERING (IMPORTANT)
+
+You wrote:
+
+CN-YYYY-NNNN
+
+👉 Good — but define clearly:
+
+✅ Add:
+CN-2026-0001 (financial year based)
+
+👉 Must be:
+
+unique
+sequential
+per financial year
+🔴 6. LEDGER TRANSACTION MUST BE ATOMIC
+
+You said transaction — good
+
+👉 But ensure:
+
+Ledger + Credit Note + Invoice update = SAME TRANSACTION
+🔴 7. PREVENT DOUBLE PROCESSING
+
+You wrote:
+
+Returns 409 if already processed
+
+👉 Good — enforce at DB level too
+
+✅ Add:
+status !== "draft" → block
+🔴 8. ADD RETURN TYPE (IMPORTANT)
+Add field:
+returnType: "damage" | "excess" | "customer_rejection"
+
+👉 Helps:
+
+reporting
+analytics
+future workflows
+🔴 9. AUDIT LOG STRUCTURE
+
+You mentioned audit log — good
+
+Define it:
+AuditLog {
+  entityType: "sales_return"
+  entityId
+  action: "created" | "processed"
+  userId
+  timestamp
+}
+🔥 FINAL IMPROVED FLOW
+Invoice
+   ↓
+Create Return (draft)
+   ↓
+Validate qty
+   ↓
+Process (transaction)
+   ↓
+Ledger: RETURN_IN
+   ↓
+Credit Note created
+   ↓
+Invoice creditedAmount updated
+   ↓
+Status recalculated
+🧠 FINAL ARCHITECTURE IMPACT
+
+After this:
+
+Sales Flow:
+SO → Dispatch → Invoice → Payment
+
+Reverse Flow:
+Invoice → Sales Return → Credit Note → Adjustment
+
+👉 Now your ERP becomes:
+
+Financially closed loop system
+
+💬 FINAL ANSWER
+
+✔ Plan is strong — proceed
+✔ Fix:
+
+movementType = RETURN_IN
+service item block
+invoice status logic
+transaction enforcement
+🧠 ONE-LINE SUMMARY
+
+This task makes your ERP audit-safe and GST-compliant in reverse flow

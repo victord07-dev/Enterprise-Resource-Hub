@@ -1813,8 +1813,10 @@ export default function Inventory() {
                     <tr className="border-b bg-muted/30">
                       <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Stock</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Supplier Price</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Blended Cost</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Floor Price</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Global Floor</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Strict Floor</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Proposed Price</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Margin</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
@@ -1825,7 +1827,7 @@ export default function Inventory() {
                     {sheetsLoading ? (
                       Array.from({ length: 5 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 8 }).map((_, j) => (
+                          {Array.from({ length: 10 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
@@ -1835,6 +1837,8 @@ export default function Inventory() {
                       const totalStock = getProductTotalStock(product.id);
                       const blendedCost = sheet ? Number(sheet.blendedInventoryPrice) : null;
                       const globalFloor = sheet ? Number(sheet.globalFloorPrice) : null;
+                      const strictFloor = sheet?.strictFloorPrice ? Number(sheet.strictFloorPrice) : null;
+                      const supplierPrice = product.costPrice ? Number(product.costPrice) : null;
                       const proposed = sheet?.proposedPrice ? Number(sheet.proposedPrice) : null;
                       const margin = (blendedCost && proposed && proposed > 0)
                         ? ((proposed - blendedCost) / proposed * 100)
@@ -1883,11 +1887,19 @@ export default function Inventory() {
                             </span>
                             <span className="text-xs text-muted-foreground ml-1">{product.unit}</span>
                           </td>
+                          <td className="p-3 text-right text-sm text-muted-foreground">
+                            {supplierPrice !== null ? `₹${supplierPrice.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-xs">—</span>}
+                          </td>
                           <td className="p-3 text-right text-sm">
                             {blendedCost !== null ? `₹${blendedCost.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs">No sheet</span>}
                           </td>
                           <td className="p-3 text-right text-sm">
                             {globalFloor !== null ? `₹${globalFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs">—</span>}
+                          </td>
+                          <td className="p-3 text-right text-sm">
+                            {strictFloor !== null ? (
+                              <span className="text-red-600 dark:text-red-400">₹{strictFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            ) : <span className="text-muted-foreground text-xs">—</span>}
                           </td>
                           <td className="p-3 text-right font-semibold">
                             {proposed !== null ? `₹${proposed.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs font-normal">Not set</span>}
@@ -1926,7 +1938,7 @@ export default function Inventory() {
                     })}
                     {!sheetsLoading && (products ?? []).filter(p => p.type === "product").length === 0 && (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={10} className="p-8 text-center text-muted-foreground">
                           <Package className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
                           No products found
                         </td>

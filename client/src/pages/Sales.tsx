@@ -12,7 +12,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3 } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -133,14 +133,69 @@ function calculateDiscount(subtotal: number, discount: DiscountState): number {
   return 0;
 }
 
+type EffectivePriceEntry = {
+  effectivePrice: string;
+  sheetDate: string;
+  noConfirmedPrice: boolean;
+  hasConfirmedToday: boolean;
+  blendedInventoryPrice: string | null;
+  globalFloorPrice: string | null;
+  strictFloorPrice: string | null;
+};
+
+function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry }) {
+  const price = item.unitPrice;
+  const blended = ep.blendedInventoryPrice ? Number(ep.blendedInventoryPrice) : null;
+  const gFloor = ep.globalFloorPrice ? Number(ep.globalFloorPrice) : null;
+  const sFloor = ep.strictFloorPrice ? Number(ep.strictFloorPrice) : null;
+  const margin = blended && price > 0 ? ((price - blended) / price * 100) : null;
+  const belowGlobal = gFloor !== null && price < gFloor;
+  const belowStrict = sFloor !== null && price < sFloor;
+  const checks = [
+    { label: "vs Blended Cost", val: blended, ok: blended === null || price >= blended, warn: belowGlobal },
+    { label: "vs Global Floor (+5%)", val: gFloor, ok: !belowGlobal, warn: belowGlobal && !belowStrict },
+    { label: "vs Strict Floor (highest lot)", val: sFloor, ok: !belowStrict, warn: false },
+  ];
+  return (
+    <div className="mt-2 bg-muted/40 border border-dashed rounded-md p-2.5 text-xs space-y-1.5" data-testid="panel-margin-sim">
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-muted-foreground">Margin Simulation</span>
+        {margin !== null && (
+          <span className={`font-bold px-1.5 py-0.5 rounded ${margin < 5 ? "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400" : margin < 15 ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400" : "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400"}`}>
+            {margin.toFixed(1)}% margin
+          </span>
+        )}
+      </div>
+      {!ep.hasConfirmedToday && (
+        <div className="flex items-center gap-1 text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded text-[10px]">
+          <AlertTriangle className="w-3 h-3 shrink-0" />
+          No confirmed price sheet for today — using last confirmed ({ep.sheetDate})
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-1.5">
+        {checks.map(({ label, val, ok, warn }) => val !== null && (
+          <div key={label} className={`rounded px-1.5 py-1 ${!ok ? "bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800" : warn ? "bg-amber-50 dark:bg-amber-950/30" : "bg-muted/30"}`}>
+            <div className="text-[10px] text-muted-foreground">{label}</div>
+            <div className={`font-semibold ${!ok ? "text-red-600 dark:text-red-400" : warn ? "text-amber-600 dark:text-amber-400" : "text-green-700 dark:text-green-400"}`}>
+              ₹{val.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+              <span className="ml-1">{!ok ? "✗ Below" : "✓ OK"}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
   discount?: DiscountState;
   onDiscountChange?: (d: DiscountState) => void;
-  effectivePrices?: Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>;
+  effectivePrices?: Record<string, EffectivePriceEntry>;
 }) {
+  const [expandedSim, setExpandedSim] = useState<Set<number>>(new Set());
   const productItems = products.filter(p => p.type === "product");
   const serviceItems = products.filter(p => p.type === "service");
 
@@ -287,6 +342,31 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <span className="font-semibold text-green-700 dark:text-green-400" data-testid={`input-item-total-${i}`}>₹{(item.totalPrice + item.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
+          {/* Margin simulation toggle — only shown when product has pricing data */}
+          {(() => {
+            const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
+            if (!ep) return null;
+            const isOpen = expandedSim.has(i);
+            return (
+              <div>
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setExpandedSim(prev => {
+                    const next = new Set(prev);
+                    if (next.has(i)) next.delete(i); else next.add(i);
+                    return next;
+                  })}
+                  data-testid={`button-margin-sim-toggle-${i}`}
+                >
+                  <BarChart3 className="w-3 h-3" />
+                  {isOpen ? "Hide" : "Show"} Margin Simulation
+                  {!ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet today" />}
+                </button>
+                {isOpen && <MarginSimPanel item={item} ep={ep} />}
+              </div>
+            );
+          })()}
         </div>
       ))}
 
@@ -367,7 +447,7 @@ export default function Sales() {
   const { data: products } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
-  const { data: effectivePrices } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>>({
+  const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
       const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });

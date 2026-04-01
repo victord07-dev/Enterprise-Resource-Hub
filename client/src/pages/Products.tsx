@@ -21,7 +21,7 @@ export default function Products() {
   const { toast } = useToast();
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: lastSoldPrices } = useQuery<Record<string, string>>({ queryKey: ["/api/products/last-sold-prices"] });
-  const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>>({
+  const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean }>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
       const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
@@ -419,10 +419,10 @@ export default function Products() {
             <div className="space-y-2">
               <Label htmlFor="prodSellingPrice" className="flex items-center gap-1.5">
                 {isService ? "Service Charge (₹)" : "Selling Price (₹)"}
-                {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
+                {editingProduct && !isService && effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday && (
                   <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded">
                     <Lock className="w-3 h-3" />
-                    Locked — confirmed price sheet exists
+                    Locked — confirmed price sheet today
                   </span>
                 )}
               </Label>
@@ -433,13 +433,16 @@ export default function Products() {
                   data-testid="input-product-selling-price"
                   value={productForm.unitPrice}
                   onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })}
-                  disabled={!!editingProduct && !isService && !!effectivePricesMap?.[editingProduct.id]}
-                  className={editingProduct && !isService && effectivePricesMap?.[editingProduct.id] ? "bg-muted cursor-not-allowed" : ""}
+                  disabled={!!editingProduct && !isService && !!effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday}
+                  className={editingProduct && !isService && effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday ? "bg-muted cursor-not-allowed" : ""}
                 />
                 {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
                   <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                     <TrendingUp className="w-3 h-3 text-blue-500" />
-                    Today's effective price: ₹{Number(effectivePricesMap[editingProduct.id].effectivePrice).toLocaleString("en-IN")}. To change, update via Daily Pricing.
+                    {effectivePricesMap[editingProduct.id].hasConfirmedToday
+                      ? `Today's confirmed price: ₹${Number(effectivePricesMap[editingProduct.id].effectivePrice).toLocaleString("en-IN")}. To change, update via Daily Pricing.`
+                      : `Last confirmed price (${effectivePricesMap[editingProduct.id].sheetDate}): ₹${Number(effectivePricesMap[editingProduct.id].effectivePrice).toLocaleString("en-IN")} — no sheet confirmed today.`
+                    }
                   </p>
                 )}
               </div>

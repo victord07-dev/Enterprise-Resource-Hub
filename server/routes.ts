@@ -5819,7 +5819,7 @@ export async function registerRoutes(
 
   // ─── Daily Pricing Engine ─────────────────────────────────────────────────
 
-  // GET effective-prices-today: batch endpoint returns map of productId → effective price
+  // GET effective-prices-today: batch endpoint returns map of productId → effective price + margin data
   app.get("/api/daily-price-sheets/effective-prices-today", authenticateToken, async (req: any, res) => {
     try {
       const today = new Date().toISOString().slice(0, 10);
@@ -5827,7 +5827,10 @@ export async function registerRoutes(
         SELECT DISTINCT ON (dps.product_id)
           dps.product_id,
           dps.sheet_date,
-          dps.proposed_price
+          dps.proposed_price,
+          dps.blended_inventory_price,
+          dps.global_floor_price,
+          dps.strict_floor_price
         FROM daily_price_sheets dps
         WHERE dps.status = 'confirmed'
           AND dps.proposed_price IS NOT NULL
@@ -5835,12 +5838,27 @@ export async function registerRoutes(
           AND dps.sheet_date::date <= ${today}::date
         ORDER BY dps.product_id, dps.sheet_date DESC
       `);
-      const priceMap: Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }> = {};
+      const priceMap: Record<string, {
+        effectivePrice: string;
+        sheetDate: string;
+        noConfirmedPrice: boolean;
+        hasConfirmedToday: boolean;
+        blendedInventoryPrice: string | null;
+        globalFloorPrice: string | null;
+        strictFloorPrice: string | null;
+      }> = {};
       for (const row of result.rows as any[]) {
+        const sheetDateStr = typeof row.sheet_date === "string"
+          ? row.sheet_date.slice(0, 10)
+          : new Date(row.sheet_date).toISOString().slice(0, 10);
         priceMap[row.product_id] = {
           effectivePrice: row.proposed_price,
-          sheetDate: row.sheet_date,
+          sheetDate: sheetDateStr,
           noConfirmedPrice: false,
+          hasConfirmedToday: sheetDateStr === today,
+          blendedInventoryPrice: row.blended_inventory_price ?? null,
+          globalFloorPrice: row.global_floor_price ?? null,
+          strictFloorPrice: row.strict_floor_price ?? null,
         };
       }
       res.json(priceMap);

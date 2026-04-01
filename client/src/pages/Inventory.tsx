@@ -59,7 +59,7 @@ export default function Inventory() {
       if (!res.ok) return [];
       return res.json();
     },
-    enabled: activeTab === "pricing" && canManagePricing,
+    enabled: canManagePricing,
   });
   const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
   const [pricingProduct, setPricingProduct] = useState<Product | null>(null);
@@ -71,6 +71,7 @@ export default function Inventory() {
   const [pricingSheetLoading, setPricingSheetLoading] = useState(false);
   const [pricingConfirmDialogOpen, setPricingConfirmDialogOpen] = useState(false);
   const [pricingRejectDialogOpen, setPricingRejectDialogOpen] = useState(false);
+  const [pricingSimQty, setPricingSimQty] = useState("1");
 
   const openPricingDialog = async (product: Product) => {
     setPricingProduct(product);
@@ -918,6 +919,12 @@ export default function Inventory() {
                         const isReservedExpanded = expandedReservedIds.has(product.id);
                         const isIncomingExpanded = expandedIncomingIds.has(product.id);
                         const warehouseBreakdown = isExpanded && isProduct ? getProductStockByWarehouse(product.id) : [];
+                        const productSheet = canManagePricing && isProduct ? (todaySheets ?? []).find((s: any) => s.productId === product.id) : null;
+                        const oldestLotDate = productSheet?.lots?.length > 0
+                          ? new Date(Math.min(...productSheet.lots.map((l: any) => new Date(l.lotDate).getTime())))
+                          : null;
+                        const invLotAgeDays = oldestLotDate ? Math.floor((Date.now() - oldestLotDate.getTime()) / 86400000) : null;
+                        const isSellPriorityMain = isProduct && invLotAgeDays !== null && invLotAgeDays > 30 && (totalStock ?? 0) > (product.minStockLevel ?? 0);
 
                         return (
                           <Fragment key={product.id}>
@@ -944,7 +951,14 @@ export default function Inventory() {
                                   </span>
                                 )}
                               </td>
-                              <td className="p-3 font-medium">{product.name}</td>
+                              <td className="p-3 font-medium">
+                                <span className="flex items-center gap-1.5">
+                                  {product.name}
+                                  {isSellPriorityMain && (
+                                    <span title={`Aged stock (${invLotAgeDays}d) — sell priority`} className="text-base leading-none" data-testid={`badge-sell-priority-${product.id}`}>🔥</span>
+                                  )}
+                                </span>
+                              </td>
                               <td className="p-3 text-muted-foreground">{product.type === "service" ? "—" : product.sku}</td>
                               <td className="p-3 text-muted-foreground" data-testid={`text-product-brand-${product.id}`}>{product.brand || "—"}</td>
                               <td className="p-3">
@@ -2045,17 +2059,28 @@ export default function Inventory() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-sm font-semibold">Proposed Selling Price (₹)</Label>
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={pricingProposed}
-                      onChange={(e) => setPricingProposed(e.target.value)}
-                      disabled={pricingSheet.status === "confirmed" || (pricingSheet.status === "submitted" && !canConfirmPricing)}
-                      placeholder="Enter selling price..."
-                      data-testid="input-proposed-price"
-                      className="mt-1"
-                    />
+                    {(() => {
+                      const pp = pricingProposed ? Number(pricingProposed) : null;
+                      const gFloor = pricingSheet.globalFloorPrice ? Number(pricingSheet.globalFloorPrice) : null;
+                      const sFloor = pricingSheet.strictFloorPrice ? Number(pricingSheet.strictFloorPrice) : null;
+                      const inputColorClass = pp === null ? ""
+                        : (sFloor && pp < sFloor) ? "border-red-400 focus-visible:ring-red-400 text-red-600 bg-red-50 dark:bg-red-950/20"
+                        : (gFloor && pp < gFloor) ? "border-amber-400 focus-visible:ring-amber-400 text-amber-700 bg-amber-50 dark:bg-amber-950/20"
+                        : "";
+                      return (
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={pricingProposed}
+                          onChange={(e) => setPricingProposed(e.target.value)}
+                          disabled={pricingSheet.status === "confirmed" || (pricingSheet.status === "submitted" && !canConfirmPricing)}
+                          placeholder="Enter selling price..."
+                          data-testid="input-proposed-price"
+                          className={`mt-1 ${inputColorClass}`}
+                        />
+                      );
+                    })()}
                   </div>
                   <div>
                     <Label className="text-sm font-semibold">Notes</Label>
@@ -2070,33 +2095,69 @@ export default function Inventory() {
                   </div>
                 </div>
 
-                {/* Live margin simulation */}
-                {pricingProposed && Number(pricingProposed) > 0 && pricingSheet.blendedInventoryPrice && (
-                  <div className="rounded-lg border p-3 bg-muted/10 space-y-2">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Margin Analysis</p>
-                    <div className="grid grid-cols-3 gap-3">
-                      {(() => {
-                        const pp = Number(pricingProposed);
-                        const cost = Number(pricingSheet.blendedInventoryPrice);
-                        const gFloor = Number(pricingSheet.globalFloorPrice);
-                        const sFloor = Number(pricingSheet.strictFloorPrice);
-                        const margin = ((pp - cost) / pp * 100);
-                        const vsGFloor = ((pp - gFloor) / pp * 100);
-                        const vsSFloor = ((pp - sFloor) / pp * 100);
-                        return [
-                          { label: "vs Blended Cost", val: margin, warn: margin < 5 },
-                          { label: "vs Global Floor", val: vsGFloor, warn: vsGFloor < 0 },
-                          { label: "vs Strict Floor", val: vsSFloor, warn: vsSFloor < 0 },
-                        ].map(({ label, val, warn }) => (
-                          <div key={label} className={`rounded p-2 text-center ${warn ? "bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800" : "bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800"}`}>
-                            <p className="text-[10px] text-muted-foreground mb-1">{label}</p>
-                            <p className={`font-bold text-sm ${warn ? "text-red-600 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
-                              {val.toFixed(1)}%
-                            </p>
-                          </div>
-                        ));
-                      })()}
+                {/* Live margin + qty simulation */}
+                {pricingProposed && Number(pricingProposed) > 0 && (
+                  <div className="rounded-lg border p-3 bg-muted/10 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Margin & Revenue Simulation</p>
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs text-muted-foreground">Simulate Qty:</Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={pricingSimQty}
+                          onChange={(e) => setPricingSimQty(e.target.value)}
+                          className="w-20 h-6 text-xs px-1.5"
+                          data-testid="input-sim-qty"
+                        />
+                      </div>
                     </div>
+                    {(() => {
+                      const pp = Number(pricingProposed);
+                      const qty = Math.max(1, Number(pricingSimQty) || 1);
+                      const cost = pricingSheet.blendedInventoryPrice ? Number(pricingSheet.blendedInventoryPrice) : null;
+                      const gFloor = pricingSheet.globalFloorPrice ? Number(pricingSheet.globalFloorPrice) : null;
+                      const sFloor = pricingSheet.strictFloorPrice ? Number(pricingSheet.strictFloorPrice) : null;
+                      const revenue = pp * qty;
+                      const totalCost = cost !== null ? cost * qty : null;
+                      const profit = totalCost !== null ? revenue - totalCost : null;
+                      const margin = (cost !== null && pp > 0) ? ((pp - cost) / pp * 100) : null;
+                      const belowGlobal = gFloor !== null && pp < gFloor;
+                      const belowStrict = sFloor !== null && pp < sFloor;
+                      return (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-3 gap-3">
+                            {[
+                              { label: "vs Blended Cost", val: margin !== null ? `${margin.toFixed(1)}%` : "—", warn: margin !== null && margin < 5, tip: cost !== null ? `Cost: ₹${cost.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined },
+                              { label: "vs Global Floor (+5%)", val: gFloor !== null ? (belowGlobal ? `₹${gFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ✗` : "✓ OK") : "—", warn: belowGlobal, tip: gFloor !== null ? `Floor: ₹${gFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined },
+                              { label: "vs Strict Floor", val: sFloor !== null ? (belowStrict ? `₹${sFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ✗` : "✓ OK") : "—", warn: belowStrict, tip: sFloor !== null ? `Floor: ₹${sFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined },
+                            ].map(({ label, val, warn, tip }) => (
+                              <div key={label} title={tip} className={`rounded p-2 text-center ${warn ? "bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800" : "bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800"}`}>
+                                <p className="text-[10px] text-muted-foreground mb-1">{label}</p>
+                                <p className={`font-bold text-sm ${warn ? "text-red-600 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>{val}</p>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="grid grid-cols-3 gap-3 text-xs">
+                            <div className="rounded p-2 bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground mb-0.5">Revenue ({qty} units)</p>
+                              <p className="font-semibold">₹{revenue.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                            </div>
+                            <div className="rounded p-2 bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground mb-0.5">Total Cost</p>
+                              <p className="font-semibold">{totalCost !== null ? `₹${totalCost.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</p>
+                            </div>
+                            <div className={`rounded p-2 text-center ${profit !== null && profit >= 0 ? "bg-green-50 dark:bg-green-950/20" : "bg-red-50 dark:bg-red-950/20"}`}>
+                              <p className="text-[10px] text-muted-foreground mb-0.5">Gross Profit</p>
+                              <p className={`font-semibold ${profit !== null ? (profit >= 0 ? "text-green-700 dark:text-green-400" : "text-red-600 dark:text-red-400") : ""}`}>
+                                {profit !== null ? `₹${profit.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 

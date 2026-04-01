@@ -6009,11 +6009,11 @@ export async function registerRoutes(
       const lots = await storage.getDailyPriceSheetLots(sheet.id);
       const pp = parseFloat(sheet.proposedPrice);
       const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
-      // Accept overrideReason from request body (highest priority) or previously stored value
+      // When proposed price is below floor for any lot, overrideReason MUST be supplied
+      // explicitly in the confirm request body — stored sheet.overrideReason is not accepted
       const bodyOverrideReason = (req.body?.overrideReason ?? undefined) as string | undefined;
-      const effectiveOverrideReason = bodyOverrideReason || sheet.overrideReason;
-      if (overrideRequired && !effectiveOverrideReason) {
-        return res.status(400).json({ message: "overrideReason is required in request body when proposed price is below floor for any lot" });
+      if (overrideRequired && !bodyOverrideReason) {
+        return res.status(400).json({ message: "overrideReason is required in the confirm request body when proposed price is below floor for any lot" });
       }
 
       // NOTE: product.unitPrice is intentionally NOT overwritten — this sheet is pricing reference only

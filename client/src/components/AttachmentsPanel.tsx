@@ -2,9 +2,9 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Paperclip, Upload, Download, FileText, X } from "lucide-react";
+import { Paperclip, Upload, Download, FileText, X, ExternalLink } from "lucide-react";
 import { getUser, getToken } from "@/lib/auth";
 import type { Attachment } from "@shared/schema";
 
@@ -19,13 +19,6 @@ const DOC_TYPE_LABELS: Record<string, { label: string; variant: string }> = {
   invoice: { label: "Invoice", variant: "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/30 dark:text-purple-400 dark:border-purple-800" },
   other: { label: "Other", variant: "bg-gray-50 text-gray-700 border-gray-200 dark:bg-gray-950/30 dark:text-gray-400 dark:border-gray-800" },
 };
-
-async function computeSHA256(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer();
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
-}
 
 function AttachmentImage({ attachmentId, fileName }: { attachmentId: string; fileName: string }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -56,18 +49,30 @@ function AttachmentImage({ attachmentId, fileName }: { attachmentId: string; fil
     <img
       src={blobUrl}
       alt={fileName}
-      className="w-10 h-10 object-cover rounded border flex-shrink-0"
+      className="w-10 h-10 object-cover rounded border flex-shrink-0 cursor-pointer"
+      onClick={() => window.open(blobUrl, "_blank")}
     />
   );
 }
 
-async function downloadAttachment(attachmentId: string, fileName: string) {
+async function fetchAttachmentBlob(attachmentId: string): Promise<Blob> {
   const token = getToken();
   const res = await fetch(`/api/attachments/file/${attachmentId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error("Failed to download");
-  const blob = await res.blob();
+  if (!res.ok) throw new Error("Failed to fetch file");
+  return res.blob();
+}
+
+async function openAttachment(attachmentId: string): Promise<void> {
+  const blob = await fetchAttachmentBlob(attachmentId);
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function downloadAttachment(attachmentId: string, fileName: string): Promise<void> {
+  const blob = await fetchAttachmentBlob(attachmentId);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -86,7 +91,11 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
   const { data: attachments, isLoading } = useQuery<Attachment[]>({
     queryKey: ["/api/attachments", entityType, entityId],
     queryFn: async () => {
-      const res = await apiRequest("GET", `/api/attachments/${entityType}/${entityId}`);
+      const token = getToken();
+      const res = await fetch(`/api/attachments/${entityType}/${entityId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch attachments");
       return res.json();
     },
     enabled: !!entityId,
@@ -94,7 +103,15 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/attachments/${id}`);
+      const token = getToken();
+      const res = await fetch(`/api/attachments/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Delete failed");
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/attachments", entityType, entityId] });
@@ -122,45 +139,23 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
 
     setUploading(true);
     try {
-      const fileHash = await computeSHA256(file);
+      const token = getToken();
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("entityType", entityType);
+      formData.append("entityId", entityId);
+      formData.append("documentType", docType);
+      formData.append("module", mod);
 
-      const reqRes = await apiRequest("POST", "/api/attachments/request-upload", {
-        entityType,
-        entityId,
-        documentType: docType,
-        module: mod,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-        fileHash,
+      const res = await fetch("/api/attachments", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
       });
-      if (!reqRes.ok) {
-        const errData = await reqRes.json();
-        throw new Error(errData.message || "Failed to get upload URL");
-      }
-      const { uploadURL, objectPath } = await reqRes.json();
 
-      const uploadRes = await fetch(uploadURL, {
-        method: "PUT",
-        headers: { "Content-Type": file.type },
-        body: file,
-      });
-      if (!uploadRes.ok) throw new Error("Failed to upload file to storage");
-
-      const confirmRes = await apiRequest("POST", "/api/attachments/confirm", {
-        entityType,
-        entityId,
-        documentType: docType,
-        module: mod,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-        fileHash,
-        objectPath,
-      });
-      if (!confirmRes.ok) {
-        const errData = await confirmRes.json();
-        throw new Error(errData.message || "Failed to save attachment record");
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.message || "Upload failed");
       }
 
       queryClient.invalidateQueries({ queryKey: ["/api/attachments", entityType, entityId] });
@@ -177,6 +172,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
     !!currentUser && (currentUser.id === att.uploadedBy || currentUser.role === "admin");
 
   const isImage = (fileType: string) => fileType.startsWith("image/");
+  const isPDF = (fileType: string) => fileType === "application/pdf";
 
   return (
     <div className="space-y-3" data-testid="panel-attachments">
@@ -241,14 +237,29 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
                   </p>
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
+                  {isPDF(att.fileType) && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="w-7 h-7"
+                      title="Open in new tab"
+                      onClick={async () => {
+                        try { await openAttachment(att.id); } catch {
+                          toast({ title: "Preview failed", variant: "destructive" });
+                        }
+                      }}
+                      data-testid={`button-preview-attachment-${att.id}`}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
                   <Button
                     size="icon"
                     variant="ghost"
                     className="w-7 h-7"
+                    title="Download"
                     onClick={async () => {
-                      try {
-                        await downloadAttachment(att.id, att.fileName);
-                      } catch {
+                      try { await downloadAttachment(att.id, att.fileName); } catch {
                         toast({ title: "Download failed", variant: "destructive" });
                       }
                     }}

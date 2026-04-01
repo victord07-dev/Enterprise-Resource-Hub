@@ -23,6 +23,7 @@ import {
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
+import multer from "multer";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
 
@@ -5079,6 +5080,81 @@ export async function registerRoutes(
 
   const ALLOWED_FILE_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/jpg"];
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_FILE_SIZE },
+    fileFilter: (_req, file, cb) => {
+      if (ALLOWED_FILE_TYPES.includes(file.mimetype)) {
+        cb(null, true);
+      } else {
+        cb(new Error("Only PDF, JPG, and PNG files are allowed"));
+      }
+    },
+  });
+
+  // Primary single-step upload endpoint
+  app.post("/api/attachments", authenticateToken, upload.single("file"), async (req: any, res) => {
+    try {
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "No file provided" });
+
+      const { entityType, entityId, documentType, module: mod } = req.body;
+      if (!entityType || !entityId) {
+        return res.status(400).json({ message: "entityType and entityId are required" });
+      }
+
+      // Validate entity exists
+      if (entityType === "grn") {
+        const grn = await storage.getGRN(entityId);
+        if (!grn) return res.status(404).json({ message: "GRN not found" });
+      } else if (entityType === "supplier_invoice") {
+        const inv = await storage.getSupplierInvoice(entityId);
+        if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      } else {
+        return res.status(400).json({ message: "Invalid entityType" });
+      }
+
+      // Compute SHA-256 hash of file buffer
+      const { createHash } = await import("crypto");
+      const fileHash = createHash("sha256").update(file.buffer).digest("hex");
+
+      // Deduplication check
+      const existing = await storage.getAttachmentByHash(entityType, entityId, fileHash);
+      if (existing) return res.status(409).json({ message: "This file has already been uploaded for this record" });
+
+      // Get signed upload URL and upload server-side
+      const uploadURL = await objectStorage.getObjectEntityUploadURL();
+      const objectPath = objectStorage.normalizeObjectEntityPath(uploadURL);
+
+      const uploadRes = await fetch(uploadURL, {
+        method: "PUT",
+        headers: { "Content-Type": file.mimetype },
+        body: file.buffer,
+      });
+      if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
+
+      // Persist DB record
+      const attachment = await storage.createAttachment({
+        entityType,
+        entityId,
+        module: mod || "inventory",
+        documentType: documentType || "other",
+        fileUrl: objectPath,
+        fileName: file.originalname,
+        fileType: file.mimetype,
+        fileSize: file.size,
+        fileHash,
+        uploadedBy: req.user.id,
+      });
+
+      res.status(201).json(attachment);
+    } catch (err: unknown) {
+      console.error("Attachment upload error:", err);
+      const message = err instanceof Error ? err.message : "Failed to upload attachment";
+      res.status(500).json({ message });
+    }
+  });
 
   // Step 1: validate + get signed upload URL
   app.post("/api/attachments/request-upload", authenticateToken, async (req: any, res) => {

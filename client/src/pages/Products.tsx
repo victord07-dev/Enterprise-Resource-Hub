@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product } from "@shared/schema";
 
@@ -21,6 +21,14 @@ export default function Products() {
   const { toast } = useToast();
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: lastSoldPrices } = useQuery<Record<string, string>>({ queryKey: ["/api/products/last-sold-prices"] });
+  const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>>({
+    queryKey: ["/api/daily-price-sheets/effective-prices-today"],
+    queryFn: async () => {
+      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+      if (!res.ok) return {};
+      return res.json();
+    },
+  });
 
   const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
@@ -409,8 +417,32 @@ export default function Products() {
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="prodSellingPrice">{isService ? "Service Charge (₹)" : "Selling Price (₹)"}</Label>
-              <Input id="prodSellingPrice" type="number" data-testid="input-product-selling-price" value={productForm.unitPrice} onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })} />
+              <Label htmlFor="prodSellingPrice" className="flex items-center gap-1.5">
+                {isService ? "Service Charge (₹)" : "Selling Price (₹)"}
+                {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
+                  <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded">
+                    <Lock className="w-3 h-3" />
+                    Locked — confirmed price sheet exists
+                  </span>
+                )}
+              </Label>
+              <div className="relative">
+                <Input
+                  id="prodSellingPrice"
+                  type="number"
+                  data-testid="input-product-selling-price"
+                  value={productForm.unitPrice}
+                  onChange={(e) => setProductForm({ ...productForm, unitPrice: e.target.value })}
+                  disabled={!!editingProduct && !isService && !!effectivePricesMap?.[editingProduct.id]}
+                  className={editingProduct && !isService && effectivePricesMap?.[editingProduct.id] ? "bg-muted cursor-not-allowed" : ""}
+                />
+                {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
+                  <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                    <TrendingUp className="w-3 h-3 text-blue-500" />
+                    Today's effective price: ₹{Number(effectivePricesMap[editingProduct.id].effectivePrice).toLocaleString("en-IN")}. To change, update via Daily Pricing.
+                  </p>
+                )}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">

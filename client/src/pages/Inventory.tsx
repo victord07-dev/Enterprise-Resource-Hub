@@ -12,8 +12,9 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, TrendingUp, Flame, DollarSign, ShieldAlert, Lock } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCurrentUser } from "@/lib/auth";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 
@@ -45,6 +46,154 @@ export default function Inventory() {
   const [movementFilterDateFrom, setMovementFilterDateFrom] = useState("");
   const [movementFilterDateTo, setMovementFilterDateTo] = useState("");
   const [refDetailModal, setRefDetailModal] = useState<{ open: boolean; type: string; label: string; number: string; notes: string }>({ open: false, type: "", label: "", number: "", notes: "" });
+
+  // ─── Daily Pricing state ────────────────────────────────────────────────────
+  const { data: currentUser } = useCurrentUser();
+  const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+  const canConfirmPricing = ["admin", "accountant"].includes(currentUser?.role ?? "");
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const { data: todaySheets, isLoading: sheetsLoading, refetch: refetchSheets } = useQuery<any[]>({
+    queryKey: ["/api/daily-price-sheets", todayStr],
+    queryFn: async () => {
+      const res = await fetch(`/api/daily-price-sheets?sheetDate=${todayStr}`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: activeTab === "pricing" && canManagePricing,
+  });
+  const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
+  const [pricingProduct, setPricingProduct] = useState<Product | null>(null);
+  const [pricingSheet, setPricingSheet] = useState<any | null>(null);
+  const [pricingProposed, setPricingProposed] = useState("");
+  const [pricingOverrideReason, setPricingOverrideReason] = useState("");
+  const [pricingNotes, setPricingNotes] = useState("");
+  const [pricingRejectionNotes, setPricingRejectionNotes] = useState("");
+  const [pricingSheetLoading, setPricingSheetLoading] = useState(false);
+  const [pricingConfirmDialogOpen, setPricingConfirmDialogOpen] = useState(false);
+  const [pricingRejectDialogOpen, setPricingRejectDialogOpen] = useState(false);
+
+  const openPricingDialog = async (product: Product) => {
+    setPricingProduct(product);
+    setPricingSheet(null);
+    setPricingProposed("");
+    setPricingOverrideReason("");
+    setPricingNotes("");
+    setPricingRejectionNotes("");
+    setPricingSheetLoading(true);
+    setPricingDialogOpen(true);
+    try {
+      const res = await fetch(`/api/daily-price-sheets?productId=${product.id}&sheetDate=${todayStr}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      const sheets = await res.json();
+      if (Array.isArray(sheets) && sheets.length > 0) {
+        const s = sheets[0];
+        setPricingSheet(s);
+        setPricingProposed(s.proposedPrice ?? "");
+        setPricingOverrideReason(s.overrideReason ?? "");
+        setPricingNotes(s.notes ?? "");
+      }
+    } catch {}
+    setPricingSheetLoading(false);
+  };
+
+  const createPricingSheetMutation = useMutation({
+    mutationFn: async (productId: string) => {
+      const res = await apiRequest("POST", "/api/daily-price-sheets", { productId, sheetDate: todayStr });
+      return res.json();
+    },
+    onSuccess: (sheet: any) => {
+      setPricingSheet(sheet);
+      setPricingProposed(sheet.proposedPrice ?? "");
+      setPricingNotes(sheet.notes ?? "");
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-price-sheets", todayStr] });
+      toast({ title: "Price sheet created", description: "Draft price sheet ready for pricing" });
+    },
+    onError: async (error: any) => {
+      const msg = error?.message ?? "";
+      // Try to parse sheetId from 409 conflict response JSON
+      try {
+        const jsonStart = msg.indexOf("{");
+        if (jsonStart !== -1) {
+          const body = JSON.parse(msg.slice(jsonStart));
+          if (body?.sheetId) {
+            const res = await fetch(`/api/daily-price-sheets/${body.sheetId}`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+            if (res.ok) { const s = await res.json(); setPricingSheet(s); setPricingProposed(s.proposedPrice ?? ""); setPricingOverrideReason(s.overrideReason ?? ""); setPricingNotes(s.notes ?? ""); return; }
+          }
+        }
+      } catch {}
+      toast({ title: "Error", description: msg, variant: "destructive" });
+    },
+  });
+
+  const savePricingDraftMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/daily-price-sheets/${pricingSheet.id}`, {
+        proposedPrice: pricingProposed,
+        overrideReason: pricingOverrideReason || undefined,
+        notes: pricingNotes || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: (sheet: any) => {
+      setPricingSheet(sheet);
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-price-sheets", todayStr] });
+      toast({ title: "Draft saved" });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  const submitPricingSheetMutation = useMutation({
+    mutationFn: async () => {
+      const saveRes = await apiRequest("PATCH", `/api/daily-price-sheets/${pricingSheet.id}`, {
+        proposedPrice: pricingProposed,
+        overrideReason: pricingOverrideReason || undefined,
+        notes: pricingNotes || undefined,
+      });
+      await saveRes.json();
+      const res = await apiRequest("POST", `/api/daily-price-sheets/${pricingSheet.id}/submit`);
+      return res.json();
+    },
+    onSuccess: (sheet: any) => {
+      setPricingSheet({ ...pricingSheet, ...sheet });
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-price-sheets", todayStr] });
+      toast({ title: "Submitted for approval" });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  const confirmPricingSheetMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/daily-price-sheets/${pricingSheet.id}/confirm`, {
+        overrideReason: pricingOverrideReason || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: (sheet: any) => {
+      setPricingSheet({ ...pricingSheet, ...sheet });
+      setPricingConfirmDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-price-sheets", todayStr] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "Price confirmed", description: `Confirmed price ₹${pricingProposed} for ${pricingProduct?.name}` });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+
+  const rejectPricingSheetMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/daily-price-sheets/${pricingSheet.id}/reject`, {
+        rejectionNotes: pricingRejectionNotes || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: (sheet: any) => {
+      setPricingSheet({ ...pricingSheet, ...sheet });
+      setPricingRejectDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["/api/daily-price-sheets", todayStr] });
+      toast({ title: "Sheet rejected", description: "Returned to draft for revision" });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
 
   const { data: stockMovements, isLoading: movementsLoading } = useQuery<StockMovement[]>({ queryKey: ["/api/stock-movements"] });
   const { data: inventoryStockData } = useQuery<InventoryStock[]>({ queryKey: ["/api/inventory-stock"] });
@@ -704,6 +853,17 @@ export default function Inventory() {
             )}
           </TabsTrigger>
           <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>
+          {canManagePricing && (
+            <TabsTrigger value="pricing" data-testid="tab-pricing" className="gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5" />
+              Daily Pricing
+              {(todaySheets?.filter((s: any) => s.status === "submitted").length ?? 0) > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold rounded-full bg-amber-500 text-white">
+                  {todaySheets?.filter((s: any) => s.status === "submitted").length}
+                </span>
+              )}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -1614,7 +1774,425 @@ export default function Inventory() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ─── Daily Pricing Tab ──────────────────────────────────────────────── */}
+        <TabsContent value="pricing" className="space-y-4">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Daily Pricing — {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</h2>
+              <p className="text-sm text-muted-foreground">Set and approve selling prices based on FIFO lot costs</p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => refetchSheets()} data-testid="button-refresh-pricing">
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh
+            </Button>
+          </div>
+
+          {/* Summary cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: "Draft", val: (todaySheets ?? []).filter((s: any) => s.status === "draft").length, color: "text-gray-600 dark:text-gray-400", bg: "bg-gray-50 dark:bg-gray-950/30" },
+              { label: "Submitted", val: (todaySheets ?? []).filter((s: any) => s.status === "submitted").length, color: "text-amber-700 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30" },
+              { label: "Confirmed", val: (todaySheets ?? []).filter((s: any) => s.status === "confirmed").length, color: "text-green-700 dark:text-green-400", bg: "bg-green-50 dark:bg-green-950/30" },
+              { label: "Rejected", val: (todaySheets ?? []).filter((s: any) => s.status === "rejected" || (s.status === "draft" && s.rejectionNotes)).length, color: "text-red-700 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950/30" },
+            ].map(({ label, val, color, bg }) => (
+              <Card key={label}>
+                <CardContent className={`p-4 rounded-lg ${bg}`}>
+                  <p className={`text-2xl font-bold ${color}`}>{val}</p>
+                  <p className="text-xs text-muted-foreground">{label} Today</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {/* Products table */}
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/30">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Stock</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Blended Cost</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Floor Price</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Proposed Price</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Margin</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sheetsLoading ? (
+                      Array.from({ length: 5 }).map((_, i) => (
+                        <tr key={i} className="border-b">
+                          {Array.from({ length: 8 }).map((_, j) => (
+                            <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
+                          ))}
+                        </tr>
+                      ))
+                    ) : (products ?? []).filter(p => p.type === "product").map((product) => {
+                      const sheet = (todaySheets ?? []).find((s: any) => s.productId === product.id);
+                      const totalStock = getProductTotalStock(product.id);
+                      const blendedCost = sheet ? Number(sheet.blendedInventoryPrice) : null;
+                      const globalFloor = sheet ? Number(sheet.globalFloorPrice) : null;
+                      const proposed = sheet?.proposedPrice ? Number(sheet.proposedPrice) : null;
+                      const margin = (blendedCost && proposed && proposed > 0)
+                        ? ((proposed - blendedCost) / proposed * 100)
+                        : null;
+                      const pressureRatio = (blendedCost && proposed && proposed > 0) ? blendedCost / proposed : null;
+                      const pressureBadge = pressureRatio === null ? null
+                        : pressureRatio > 0.9 ? { label: "High Risk", cls: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400" }
+                        : pressureRatio > 0.75 ? { label: "Medium", cls: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400" }
+                        : { label: "Safe", cls: "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400" };
+                      const oldestLotDate = sheet?.lots?.length > 0
+                        ? new Date(Math.min(...sheet.lots.map((l: any) => new Date(l.lotDate).getTime())))
+                        : null;
+                      const lotAgeDays = oldestLotDate ? Math.floor((Date.now() - oldestLotDate.getTime()) / 86400000) : null;
+                      const isSellPriority = lotAgeDays !== null && lotAgeDays > 30 && totalStock > (product.minStockLevel ?? 0);
+                      const statusColors: Record<string, string> = {
+                        draft: "bg-gray-100 text-gray-700 dark:bg-gray-950/40 dark:text-gray-400",
+                        submitted: "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+                        confirmed: "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400",
+                        rejected: "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400",
+                      };
+                      return (
+                        <tr key={product.id} className="border-b hover:bg-muted/20 transition-colors" data-testid={`row-pricing-${product.id}`}>
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <div>
+                                <div className="flex items-center gap-1.5 font-medium">
+                                  {product.name}
+                                  {isSellPriority && (
+                                    <span title="Aged stock — prioritise selling" className="text-orange-500">
+                                      <Flame className="w-3.5 h-3.5" />
+                                    </span>
+                                  )}
+                                  {product.needsPricingReview && (
+                                    <span title="Supplier price changed — review needed" className="text-blue-500">
+                                      <ShieldAlert className="w-3.5 h-3.5" />
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">{product.sku}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-3 text-right">
+                            <span className={`text-sm font-medium ${totalStock === 0 ? "text-muted-foreground" : totalStock <= (product.minStockLevel ?? 0) ? "text-red-600" : ""}`}>
+                              {totalStock}
+                            </span>
+                            <span className="text-xs text-muted-foreground ml-1">{product.unit}</span>
+                          </td>
+                          <td className="p-3 text-right text-sm">
+                            {blendedCost !== null ? `₹${blendedCost.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs">No sheet</span>}
+                          </td>
+                          <td className="p-3 text-right text-sm">
+                            {globalFloor !== null ? `₹${globalFloor.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs">—</span>}
+                          </td>
+                          <td className="p-3 text-right font-semibold">
+                            {proposed !== null ? `₹${proposed.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : <span className="text-muted-foreground text-xs font-normal">Not set</span>}
+                          </td>
+                          <td className="p-3 text-center">
+                            {margin !== null ? (
+                              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${margin < 5 ? "text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30" : margin < 15 ? "text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30" : "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30"}`}>
+                                {margin.toFixed(1)}%
+                              </span>
+                            ) : <span className="text-muted-foreground text-xs">—</span>}
+                          </td>
+                          <td className="p-3 text-center">
+                            {sheet ? (
+                              <div className="flex items-center justify-center gap-1.5">
+                                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusColors[sheet.status] || statusColors.draft}`}>
+                                  {sheet.status.charAt(0).toUpperCase() + sheet.status.slice(1)}
+                                </span>
+                                {pressureBadge && (
+                                  <span className={`text-xs px-1.5 py-0.5 rounded-full ${pressureBadge.cls}`}>
+                                    {pressureBadge.label}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">No sheet</span>
+                            )}
+                          </td>
+                          <td className="p-3 text-right">
+                            <Button size="sm" variant="outline" onClick={() => openPricingDialog(product)} data-testid={`button-pricing-open-${product.id}`}>
+                              {sheet ? <Pencil className="w-3.5 h-3.5 mr-1" /> : <Plus className="w-3.5 h-3.5 mr-1" />}
+                              {sheet ? "Edit" : "Add Sheet"}
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!sheetsLoading && (products ?? []).filter(p => p.type === "product").length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-muted-foreground">
+                          <Package className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
+                          No products found
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* ─── Pricing Dialog ──────────────────────────────────────────────────── */}
+      <Dialog open={pricingDialogOpen} onOpenChange={setPricingDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-blue-500" />
+              Daily Pricing — {pricingProduct?.name}
+            </DialogTitle>
+            <DialogDescription>
+              {pricingProduct?.sku} · {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+            </DialogDescription>
+          </DialogHeader>
+
+          {pricingSheetLoading ? (
+            <div className="space-y-3 py-4">
+              {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+            </div>
+          ) : !pricingSheet ? (
+            <div className="py-10 text-center space-y-4">
+              <DollarSign className="w-12 h-12 mx-auto text-muted-foreground/40" />
+              <p className="text-muted-foreground">No price sheet for today. Create one to run the FIFO lot engine.</p>
+              <Button onClick={() => pricingProduct && createPricingSheetMutation.mutate(pricingProduct.id)} disabled={createPricingSheetMutation.isPending} data-testid="button-create-pricing-sheet">
+                {createPricingSheetMutation.isPending ? "Creating..." : "Create Price Sheet"}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {/* Rejection alert */}
+              {pricingSheet.rejectionNotes && (
+                <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/30 p-3 text-sm text-red-700 dark:text-red-400">
+                  <strong>Rejected:</strong> {pricingSheet.rejectionNotes}
+                </div>
+              )}
+
+              {/* Lot breakdown */}
+              <div>
+                <p className="text-sm font-semibold mb-2">FIFO Lot Breakdown</p>
+                {(pricingSheet.lots ?? []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No confirmed GRN lots found for this product.</p>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b bg-muted/30">
+                          <th className="text-left p-2 font-medium">GRN #</th>
+                          <th className="text-left p-2 font-medium">Date</th>
+                          <th className="text-right p-2 font-medium">Remaining Qty</th>
+                          <th className="text-right p-2 font-medium">Landed Cost</th>
+                          <th className="text-right p-2 font-medium">Floor Price (+5%)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(pricingSheet.lots ?? []).map((lot: any) => {
+                          const pp = pricingProposed ? Number(pricingProposed) : null;
+                          const belowFloor = pp !== null && pp < Number(lot.floorPrice);
+                          return (
+                            <tr key={lot.id} className={`border-b last:border-0 ${belowFloor ? "bg-red-50/60 dark:bg-red-950/20" : ""}`}>
+                              <td className="p-2 font-medium">{lot.grnNumber}</td>
+                              <td className="p-2 text-muted-foreground">{lot.lotDate ? new Date(lot.lotDate).toLocaleDateString("en-IN") : "—"}</td>
+                              <td className="p-2 text-right">{Number(lot.remainingQty).toLocaleString("en-IN")}</td>
+                              <td className="p-2 text-right">₹{Number(lot.landedCost).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                              <td className={`p-2 text-right font-medium ${belowFloor ? "text-red-600 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
+                                ₹{Number(lot.floorPrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                {belowFloor && <span className="ml-1 text-[10px]">⚠</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Cost summary chips */}
+              <div className="grid grid-cols-3 gap-3 text-xs">
+                {[
+                  { label: "Blended Inventory Cost", val: pricingSheet.blendedInventoryPrice, color: "text-foreground" },
+                  { label: "Global Floor (5% margin)", val: pricingSheet.globalFloorPrice, color: "text-amber-600 dark:text-amber-400" },
+                  { label: "Strict Floor (highest lot)", val: pricingSheet.strictFloorPrice, color: "text-red-600 dark:text-red-400" },
+                ].map(({ label, val, color }) => (
+                  <div key={label} className="rounded-lg border bg-muted/20 p-3 text-center">
+                    <p className="text-muted-foreground mb-1">{label}</p>
+                    <p className={`text-base font-bold ${color}`}>₹{val ? Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Price input & simulation */}
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-semibold">Proposed Selling Price (₹)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={pricingProposed}
+                      onChange={(e) => setPricingProposed(e.target.value)}
+                      disabled={pricingSheet.status === "confirmed" || (pricingSheet.status === "submitted" && !canConfirmPricing)}
+                      placeholder="Enter selling price..."
+                      data-testid="input-proposed-price"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-semibold">Notes</Label>
+                    <Input
+                      value={pricingNotes}
+                      onChange={(e) => setPricingNotes(e.target.value)}
+                      disabled={pricingSheet.status === "confirmed"}
+                      placeholder="Optional notes..."
+                      data-testid="input-pricing-notes"
+                      className="mt-1"
+                    />
+                  </div>
+                </div>
+
+                {/* Live margin simulation */}
+                {pricingProposed && Number(pricingProposed) > 0 && pricingSheet.blendedInventoryPrice && (
+                  <div className="rounded-lg border p-3 bg-muted/10 space-y-2">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Margin Analysis</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      {(() => {
+                        const pp = Number(pricingProposed);
+                        const cost = Number(pricingSheet.blendedInventoryPrice);
+                        const gFloor = Number(pricingSheet.globalFloorPrice);
+                        const sFloor = Number(pricingSheet.strictFloorPrice);
+                        const margin = ((pp - cost) / pp * 100);
+                        const vsGFloor = ((pp - gFloor) / pp * 100);
+                        const vsSFloor = ((pp - sFloor) / pp * 100);
+                        return [
+                          { label: "vs Blended Cost", val: margin, warn: margin < 5 },
+                          { label: "vs Global Floor", val: vsGFloor, warn: vsGFloor < 0 },
+                          { label: "vs Strict Floor", val: vsSFloor, warn: vsSFloor < 0 },
+                        ].map(({ label, val, warn }) => (
+                          <div key={label} className={`rounded p-2 text-center ${warn ? "bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800" : "bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800"}`}>
+                            <p className="text-[10px] text-muted-foreground mb-1">{label}</p>
+                            <p className={`font-bold text-sm ${warn ? "text-red-600 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>
+                              {val.toFixed(1)}%
+                            </p>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  </div>
+                )}
+
+                {/* Override reason */}
+                {pricingSheet.overrideRequired && (
+                  <div>
+                    <Label className="text-sm font-semibold text-red-600">Override Reason <span className="text-xs font-normal">(required — price is below floor)</span></Label>
+                    <Textarea
+                      value={pricingOverrideReason}
+                      onChange={(e) => setPricingOverrideReason(e.target.value)}
+                      disabled={pricingSheet.status === "confirmed"}
+                      placeholder="Explain why selling below floor price..."
+                      className="mt-1 text-sm"
+                      rows={2}
+                      data-testid="input-override-reason"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex-wrap gap-2 pt-2">
+            {pricingSheet && pricingSheet.status !== "confirmed" && (
+              <>
+                {(pricingSheet.status === "draft" || pricingSheet.status === "rejected") && (
+                  <>
+                    <Button variant="outline" onClick={() => savePricingDraftMutation.mutate()} disabled={savePricingDraftMutation.isPending || !pricingProposed} data-testid="button-save-draft">
+                      {savePricingDraftMutation.isPending ? "Saving..." : "Save Draft"}
+                    </Button>
+                    <Button onClick={() => submitPricingSheetMutation.mutate()} disabled={submitPricingSheetMutation.isPending || !pricingProposed || (pricingSheet.overrideRequired && !pricingOverrideReason)} data-testid="button-submit-pricing">
+                      {submitPricingSheetMutation.isPending ? "Submitting..." : "Submit for Approval"}
+                    </Button>
+                  </>
+                )}
+                {pricingSheet.status === "submitted" && canConfirmPricing && (
+                  <>
+                    <Button variant="outline" className="text-red-600 border-red-300 hover:bg-red-50" onClick={() => setPricingRejectDialogOpen(true)} data-testid="button-reject-pricing">
+                      Reject
+                    </Button>
+                    <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => setPricingConfirmDialogOpen(true)} data-testid="button-confirm-pricing">
+                      <CheckCircle className="w-4 h-4 mr-1.5" /> Confirm Price
+                    </Button>
+                  </>
+                )}
+                {pricingSheet.status === "submitted" && !canConfirmPricing && (
+                  <p className="text-sm text-muted-foreground italic">Awaiting admin/accountant approval</p>
+                )}
+              </>
+            )}
+            {pricingSheet?.status === "confirmed" && (
+              <div className="flex items-center gap-2 text-green-700 dark:text-green-400 text-sm">
+                <CheckCircle className="w-4 h-4" /> Price confirmed at ₹{Number(pricingSheet.proposedPrice).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </div>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pricing confirm dialog */}
+      <Dialog open={pricingConfirmDialogOpen} onOpenChange={setPricingConfirmDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Price Sheet</DialogTitle>
+            <DialogDescription>
+              This will set ₹{pricingProposed ? Number(pricingProposed).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"} as the confirmed selling price for {pricingProduct?.name} today.
+              {pricingSheet?.overrideRequired && <span className="block mt-1 text-red-600 font-medium">⚠ This price is below the floor — override reason is required.</span>}
+            </DialogDescription>
+          </DialogHeader>
+          {pricingSheet?.overrideRequired && (
+            <div className="space-y-1">
+              <Label>Override Reason</Label>
+              <Textarea value={pricingOverrideReason} onChange={(e) => setPricingOverrideReason(e.target.value)} placeholder="Required: explain below-floor pricing..." rows={3} data-testid="input-confirm-override-reason" />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPricingConfirmDialogOpen(false)}>Cancel</Button>
+            <Button
+              className="bg-green-600 hover:bg-green-700 text-white"
+              onClick={() => confirmPricingSheetMutation.mutate()}
+              disabled={confirmPricingSheetMutation.isPending || (pricingSheet?.overrideRequired && !pricingOverrideReason)}
+              data-testid="button-confirm-pricing-final"
+            >
+              {confirmPricingSheetMutation.isPending ? "Confirming..." : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pricing reject dialog */}
+      <Dialog open={pricingRejectDialogOpen} onOpenChange={setPricingRejectDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Price Sheet</DialogTitle>
+            <DialogDescription>Provide a reason. The sheet will return to draft for revision.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <Label>Rejection Notes</Label>
+            <Textarea value={pricingRejectionNotes} onChange={(e) => setPricingRejectionNotes(e.target.value)} placeholder="Explain what needs to be revised..." rows={3} data-testid="input-rejection-notes" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPricingRejectDialogOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={() => rejectPricingSheetMutation.mutate()} disabled={rejectPricingSheetMutation.isPending} data-testid="button-reject-pricing-final">
+              {rejectPricingSheetMutation.isPending ? "Rejecting..." : "Reject"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={grnDialogOpen} onOpenChange={setGrnDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">

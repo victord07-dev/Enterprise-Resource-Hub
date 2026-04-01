@@ -133,12 +133,13 @@ function calculateDiscount(subtotal: number, discount: DiscountState): number {
   return 0;
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
   discount?: DiscountState;
   onDiscountChange?: (d: DiscountState) => void;
+  effectivePrices?: Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>;
 }) {
   const productItems = products.filter(p => p.type === "product");
   const serviceItems = products.filter(p => p.type === "service");
@@ -150,12 +151,14 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     if (field === "productId" && value) {
       const prod = products.find(p => p.id === value);
       if (prod) {
-        item.unitPrice = Number(prod.unitPrice);
+        const ep = effectivePrices?.[prod.id];
+        const priceToUse = ep && !ep.noConfirmedPrice ? Number(ep.effectivePrice) : Number(prod.unitPrice);
+        item.unitPrice = priceToUse;
         item.description = prod.name;
         item.itemType = prod.type;
         item.gstRate = Number(prod.gstRate || 0);
         item.hsnCode = prod.hsnCode || "";
-        const lineTotal = item.quantity * Number(prod.unitPrice);
+        const lineTotal = item.quantity * priceToUse;
         item.totalPrice = lineTotal;
         item.taxAmount = lineTotal * item.gstRate / 100;
       }
@@ -225,9 +228,16 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                     <SelectValue placeholder={`Select ${item.itemType}...`} />
                   </SelectTrigger>
                   <SelectContent>
-                    {(item.itemType === "product" ? productItems : serviceItems).map((p) => (
-                      <SelectItem key={p.id} value={p.id}>{p.name} — ₹{Number(p.unitPrice).toLocaleString()}</SelectItem>
-                    ))}
+                    {(item.itemType === "product" ? productItems : serviceItems).map((p) => {
+                      const ep = effectivePrices?.[p.id];
+                      const displayPrice = (ep && !ep.noConfirmedPrice) ? Number(ep.effectivePrice) : Number(p.unitPrice);
+                      const hasEP = ep && !ep.noConfirmedPrice;
+                      return (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name} — ₹{displayPrice.toLocaleString()}{hasEP ? " ✓" : ""}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -357,6 +367,15 @@ export default function Sales() {
   const { data: products } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
+  const { data: effectivePrices } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }>>({
+    queryKey: ["/api/daily-price-sheets/effective-prices-today"],
+    queryFn: async () => {
+      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+      if (!res.ok) return {};
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
@@ -1889,7 +1908,7 @@ export default function Sales() {
                 </Select>
               </div>
             )}
-            <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} />
+            <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} effectivePrices={effectivePrices} />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-order" disabled={orderMutation.isPending} onClick={() => orderMutation.mutate(orderForm)}>
@@ -1977,7 +1996,7 @@ export default function Sales() {
                 </div>
               )}
             </div>
-            <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} discount={quoteDiscount} onDiscountChange={setQuoteDiscount} />
+            <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} discount={quoteDiscount} onDiscountChange={setQuoteDiscount} effectivePrices={effectivePrices} />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending} onClick={() => quoteMutation.mutate(quoteForm)}>

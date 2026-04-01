@@ -184,6 +184,27 @@ export default function FieldStaff() {
     onSettled: () => setTripStopping(false),
   });
 
+  // Auto-log GPS location every 60 seconds while field staff has an active trip
+  useEffect(() => {
+    if (!isFieldStaff || !myActiveTrip) return;
+    const tripId = myActiveTrip.id;
+
+    const logLocation = async () => {
+      try {
+        const { latitude, longitude } = await getCurrentPosition({ enableHighAccuracy: true });
+        await apiRequest("POST", `/api/trips/${tripId}/log`, { lat: latitude, lng: longitude });
+        queryClient.invalidateQueries({ queryKey: ["/api/location-logs"] });
+      } catch {
+        // Silently ignore GPS/network errors to avoid interrupting the trip
+      }
+    };
+
+    logLocation();
+    const interval = setInterval(logLocation, 60000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFieldStaff, myActiveTrip?.id]);
+
   const adminMapInstance = useRef<L.Map | null>(null);
   const adminMarkersRef = useRef<L.Marker[]>([]);
   const adminPolylineRef = useRef<L.Polyline | null>(null);

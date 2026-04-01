@@ -5819,6 +5819,36 @@ export async function registerRoutes(
 
   // ─── Daily Pricing Engine ─────────────────────────────────────────────────
 
+  // GET effective-prices-today: batch endpoint returns map of productId → effective price
+  app.get("/api/daily-price-sheets/effective-prices-today", authenticateToken, async (req: any, res) => {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const result = await db.execute(sql`
+        SELECT DISTINCT ON (dps.product_id)
+          dps.product_id,
+          dps.sheet_date,
+          dps.proposed_price
+        FROM daily_price_sheets dps
+        WHERE dps.status = 'confirmed'
+          AND dps.proposed_price IS NOT NULL
+          AND dps.sheet_date::date >= (${today}::date - INTERVAL '6 days')
+          AND dps.sheet_date::date <= ${today}::date
+        ORDER BY dps.product_id, dps.sheet_date DESC
+      `);
+      const priceMap: Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean }> = {};
+      for (const row of result.rows as any[]) {
+        priceMap[row.product_id] = {
+          effectivePrice: row.proposed_price,
+          sheetDate: row.sheet_date,
+          noConfirmedPrice: false,
+        };
+      }
+      res.json(priceMap);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get effective prices" });
+    }
+  });
+
   // GET effective-price MUST be before /:id to avoid route conflict
   app.get("/api/daily-price-sheets/effective-price", authenticateToken, async (req: any, res) => {
     try {

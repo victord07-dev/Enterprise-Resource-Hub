@@ -5988,13 +5988,12 @@ export async function registerRoutes(
       const lots = await storage.getDailyPriceSheetLots(sheet.id);
       const sheetPP = parseFloat(sheet.proposedPrice);
       // Each lot uses its own proposedPrice if set; falls back to sheet-level proposedPrice
+      // overrideRequired is computed and persisted here so admin/accountant can see the flag
+      // at confirm time, but overrideReason is only enforced at confirm (not at submit)
       const overrideRequired = lots.some(l => {
         const effectivePP = l.proposedPrice ? parseFloat(l.proposedPrice) : sheetPP;
         return effectivePP < parseFloat(l.floorPrice);
       });
-      if (overrideRequired && !sheet.overrideReason) {
-        return res.status(400).json({ message: "overrideReason is required when any lot's proposed price is below its floor price" });
-      }
 
       const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "submitted", overrideRequired });
       await logAction(req.user.id, "SUBMIT", "DailyPriceSheet", `Submitted price sheet ${sheet.id} for product ${sheet.productId}`);

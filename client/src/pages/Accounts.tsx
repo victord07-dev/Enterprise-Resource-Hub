@@ -67,7 +67,7 @@ export default function Accounts() {
     (salesInvoices ?? []).forEach(inv => {
       const grand = Number(inv.grandTotal);
       const paid = paidPerSalesInvoice[inv.id] ?? 0;
-      const credited = Number((inv as any).creditedAmount ?? 0);
+      const credited = Number(inv.creditedAmount ?? 0);
       totalReceivable += grand;
       totalCollected += Math.min(grand, paid);
       totalCredited += credited;
@@ -368,7 +368,7 @@ export default function Accounts() {
                       salesInvoices.map((inv) => {
                         const customer = customerMap.get(inv.customerId);
                         const paid = paidPerSalesInvoice[inv.id] ?? 0;
-                        const credited = Number((inv as any).creditedAmount ?? 0);
+                        const credited = Number(inv.creditedAmount ?? 0);
                         const balance = Math.max(0, Number(inv.grandTotal) - paid - credited);
                         const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
                         return (

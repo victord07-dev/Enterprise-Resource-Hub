@@ -20,6 +20,7 @@ import {
   insertSupplierInvoiceSchema, insertSupplierPaymentSchema,
   insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
   insertAttachmentSchema, attachments as attachmentsTable,
+  salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
@@ -4990,6 +4991,7 @@ export async function registerRoutes(
         totalIgst: String(totalIgst),
         totalTax: String(totalTax),
         grandTotal: String(grandTotal),
+        creditedAmount: "0",
         status: "pending",
         dueDate: dueDate ?? null,
         notes,
@@ -5320,11 +5322,17 @@ export async function registerRoutes(
 
   // ─── Sales Returns ─────────────────────────────────────────────────────────
 
-  // GET all sales returns
+  // GET all sales returns (with customer name)
   app.get("/api/sales-returns", authenticateToken, async (req: any, res) => {
     try {
       const returns = await storage.getSalesReturns();
-      res.json(returns);
+      const allCustomers = await storage.getCustomers();
+      const customerLookup = new Map(allCustomers.map((c) => [c.id, c.name]));
+      const result = returns.map((sr) => ({
+        ...sr,
+        customerName: customerLookup.get(sr.customerId) ?? null,
+      }));
+      res.json(result);
     } catch (err: unknown) {
       res.status(500).json({ message: "Failed to fetch sales returns" });
     }
@@ -5471,7 +5479,7 @@ export async function registerRoutes(
     }
   });
 
-  // POST process a sales return (atomic transaction)
+  // POST process a sales return (fully atomic DB transaction)
   app.post("/api/sales-returns/:id/process", authenticateToken, async (req: any, res) => {
     try {
       const sr = await storage.getSalesReturn(req.params.id);
@@ -5481,6 +5489,21 @@ export async function registerRoutes(
       const items = await storage.getSalesReturnItems(sr.id);
       const invoice = await storage.getSalesInvoice(sr.invoiceId);
       if (!invoice) return res.status(404).json({ message: "Associated invoice not found" });
+
+      // Load products for service/stock-tracking validation
+      const allProducts = await storage.getProducts();
+      const productMap = new Map(allProducts.map((p) => [p.id, p]));
+
+      // Hard-reject: block if any item with qty > 0 belongs to a service product
+      const returnItemsAll = items.filter((i) => Number(i.qtyReturned) > 0);
+      for (const item of returnItemsAll) {
+        if (item.productId) {
+          const prod = productMap.get(item.productId);
+          if (prod && prod.type === "service") {
+            return res.status(400).json({ message: `Service items cannot be returned: ${item.description}` });
+          }
+        }
+      }
 
       // Validate qty bounds
       for (const item of items) {
@@ -5496,25 +5519,22 @@ export async function registerRoutes(
         return res.status(400).json({ message: "At least one item must have a return qty > 0" });
       }
 
-      // Get product info for service/stock-tracked check
-      const allProducts = await storage.getProducts();
-      const productMap = new Map(allProducts.map((p) => [p.id, p]));
-
       const isInterState = invoice.isInterState;
 
-      // Compute per-item GST and totals
-      let cnSubtotal = 0;
-      let cnTotalCgst = 0;
-      let cnTotalSgst = 0;
-      let cnTotalIgst = 0;
-      const computedItems: Array<{ item: typeof items[0]; taxableAmt: number; cgst: number; sgst: number; igst: number; tax: number; total: number }> = [];
+      // Compute per-item GST and totals (pre-transaction)
+      let cnSubtotal = 0, cnTotalCgst = 0, cnTotalSgst = 0, cnTotalIgst = 0;
+      const computedItems: Array<{
+        item: typeof items[0];
+        taxableAmt: number; cgst: number; sgst: number; igst: number; tax: number; total: number;
+        isStockTracked: boolean;
+      }> = [];
 
       for (const item of returnItems) {
         const qtyReturned = Number(item.qtyReturned);
         const unitPrice = Number(item.unitPrice);
         const gstRate = Number(item.gstRate);
         const taxableAmt = qtyReturned * unitPrice;
-        const totalTax = taxableAmt * gstRate / 100;
+        const totalTax = (taxableAmt * gstRate) / 100;
         const cgst = isInterState ? 0 : totalTax / 2;
         const sgst = isInterState ? 0 : totalTax / 2;
         const igst = isInterState ? totalTax : 0;
@@ -5523,69 +5543,89 @@ export async function registerRoutes(
         cnTotalCgst += cgst;
         cnTotalSgst += sgst;
         cnTotalIgst += igst;
-        computedItems.push({ item, taxableAmt, cgst, sgst, igst, tax: totalTax, total });
+        // Stock-tracked = has a productId AND product type !== "service"
+        const prod = item.productId ? productMap.get(item.productId) : undefined;
+        const isStockTracked = !!prod && prod.type !== "service";
+        computedItems.push({ item, taxableAmt, cgst, sgst, igst, tax: totalTax, total, isStockTracked });
       }
       const cnTaxAmount = cnTotalCgst + cnTotalSgst + cnTotalIgst;
       const cnGrandTotal = cnSubtotal + cnTaxAmount;
 
-      // Atomic operations — all DB writes
-      // Step 1: Update return item computed fields
-      for (const ci of computedItems) {
-        await storage.updateSalesReturnItem(ci.item.id, {
-          taxableAmount: String(ci.taxableAmt.toFixed(2)),
-          cgst: String(ci.cgst.toFixed(2)),
-          sgst: String(ci.sgst.toFixed(2)),
-          igst: String(ci.igst.toFixed(2)),
-          taxAmount: String(ci.tax.toFixed(2)),
-          totalAmount: String(ci.total.toFixed(2)),
-        });
-      }
-
-      // Step 2: Stock ledger entries (RETURN_IN) for stock-tracked products only
-      for (const ci of computedItems) {
-        if (!ci.item.productId) continue;
-        const prod = productMap.get(ci.item.productId);
-        if (!prod) continue;
-        if ((prod as any).type === "service") continue;
-        const qtyReturned = Number(ci.item.qtyReturned);
-        await storage.createStockMovement({
-          productId: ci.item.productId,
-          warehouseId: sr.warehouseId ?? null,
-          movementType: "RETURN_IN",
-          quantity: qtyReturned,
-          referenceType: "SALES_RETURN",
-          referenceId: sr.id,
-          notes: `Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`,
-          createdBy: req.user.id,
-        } as any);
-      }
-
-      // Step 3: Create Credit Note
+      // Generate credit note number before transaction (serial read, safe)
       const creditNoteNumber = await storage.generateCreditNoteNumber();
-      const creditNote = await storage.createCreditNote({
-        creditNoteNumber,
-        invoiceId: sr.invoiceId,
-        salesReturnId: sr.id,
-        customerId: sr.customerId,
-        isInterState,
-        subtotal: String(cnSubtotal.toFixed(2)),
-        totalCgst: String(cnTotalCgst.toFixed(2)),
-        totalSgst: String(cnTotalSgst.toFixed(2)),
-        totalIgst: String(cnTotalIgst.toFixed(2)),
-        taxAmount: String(cnTaxAmount.toFixed(2)),
-        grandTotal: String(cnGrandTotal.toFixed(2)),
-        status: "issued",
-        createdBy: req.user.id,
+
+      // ── Atomic DB transaction ─────────────────────────────────────────────
+      let creditNote: any;
+      await db.transaction(async (tx) => {
+        // Step 1: Update return item computed fields
+        for (const ci of computedItems) {
+          await tx.update(salesReturnItems)
+            .set({
+              taxableAmount: ci.taxableAmt.toFixed(2),
+              cgst: ci.cgst.toFixed(2),
+              sgst: ci.sgst.toFixed(2),
+              igst: ci.igst.toFixed(2),
+              taxAmount: ci.tax.toFixed(2),
+              totalAmount: ci.total.toFixed(2),
+            })
+            .where(eq(salesReturnItems.id, ci.item.id));
+        }
+
+        // Step 2: Stock ledger RETURN_IN for stock-tracked products only
+        for (const ci of computedItems) {
+          if (!ci.isStockTracked || !ci.item.productId) continue;
+          await tx.insert(stockMovements).values({
+            productId: ci.item.productId,
+            warehouseId: sr.warehouseId ?? null,
+            movementType: "RETURN_IN",
+            quantity: Number(ci.item.qtyReturned),
+            referenceType: "SALES_RETURN",
+            referenceId: sr.id,
+            notes: `Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`,
+            createdBy: req.user.id,
+          });
+        }
+
+        // Step 3: Create Credit Note
+        const [cn] = await tx.insert(creditNotes).values({
+          creditNoteNumber,
+          invoiceId: sr.invoiceId,
+          salesReturnId: sr.id,
+          customerId: sr.customerId,
+          isInterState,
+          subtotal: cnSubtotal.toFixed(2),
+          totalCgst: cnTotalCgst.toFixed(2),
+          totalSgst: cnTotalSgst.toFixed(2),
+          totalIgst: cnTotalIgst.toFixed(2),
+          taxAmount: cnTaxAmount.toFixed(2),
+          grandTotal: cnGrandTotal.toFixed(2),
+          status: "issued",
+          createdBy: req.user.id,
+        } as any).returning();
+        creditNote = cn;
+
+        // Step 4: Recompute invoice creditedAmount and status
+        // Sum all credit notes for this invoice (including the one just created)
+        const allCNs = await tx.select().from(creditNotes).where(eq(creditNotes.invoiceId, sr.invoiceId));
+        const totalCredited = allCNs.reduce((s, c) => s + Number(c.grandTotal), 0);
+        const totalPaidResult = await storage.getCustomerPayments(sr.invoiceId);
+        const totalPaid = totalPaidResult.reduce((s, p) => s + Number(p.amount), 0);
+        const grandTotal = Number(invoice.grandTotal);
+        const netOutstanding = grandTotal - totalPaid - totalCredited;
+        const newStatus = netOutstanding <= 0 ? "paid" : totalPaid + totalCredited > 0 ? "partial_paid" : "pending";
+
+        await tx.update(salesInvoices)
+          .set({ creditedAmount: totalCredited.toFixed(2), status: newStatus } as any)
+          .where(eq(salesInvoices.id, sr.invoiceId));
+
+        // Step 5: Mark return processed
+        await tx.update(salesReturns)
+          .set({ status: "processed" })
+          .where(eq(salesReturns.id, sr.id));
       });
 
-      // Step 4: Update invoice creditedAmount and recompute status
-      await storage.recomputeInvoiceCreditedAmount(sr.invoiceId);
-
-      // Step 5: Mark return processed
-      const processed = await storage.updateSalesReturn(sr.id, { status: "processed" });
-
       await logAction(req.user.id, "UPDATE", "SalesReturn", `Processed sales return ${sr.returnNumber} — credit note ${creditNoteNumber} issued`);
-      res.json({ ...processed, creditNote });
+      res.json({ status: "processed", creditNote });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to process sales return";
       res.status(500).json({ message: msg });
@@ -5597,7 +5637,13 @@ export async function registerRoutes(
   app.get("/api/credit-notes", authenticateToken, async (req: any, res) => {
     try {
       const cns = await storage.getCreditNotes();
-      res.json(cns);
+      const allCustomers = await storage.getCustomers();
+      const customerLookup = new Map(allCustomers.map((c) => [c.id, c.name]));
+      const result = cns.map((cn) => ({
+        ...cn,
+        customerName: customerLookup.get(cn.customerId) ?? null,
+      }));
+      res.json(result);
     } catch (err: unknown) {
       res.status(500).json({ message: "Failed to fetch credit notes" });
     }

@@ -567,7 +567,6 @@ function SalesReturnDialog({
                       entityType="sales_return"
                       entityId={salesReturn.id}
                       module="sales"
-                      allowedDocTypes={["return_proof", "customer_doc", "other"]}
                     />
                   </div>
                 )}
@@ -961,7 +960,7 @@ export default function SalesInvoices() {
               {filtered.map((inv) => {
                 const customer = customers.find((c) => c.id === inv.customerId);
                 const isSelected = selectedId === inv.id;
-                const creditedAmount = Number((inv as any).creditedAmount ?? 0);
+                const creditedAmount = Number(inv.creditedAmount ?? 0);
                 return (
                   <button
                     key={inv.id}

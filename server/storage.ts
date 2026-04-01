@@ -1525,7 +1525,7 @@ export class DatabaseStorage implements IStorage {
         return { effectivePrice: sheet.proposedPrice, sheetDate: dateStr, noConfirmedPrice: false };
       }
     }
-    return { effectivePrice: null, sheetDate: date, noConfirmedPrice: true };
+    return { effectivePrice: null, sheetDate: null, noConfirmedPrice: true };
   }
 
   // Dashboard

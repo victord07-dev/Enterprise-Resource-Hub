@@ -281,11 +281,17 @@ async function computeFifoLots(productId: string): Promise<Array<{
     ORDER BY grn.received_date ASC, grn.id ASC
   `);
 
-  // Step 2: net dispatched quantity (out minus RETURN_IN)
+  // Step 2: net dispatched quantity (out minus returns)
+  // Handles both RETURN_IN movement_type (used by sales return flow)
+  // and 'in' with reference_type='SALES_RETURN' (alternate pattern)
   const netRes = await db.execute(sql`
     SELECT
-      COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric          AS total_out,
-      COALESCE(SUM(CASE WHEN movement_type = 'RETURN_IN' THEN quantity ELSE 0 END), 0)::numeric     AS total_return
+      COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
+      COALESCE(SUM(CASE
+        WHEN movement_type = 'RETURN_IN' THEN quantity
+        WHEN movement_type = 'in' AND reference_type = 'SALES_RETURN' THEN quantity
+        ELSE 0
+      END), 0)::numeric AS total_return
     FROM stock_movements
     WHERE product_id = ${productId}
   `);

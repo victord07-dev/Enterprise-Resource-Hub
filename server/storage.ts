@@ -329,7 +329,7 @@ export interface IStorage {
   updateDailyPriceSheet(id: string, data: Partial<Omit<DailyPriceSheet, "id" | "createdAt">>): Promise<DailyPriceSheet | undefined>;
   getDailyPriceSheetLots(sheetId: string): Promise<DailyPriceSheetLot[]>;
   upsertDailyPriceSheetLots(sheetId: string, lots: Omit<DailyPriceSheetLot, "id">[]): Promise<DailyPriceSheetLot[]>;
-  getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string; sheetDate: string; noConfirmedPrice?: boolean } | null>;
+  getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string | null; sheetDate: string | null; noConfirmedPrice: boolean } | null>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1507,7 +1507,9 @@ export class DatabaseStorage implements IStorage {
     return db.insert(dailyPriceSheetLots).values(lots as any).returning();
   }
 
-  async getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string; sheetDate: string; noConfirmedPrice?: boolean } | null> {
+  async getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string | null; sheetDate: string | null; noConfirmedPrice: boolean } | null> {
+    const [prod] = await db.select().from(products).where(eq(products.id, productId));
+    if (!prod) return null;
     const dateObj = new Date(date);
     for (let i = 0; i < 8; i++) {
       const d = new Date(dateObj);
@@ -1520,12 +1522,10 @@ export class DatabaseStorage implements IStorage {
           eq(dailyPriceSheets.status, "confirmed")
         ));
       if (sheet && sheet.proposedPrice) {
-        return { effectivePrice: sheet.proposedPrice, sheetDate: dateStr };
+        return { effectivePrice: sheet.proposedPrice, sheetDate: dateStr, noConfirmedPrice: false };
       }
     }
-    const [prod] = await db.select().from(products).where(eq(products.id, productId));
-    if (!prod) return null;
-    return { effectivePrice: prod.unitPrice, sheetDate: date, noConfirmedPrice: true };
+    return { effectivePrice: null, sheetDate: date, noConfirmedPrice: true };
   }
 
   // Dashboard

@@ -5822,15 +5822,22 @@ export async function registerRoutes(
 
   app.get("/api/daily-price-sheets", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
-      const { productId, sheetDate, status } = req.query as { productId?: string; sheetDate?: string; status?: string };
-      const sheets = await storage.getDailyPriceSheets({ productId, sheetDate, status });
+      const { productId, sheetDate, date, status } = req.query as { productId?: string; sheetDate?: string; date?: string; status?: string };
+      // Accept both `sheetDate` and `date` query params
+      const dateFilter = sheetDate || date;
+      const sheets = await storage.getDailyPriceSheets({ productId, sheetDate: dateFilter, status });
       const allProducts = await storage.getProducts();
       const prodMap = new Map(allProducts.map(p => [p.id, p]));
-      const result = sheets.map(s => ({
-        ...s,
-        productName: prodMap.get(s.productId)?.name ?? null,
-        productSku:  prodMap.get(s.productId)?.sku ?? null,
-        needsPricingReview: prodMap.get(s.productId)?.needsPricingReview ?? false,
+      // Include lot lines in each list item
+      const result = await Promise.all(sheets.map(async s => {
+        const lots = await storage.getDailyPriceSheetLots(s.id);
+        return {
+          ...s,
+          lots,
+          productName: prodMap.get(s.productId)?.name ?? null,
+          productSku:  prodMap.get(s.productId)?.sku ?? null,
+          needsPricingReview: prodMap.get(s.productId)?.needsPricingReview ?? false,
+        };
       }));
       res.json(result);
     } catch (err) {
@@ -5978,6 +5985,7 @@ export async function registerRoutes(
     try {
       const sheet = await storage.getDailyPriceSheet(req.params.id);
       if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
+      if (sheet.status === "confirmed") return res.status(403).json({ message: "Sheet is already confirmed" });
       if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be confirmed" });
       if (!sheet.proposedPrice) return res.status(400).json({ message: "proposedPrice must be set before confirming" });
 
@@ -6005,8 +6013,9 @@ export async function registerRoutes(
       if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be rejected" });
 
       const { rejectionNotes } = req.body;
-      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "rejected", rejectionNotes: rejectionNotes || null });
-      await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId}`);
+      // Return to draft with rejection notes — submitter must revise and resubmit
+      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "draft", rejectionNotes: rejectionNotes || null });
+      await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId} — returned to draft`);
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: "Failed to reject price sheet" });

@@ -1031,8 +1031,23 @@ export async function registerRoutes(
       }
 
       // Earliest dispatch date = the "as of" point for this order's FIFO state.
-      // All 'out' movements with created_at < dispatchDate are "prior" dispatches from other orders.
+      // All 'out' movements with created_at < firstDispatchDate are "prior" dispatches from other orders.
       const firstDispatchDate = new Date(dispatchedChallans[0].dispatch_date);
+
+      // Fetch actually dispatched quantities per product across all dispatched challans for this order.
+      // This handles partial dispatches correctly by using qty_dispatched (not ordered qty).
+      const challanIdList = dispatchedChallans.map(c => `'${c.id}'`).join(",");
+      const dispatchedQtyRes = await db.execute(sql.raw(`
+        SELECT product_id, COALESCE(SUM(qty_dispatched::numeric), 0) AS dispatched_qty
+        FROM delivery_challan_items
+        WHERE challan_id IN (${challanIdList})
+          AND qty_dispatched IS NOT NULL AND qty_dispatched::numeric > 0
+        GROUP BY product_id
+      `));
+      const dispatchedQtyMap = new Map<string, number>();
+      for (const row of dispatchedQtyRes.rows as any[]) {
+        dispatchedQtyMap.set(row.product_id, Number(row.dispatched_qty));
+      }
 
       const result: any[] = [];
       for (const item of items) {
@@ -1040,11 +1055,15 @@ export async function registerRoutes(
           result.push({ itemId: item.id, productId: null, blendedCost: null, estimatedMarginPct: null });
           continue;
         }
+
+        // Use actually dispatched quantity (partial dispatch aware); fall back to ordered qty
+        const dispatchedQty = dispatchedQtyMap.get(item.productId) ?? item.quantity;
+
         let blendedCost: number | null = null;
         let estimatedMarginPct: number | null = null;
 
         try {
-          // Step 1: GRN lots confirmed at or before dispatch date, FIFO ordered (oldest first)
+          // Step 1: GRN lots confirmed at or before first dispatch date, FIFO ordered (oldest first)
           const grnRes = await db.execute(sql`
             SELECT
               gi.received_quantity::numeric                           AS qty,
@@ -1063,7 +1082,7 @@ export async function registerRoutes(
             ORDER BY g.received_date ASC, g.id ASC
           `);
 
-          // Step 2: Prior net out movements = stock dispatched BEFORE this order's first dispatch.
+          // Step 2: Prior net out movements = all out movements created BEFORE this order's first dispatch.
           // Using created_at < firstDispatchDate excludes this order's own challan movements.
           const priorRes = await db.execute(sql`
             SELECT
@@ -1102,8 +1121,8 @@ export async function registerRoutes(
             }
           }
 
-          // Step 4: Consume this order's quantity from available lots in FIFO order
-          let qtyToConsume = item.quantity;
+          // Step 4: Consume this order's DISPATCHED quantity from available lots in FIFO order
+          let qtyToConsume = dispatchedQty;
           let totalCostConsumed = 0;
           let totalQtyConsumed = 0;
           for (const lot of availableLots) {
@@ -1136,7 +1155,7 @@ export async function registerRoutes(
         } catch (e: any) {
           console.error(`[lot-margins] orderId=${orderId} productId=${item.productId}: ${e.message}`);
         }
-        result.push({ itemId: item.id, productId: item.productId, blendedCost, estimatedMarginPct });
+        result.push({ itemId: item.id, productId: item.productId, blendedCost, estimatedMarginPct, dispatchedQty });
       }
       res.json(result);
     } catch (err: any) {

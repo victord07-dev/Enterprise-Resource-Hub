@@ -1469,11 +1469,13 @@ export class DatabaseStorage implements IStorage {
 
   // Daily Price Sheets
   async getDailyPriceSheets(filters?: { productId?: string; sheetDate?: string; status?: string }): Promise<DailyPriceSheet[]> {
-    let result = await db.select().from(dailyPriceSheets).orderBy(desc(dailyPriceSheets.createdAt));
-    if (filters?.productId) result = result.filter(s => s.productId === filters.productId);
-    if (filters?.sheetDate) result = result.filter(s => s.sheetDate === filters.sheetDate);
-    if (filters?.status) result = result.filter(s => s.status === filters.status);
-    return result;
+    const conditions: any[] = [];
+    if (filters?.productId) conditions.push(eq(dailyPriceSheets.productId, filters.productId));
+    if (filters?.sheetDate) conditions.push(eq(dailyPriceSheets.sheetDate, filters.sheetDate));
+    if (filters?.status) conditions.push(eq(dailyPriceSheets.status, filters.status));
+    return db.select().from(dailyPriceSheets)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(dailyPriceSheets.createdAt));
   }
 
   async getDailyPriceSheet(id: string): Promise<DailyPriceSheet | undefined> {
@@ -1511,7 +1513,7 @@ export class DatabaseStorage implements IStorage {
     const [prod] = await db.select().from(products).where(eq(products.id, productId));
     if (!prod) return null;
     const dateObj = new Date(date);
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 7; i++) {
       const d = new Date(dateObj);
       d.setDate(d.getDate() - i);
       const dateStr = d.toISOString().slice(0, 10);

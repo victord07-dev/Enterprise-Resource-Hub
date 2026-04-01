@@ -6027,10 +6027,13 @@ export async function registerRoutes(
       }
 
       // NOTE: product.unitPrice is intentionally NOT overwritten — this sheet is pricing reference only
-      const confirmUpdate: Record<string, any> = { status: "confirmed", confirmedBy: req.user.id };
+      const confirmUpdate: Record<string, any> = {
+        status: "confirmed",
+        confirmedBy: req.user.id,
+        overrideRequired,  // always persist recomputed value (may be true or false)
+      };
       if (bodyOverrideReason) {
         confirmUpdate.overrideReason = bodyOverrideReason;
-        confirmUpdate.overrideRequired = true;
       }
       const updated = await storage.updateDailyPriceSheet(sheet.id, confirmUpdate);
       await db.execute(sql`UPDATE products SET needs_pricing_review = false WHERE id = ${sheet.productId}`);

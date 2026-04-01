@@ -1036,14 +1036,17 @@ export async function registerRoutes(
 
       // Fetch actually dispatched quantities per product across all dispatched challans for this order.
       // This handles partial dispatches correctly by using qty_dispatched (not ordered qty).
-      const challanIdList = dispatchedChallans.map(c => `'${c.id}'`).join(",");
-      const dispatchedQtyRes = await db.execute(sql.raw(`
-        SELECT product_id, COALESCE(SUM(qty_dispatched::numeric), 0) AS dispatched_qty
-        FROM delivery_challan_items
-        WHERE challan_id IN (${challanIdList})
-          AND qty_dispatched IS NOT NULL AND qty_dispatched::numeric > 0
-        GROUP BY product_id
-      `));
+      // Uses a JOIN to avoid any raw string interpolation — fully parameterized via orderId.
+      const dispatchedQtyRes = await db.execute(sql`
+        SELECT dci.product_id, COALESCE(SUM(dci.qty_dispatched::numeric), 0) AS dispatched_qty
+        FROM delivery_challan_items dci
+        JOIN delivery_challans dc ON dc.id = dci.challan_id
+        WHERE dc.order_id = ${orderId}
+          AND dc.status = 'dispatched'
+          AND dci.qty_dispatched IS NOT NULL
+          AND dci.qty_dispatched::numeric > 0
+        GROUP BY dci.product_id
+      `);
       const dispatchedQtyMap = new Map<string, number>();
       for (const row of dispatchedQtyRes.rows as any[]) {
         dispatchedQtyMap.set(row.product_id, Number(row.dispatched_qty));

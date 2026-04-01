@@ -1,0 +1,270 @@
+🚀 FINAL MASTER DEVELOPMENT PLAN (LOCKED)
+Daily Pricing + Lot Engine + Margin Control (Production-Grade)
+🧠 SYSTEM ARCHITECTURE (FINAL)
+STOCK (GRN + movements)
+        ↓
+LOT ENGINE (FIFO + mapping + returns-ready)
+        ↓
+PRICING ENGINE (daily sheets)
+        ↓
+MARGIN ENGINE (lot + portfolio validation)
+        ↓
+SALES / UI / REPORTING
+
+👉 Lot Engine = foundation
+👉 Everything else depends on it
+
+🧱 PHASE 1 — DATABASE (FINAL STRUCTURE)
+✅ 1.1 Products
+ALTER TABLE products 
+ADD COLUMN min_margin_pct NUMERIC(5,2) DEFAULT 5.00;
+
+ALTER TABLE products 
+ADD COLUMN needs_pricing_review BOOLEAN DEFAULT FALSE;
+✅ 1.2 Supplier Primary Flag (FIXED GAP)
+ALTER TABLE supplier_products
+ADD COLUMN is_primary BOOLEAN DEFAULT FALSE;
+✅ 1.3 Daily Price Sheets
+CREATE TABLE daily_price_sheets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id UUID NOT NULL,
+
+  applies_date DATE NOT NULL,
+
+  supplier_price NUMERIC(10,2),
+  market_price NUMERIC(10,2),
+
+  blended_inventory_price NUMERIC(10,2),
+  global_floor_price NUMERIC(10,2),
+  strict_floor_price NUMERIC(10,2),
+
+  min_margin_pct NUMERIC(5,2),
+
+  status VARCHAR(20) DEFAULT 'draft',
+
+  submitted_by VARCHAR,
+  submitted_at TIMESTAMPTZ,
+
+  confirmed_by VARCHAR,
+  confirmed_at TIMESTAMPTZ,
+
+  rejection_notes TEXT,
+  override_required BOOLEAN DEFAULT FALSE,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+
+  UNIQUE(product_id, applies_date)
+);
+✅ 1.4 Price Sheet Lots
+CREATE TABLE daily_price_sheet_lots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  price_sheet_id UUID REFERENCES daily_price_sheets(id) ON DELETE CASCADE,
+
+  grn_id UUID,
+  grn_number VARCHAR,
+  received_date DATE,
+
+  remaining_qty NUMERIC(10,3),
+
+  landed_cost NUMERIC(10,2),
+  lot_floor_price NUMERIC(10,2),
+
+  proposed_price NUMERIC(10,2),
+  confirmed_price NUMERIC(10,2),
+
+  override_reason TEXT
+);
+✅ 1.5 Stock Movements (CRITICAL UPGRADE)
+{
+  productId,
+  warehouseId,
+
+  qty,
+  type, // GRN, DISPATCH, SALES_RETURN, PURCHASE_RETURN, ADJUSTMENT_IN, ADJUSTMENT_OUT
+
+  referenceType,
+  referenceId,
+
+  grnId // 🔥 REQUIRED
+}
+✅ 1.6 Base Lot View
+CREATE VIEW stock_lot_base AS
+SELECT
+  grni.id,
+  grni.product_id,
+  grni.grn_id,
+  g.grn_number,
+  g.received_date,
+  grni.received_quantity,
+  grni.buying_price,
+  g.delivery_cost
+FROM goods_receipt_note_items grni
+JOIN goods_receipt_notes g ON g.id = grni.grn_id
+WHERE g.status = 'confirmed';
+🧱 PHASE 2 — LOT ENGINE (FINAL + CORRECTED)
+🎯 API
+GET /api/inventory/stock-lot-summary?productId=
+🔥 FULL ENGINE LOGIC
+✅ Step 1 — Load GRN Lots
+✅ Step 2 — Landed Cost
+landedCost =
+(buyingPrice × qty + allocatedDeliveryCost)
+÷ qty
+✅ Step 3 — FIFO Engine
+for movement in chronological order:
+
+  switch (movement.type):
+
+    case "GRN":
+      create lot
+
+    case "DISPATCH":
+      consume FIFO
+
+    case "SALES_RETURN":
+      add back to original lot (using grnId)
+
+    case "PURCHASE_RETURN":
+      // FUTURE MODULE (#22)
+      reduce from original lot
+
+    case "ADJUSTMENT_IN":
+      create synthetic lot
+      cost = product.costPrice
+
+    case "ADJUSTMENT_OUT":
+      consume FIFO
+⚠️ ADD COMMENT (IMPORTANT)
+// PURCHASE_RETURN logic will activate after module #22 is built
+✅ Step 4 — Remaining Qty
+✅ Step 5 — Floor Calculations
+lotFloor = landedCost × (1 + margin)
+
+blendedCost = weighted avg
+
+globalFloor = blendedCost × (1 + margin)
+
+strictFloor = MAX(lotFloor)
+✅ RESPONSE
+{
+  lots: [],
+  blendedCost,
+  globalFloor,
+  strictFloor
+}
+🚨 HARD RULE
+
+👉 DO NOT PROCEED until this is fully tested
+
+🧱 PHASE 3 — PRICING ENGINE
+✅ 3.1 GET Sheets
+✅ 3.2 CREATE / UPDATE
+if proposed_price < lotFloor:
+   allow
+   override_required = true
+✅ 3.3 CONFIRM
+status = confirmed
+
+product.unitPrice = marketPrice
+
+product.needs_pricing_review = false
+🔒 3.4 LOCK
+if status === "confirmed":
+   throw 403
+✅ 3.5 REJECT
+✅ 3.6 EFFECTIVE PRICE (FIXED GAP)
+effectivePrice = todayConfirmed ?? yesterdayConfirmed
+🧱 PHASE 4 — MARGIN ENGINE (FULLY DEFINED)
+🔥 TWO-LEVEL MARGIN SYSTEM
+✅ 4.1 Lot-Level (Sales)
+lotMargin = (price - lotCost) / lotCost
+✅ 4.2 Portfolio-Level (Pricing Screen)
+totalRevenue = Σ(lotQty × proposedPrice)
+
+requiredRevenue = totalCost × (1 + margin)
+
+SAFE / RISK
+🧱 PHASE 5 — AUTOMATION
+✅ GRN → Create pricing sheet
+✅ Supplier change → flag review
+✅ 5PM Cron → notify missing approvals
+✅ Fallback → yesterday price
+🧱 PHASE 6 — UI (FINAL + CORRECTED)
+✅ Inventory → Daily Pricing
+
+📄
+
+✅ Pricing Dialog
+Show:
+Blended cost
+Global floor
+Strict floor
+🔥 Add:
+Discount Simulation (FULL SPEC)
+Input:
+qty
+price
+Output:
+margin %
+globalFloor check
+strictFloor check
+🟢 MOVE THIS ALSO TO SALES
+
+📄
+
+👉 Staff uses this here most
+
+🔒 Disable unitPrice editing
+if confirmedPriceSheetExists:
+   make unitPrice readOnly
+🧱 PHASE 7 — BUSINESS INTELLIGENCE (FINALIZED)
+✅ Pressure Indicator (FIXED)
+pressure = cost / marketPrice
+
+> 0.9 → 🔴 High Risk
+> 0.75 → 🟡 Medium
+≤ 0.75 → 🟢 Safe
+✅ Sell Priority (FINAL RULE)
+Non-Serial:
+if age > 30 days AND qty > minStock:
+   show 🔥
+Serial:
+if age > 30 days:
+   show 🔥
+🧱 PHASE 8 — EDGE CASES (FINAL)
+✅ Synthetic Lot
+cost = product.costPrice
+label = "Manual Adjustment"
+✅ No GRN → fallback
+✅ Multi-supplier → use primary
+✅ Missing approval → fallback
+🧱 PHASE 9 — TESTING
+
+Test:
+
+Multi-week pricing
+Mixed lots
+Sales returns
+Adjustments
+New stock arrival
+Margin simulation
+Override flow
+🧠 FINAL BUILD ORDER (STRICT)
+Week 1 → DB + LOT ENGINE
+Week 2 → Pricing APIs
+Week 3 → UI + Dialog
+Week 4 → Margin + Simulation
+Week 5 → Testing
+
+THEN → #22 Purchase Return
+🚀 FINAL RESULT
+
+You now have:
+
+✅ Lot-aware inventory
+✅ Dynamic pricing
+✅ Margin protection
+✅ Discount flexibility
+✅ Audit + control
+✅ Future-ready system

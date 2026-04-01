@@ -4859,7 +4859,8 @@ export async function registerRoutes(
       const items = await storage.getSalesInvoiceItems(inv.id);
       const pmts = await storage.getCustomerPayments(inv.id);
       const totalPaid = pmts.reduce((s, p) => s + Number(p.amount), 0);
-      const balance = Number(inv.grandTotal) - totalPaid;
+      const creditedAmount = Number(inv.creditedAmount ?? 0);
+      const balance = Math.max(0, Number(inv.grandTotal) - totalPaid - creditedAmount);
       res.json({ ...inv, items, payments: pmts, totalPaid, balance });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to fetch invoice" });
@@ -5317,7 +5318,7 @@ export async function registerRoutes(
   // ─── Sales Returns ─────────────────────────────────────────────────────────
 
   // GET all sales returns (with customer name + invoice number)
-  app.get("/api/sales-returns", authenticateToken, async (req: any, res) => {
+  app.get("/api/sales-returns", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const returns = await storage.getSalesReturns();
       const allCustomers = await storage.getCustomers();
@@ -5336,7 +5337,7 @@ export async function registerRoutes(
   });
 
   // GET single sales return with items
-  app.get("/api/sales-returns/:id", authenticateToken, async (req: any, res) => {
+  app.get("/api/sales-returns/:id", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const sr = await storage.getSalesReturn(req.params.id);
       if (!sr) return res.status(404).json({ message: "Sales return not found" });
@@ -5350,7 +5351,7 @@ export async function registerRoutes(
   });
 
   // POST create a sales return from an invoice (draft)
-  app.post("/api/sales-returns/create-from-invoice/:invoiceId", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-returns/create-from-invoice/:invoiceId", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const invoice = await storage.getSalesInvoice(req.params.invoiceId);
       if (!invoice) return res.status(404).json({ message: "Invoice not found" });
@@ -5448,7 +5449,7 @@ export async function registerRoutes(
   });
 
   // PATCH update draft return (qty, reason, returnType, returnDate)
-  app.patch("/api/sales-returns/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/sales-returns/:id", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const sr = await storage.getSalesReturn(req.params.id);
       if (!sr) return res.status(404).json({ message: "Sales return not found" });
@@ -5478,7 +5479,7 @@ export async function registerRoutes(
   });
 
   // POST process a sales return (fully atomic DB transaction)
-  app.post("/api/sales-returns/:id/process", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-returns/:id/process", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const sr = await storage.getSalesReturn(req.params.id);
       if (!sr) return res.status(404).json({ message: "Sales return not found" });
@@ -5572,6 +5573,7 @@ export async function registerRoutes(
         // Step 2: Stock ledger RETURN_IN for stock-tracked products only (raw SQL to avoid type coercion)
         for (const ci of computedItems) {
           if (!ci.isStockTracked || !ci.item.productId) continue;
+          // stock_movements.quantity is INTEGER in schema; round to nearest whole unit (standard for discrete-UOM products)
           const qty = Math.round(Number(ci.item.qtyReturned));
           await tx.execute(sql`
             INSERT INTO stock_movements (id, product_id, warehouse_id, movement_type, quantity, reference_type, reference_id, notes, created_by, created_at)
@@ -5589,7 +5591,25 @@ export async function registerRoutes(
                   ${cnTaxAmount.toFixed(2)}, ${cnGrandTotal.toFixed(2)}, ${"issued"}, ${req.user.id}, now())
           RETURNING *
         `);
-        creditNote = cnResult.rows[0];
+        // Map snake_case raw SQL result to camelCase for frontend
+        const cnRow = cnResult.rows[0] as Record<string, unknown>;
+        creditNote = {
+          id: cnRow.id,
+          creditNoteNumber: cnRow.credit_note_number,
+          invoiceId: cnRow.invoice_id,
+          salesReturnId: cnRow.sales_return_id,
+          customerId: cnRow.customer_id,
+          isInterState: cnRow.is_inter_state,
+          subtotal: cnRow.subtotal,
+          totalCgst: cnRow.total_cgst,
+          totalSgst: cnRow.total_sgst,
+          totalIgst: cnRow.total_igst,
+          taxAmount: cnRow.tax_amount,
+          grandTotal: cnRow.grand_total,
+          status: cnRow.status,
+          createdBy: cnRow.created_by,
+          createdAt: cnRow.created_at,
+        };
 
         // Step 4: Recompute invoice creditedAmount and status (query all CNs within tx)
         const allCNsResult = await tx.execute(sql`
@@ -5625,7 +5645,7 @@ export async function registerRoutes(
 
   // ─── Credit Notes ──────────────────────────────────────────────────────────
 
-  app.get("/api/credit-notes", authenticateToken, async (req: any, res) => {
+  app.get("/api/credit-notes", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const cns = await storage.getCreditNotes();
       const allCustomers = await storage.getCustomers();
@@ -5640,7 +5660,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/credit-notes/:id", authenticateToken, async (req: any, res) => {
+  app.get("/api/credit-notes/:id", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const cn = await storage.getCreditNote(req.params.id);
       if (!cn) return res.status(404).json({ message: "Credit note not found" });

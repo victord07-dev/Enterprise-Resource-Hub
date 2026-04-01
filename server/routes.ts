@@ -1006,9 +1006,22 @@ export async function registerRoutes(
   });
 
   // GET lot margin estimates for dispatched sales order line items
-  app.get("/api/sales-orders/:id/lot-margins", authenticateToken, async (req, res) => {
+  // Restricted to pricing roles — exposes cost/margin data
+  app.get("/api/sales-orders/:id/lot-margins", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req, res) => {
     try {
-      const items = await storage.getSalesOrderItems(req.params.id);
+      const orderId = req.params.id;
+      const items = await storage.getSalesOrderItems(orderId);
+
+      // Determine effective dispatch date: latest dispatch_date across dispatched challans for this order
+      const challanRes = await db.execute(sql`
+        SELECT MAX(dispatch_date) AS last_dispatch
+        FROM delivery_challans
+        WHERE order_id = ${orderId} AND status = 'dispatched' AND dispatch_date IS NOT NULL
+      `);
+      const lastDispatch: Date = (challanRes.rows as any[])[0]?.last_dispatch
+        ? new Date((challanRes.rows as any[])[0].last_dispatch)
+        : new Date();
+
       const result: any[] = [];
       for (const item of items) {
         if (item.itemType !== "product" || !item.productId) {
@@ -1018,20 +1031,49 @@ export async function registerRoutes(
         let blendedCost: number | null = null;
         let estimatedMarginPct: number | null = null;
         try {
-          const lots = await computeFifoLots(item.productId);
-          const totalQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+          // Use GRN lots confirmed at or before dispatch date for dispatch-time cost estimation (FIFO-aware)
+          const lotsRes = await db.execute(sql`
+            SELECT
+              gi.received_quantity AS qty,
+              CAST(gi.buying_price AS numeric) AS cost,
+              COALESCE(
+                CAST(g.delivery_cost AS numeric) / NULLIF(
+                  (SELECT SUM(i2.received_quantity) FROM goods_receipt_note_items i2 WHERE i2.grn_id = g.id AND i2.received_quantity > 0),
+                  0
+                ),
+                0
+              ) AS apportioned_delivery
+            FROM goods_receipt_notes g
+            JOIN goods_receipt_note_items gi ON gi.grn_id = g.id
+            WHERE gi.product_id = ${item.productId}
+              AND g.status = 'confirmed'
+              AND g.received_date <= ${lastDispatch.toISOString()}
+            ORDER BY g.received_date ASC
+          `);
+
+          const lotList = (lotsRes.rows as any[]).map(l => ({
+            qty: Number(l.qty),
+            landedCost: Number(l.cost) + Number(l.apportioned_delivery || 0),
+          })).filter(l => l.qty > 0 && l.landedCost > 0);
+
+          const totalQty = lotList.reduce((s, l) => s + l.qty, 0);
           if (totalQty > 0) {
-            blendedCost = parseFloat((lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalQty).toFixed(2));
+            blendedCost = parseFloat(
+              (lotList.reduce((s, l) => s + l.landedCost * l.qty, 0) / totalQty).toFixed(2)
+            );
             const unitPrice = Number(item.unitPrice);
             if (unitPrice > 0) {
               estimatedMarginPct = parseFloat(((unitPrice - blendedCost) / unitPrice * 100).toFixed(2));
             }
           }
-        } catch {}
+        } catch (e: any) {
+          console.error(`[lot-margins] orderId=${orderId} productId=${item.productId}: ${e.message}`);
+        }
         result.push({ itemId: item.id, productId: item.productId, blendedCost, estimatedMarginPct });
       }
       res.json(result);
     } catch (err: any) {
+      console.error("[lot-margins]", err);
       res.status(500).json({ message: err.message || "Failed to compute lot margins" });
     }
   });
@@ -5064,7 +5106,9 @@ export async function registerRoutes(
       for (const prod of allProds.rows as any[]) {
         const totalStock = Number(prod.total_stock);
         let lots: Awaited<ReturnType<typeof computeFifoLots>> = [];
-        try { lots = await computeFifoLots(prod.id); } catch {}
+        try { lots = await computeFifoLots(prod.id); } catch (e: any) {
+          console.error(`[pricing-summary] computeFifoLots productId=${prod.id}: ${e.message}`);
+        }
 
         const totalLotQty = lots.reduce((s, l) => s + l.remainingQty, 0);
         const blendedCost = totalLotQty > 0
@@ -5145,6 +5189,7 @@ export async function registerRoutes(
         },
       });
     } catch (err: any) {
+      console.error("[pricing-summary]", err);
       res.status(500).json({ message: err.message || "Failed to generate pricing summary" });
     }
   });

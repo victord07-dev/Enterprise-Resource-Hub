@@ -7,10 +7,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
+  Flame, TrendingDown, Shield, Search,
 } from "lucide-react";
+import { useCurrentUser } from "@/lib/auth";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -516,7 +519,267 @@ function ARAgingTab() {
   );
 }
 
+// ─── Daily Pricing Tab ──────────────────────────────────────────────────────
+
+interface PricingProduct {
+  productId: string;
+  productName: string;
+  sku: string;
+  category: string;
+  unit: string;
+  totalStock: number;
+  blendedCost: number | null;
+  globalFloor: number | null;
+  strictFloor: number | null;
+  confirmedPrice: number;
+  sheetDate: string | null;
+  hasConfirmedToday: boolean;
+  hasConfirmedSheet: boolean;
+  hasUnconfirmedSheet: boolean;
+  marginPct: number | null;
+  pressureLevel: "High Risk" | "Medium" | "Safe" | "None";
+  sellPriority: boolean;
+  lotCount: number;
+  lotAgeDays: number | null;
+  needsPricingReview: boolean;
+}
+
+interface PricingSummary {
+  products: PricingProduct[];
+  portfolio: {
+    totalInventoryCost: number;
+    revenueAtConfirmedPrices: number;
+    requiredRevenueAtMinMargin: number;
+    portfolioMarginPct: number | null;
+    portfolioStatus: "SAFE" | "AT RISK";
+    productsAtRisk: number;
+    productsNoSheet: number;
+    productsSellPriority: number;
+  };
+}
+
+const fmtCur = (v: number) => `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtPct = (v: number | null) => v === null ? "—" : `${v.toFixed(1)}%`;
+
+function PressureBadge({ level }: { level: PricingProduct["pressureLevel"] }) {
+  if (level === "High Risk") return <Badge className="bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 border-0 text-xs px-1.5 py-0.5">High Risk</Badge>;
+  if (level === "Medium") return <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border-0 text-xs px-1.5 py-0.5">Medium</Badge>;
+  if (level === "Safe") return <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border-0 text-xs px-1.5 py-0.5">Safe</Badge>;
+  return <Badge variant="outline" className="text-xs px-1.5 py-0.5">No Cost</Badge>;
+}
+
+function DailyPricingTab() {
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [atRiskOnly, setAtRiskOnly] = useState(false);
+
+  const { data, isLoading } = useQuery<PricingSummary>({
+    queryKey: ["/api/reports/pricing-summary"],
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16 text-muted-foreground text-sm">
+        Loading pricing data…
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const { portfolio } = data;
+  const categories = Array.from(new Set(data.products.map(p => p.category))).sort();
+
+  let filtered = data.products;
+  if (search) {
+    const q = search.toLowerCase();
+    filtered = filtered.filter(p =>
+      p.productName.toLowerCase().includes(q) ||
+      p.sku.toLowerCase().includes(q) ||
+      p.category.toLowerCase().includes(q)
+    );
+  }
+  if (category !== "all") filtered = filtered.filter(p => p.category === category);
+  if (atRiskOnly) filtered = filtered.filter(p => p.pressureLevel === "High Risk" || p.pressureLevel === "Medium");
+
+  // Sort: High Risk first, then Medium, then by marginPct ascending
+  filtered = [...filtered].sort((a, b) => {
+    const order = { "High Risk": 0, "Medium": 1, "Safe": 2, "None": 3 };
+    const diff = (order[a.pressureLevel] ?? 3) - (order[b.pressureLevel] ?? 3);
+    if (diff !== 0) return diff;
+    if (a.marginPct === null && b.marginPct === null) return 0;
+    if (a.marginPct === null) return 1;
+    if (b.marginPct === null) return -1;
+    return a.marginPct - b.marginPct;
+  });
+
+  return (
+    <div className="space-y-5">
+      {/* Portfolio cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card data-testid="card-portfolio-cost">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-md bg-blue-50 dark:bg-blue-950/30 flex items-center justify-center flex-shrink-0">
+                <Package className="w-4 h-4 text-blue-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground leading-tight">Total Inventory Cost</p>
+                <p className="text-lg font-bold leading-tight mt-0.5" data-testid="text-portfolio-cost">{fmtCur(portfolio.totalInventoryCost)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-portfolio-revenue">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-md bg-emerald-50 dark:bg-emerald-950/30 flex items-center justify-center flex-shrink-0">
+                <TrendingUp className="w-4 h-4 text-emerald-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground leading-tight">Revenue @ Confirmed Prices</p>
+                <p className="text-lg font-bold leading-tight mt-0.5" data-testid="text-portfolio-revenue">{fmtCur(portfolio.revenueAtConfirmedPrices)}</p>
+                {portfolio.portfolioMarginPct !== null && (
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400">{fmtPct(portfolio.portfolioMarginPct)} margin</p>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-portfolio-required">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-md bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center flex-shrink-0">
+                <Shield className="w-4 h-4 text-amber-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground leading-tight">Required @ 5% Min Margin</p>
+                <p className="text-lg font-bold leading-tight mt-0.5" data-testid="text-portfolio-required">{fmtCur(portfolio.requiredRevenueAtMinMargin)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card data-testid="card-portfolio-status">
+          <CardContent className="p-4">
+            <div className="flex items-start gap-3">
+              <div className={`w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 ${portfolio.portfolioStatus === "SAFE" ? "bg-emerald-50 dark:bg-emerald-950/30" : "bg-red-50 dark:bg-red-950/30"}`}>
+                {portfolio.portfolioStatus === "SAFE"
+                  ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                  : <AlertTriangle className="w-4 h-4 text-red-500" />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground leading-tight">Portfolio Status</p>
+                <p className={`text-lg font-bold leading-tight mt-0.5 ${portfolio.portfolioStatus === "SAFE" ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`} data-testid="text-portfolio-status">{portfolio.portfolioStatus}</p>
+                <div className="flex gap-1 flex-wrap mt-0.5">
+                  {portfolio.productsAtRisk > 0 && <span className="text-xs text-red-500">{portfolio.productsAtRisk} at risk</span>}
+                  {portfolio.productsSellPriority > 0 && <span className="text-xs text-amber-500">{portfolio.productsSellPriority} 🔥</span>}
+                  {portfolio.productsNoSheet > 0 && <span className="text-xs text-muted-foreground">{portfolio.productsNoSheet} unpriced</span>}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="relative flex-1 min-w-40">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input placeholder="Search product, SKU, category…" value={search} onChange={e => setSearch(e.target.value)} className="pl-8 h-8 text-sm" data-testid="input-pricing-search" />
+        </div>
+        <Select value={category} onValueChange={setCategory}>
+          <SelectTrigger className="w-44 h-8 text-sm" data-testid="select-pricing-category">
+            <SelectValue placeholder="All Categories" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Categories</SelectItem>
+            {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-2">
+          <Switch id="at-risk-toggle" checked={atRiskOnly} onCheckedChange={setAtRiskOnly} data-testid="switch-at-risk" />
+          <Label htmlFor="at-risk-toggle" className="text-sm cursor-pointer">Show only at-risk</Label>
+        </div>
+        <span className="text-xs text-muted-foreground ml-auto">{filtered.length} product{filtered.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      {/* Table */}
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/30">
+                <th className="text-left px-4 py-2.5 font-medium text-xs text-muted-foreground">Product</th>
+                <th className="text-left px-3 py-2.5 font-medium text-xs text-muted-foreground">Category</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Stock</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Blended Cost</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Global Floor</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Strict Floor</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Today's Price</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Margin %</th>
+                <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Pressure</th>
+                <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="text-center py-10 text-muted-foreground text-sm">No products match the current filter.</td>
+                </tr>
+              ) : filtered.map(p => (
+                <tr key={p.productId} className="border-b hover:bg-muted/20 transition-colors" data-testid={`row-pricing-${p.productId}`}>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      {p.sellPriority && <Flame className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
+                      <div>
+                        <p className="font-medium leading-tight">{p.productName}</p>
+                        <p className="text-xs text-muted-foreground">{p.sku}</p>
+                      </div>
+                      {p.needsPricingReview && <Badge className="ml-1 bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border-0 text-xs px-1 py-0">Review</Badge>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-muted-foreground text-xs">{p.category}</td>
+                  <td className="px-3 py-2.5 text-right font-mono text-xs">{p.totalStock.toLocaleString()} {p.unit}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono">{p.blendedCost !== null ? fmtCur(p.blendedCost) : <span className="text-muted-foreground">—</span>}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono text-amber-600 dark:text-amber-400">{p.globalFloor !== null ? fmtCur(p.globalFloor) : <span className="text-muted-foreground">—</span>}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono text-red-600 dark:text-red-400">{p.strictFloor !== null ? fmtCur(p.strictFloor) : <span className="text-muted-foreground">—</span>}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono">
+                    <div className="flex items-center justify-end gap-1">
+                      <span className="font-medium">{fmtCur(p.confirmedPrice)}</span>
+                      {p.hasConfirmedToday && <span title="Confirmed today" className="text-emerald-500 text-xs">✓</span>}
+                      {!p.hasConfirmedSheet && !p.hasUnconfirmedSheet && <span title="No price sheet" className="text-muted-foreground text-xs">⚪</span>}
+                      {p.hasUnconfirmedSheet && !p.hasConfirmedSheet && <span title="Draft/submitted sheet exists" className="text-amber-500 text-xs">◑</span>}
+                    </div>
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-xs">
+                    {p.marginPct !== null ? (
+                      <span className={p.marginPct < 5 ? "text-red-600 dark:text-red-400 font-semibold" : p.marginPct < 15 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}>
+                        {fmtPct(p.marginPct)}
+                      </span>
+                    ) : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-center"><PressureBadge level={p.pressureLevel} /></td>
+                  <td className="px-3 py-2.5 text-center">
+                    {p.hasConfirmedToday
+                      ? <Badge className="bg-emerald-100 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border-0 text-xs">Confirmed</Badge>
+                      : p.hasUnconfirmedSheet
+                      ? <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 border-0 text-xs">Pending</Badge>
+                      : <Badge variant="outline" className="text-muted-foreground text-xs">No Sheet</Badge>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export default function Reports() {
+  const { data: currentUser } = useCurrentUser();
+  const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -535,6 +798,7 @@ export default function Reports() {
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
           <TabsTrigger value="ap-aging" data-testid="tab-ap-aging">AP Aging</TabsTrigger>
           <TabsTrigger value="ar-aging" data-testid="tab-ar-aging">AR Aging</TabsTrigger>
+          {canManagePricing && <TabsTrigger value="daily-pricing" data-testid="tab-daily-pricing">Daily Pricing</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6 mt-4">
@@ -632,6 +896,12 @@ export default function Reports() {
         <TabsContent value="ar-aging" className="mt-4">
           <ARAgingTab />
         </TabsContent>
+
+        {canManagePricing && (
+          <TabsContent value="daily-pricing" className="mt-4">
+            <DailyPricingTab />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

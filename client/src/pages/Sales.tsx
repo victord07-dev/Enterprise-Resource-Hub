@@ -448,6 +448,7 @@ export default function Sales() {
   const { toast } = useToast();
   const { data: currentUser } = useCurrentUser();
   const isReadOnly = currentUser?.role === "accountant";
+  const canSeePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
   const { data: orders, isLoading: ordersLoading } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
   const { data: customers, isLoading: customersLoading } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: quotations, isLoading: quotationsLoading } = useQuery<Quotation[]>({ queryKey: ["/api/quotations"] });
@@ -500,6 +501,7 @@ export default function Sales() {
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
   const [orderDispatchSummaryMap, setOrderDispatchSummaryMap] = useState<Record<string, Array<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }>>>({});
+  const [orderLotMarginsMap, setOrderLotMarginsMap] = useState<Record<string, Array<{ itemId: string; productId: string | null; blendedCost: number | null; estimatedMarginPct: number | null }>>>({});
 
   const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
   const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
@@ -519,16 +521,18 @@ export default function Sales() {
       const fetches: Promise<any>[] = [
         fetch(`/api/sales-orders/${orderId}/items`, { headers }),
         fetch(`/api/delivery-challans/by-order/${orderId}`, { headers }),
+        fetch(`/api/sales-orders/${orderId}/lot-margins`, { headers }),
       ];
       if (isDispatchEligible) {
         fetches.push(fetch(`/api/sales-orders/${orderId}/dispatch-summary`, { headers }));
       }
       const results = await Promise.all(fetches);
-      const [itemsData, challansData] = await Promise.all([results[0].json(), results[1].json()]);
+      const [itemsData, challansData, lotMarginsData] = await Promise.all([results[0].json(), results[1].json(), results[2].json()]);
       setExpandedOrderItems(itemsData);
       setOrderChallansMap(prev => ({ ...prev, [orderId]: Array.isArray(challansData) ? challansData : [] }));
-      if (isDispatchEligible && results[2]) {
-        const summaryData = await results[2].json();
+      setOrderLotMarginsMap(prev => ({ ...prev, [orderId]: Array.isArray(lotMarginsData) ? lotMarginsData : [] }));
+      if (isDispatchEligible && results[3]) {
+        const summaryData = await results[3].json();
         setOrderDispatchSummaryMap(prev => ({ ...prev, [orderId]: Array.isArray(summaryData.items) ? summaryData.items : [] }));
       }
       setExpandedOrderId(orderId);
@@ -1275,10 +1279,13 @@ export default function Sales() {
                                           <th className="text-right py-1 font-medium">GST%</th>
                                           <th className="text-right py-1 font-medium">Tax (GST)</th>
                                           <th className="text-right py-1 font-medium">Item Total (incl. GST)</th>
+                                          {canSeePricing && <th className="text-right py-1 font-medium">Est. Margin</th>}
                                         </tr>
                                       </thead>
                                       <tbody>
-                                        {expandedOrderItems.map((it) => (
+                                        {expandedOrderItems.map((it) => {
+                                          const lotMargin = orderLotMarginsMap[order.id]?.find(m => m.itemId === it.id);
+                                          return (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
                                               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
@@ -1294,8 +1301,20 @@ export default function Sales() {
                                               {Number(it.taxAmount || 0) > 0 ? `₹${Number(it.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                                             </td>
                                             <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number(it.taxAmount || 0)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                            {canSeePricing && (
+                                              <td className="py-1.5 text-right">
+                                                {lotMargin && lotMargin.estimatedMarginPct !== null ? (
+                                                  <span className={`font-medium ${lotMargin.estimatedMarginPct < 5 ? "text-red-600 dark:text-red-400" : lotMargin.estimatedMarginPct < 15 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`} title={`FIFO blended cost: ₹${lotMargin.blendedCost?.toLocaleString() ?? "—"}`}>
+                                                    {lotMargin.estimatedMarginPct.toFixed(1)}%
+                                                  </span>
+                                                ) : it.itemType === "product" ? (
+                                                  <span className="text-muted-foreground">—</span>
+                                                ) : null}
+                                              </td>
+                                            )}
                                           </tr>
-                                        ))}
+                                          );
+                                        })}
                                       </tbody>
                                     </table>
                                   ) : (

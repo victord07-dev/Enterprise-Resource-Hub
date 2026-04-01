@@ -1005,6 +1005,37 @@ export async function registerRoutes(
     }
   });
 
+  // GET lot margin estimates for dispatched sales order line items
+  app.get("/api/sales-orders/:id/lot-margins", authenticateToken, async (req, res) => {
+    try {
+      const items = await storage.getSalesOrderItems(req.params.id);
+      const result: any[] = [];
+      for (const item of items) {
+        if (item.itemType !== "product" || !item.productId) {
+          result.push({ itemId: item.id, productId: null, blendedCost: null, estimatedMarginPct: null });
+          continue;
+        }
+        let blendedCost: number | null = null;
+        let estimatedMarginPct: number | null = null;
+        try {
+          const lots = await computeFifoLots(item.productId);
+          const totalQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+          if (totalQty > 0) {
+            blendedCost = parseFloat((lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalQty).toFixed(2));
+            const unitPrice = Number(item.unitPrice);
+            if (unitPrice > 0) {
+              estimatedMarginPct = parseFloat(((unitPrice - blendedCost) / unitPrice * 100).toFixed(2));
+            }
+          }
+        } catch {}
+        result.push({ itemId: item.id, productId: item.productId, blendedCost, estimatedMarginPct });
+      }
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to compute lot margins" });
+    }
+  });
+
   app.post("/api/sales-orders/:id/items", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const items = req.body.items;
@@ -4983,6 +5014,138 @@ export async function registerRoutes(
       res.json({ rows, summary });
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to generate AR aging report" });
+    }
+  });
+
+  // ─── Pricing Summary Report ─────────────────────────────────────────────────
+  app.get("/api/reports/pricing-summary", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Fetch all products and current stock
+      const allProds = await db.execute(sql`
+        SELECT p.id, p.name, p.sku, p.category, p.unit, p.unit_price, p.cost_price,
+               p.min_stock_level, p.needs_pricing_review,
+               COALESCE(SUM(s.quantity), 0)::numeric AS total_stock
+        FROM products p
+        LEFT JOIN inventory_stock s ON s.product_id = p.id
+        WHERE p.type = 'product'
+        GROUP BY p.id
+      `);
+
+      // Fetch today's confirmed sheet (7-day window)
+      const sheetRes = await db.execute(sql`
+        SELECT DISTINCT ON (product_id)
+          product_id, sheet_date, proposed_price, blended_inventory_price,
+          global_floor_price, strict_floor_price, status
+        FROM daily_price_sheets
+        WHERE status = 'confirmed' AND proposed_price IS NOT NULL
+          AND sheet_date::date >= (${today}::date - INTERVAL '6 days')
+          AND sheet_date::date <= ${today}::date
+        ORDER BY product_id, sheet_date DESC
+      `);
+      const sheetMap = new Map<string, any>();
+      for (const r of sheetRes.rows as any[]) {
+        sheetMap.set(r.product_id, r);
+      }
+
+      // Also check unconfirmed (draft/submitted) sheets for today
+      const unconfirmedRes = await db.execute(sql`
+        SELECT product_id FROM daily_price_sheets
+        WHERE sheet_date::date = ${today}::date AND status IN ('draft', 'submitted')
+      `);
+      const unconfirmedSet = new Set((unconfirmedRes.rows as any[]).map(r => r.product_id));
+
+      let portfolioTotalCost = 0;
+      let portfolioRevenue = 0;
+      let portfolioRequiredRevenue = 0;
+
+      const products: any[] = [];
+      for (const prod of allProds.rows as any[]) {
+        const totalStock = Number(prod.total_stock);
+        let lots: Awaited<ReturnType<typeof computeFifoLots>> = [];
+        try { lots = await computeFifoLots(prod.id); } catch {}
+
+        const totalLotQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+        const blendedCost = totalLotQty > 0
+          ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalLotQty
+          : 0;
+        const globalFloor = blendedCost > 0 ? blendedCost * 1.05 : 0;
+        const strictFloor = lots.length > 0 ? Math.max(...lots.map(l => l.floorPrice)) : 0;
+
+        const sheet = sheetMap.get(prod.id);
+        const confirmedPrice = sheet ? Number(sheet.proposed_price) : Number(prod.unit_price);
+        const sheetDate = sheet ? (typeof sheet.sheet_date === "string" ? sheet.sheet_date.slice(0, 10) : new Date(sheet.sheet_date).toISOString().slice(0, 10)) : null;
+        const hasConfirmedToday = sheetDate === today;
+        const hasConfirmedSheet = sheetDate !== null;
+        const hasUnconfirmedSheet = unconfirmedSet.has(prod.id);
+
+        const marginPct = confirmedPrice > 0 && blendedCost > 0
+          ? ((confirmedPrice - blendedCost) / confirmedPrice) * 100
+          : null;
+
+        const pressureRatio = blendedCost > 0 && confirmedPrice > 0 ? blendedCost / confirmedPrice : null;
+        const pressureLevel = pressureRatio === null ? "None"
+          : pressureRatio > 0.9 ? "High Risk"
+          : pressureRatio > 0.75 ? "Medium"
+          : "Safe";
+
+        const oldestLotDate = lots.length > 0
+          ? new Date(Math.min(...lots.map(l => l.lotDate ? l.lotDate.getTime() : Date.now())))
+          : null;
+        const lotAgeDays = oldestLotDate ? Math.floor((Date.now() - oldestLotDate.getTime()) / 86400000) : null;
+        const sellPriority = lotAgeDays !== null && lotAgeDays > 30 && totalStock > (Number(prod.min_stock_level) || 0);
+
+        // Portfolio rollup (only products with cost data)
+        if (blendedCost > 0 && totalStock > 0) {
+          portfolioTotalCost += blendedCost * totalStock;
+          portfolioRevenue += confirmedPrice * totalStock;
+          portfolioRequiredRevenue += (blendedCost / (1 - 0.05)) * totalStock; // cost / (1 - minMargin)
+        }
+
+        products.push({
+          productId: prod.id,
+          productName: prod.name,
+          sku: prod.sku,
+          category: prod.category,
+          unit: prod.unit,
+          totalStock,
+          blendedCost: blendedCost > 0 ? parseFloat(blendedCost.toFixed(2)) : null,
+          globalFloor: globalFloor > 0 ? parseFloat(globalFloor.toFixed(2)) : null,
+          strictFloor: strictFloor > 0 ? parseFloat(strictFloor.toFixed(2)) : null,
+          confirmedPrice: parseFloat(confirmedPrice.toFixed(2)),
+          sheetDate,
+          hasConfirmedToday,
+          hasConfirmedSheet,
+          hasUnconfirmedSheet,
+          marginPct: marginPct !== null ? parseFloat(marginPct.toFixed(2)) : null,
+          pressureLevel,
+          sellPriority,
+          lotCount: lots.length,
+          lotAgeDays,
+          needsPricingReview: prod.needs_pricing_review,
+        });
+      }
+
+      const portfolioStatus = portfolioRevenue >= portfolioRequiredRevenue ? "SAFE" : "AT RISK";
+
+      res.json({
+        products,
+        portfolio: {
+          totalInventoryCost: parseFloat(portfolioTotalCost.toFixed(2)),
+          revenueAtConfirmedPrices: parseFloat(portfolioRevenue.toFixed(2)),
+          requiredRevenueAtMinMargin: parseFloat(portfolioRequiredRevenue.toFixed(2)),
+          portfolioMarginPct: portfolioRevenue > 0
+            ? parseFloat(((portfolioRevenue - portfolioTotalCost) / portfolioRevenue * 100).toFixed(2))
+            : null,
+          portfolioStatus,
+          productsAtRisk: products.filter(p => p.pressureLevel === "High Risk").length,
+          productsNoSheet: products.filter(p => !p.hasConfirmedSheet).length,
+          productsSellPriority: products.filter(p => p.sellPriority).length,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to generate pricing summary" });
     }
   });
 

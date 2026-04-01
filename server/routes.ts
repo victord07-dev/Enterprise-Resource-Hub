@@ -5943,19 +5943,13 @@ export async function registerRoutes(
       if (!["draft", "rejected"].includes(sheet.status)) return res.status(409).json({ message: "Can only edit draft or rejected sheets" });
 
       const { proposedPrice, overrideReason, notes, lots: lotsInput } = req.body;
-      const existingLots = await storage.getDailyPriceSheetLots(sheet.id);
 
-      let overrideRequired = sheet.overrideRequired;
-      if (proposedPrice !== undefined) {
-        const pp = parseFloat(proposedPrice);
-        overrideRequired = existingLots.some(l => pp < parseFloat(l.floorPrice));
-      }
-
-      const update: Record<string, any> = { overrideRequired, rejectionNotes: null };
+      const update: Record<string, any> = { rejectionNotes: null };
       if (proposedPrice !== undefined) update.proposedPrice = parseFloat(proposedPrice).toFixed(2);
       if (overrideReason !== undefined) update.overrideReason = overrideReason;
       if (notes !== undefined) update.notes = notes;
 
+      // Apply lot-level proposedPrice edits first
       if (Array.isArray(lotsInput)) {
         for (const li of lotsInput) {
           if (li.id && li.proposedPrice !== undefined) {
@@ -5966,6 +5960,14 @@ export async function registerRoutes(
           }
         }
       }
+
+      // Recompute overrideRequired from updated lots and the effective sheet proposedPrice
+      const currentLots = await storage.getDailyPriceSheetLots(sheet.id);
+      const sheetPP = proposedPrice !== undefined ? parseFloat(proposedPrice) : parseFloat(sheet.proposedPrice ?? "0");
+      update.overrideRequired = currentLots.some(l => {
+        const effectivePP = l.proposedPrice ? parseFloat(l.proposedPrice) : sheetPP;
+        return effectivePP < parseFloat(l.floorPrice);
+      });
 
       const updated = await storage.updateDailyPriceSheet(sheet.id, update);
       const updatedLots = await storage.getDailyPriceSheetLots(sheet.id);
@@ -5984,10 +5986,14 @@ export async function registerRoutes(
       if (!sheet.proposedPrice) return res.status(400).json({ message: "proposedPrice must be set before submitting" });
 
       const lots = await storage.getDailyPriceSheetLots(sheet.id);
-      const pp = parseFloat(sheet.proposedPrice);
-      const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
+      const sheetPP = parseFloat(sheet.proposedPrice);
+      // Each lot uses its own proposedPrice if set; falls back to sheet-level proposedPrice
+      const overrideRequired = lots.some(l => {
+        const effectivePP = l.proposedPrice ? parseFloat(l.proposedPrice) : sheetPP;
+        return effectivePP < parseFloat(l.floorPrice);
+      });
       if (overrideRequired && !sheet.overrideReason) {
-        return res.status(400).json({ message: "overrideReason is required when proposed price is below floor for any lot" });
+        return res.status(400).json({ message: "overrideReason is required when any lot's proposed price is below its floor price" });
       }
 
       const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "submitted", overrideRequired });
@@ -6007,13 +6013,17 @@ export async function registerRoutes(
       if (!sheet.proposedPrice) return res.status(400).json({ message: "proposedPrice must be set before confirming" });
 
       const lots = await storage.getDailyPriceSheetLots(sheet.id);
-      const pp = parseFloat(sheet.proposedPrice);
-      const overrideRequired = lots.some(l => pp < parseFloat(l.floorPrice));
-      // When proposed price is below floor for any lot, overrideReason MUST be supplied
-      // explicitly in the confirm request body — stored sheet.overrideReason is not accepted
+      const sheetPP = parseFloat(sheet.proposedPrice);
+      // Each lot uses its own proposedPrice if set; falls back to sheet-level proposedPrice
+      const overrideRequired = lots.some(l => {
+        const effectivePP = l.proposedPrice ? parseFloat(l.proposedPrice) : sheetPP;
+        return effectivePP < parseFloat(l.floorPrice);
+      });
+      // When any lot's price is below floor, overrideReason MUST be supplied explicitly
+      // in the confirm request body — stored sheet.overrideReason is not accepted
       const bodyOverrideReason = (req.body?.overrideReason ?? undefined) as string | undefined;
       if (overrideRequired && !bodyOverrideReason) {
-        return res.status(400).json({ message: "overrideReason is required in the confirm request body when proposed price is below floor for any lot" });
+        return res.status(400).json({ message: "overrideReason is required in the confirm request body when any lot's proposed price is below its floor" });
       }
 
       // NOTE: product.unitPrice is intentionally NOT overwritten — this sheet is pricing reference only

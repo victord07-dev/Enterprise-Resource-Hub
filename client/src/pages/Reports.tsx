@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
+import { useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,12 +10,15 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { useToast } from "@/hooks/use-toast";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
-  Flame, TrendingDown, Shield, Search,
+  Flame, TrendingDown, Shield, Search, ChevronDown,
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
+import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF } from "@/lib/reports-pdf";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -80,6 +85,35 @@ const rowTint: Record<string, string> = {
   "61-90": "bg-red-50/60 dark:bg-red-950/15",
   "90+": "bg-red-100/70 dark:bg-red-950/25",
 };
+
+// ─── Export helpers ──────────────────────────────────────────────────────────
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function downloadCSV(filename: string, headers: string[], rows: (string | number | null)[][]) {
+  const escape = (v: string | number | null) => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.map(escape).join(","), ...rows.map(r => r.map(escape).join(","))];
+  const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadPDF(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Data types ───────────────────────────────────────────────────────────────
 
 interface APAgingRow {
   invoiceId: string;
@@ -168,6 +202,19 @@ function APAgingTab() {
   // Table rows: apply paid-invoice toggle on top of supplier filter
   const filtered = supplierFiltered.filter(r => showPaid || r.balance > 0);
 
+  const handleExportCSV = () => {
+    downloadCSV(
+      `itfi-ap-aging-${todayISO()}.csv`,
+      ["Supplier", "Invoice #", "PO #", "Invoice Date", "Due Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
+      filtered.map(r => [r.supplierName, r.invoiceNumber, r.poNumber ?? "", r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
+    );
+  };
+
+  const handleExportPDF = () => {
+    const blob = generateAPAgingPDF(filtered, summary, supplierFilter === "all" ? "All Suppliers" : (filtered[0]?.supplierName ?? ""));
+    downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, blob);
+  };
+
   const summaryCards = [
     { label: "Total Outstanding", value: summary.totalOutstanding, bucket: "90+", icon: AlertCircle, iconClass: "text-red-500" },
     { label: "Current (Not Due)", value: summary.current, bucket: "current", icon: CheckCircle2, iconClass: "text-emerald-500" },
@@ -224,6 +271,12 @@ function APAgingTab() {
         <span className="text-xs text-muted-foreground ml-auto">
           {filtered.length} invoice{filtered.length !== 1 ? "s" : ""}
         </span>
+        <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={filtered.length === 0} data-testid="button-ap-aging-pdf">
+          <FileText className="w-3.5 h-3.5 mr-1.5" />PDF
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExportCSV} disabled={filtered.length === 0} data-testid="button-ap-aging-csv">
+          <Download className="w-3.5 h-3.5 mr-1.5" />CSV
+        </Button>
       </div>
 
       {/* Table */}
@@ -364,6 +417,19 @@ function ARAgingTab() {
     return <span className="ml-1">{sortAsc ? "↑" : "↓"}</span>;
   };
 
+  const handleExportCSV = () => {
+    downloadCSV(
+      `itfi-ar-aging-${todayISO()}.csv`,
+      ["Customer", "Type", "GSTIN", "Invoice #", "Invoice Date", "Due Date", "Grand Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
+      filtered.map(r => [r.customerName, r.customerType, r.customerGSTIN ?? "", r.invoiceNumber, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
+    );
+  };
+
+  const handleExportPDF = () => {
+    const blob = generateARAgingPDF(filtered, summary, customerFilter === "all" ? "All Customers" : (filtered[0]?.customerName ?? ""));
+    downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, blob);
+  };
+
   const summaryCards = [
     { label: "Total Outstanding", value: summary.totalOutstanding, bucket: "90+", icon: AlertCircle, iconClass: "text-red-500" },
     { label: "Current (Not Due)", value: summary.current, bucket: "current", icon: CheckCircle2, iconClass: "text-emerald-500" },
@@ -418,6 +484,12 @@ function ARAgingTab() {
         <span className="text-xs text-muted-foreground ml-auto">
           {filtered.length} invoice{filtered.length !== 1 ? "s" : ""}
         </span>
+        <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={filtered.length === 0} data-testid="button-ar-aging-pdf">
+          <FileText className="w-3.5 h-3.5 mr-1.5" />PDF
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExportCSV} disabled={filtered.length === 0} data-testid="button-ar-aging-csv">
+          <Download className="w-3.5 h-3.5 mr-1.5" />CSV
+        </Button>
       </div>
 
       <Card>
@@ -625,6 +697,19 @@ function DailyPricingTab() {
     if (atRiskOnly) filtered = filtered.filter(p => p.pressureLevel === "High Risk" || p.pressureLevel === "Medium");
   }
 
+  const handleExportCSV = () => {
+    downloadCSV(
+      `itfi-daily-pricing-${todayISO()}.csv`,
+      ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Sell Priority"],
+      filtered.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, p.sellPriority ? "Yes" : "No"])
+    );
+  };
+
+  const handleExportPDF = () => {
+    const blob = generatePricingPDF(filtered, portfolio, search || category !== "all" || !!activeInsight ? "Filtered view" : "All Products");
+    downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, blob);
+  };
+
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(p =>
@@ -809,6 +894,12 @@ function DailyPricingTab() {
           </div>
         )}
         <span className="text-xs text-muted-foreground ml-auto">{filtered.length} product{filtered.length !== 1 ? "s" : ""}</span>
+        <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={filtered.length === 0} data-testid="button-pricing-pdf">
+          <FileText className="w-3.5 h-3.5 mr-1.5" />PDF
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExportCSV} disabled={filtered.length === 0} data-testid="button-pricing-csv">
+          <Download className="w-3.5 h-3.5 mr-1.5" />CSV
+        </Button>
       </div>
 
       {/* Table */}
@@ -886,9 +977,60 @@ function DailyPricingTab() {
   );
 }
 
+const TAB_LABELS: Record<string, string> = {
+  overview: "Overview",
+  "ap-aging": "AP Aging",
+  "ar-aging": "AR Aging",
+  "daily-pricing": "Daily Pricing",
+};
+
 export default function Reports() {
   const { data: currentUser } = useCurrentUser();
   const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+  const [activeTab, setActiveTab] = useState("overview");
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+
+  const exportCurrentTab = (format: "csv" | "pdf") => {
+    const selectorMap: Record<string, string> = {
+      "ap-aging": `[data-testid="button-ap-aging-${format}"]`,
+      "ar-aging": `[data-testid="button-ar-aging-${format}"]`,
+      "daily-pricing": `[data-testid="button-pricing-${format}"]`,
+    };
+    const selector = selectorMap[activeTab];
+    if (!selector) {
+      toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
+      return;
+    }
+    const el = document.querySelector<HTMLButtonElement>(selector);
+    if (!el) {
+      toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
+      return;
+    }
+    if (el.disabled) {
+      toast({ title: "No data to export", description: "Load the tab first or adjust filters." });
+      return;
+    }
+    el.click();
+  };
+
+  const handleOverviewCard = (title: string) => {
+    if (title === "Inventory Report") { navigate("/inventory"); return; }
+    if (title === "Staff Report") { navigate("/employees"); return; }
+    if (title === "Project Report") { navigate("/projects"); return; }
+    if (title === "Tax Report") {
+      const apBtn = document.querySelector<HTMLButtonElement>('[data-testid="button-ap-aging-pdf"]');
+      const arBtn = document.querySelector<HTMLButtonElement>('[data-testid="button-ar-aging-pdf"]');
+      if (apBtn && !apBtn.disabled) apBtn.click();
+      if (arBtn && !arBtn.disabled) arBtn.click();
+      if (!apBtn || !arBtn) {
+        setActiveTab("ap-aging");
+        toast({ title: "Switch to AP/AR Aging tabs to generate a Tax Report PDF", description: "Each tab has its own PDF export button." });
+      }
+      return;
+    }
+    toast({ title: "Coming soon", description: "Data pipelines for this report are not yet connected." });
+  };
 
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
@@ -897,13 +1039,29 @@ export default function Reports() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Reports</h1>
           <p className="text-muted-foreground text-sm mt-1">Business analytics and exportable reports</p>
         </div>
-        <Button variant="outline" data-testid="button-export-all">
-          <Download className="w-4 h-4 mr-2" />
-          Export All
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" data-testid="button-export-all">
+              <Download className="w-4 h-4 mr-2" />
+              Export
+              <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => exportCurrentTab("csv")} data-testid="dropdown-export-csv">
+              <Download className="w-4 h-4 mr-2" />
+              Export {TAB_LABELS[activeTab] ?? "Current Tab"} as CSV
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => exportCurrentTab("pdf")} data-testid="dropdown-export-pdf">
+              <FileText className="w-4 h-4 mr-2" />
+              Export {TAB_LABELS[activeTab] ?? "Current Tab"} as PDF
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList data-testid="tabs-reports">
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
           <TabsTrigger value="ap-aging" data-testid="tab-ap-aging">AP Aging</TabsTrigger>
@@ -925,7 +1083,7 @@ export default function Reports() {
                       <p className="text-xs text-muted-foreground">{report.description}</p>
                     </div>
                   </div>
-                  <Button variant="outline" size="sm" className="w-full">
+                  <Button variant="outline" size="sm" className="w-full" onClick={() => handleOverviewCard(report.title)} data-testid={`button-generate-${report.title.toLowerCase().replace(/\s+/g, "-")}`}>
                     <Download className="w-3.5 h-3.5 mr-2" />
                     Generate Report
                   </Button>

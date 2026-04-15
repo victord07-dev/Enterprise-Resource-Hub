@@ -1,0 +1,233 @@
+#24 — Daily Pricing UI + Sales Integration (FINAL — PRODUCTION READY)
+🧠 What & Why
+
+This task converts your backend system into a daily operational tool for:
+
+sales team
+pricing team
+CEO / owner
+💡 Goal:
+Show correct data → allow decisions → enforce safety → never block sales
+🔒 CORE UI PRINCIPLES (MANDATORY)
+1. Never block business
+Sales must ALWAYS continue
+use effective price fallback (#27)
+show warnings instead of blocking (except below floor)
+2. Separate decision vs execution
+Pricing happens in Pricing UI
+Selling happens in Sales UI
+3. Show only relevant complexity
+no lot data in product list
+full lot data only in pricing dialog
+4. Visual clarity over data overload
+color indicators
+badges
+warnings
+🖥️ MODULE: Inventory → Daily Pricing Tab
+📍 Main Table (Primary Screen)
+Columns:
+Column	Source
+Product	products
+Primary Supplier Price	supplier_products (isPrimary)
+Blended Cost	#22
+Global Floor	#22
+Strict Floor	#22
+Proposed Price	#27
+Effective Price	#27
+Source	#27 (today / fallback / none)
+Status	draft / submitted / confirmed / rejected
+Needs Review	products.needsPricingReview
+Pressure Indicator	derived
+Sell Priority 🔥	derived
+Actions	open dialog
+🎨 Visual Indicators (MANDATORY)
+Source badge:
+🟢 Today → “Approved Today”
+🟡 Fallback → “Using Previous Price”
+🔴 None → “No Approved Price”
+Pressure indicator:
+cost / proposedPrice
+
+90% → 🔴 High Risk
+
+75% → 🟡 Medium
+
+else → 🟢 Safe
+Needs review badge:
+products.needsPricingReview = true
+Sell priority 🔥:
+(stock age > 30 days AND qty > minStockLevel)
+🔍 Pricing Dialog (FULL-SCREEN — Inventory Only)
+Purpose:
+
+👉 Decision-making screen (staff + CEO)
+
+Sections:
+🟢 1. Summary Header
+Product name
+Supplier price
+Blended cost
+Global floor
+Strict floor
+🟢 2. Proposed Price Input
+proposedMarketPrice (editable)
+Color logic:
+🟢 above strict floor
+🟡 between global & strict
+🔴 below global
+🟢 3. Lot Breakdown Table
+GRN	Date	Qty	Cost	Floor	Proposed
+
+👉 Purpose:
+
+💡 “How many units can be sold at what minimum price”
+🟢 4. Override Warning
+
+If any:
+
+proposedPrice < lotFloor
+
+Show:
+
+⚠️ Below safe margin — override required
+
+Require:
+
+overrideReason input
+🟢 5. Actions
+Role	Actions
+Staff	Save Draft / Submit
+CEO/Admin	Confirm / Reject
+🧮 Discount Simulation Component (CRITICAL)
+Used in:
+Pricing dialog
+Sales form
+Inputs:
+qty
+selling price
+Output:
+margin %
+clears global floor ✔/❌
+clears strict floor ✔/❌
+Color result:
+🟢 Safe
+🟡 Risk
+🔴 Block
+🛒 Sales / Quotation Integration
+🔴 THIS IS MOST IMPORTANT PART
+When adding product:
+Fetch:
+GET /effective-price
+Display:
+Selling Price: ₹140
+Also show:
+Floor: ₹115
+Source: Today / Fallback / None
+⚠️ Warning cases:
+🟡 fallback:
+Using previous price
+🔴 none:
+No approved price — using default
+💰 Discount Behavior
+If user changes price:
+Case 1 — Above floor
+
+✔ allowed
+
+Case 2 — Below floor
+
+❌ block OR require override (based on role)
+
+🔐 Product Module Changes
+In Products Page:
+Add:
+minMarginPct (editable)
+needsPricingReview (badge)
+Modify:
+unitPrice → read-only IF confirmed price exists today
+🔔 Notifications UI (Integration from #27)
+
+When user clicks:
+
+“Price Sheet Awaiting Review”
+
+👉 Opens pricing dialog directly
+
+🚫 What NOT to Do
+
+❌ Do NOT show lot breakdown in product list
+❌ Do NOT allow manual price override without validation
+❌ Do NOT block sales due to missing approval
+❌ Do NOT open full pricing dialog inside sales form
+
+⚠️ UX CORRECTIONS (IMPORTANT FIXES FROM REVIEW)
+1. No multiple panels in sales form
+
+Instead of:
+
+10 collapsible panels ❌
+
+Use:
+
+Single "Check Margin" button per line
+→ opens small modal
+2. No nested full-screen dialogs
+full dialog → ONLY in inventory
+sales → lightweight modal
+📊 DATA FLOW (FINAL)
+#22 → cost + floor
+
+#27 → price + approval + fallback
+
+#24 → shows + enforces
+
+Sales → uses #27
+BUT validated by #22
+🧾 Validation Checklist
+
+Before moving to #25:
+
+✔ pricing table loads correctly
+✔ dialog shows correct lot data
+✔ submit/confirm/reject works
+✔ override UI works
+✔ sales uses effective price
+✔ discount validation works
+✔ fallback warnings visible
+✔ noConfirmedPrice handled
+✔ product price lock works
+
+🧠 Real Business Behavior
+If no update today:
+Use yesterday price + warning
+If CEO delays:
+Sales continues safely
+If new product:
+Use fallback price
+🧾 Owner Explanation
+The system shows daily cost and safe price.
+
+Your team enters market price.
+
+You approve it.
+
+Sales team uses that price, and the system ensures they never sell below profit.
+
+Even if pricing is delayed, business continues safely.
+🔥 FINAL STATUS
+
+👉 This is now:
+
+💡 Production-grade UI for pricing + sales control
+🚀 NEXT STEP
+
+👉 Build #24
+👉 Then move to #25 (Reports)
+
+🔥 FINAL LINE
+
+👉 #22 = safety
+👉 #27 = decision
+👉 #24 = execution
+
+💡 Together = real-world usable system

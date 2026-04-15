@@ -3140,6 +3140,7 @@ export async function registerRoutes(
           try {
             fifoLotsPerProduct[item.productId] = await computeFifoLots(item.productId, { warehouseId: challan.sourceId });
           } catch (e) {
+            console.error(`[FIFO][DISPATCH] computeFifoLots failed for productId=${item.productId} warehouseId=${challan.sourceId} challan=${challan.challanNumber}:`, (e as Error).message);
             fifoLotsPerProduct[item.productId] = [];
           }
         }
@@ -3194,8 +3195,11 @@ export async function registerRoutes(
               remaining -= consumed;
             }
 
-            // If qty is not fully covered by known lots (e.g. manual stock adjustments), record remainder without grnId
+            // If qty is not fully covered by known lots (e.g. manual stock adjustments), record remainder without grnId.
+            // This is expected for stock that entered outside the GRN workflow (adjustments, opening balances).
+            // Log a WARNING so data-integrity drift is visible in server logs.
             if (remaining > 0) {
+              console.warn(`[FIFO][DISPATCH][FALLBACK] productId=${item.productId} warehouseId=${challan.sourceId} challan=${challan.challanNumber} unattributed_qty=${remaining} totalQty=${qty} — no matching GRN lots (manual/adjusted stock)`);
               await addLedgerEntry(tx, {
                 productId: item.productId,
                 warehouseId: challan.sourceId,

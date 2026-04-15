@@ -1,0 +1,167 @@
+#25 — Margin Engine & Pricing Reports
+🧠 What & Why
+
+The system now supports:
+
+FIFO lot-based cost (#22)
+Daily pricing with approval workflow (#27)
+Full pricing UI and sales integration (#28)
+
+However, there is no management-level visibility into:
+
+overall profitability
+pricing risk
+products requiring action
+💡 Goal:
+Provide a real-time pricing and margin dashboard
+that converts cost + pricing data into business decisions.
+✅ Done Looks Like
+1. Reports → Daily Pricing Dashboard
+
+A new page under:
+
+Reports → Daily Pricing
+2. Portfolio Summary (Top Cards)
+
+Display 4 summary cards:
+
+🟢 Total Inventory Cost
+Sum of (remaining stock × blendedCost)
+🟢 Expected Revenue
+Sum of (remaining stock × effectivePrice)
+🟡 Required Revenue (Min Margin)
+Sum of (remaining stock × globalFloor)
+🔴 Portfolio Status
+If Expected Revenue ≥ Required Revenue → SAFE
+Else → AT RISK
+3. Product-Level Table
+Columns:
+Product | Stock Qty | Avg Cost | Effective Price | Global Floor | Margin % | Source | Risk | Needs Pricing
+Calculations:
+Margin %
+((effectivePrice - blendedCost) / blendedCost) × 100
+Risk Indicator
+costRatio = blendedCost / effectivePrice
+
+0.9 → 🔴 High Risk
+
+0.75 → 🟡 Medium
+
+else → 🟢 Safe
+Source
+
+From:
+
+/api/daily-price-sheets/effective-prices-today
+
+Values:
+
+"today" | "fallback" | "none"
+⚠️ Special Handling — No Confirmed Price
+
+If:
+
+source = "none"
+
+Then:
+
+show badge: "Needs Pricing"
+exclude from Expected Revenue calculation ❗
+include in a separate count
+4. Actionable Insights Section
+🟡 Needs Pricing
+products.needsPricingReview = true OR source = "none"
+🔴 High Risk Products
+marginPct < product.minMarginPct
+🔥 Old Stock Pressure
+stock age > 30 days AND qty > minStockLevel
+5. Sales Order — Lot-Level Margin
+📍 In Sales Order Detail Page
+
+For each dispatched line item:
+
+Cost (FIFO): ₹40,000  
+Selling Price: ₹45,000  
+Margin: 12.5%
+If multiple lots used:
+Use weighted average cost based on FIFO consumption
+🔌 API — Pricing Summary
+Endpoint:
+GET /api/reports/pricing-summary
+Response Structure:
+Per Product:
+{
+  productId,
+  productName,
+  stockQty,
+  blendedCost,
+  effectivePrice,
+  globalFloor,
+  marginPct,
+  riskLevel,
+  source,
+  needsPricingReview
+}
+Portfolio:
+{
+  totalCost,
+  expectedRevenue,
+  requiredRevenue,
+  status: "SAFE" | "AT_RISK",
+  productsWithoutPriceCount
+}
+⚠️ Business Rules (MANDATORY)
+1. Use Effective Price ONLY
+Do NOT use product.unitPrice for reporting
+2. Exclude "No Price" Products from Revenue
+source = "none" → exclude from expectedRevenue
+3. FIFO Cost Only
+Use blendedCost from lot engine (not WAC directly)
+4. Warehouse Support (Optional Filter)
+
+Allow filtering by:
+
+warehouseId (if provided)
+🎨 UI — Reports Page
+Sections:
+🔷 1. Portfolio Cards (top)
+🔷 2. Filters
+Product | Risk Level | Needs Pricing | Warehouse
+🔷 3. Table
+
+Include:
+
+sorting (margin %, risk)
+toggle: Show only at-risk products
+📁 Files
+server/routes.ts → add /api/reports/pricing-summary
+server/storage.ts → pricing aggregation logic
+client/src/pages/Reports.tsx → add Daily Pricing tab
+client/src/components → summary cards + table
+🚫 Out of Scope
+Historical trend charts
+automated alerts
+commissions / payroll integration
+forecasting
+🔄 Workflow After This Task
+Role	Action
+Owner	monitors profitability
+Pricing team	identifies gaps
+Sales team	sells with confidence
+System	enforces margin
+🧾 Owner-Level Explanation
+This dashboard shows whether your inventory is profitable at current prices.
+
+It highlights products where margins are low, pricing is missing, or stock needs attention.
+
+You can immediately take action — update prices, push sales, or clear inventory.
+🔥 FINAL SYSTEM STACK
+#22 → cost engine  
+#27 → pricing engine  
+#28 → UI + workflow  
+#25 → business intelligence
+🚀 FINAL RESULT
+
+👉 You now have:
+
+💡 End-to-end pricing + profit control system

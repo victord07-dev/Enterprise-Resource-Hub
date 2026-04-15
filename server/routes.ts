@@ -5354,7 +5354,7 @@ export async function registerRoutes(
       // Fetch all products and current stock
       const allProds = await db.execute(sql`
         SELECT p.id, p.name, p.sku, p.category, p.unit, p.unit_price, p.cost_price,
-               p.min_stock_level, p.needs_pricing_review,
+               p.min_stock_level, p.needs_pricing_review, p.min_margin_pct,
                COALESCE(SUM(s.quantity), 0)::numeric AS total_stock
         FROM products p
         LEFT JOIN inventory_stock s ON s.product_id = p.id
@@ -5397,11 +5397,15 @@ export async function registerRoutes(
           console.error(`[pricing-summary] computeFifoLots productId=${prod.id}: ${e.message}`);
         }
 
+        // Per-product minimum margin (from Task #26 — respects product-level setting)
+        const minMarginPct = Number(prod.min_margin_pct ?? 5);
+
         const totalLotQty = lots.reduce((s, l) => s + l.remainingQty, 0);
         const blendedCost = totalLotQty > 0
           ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalLotQty
           : 0;
-        const globalFloor = blendedCost > 0 ? blendedCost * 1.05 : 0;
+        // Fix #4: globalFloor uses per-product minMarginPct, not hardcoded 5%
+        const globalFloor = blendedCost > 0 ? blendedCost * (1 + minMarginPct / 100) : 0;
         const strictFloor = lots.length > 0 ? Math.max(...lots.map(l => l.floorPrice)) : 0;
 
         const sheet = sheetMap.get(prod.id);
@@ -5411,14 +5415,19 @@ export async function registerRoutes(
         const hasConfirmedSheet = sheetDate !== null;
         const hasUnconfirmedSheet = unconfirmedSet.has(prod.id);
 
+        // Fix #2: derive source field ("today" | "fallback" | "none")
+        const source: "today" | "fallback" | "none" = hasConfirmedToday ? "today"
+          : hasConfirmedSheet ? "fallback"
+          : "none";
+
         const marginPct = confirmedPrice > 0 && blendedCost > 0
           ? ((confirmedPrice - blendedCost) / confirmedPrice) * 100
           : null;
 
-        const pressureRatio = blendedCost > 0 && confirmedPrice > 0 ? blendedCost / confirmedPrice : null;
-        const pressureLevel = pressureRatio === null ? "None"
-          : pressureRatio > 0.9 ? "High Risk"
-          : pressureRatio > 0.75 ? "Medium"
+        // Fix #5: pressureLevel uses per-product minMarginPct, not hardcoded 0.9/0.75 ratios
+        const pressureLevel = marginPct === null ? "None"
+          : marginPct < minMarginPct ? "High Risk"
+          : marginPct < (minMarginPct + 10) ? "Medium"
           : "Safe";
 
         const oldestLotDate = lots.length > 0
@@ -5427,11 +5436,16 @@ export async function registerRoutes(
         const lotAgeDays = oldestLotDate ? Math.floor((Date.now() - oldestLotDate.getTime()) / 86400000) : null;
         const sellPriority = lotAgeDays !== null && lotAgeDays > 30 && totalStock > (Number(prod.min_stock_level) || 0);
 
-        // Portfolio rollup (only products with cost data)
+        // Portfolio rollup
         if (blendedCost > 0 && totalStock > 0) {
+          // Always count cost (the inventory cost is real regardless of pricing status)
           portfolioTotalCost += blendedCost * totalStock;
-          portfolioRevenue += confirmedPrice * totalStock;
-          portfolioRequiredRevenue += (blendedCost / (1 - 0.05)) * totalStock; // cost / (1 - minMargin)
+          // Fix #3: only count revenue for products with a confirmed price (source != "none")
+          if (source !== "none") {
+            portfolioRevenue += confirmedPrice * totalStock;
+          }
+          // Fix #1: requiredRevenue uses per-product globalFloor × stock (not hardcoded cost/0.95)
+          portfolioRequiredRevenue += globalFloor * totalStock;
         }
 
         products.push({
@@ -5446,10 +5460,12 @@ export async function registerRoutes(
           strictFloor: strictFloor > 0 ? parseFloat(strictFloor.toFixed(2)) : null,
           confirmedPrice: parseFloat(confirmedPrice.toFixed(2)),
           sheetDate,
+          source,
           hasConfirmedToday,
           hasConfirmedSheet,
           hasUnconfirmedSheet,
           marginPct: marginPct !== null ? parseFloat(marginPct.toFixed(2)) : null,
+          minMarginPct,
           pressureLevel,
           sellPriority,
           lotCount: lots.length,
@@ -5472,6 +5488,7 @@ export async function registerRoutes(
           portfolioStatus,
           productsAtRisk: products.filter(p => p.pressureLevel === "High Risk").length,
           productsNoSheet: products.filter(p => !p.hasConfirmedSheet).length,
+          productsWithoutPriceCount: products.filter(p => p.source === "none").length,
           productsSellPriority: products.filter(p => p.sellPriority).length,
         },
       });

@@ -12,7 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal } from "lucide-react";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal, Loader2, Info } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -56,6 +56,7 @@ export default function FieldStaff() {
 
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
   const [selectedFieldEmployee, setSelectedFieldEmployee] = useState<string | null>(null);
   const [routeFilterEmployee, setRouteFilterEmployee] = useState<string>("all");
 
@@ -114,6 +115,24 @@ export default function FieldStaff() {
     const h = Math.floor(m / 60);
     return h > 0 ? `${h}h ${m % 60}m` : `${m}m`;
   };
+
+  const formatTripDuration = (startTime: string | Date, endTime: string | Date | null) => {
+    if (!endTime) return null;
+    const ms = new Date(endTime).getTime() - new Date(startTime).getTime();
+    const m = Math.floor(ms / 60000);
+    const h = Math.floor(m / 60);
+    return h > 0 ? `${h}h ${m % 60}m` : `${m}m`;
+  };
+
+  const tripStraightLineKm = useCallback((trip: Trip): number | null => {
+    if (!trip.startLat || !trip.startLng || !trip.endLat || !trip.endLng) return null;
+    const lat1 = Number(trip.startLat), lon1 = Number(trip.startLng);
+    const lat2 = Number(trip.endLat), lon2 = Number(trip.endLng);
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1.3;
+  }, []);
 
   const reverseGeocode = async (lat: number, lng: number): Promise<string | null> => {
     try {
@@ -277,6 +296,8 @@ export default function FieldStaff() {
   const totalExpense = travelCost + LUNCH_MONEY;
 
   const viewTripRoute = useCallback(async (tripId: string) => {
+    if (routeLoading) return;
+    setRouteLoading(true);
     try {
       const res = await fetch(`/api/trips/${tripId}/route`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
@@ -284,10 +305,15 @@ export default function FieldStaff() {
       const logs: LocationLog[] = await res.json();
       setSelectedTripId(tripId);
       setSelectedTripRoute(logs);
+      if (logs.length === 0) {
+        toast({ title: "No GPS data", description: "No GPS points were recorded for this trip. The employee may not have had location access enabled.", variant: "default" });
+      }
     } catch {
       toast({ title: "Error", description: "Failed to load route", variant: "destructive" });
+    } finally {
+      setRouteLoading(false);
     }
-  }, [toast]);
+  }, [toast, routeLoading]);
 
   useEffect(() => {
     if (!adminMapInstance.current) return;
@@ -623,8 +649,10 @@ export default function FieldStaff() {
                             </div>
                           </div>
                         </div>
-                        <Button size="sm" variant="ghost" className="shrink-0 text-emerald-600" data-testid={`button-view-active-trip-${trip.id}`}>
-                          <Eye className="w-3.5 h-3.5" />
+                        <Button size="sm" variant="ghost" className="shrink-0 text-emerald-600" disabled={routeLoading && selectedTripId === trip.id} data-testid={`button-view-active-trip-${trip.id}`}>
+                          {routeLoading && selectedTripId === trip.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Eye className="w-3.5 h-3.5" />}
                         </Button>
                       </div>
                     );})}
@@ -676,29 +704,47 @@ export default function FieldStaff() {
                               </Avatar>
                               <div className="min-w-0">
                                 <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
-                                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                                  <Clock className="w-3 h-3 shrink-0" />
-                                  {new Date(trip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                  {trip.endTime && <> → {new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</>}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                    <Clock className="w-3 h-3 shrink-0" />
+                                    <span data-testid={`text-trip-time-${trip.id}`}>
+                                      {new Date(trip.startTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                      {trip.endTime && ` → ${new Date(trip.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+                                    </span>
+                                  </div>
+                                  {formatTripDuration(trip.startTime, trip.endTime) && (
+                                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                      <Timer className="w-3 h-3 shrink-0" />
+                                      <span data-testid={`text-trip-duration-${trip.id}`}>{formatTripDuration(trip.startTime, trip.endTime)}</span>
+                                    </div>
+                                  )}
+                                  {tripStraightLineKm(trip) !== null && (
+                                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                      <Route className="w-3 h-3 shrink-0" />
+                                      <span data-testid={`text-trip-distance-${trip.id}`}>~{tripStraightLineKm(trip)!.toFixed(1)} km</span>
+                                    </div>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5" data-testid={`text-trip-coords-${trip.id}`}>
                                   <MapPin className="w-2.5 h-2.5 shrink-0" />
                                   <span className="truncate">
                                     {trip.startAddress
                                       ? trip.startAddress
-                                      : trip.startLat ? `${Number(trip.startLat).toFixed(3)}, ${Number(trip.startLng).toFixed(3)}` : "—"}
+                                      : trip.startLat ? `${Number(trip.startLat).toFixed(3)}, ${Number(trip.startLng).toFixed(3)}` : "Unknown origin"}
                                   </span>
-                                  <span className="shrink-0"> → </span>
+                                  <span className="shrink-0 mx-0.5">→</span>
                                   <span className="truncate">
                                     {trip.endAddress
                                       ? trip.endAddress
-                                      : trip.endLat ? `${Number(trip.endLat).toFixed(3)}, ${Number(trip.endLng).toFixed(3)}` : "In progress"}
+                                      : trip.endLat ? `${Number(trip.endLat).toFixed(3)}, ${Number(trip.endLng).toFixed(3)}` : "Not recorded"}
                                   </span>
                                 </div>
                               </div>
                             </div>
-                            <Button size="sm" variant="ghost" className="shrink-0" data-testid={`button-view-route-${trip.id}`}>
-                              <Eye className="w-4 h-4" />
+                            <Button size="sm" variant="ghost" className="shrink-0" disabled={routeLoading && selectedTripId === trip.id} data-testid={`button-view-route-${trip.id}`}>
+                              {routeLoading && selectedTripId === trip.id
+                                ? <Loader2 className="w-4 h-4 animate-spin" />
+                                : <Eye className="w-4 h-4" />}
                             </Button>
                           </div>
                         ))}
@@ -715,8 +761,13 @@ export default function FieldStaff() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
                   <MapPinned className="w-4 h-4" />
-                  {selectedTripId ? "Trip Route" : "Live Location Map"}
-                  {selectedTripId && (
+                  {routeLoading ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading Route…
+                    </span>
+                  ) : selectedTripId ? "Trip Route" : "Live Location Map"}
+                  {selectedTripId && !routeLoading && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -727,7 +778,7 @@ export default function FieldStaff() {
                       Clear Route
                     </Button>
                   )}
-                  {!selectedTripId && activeTripsCount > 0 && (
+                  {!selectedTripId && !routeLoading && activeTripsCount > 0 && (
                     <Badge variant="outline" className="ml-auto no-default-hover-elevate no-default-active-elevate">
                       <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse mr-1" />
                       {activeTripsCount} active
@@ -736,7 +787,18 @@ export default function FieldStaff() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div ref={adminMapRef} style={{ height: 450 }} className="rounded-md border" data-testid="map-admin-location" />
+                <div ref={adminMapRef} style={{ height: 450 }} className="rounded-md border relative" data-testid="map-admin-location">
+                  {selectedTripRoute !== null && selectedTripRoute.length === 0 && !routeLoading && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/70 rounded-md z-[1000]">
+                      <Info className="w-8 h-8 text-muted-foreground mb-2" />
+                      <p className="text-sm font-medium text-muted-foreground">No GPS data recorded</p>
+                      <p className="text-xs text-muted-foreground mt-1">The employee may not have had location access enabled.</p>
+                      <Button size="sm" variant="outline" className="mt-3" onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); }}>
+                        Back to Live Map
+                      </Button>
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </div>

@@ -533,10 +533,12 @@ interface PricingProduct {
   strictFloor: number | null;
   confirmedPrice: number;
   sheetDate: string | null;
+  source: "today" | "fallback" | "none";
   hasConfirmedToday: boolean;
   hasConfirmedSheet: boolean;
   hasUnconfirmedSheet: boolean;
   marginPct: number | null;
+  minMarginPct: number;
   pressureLevel: "High Risk" | "Medium" | "Safe" | "None";
   sellPriority: boolean;
   lotCount: number;
@@ -554,6 +556,7 @@ interface PricingSummary {
     portfolioStatus: "SAFE" | "AT RISK";
     productsAtRisk: number;
     productsNoSheet: number;
+    productsWithoutPriceCount: number;
     productsSellPriority: number;
   };
 }
@@ -568,10 +571,19 @@ function PressureBadge({ level }: { level: PricingProduct["pressureLevel"] }) {
   return <Badge variant="outline" className="text-xs px-1.5 py-0.5">No Cost</Badge>;
 }
 
+function SourceBadge({ source, sheetDate }: { source: PricingProduct["source"]; sheetDate: string | null }) {
+  if (source === "today") return <span className="text-emerald-600 dark:text-emerald-400 font-medium text-xs">🟢 Today</span>;
+  if (source === "fallback") return <span className="text-amber-600 dark:text-amber-400 text-xs" title={sheetDate ?? ""}>🟡 {sheetDate ?? "Prev"}</span>;
+  return <span className="text-red-500 dark:text-red-400 text-xs">🔴 No Price</span>;
+}
+
+type InsightFilter = null | "needsPricing" | "highRisk" | "sellPriority";
+
 function DailyPricingTab() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [atRiskOnly, setAtRiskOnly] = useState(false);
+  const [activeInsight, setActiveInsight] = useState<InsightFilter>(null);
 
   const { data, isLoading } = useQuery<PricingSummary>({
     queryKey: ["/api/reports/pricing-summary"],
@@ -590,7 +602,29 @@ function DailyPricingTab() {
   const { portfolio } = data;
   const categories = Array.from(new Set(data.products.map(p => p.category))).sort();
 
+  // Insight bucket counts + top-3 lists
+  const needsPricingProducts = data.products.filter(p => p.needsPricingReview || p.source === "none");
+  const highRiskProducts = data.products.filter(p => p.pressureLevel === "High Risk");
+  const sellPriorityProducts = data.products.filter(p => p.sellPriority);
+
+  const toggleInsight = (key: InsightFilter) => {
+    setActiveInsight(prev => prev === key ? null : key);
+    setAtRiskOnly(false);
+  };
+
   let filtered = data.products;
+
+  // Insight quick-filter (overrides atRiskOnly when active)
+  if (activeInsight === "needsPricing") {
+    filtered = needsPricingProducts;
+  } else if (activeInsight === "highRisk") {
+    filtered = highRiskProducts;
+  } else if (activeInsight === "sellPriority") {
+    filtered = sellPriorityProducts;
+  } else {
+    if (atRiskOnly) filtered = filtered.filter(p => p.pressureLevel === "High Risk" || p.pressureLevel === "Medium");
+  }
+
   if (search) {
     const q = search.toLowerCase();
     filtered = filtered.filter(p =>
@@ -600,7 +634,6 @@ function DailyPricingTab() {
     );
   }
   if (category !== "all") filtered = filtered.filter(p => p.category === category);
-  if (atRiskOnly) filtered = filtered.filter(p => p.pressureLevel === "High Risk" || p.pressureLevel === "Medium");
 
   // Sort: High Risk first, then Medium, then by marginPct ascending
   filtered = [...filtered].sort((a, b) => {
@@ -642,6 +675,9 @@ function DailyPricingTab() {
                 {portfolio.portfolioMarginPct !== null && (
                   <p className="text-xs text-emerald-600 dark:text-emerald-400">{fmtPct(portfolio.portfolioMarginPct)} margin</p>
                 )}
+                {(portfolio.productsWithoutPriceCount ?? 0) > 0 && (
+                  <p className="text-xs text-muted-foreground mt-0.5">{portfolio.productsWithoutPriceCount} unpriced excluded</p>
+                )}
               </div>
             </div>
           </CardContent>
@@ -653,8 +689,9 @@ function DailyPricingTab() {
                 <Shield className="w-4 h-4 text-amber-500" />
               </div>
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground leading-tight">Required @ 5% Min Margin</p>
+                <p className="text-xs text-muted-foreground leading-tight">Required @ Min Margin</p>
                 <p className="text-lg font-bold leading-tight mt-0.5" data-testid="text-portfolio-required">{fmtCur(portfolio.requiredRevenueAtMinMargin)}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">per-product floor</p>
               </div>
             </div>
           </CardContent>
@@ -681,6 +718,75 @@ function DailyPricingTab() {
         </Card>
       </div>
 
+      {/* Actionable Insights */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Needs Pricing */}
+        <button
+          onClick={() => toggleInsight("needsPricing")}
+          data-testid="card-insight-needs-pricing"
+          className={`text-left rounded-lg border p-3.5 transition-all hover:shadow-sm ${activeInsight === "needsPricing" ? "border-amber-400 bg-amber-50 dark:bg-amber-950/20" : "border-border bg-card hover:border-amber-300"}`}
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0" />
+            <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">Needs Pricing</span>
+            <span className="ml-auto text-xl font-bold text-amber-600 dark:text-amber-400" data-testid="text-insight-needs-pricing-count">{needsPricingProducts.length}</span>
+          </div>
+          <div className="space-y-0.5">
+            {needsPricingProducts.slice(0, 3).map(p => (
+              <p key={p.productId} className="text-xs text-muted-foreground truncate">{p.productName}</p>
+            ))}
+            {needsPricingProducts.length === 0 && <p className="text-xs text-muted-foreground">All products are priced</p>}
+            {needsPricingProducts.length > 3 && <p className="text-xs text-muted-foreground">+{needsPricingProducts.length - 3} more</p>}
+          </div>
+        </button>
+
+        {/* High Risk */}
+        <button
+          onClick={() => toggleInsight("highRisk")}
+          data-testid="card-insight-high-risk"
+          className={`text-left rounded-lg border p-3.5 transition-all hover:shadow-sm ${activeInsight === "highRisk" ? "border-red-400 bg-red-50 dark:bg-red-950/20" : "border-border bg-card hover:border-red-300"}`}
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <TrendingDown className="w-4 h-4 text-red-500 flex-shrink-0" />
+            <span className="text-sm font-semibold text-red-700 dark:text-red-400">High Risk Products</span>
+            <span className="ml-auto text-xl font-bold text-red-600 dark:text-red-400" data-testid="text-insight-high-risk-count">{highRiskProducts.length}</span>
+          </div>
+          <div className="space-y-0.5">
+            {highRiskProducts.slice(0, 3).map(p => (
+              <p key={p.productId} className="text-xs text-muted-foreground truncate">{p.productName} <span className="text-red-500">{fmtPct(p.marginPct)}</span></p>
+            ))}
+            {highRiskProducts.length === 0 && <p className="text-xs text-muted-foreground">No high-risk products</p>}
+            {highRiskProducts.length > 3 && <p className="text-xs text-muted-foreground">+{highRiskProducts.length - 3} more</p>}
+          </div>
+        </button>
+
+        {/* Old Stock Pressure */}
+        <button
+          onClick={() => toggleInsight("sellPriority")}
+          data-testid="card-insight-sell-priority"
+          className={`text-left rounded-lg border p-3.5 transition-all hover:shadow-sm ${activeInsight === "sellPriority" ? "border-orange-400 bg-orange-50 dark:bg-orange-950/20" : "border-border bg-card hover:border-orange-300"}`}
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <Flame className="w-4 h-4 text-orange-500 flex-shrink-0" />
+            <span className="text-sm font-semibold text-orange-700 dark:text-orange-400">Old Stock Pressure</span>
+            <span className="ml-auto text-xl font-bold text-orange-600 dark:text-orange-400" data-testid="text-insight-sell-priority-count">{sellPriorityProducts.length}</span>
+          </div>
+          <div className="space-y-0.5">
+            {sellPriorityProducts.slice(0, 3).map(p => (
+              <p key={p.productId} className="text-xs text-muted-foreground truncate">🔥 {p.productName} <span className="text-orange-500">{p.lotAgeDays}d</span></p>
+            ))}
+            {sellPriorityProducts.length === 0 && <p className="text-xs text-muted-foreground">No aged stock issues</p>}
+            {sellPriorityProducts.length > 3 && <p className="text-xs text-muted-foreground">+{sellPriorityProducts.length - 3} more</p>}
+          </div>
+        </button>
+      </div>
+      {activeInsight && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Showing filtered results for <strong>{activeInsight === "needsPricing" ? "Needs Pricing" : activeInsight === "highRisk" ? "High Risk" : "Old Stock Pressure"}</strong></span>
+          <button onClick={() => setActiveInsight(null)} className="text-primary underline underline-offset-2">Clear filter</button>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-40">
@@ -696,10 +802,12 @@ function DailyPricingTab() {
             {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
           </SelectContent>
         </Select>
-        <div className="flex items-center gap-2">
-          <Switch id="at-risk-toggle" checked={atRiskOnly} onCheckedChange={setAtRiskOnly} data-testid="switch-at-risk" />
-          <Label htmlFor="at-risk-toggle" className="text-sm cursor-pointer">Show only at-risk</Label>
-        </div>
+        {!activeInsight && (
+          <div className="flex items-center gap-2">
+            <Switch id="at-risk-toggle" checked={atRiskOnly} onCheckedChange={setAtRiskOnly} data-testid="switch-at-risk" />
+            <Label htmlFor="at-risk-toggle" className="text-sm cursor-pointer">Show only at-risk</Label>
+          </div>
+        )}
         <span className="text-xs text-muted-foreground ml-auto">{filtered.length} product{filtered.length !== 1 ? "s" : ""}</span>
       </div>
 
@@ -715,16 +823,17 @@ function DailyPricingTab() {
                 <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Blended Cost</th>
                 <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Global Floor</th>
                 <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Strict Floor</th>
-                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Today's Price</th>
+                <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Eff. Price</th>
+                <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Source</th>
                 <th className="text-right px-3 py-2.5 font-medium text-xs text-muted-foreground">Margin %</th>
-                <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Pressure</th>
+                <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Risk</th>
                 <th className="text-center px-3 py-2.5 font-medium text-xs text-muted-foreground">Status</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-10 text-muted-foreground text-sm">No products match the current filter.</td>
+                  <td colSpan={11} className="text-center py-10 text-muted-foreground text-sm">No products match the current filter.</td>
                 </tr>
               ) : filtered.map(p => (
                 <tr key={p.productId} className="border-b hover:bg-muted/20 transition-colors" data-testid={`row-pricing-${p.productId}`}>
@@ -746,14 +855,15 @@ function DailyPricingTab() {
                   <td className="px-3 py-2.5 text-right text-xs font-mono">
                     <div className="flex items-center justify-end gap-1">
                       <span className="font-medium">{fmtCur(p.confirmedPrice)}</span>
-                      {p.hasConfirmedToday && <span title="Confirmed today" className="text-emerald-500 text-xs">✓</span>}
-                      {!p.hasConfirmedSheet && !p.hasUnconfirmedSheet && <span title="No price sheet" className="text-muted-foreground text-xs">⚪</span>}
                       {p.hasUnconfirmedSheet && !p.hasConfirmedSheet && <span title="Draft/submitted sheet exists" className="text-amber-500 text-xs">◑</span>}
                     </div>
                   </td>
+                  <td className="px-3 py-2.5 text-center">
+                    <SourceBadge source={p.source} sheetDate={p.sheetDate} />
+                  </td>
                   <td className="px-3 py-2.5 text-right text-xs">
                     {p.marginPct !== null ? (
-                      <span className={p.marginPct < 5 ? "text-red-600 dark:text-red-400 font-semibold" : p.marginPct < 15 ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}>
+                      <span className={p.marginPct < p.minMarginPct ? "text-red-600 dark:text-red-400 font-semibold" : p.marginPct < (p.minMarginPct + 10) ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}>
                         {fmtPct(p.marginPct)}
                       </span>
                     ) : <span className="text-muted-foreground">—</span>}

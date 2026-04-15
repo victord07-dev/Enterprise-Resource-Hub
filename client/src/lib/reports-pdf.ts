@@ -182,7 +182,7 @@ export interface APAgingRowPDF {
   invoiceNumber: string;
   poNumber: string | null;
   invoiceDate: string;
-  dueDate: string;
+  dueDate: string | null;
   totalAmount: number;
   totalPaid: number;
   balance: number;
@@ -517,12 +517,12 @@ export function generateInventoryPDF(products: ProductRowPDF[], stockMap: Map<st
 // ── Staff Report PDF ──────────────────────────────────────────────────────────
 
 export interface EmployeeRowPDF {
+  id: string;
   name: string;
-  email: string;
   department: string;
   designation: string;
+  role: string;
   isActive: boolean;
-  joinDate?: string | null;
 }
 
 export function generateStaffPDF(employees: EmployeeRowPDF[]): Blob {
@@ -537,20 +537,20 @@ export function generateStaffPDF(employees: EmployeeRowPDF[]): Blob {
   ], y + 2);
 
   const cols: ColDef[] = [
-    { header: "Name", width: 50 },
-    { header: "Email", width: 55 },
+    { header: "Name", width: 55 },
+    { header: "Employee ID", width: 30, align: "center" },
     { header: "Department", width: 40 },
-    { header: "Designation", width: 45 },
-    { header: "Join Date", width: 28 },
-    { header: "Status", width: 24, align: "center" },
+    { header: "Designation", width: 50 },
+    { header: "Role", width: 40 },
+    { header: "Status", width: 22, align: "center" },
   ];
 
   const tableRows = employees.map(e => [
     e.name,
-    e.email,
+    e.id.slice(0, 8).toUpperCase(),
     e.department,
     e.designation,
-    e.joinDate ? String(e.joinDate).slice(0, 10) : "\u2014",
+    e.role,
     e.isActive ? "Active" : "Inactive",
   ]);
 

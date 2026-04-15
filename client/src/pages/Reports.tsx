@@ -185,12 +185,58 @@ interface InventoryStockRow {
 
 interface EmployeeRow {
   id: string;
+  userId?: string | null;
   name: string;
   email: string;
   department: string;
   designation: string;
   isActive: boolean;
   joinDate?: string | null;
+}
+
+interface UserRow {
+  id: string;
+  role: string;
+}
+
+interface CustomerRow {
+  id: string;
+  name: string;
+}
+
+interface SupplierRow {
+  id: string;
+  name: string;
+}
+
+interface SalesInvoiceRow {
+  id: string;
+  invoiceNumber: string;
+  customerId: string;
+  customerType: string;
+  customerGSTIN?: string | null;
+  invoiceDate: string;
+  dueDate?: string | null;
+  grandTotal: string;
+  creditedAmount?: string | null;
+  status: string;
+}
+
+interface CustomerPaymentRow {
+  id: string;
+  invoiceId: string;
+  amount: string;
+}
+
+interface SupplierInvoiceRow {
+  id: string;
+  invoiceNumber: string;
+  supplierId: string;
+  invoiceDate: string;
+  subtotal: string;
+  taxAmount: string;
+  totalAmount: string;
+  status: string;
 }
 
 function APAgingTab() {
@@ -1120,6 +1166,10 @@ export default function Reports() {
     if (title === "Project Report") { navigate("/projects"); return; }
 
     setLoadingCard(title);
+    if (title === "Tax Report") {
+      toast({ title: "Generating Tax Report…", description: "Fetching AP & AR data, please wait." });
+    }
+
     try {
       if (title === "Inventory Report") {
         const [products, inventoryStock] = await Promise.all([
@@ -1143,36 +1193,95 @@ export default function Reports() {
         } else {
           downloadPDF(`itfi-inventory-${todayISO()}.pdf`, generateInventoryPDF(products, stockMap));
         }
+
       } else if (title === "Staff Report") {
-        const employees = await queryClient.fetchQuery<EmployeeRow[]>({ queryKey: ["/api/employees"], staleTime: 30_000 });
+        const [employees, users] = await Promise.all([
+          queryClient.fetchQuery<EmployeeRow[]>({ queryKey: ["/api/employees"], staleTime: 30_000 }),
+          queryClient.fetchQuery<UserRow[]>({ queryKey: ["/api/users"], staleTime: 30_000 }).catch(() => [] as UserRow[]),
+        ]);
+        const userRoleMap = new Map(users.map(u => [u.id, u.role]));
+        const enriched = employees.map(e => ({
+          ...e,
+          role: e.userId ? (userRoleMap.get(e.userId) ?? "—") : "—",
+        }));
         if (format === "csv") {
           downloadCSV(
             `itfi-staff-${todayISO()}.csv`,
-            ["Name", "Email", "Department", "Designation", "Join Date", "Status"],
-            employees.map(e => [e.name, e.email, e.department, e.designation, e.joinDate ? String(e.joinDate).slice(0, 10) : "", e.isActive ? "Active" : "Inactive"])
+            ["Name", "Employee ID", "Department", "Designation", "Role", "Status"],
+            enriched.map(e => [e.name, e.id.slice(0, 8).toUpperCase(), e.department, e.designation, e.role, e.isActive ? "Active" : "Inactive"])
           );
         } else {
-          downloadPDF(`itfi-staff-${todayISO()}.pdf`, generateStaffPDF(employees));
+          downloadPDF(`itfi-staff-${todayISO()}.pdf`, generateStaffPDF(enriched));
         }
+
       } else if (title === "Sales Report") {
-        const arData = await queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 });
-        const rows = arData?.rows ?? [];
+        const [invoices, customers, payments] = await Promise.all([
+          queryClient.fetchQuery<SalesInvoiceRow[]>({ queryKey: ["/api/sales-invoices"], staleTime: 30_000 }),
+          queryClient.fetchQuery<CustomerRow[]>({ queryKey: ["/api/customers"], staleTime: 30_000 }),
+          queryClient.fetchQuery<CustomerPaymentRow[]>({ queryKey: ["/api/customer-payments"], staleTime: 30_000 }),
+        ]);
+        const customerMap = new Map(customers.map(c => [c.id, c.name]));
+        const paidMap = new Map<string, number>();
+        for (const p of payments) {
+          paidMap.set(p.invoiceId, (paidMap.get(p.invoiceId) ?? 0) + Number(p.amount));
+        }
+        const rows = invoices.map(inv => {
+          const totalPaid = paidMap.get(inv.id) ?? 0;
+          const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
+          return { ...inv, customerName: customerMap.get(inv.customerId) ?? inv.customerId, totalPaid, balance };
+        });
         if (format === "csv") {
           downloadCSV(
             `itfi-sales-report-${todayISO()}.csv`,
-            ["Invoice #", "Customer", "Type", "Invoice Date", "Due Date", "Grand Total (₹)", "Collected (₹)", "Balance (₹)", "Status", "Bucket"],
-            rows.map(r => [r.invoiceNumber, r.customerName, r.customerType, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status, r.bucket])
+            ["Invoice #", "Customer", "Type", "Invoice Date", "Due Date", "Grand Total (₹)", "Collected (₹)", "Balance (₹)", "Status"],
+            rows.map(r => [r.invoiceNumber, r.customerName, r.customerType, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status])
           );
         } else {
-          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, generateSalesReportPDF(rows));
+          const pdfRows = rows.map(r => ({
+            customerName: r.customerName,
+            customerType: r.customerType,
+            customerGSTIN: r.customerGSTIN ?? null,
+            invoiceNumber: r.invoiceNumber,
+            invoiceDate: r.invoiceDate,
+            dueDate: r.dueDate ?? null,
+            grandTotal: Number(r.grandTotal),
+            totalPaid: r.totalPaid,
+            balance: r.balance,
+            daysOverdue: 0,
+            bucket: "current",
+            status: r.status,
+          }));
+          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, generateSalesReportPDF(pdfRows));
         }
+
       } else if (title === "Financial Report") {
-        const [arData, apData] = await Promise.all([
-          queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 }),
-          queryClient.fetchQuery<APAgingResponse>({ queryKey: ["/api/reports/ap-aging"], staleTime: 30_000 }),
+        const [invoices, customers, payments, supplierInvoices, suppliers] = await Promise.all([
+          queryClient.fetchQuery<SalesInvoiceRow[]>({ queryKey: ["/api/sales-invoices"], staleTime: 30_000 }),
+          queryClient.fetchQuery<CustomerRow[]>({ queryKey: ["/api/customers"], staleTime: 30_000 }),
+          queryClient.fetchQuery<CustomerPaymentRow[]>({ queryKey: ["/api/customer-payments"], staleTime: 30_000 }),
+          queryClient.fetchQuery<SupplierInvoiceRow[]>({ queryKey: ["/api/supplier-invoices"], staleTime: 30_000 }),
+          queryClient.fetchQuery<SupplierRow[]>({ queryKey: ["/api/suppliers"], staleTime: 30_000 }),
         ]);
-        const arRows = arData?.rows ?? [];
-        const apRows = apData?.rows ?? [];
+        const customerMap = new Map(customers.map(c => [c.id, c.name]));
+        const supplierMap = new Map(suppliers.map(s => [s.id, s.name]));
+        const paidMap = new Map<string, number>();
+        for (const p of payments) {
+          paidMap.set(p.invoiceId, (paidMap.get(p.invoiceId) ?? 0) + Number(p.amount));
+        }
+        const arRows = invoices.map(inv => {
+          const totalPaid = paidMap.get(inv.id) ?? 0;
+          const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
+          return { ...inv, customerName: customerMap.get(inv.customerId) ?? inv.customerId, totalPaid, balance };
+        });
+        const apRows = supplierInvoices.map(inv => ({
+          ...inv,
+          supplierName: supplierMap.get(inv.supplierId) ?? inv.supplierId,
+          totalPaid: 0,
+          balance: Number(inv.totalAmount),
+          poNumber: null as string | null,
+          daysOverdue: 0,
+          bucket: "current",
+        }));
         if (format === "csv") {
           const revenueRows = arRows.map(r => [r.invoiceNumber, r.customerName, "Income", r.invoiceDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
           const expenseRows = apRows.map(r => [r.invoiceNumber, r.supplierName, "Expense", r.invoiceDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
@@ -1182,8 +1291,22 @@ export default function Reports() {
             [...revenueRows, ...expenseRows]
           );
         } else {
-          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, generateFinancialReportPDF(arRows, apRows));
+          const arPdfRows = arRows.map(r => ({
+            customerName: r.customerName, customerType: r.customerType,
+            customerGSTIN: r.customerGSTIN ?? null, invoiceNumber: r.invoiceNumber,
+            invoiceDate: r.invoiceDate, dueDate: r.dueDate ?? null,
+            grandTotal: Number(r.grandTotal), totalPaid: r.totalPaid, balance: r.balance,
+            daysOverdue: 0, bucket: "current", status: r.status,
+          }));
+          const apPdfRows = apRows.map(r => ({
+            supplierName: r.supplierName, invoiceNumber: r.invoiceNumber, poNumber: r.poNumber,
+            invoiceDate: r.invoiceDate, dueDate: null as string | null,
+            totalAmount: Number(r.totalAmount), totalPaid: r.totalPaid, balance: r.balance,
+            daysOverdue: 0, bucket: "current", status: r.status,
+          }));
+          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, generateFinancialReportPDF(arPdfRows, apPdfRows));
         }
+
       } else if (title === "Tax Report") {
         const [apData, arData] = await Promise.all([
           queryClient.fetchQuery<APAgingResponse>({ queryKey: ["/api/reports/ap-aging"], staleTime: 30_000 }),
@@ -1266,7 +1389,7 @@ export default function Reports() {
                     ) : formats.length === 1 ? (
                       <Button variant="outline" size="sm" className="w-full" disabled={isLoading} onClick={() => handleCardExport(report.title, formats[0])} data-testid={testId}>
                         {isLoading ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-2" />}
-                        {isLoading ? "Generating…" : "Generate PDF"}
+                        {isLoading ? "Generating…" : "Generate Report"}
                       </Button>
                     ) : (
                       <DropdownMenu>

@@ -344,6 +344,123 @@ export interface PortfolioPDF {
   productsSellPriority: number;
 }
 
+// ── Combined Tax Report PDF (AP Aging + AR Aging) ────────────────────────────
+
+export function generateTaxReportPDF(
+  apRows: APAgingRowPDF[],
+  apSummary: AgingSummaryPDF,
+  arRows: ARAgingRowPDF[],
+  arSummary: AgingSummaryPDF
+): Blob {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+  // ── AP Aging section ──────────────────────────────────────────────────────
+  let y = drawHeader(doc, "Tax Report — AP & AR Aging", "Combined GST Compliance & Aging Summary");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...C.textPrimary);
+  doc.text("ACCOUNTS PAYABLE AGING", M, y + 4);
+  y += 7;
+
+  y = drawSummaryBand(doc, [
+    { label: "AP Outstanding", value: apSummary.totalOutstanding, color: C.red },
+    { label: "Current", value: apSummary.current, color: C.green },
+    { label: "1\u201330 Days", value: apSummary.days1_30, color: C.amber },
+    { label: "31\u201360 Days", value: apSummary.days31_60, color: C.amber },
+    { label: "61\u201390 Days", value: apSummary.days61_90, color: C.red },
+    { label: "90+ Days", value: apSummary.days90plus, color: C.red },
+  ], y);
+
+  const apCols: ColDef[] = [
+    { header: "Supplier", width: 38 },
+    { header: "Invoice #", width: 25 },
+    { header: "PO #", width: 22 },
+    { header: "Invoice Date", width: 22 },
+    { header: "Due Date", width: 22 },
+    { header: "Total", width: 25, align: "right" },
+    { header: "Paid", width: 24, align: "right" },
+    { header: "Balance", width: 25, align: "right" },
+    { header: "Days", width: 14, align: "right" },
+    { header: "Bucket", width: 20, align: "center" },
+    { header: "Status", width: 20, align: "center" },
+  ];
+
+  const apTableRows = apRows.map(r => [
+    r.supplierName,
+    r.invoiceNumber,
+    r.poNumber ?? "\u2014",
+    r.invoiceDate?.slice(0, 10) ?? "",
+    r.dueDate?.slice(0, 10) ?? "",
+    fmtINR(r.totalAmount),
+    fmtINR(r.totalPaid),
+    fmtINR(r.balance),
+    r.daysOverdue > 0 ? String(r.daysOverdue) : "Current",
+    r.bucket,
+    r.status,
+  ]);
+
+  y = drawTable(doc, apCols, apTableRows, y + 2);
+
+  // ── AR Aging section ──────────────────────────────────────────────────────
+  if (y + 40 > PH - 12) {
+    addPageFooter(doc);
+    doc.addPage("a4", "landscape");
+    y = M;
+  } else {
+    y += 8;
+  }
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...C.textPrimary);
+  doc.text("ACCOUNTS RECEIVABLE AGING", M, y + 4);
+  y += 7;
+
+  y = drawSummaryBand(doc, [
+    { label: "AR Outstanding", value: arSummary.totalOutstanding, color: C.red },
+    { label: "Current", value: arSummary.current, color: C.green },
+    { label: "1\u201330 Days", value: arSummary.days1_30, color: C.amber },
+    { label: "31\u201360 Days", value: arSummary.days31_60, color: C.amber },
+    { label: "61\u201390 Days", value: arSummary.days61_90, color: C.red },
+    { label: "90+ Days", value: arSummary.days90plus, color: C.red },
+  ], y);
+
+  const arCols: ColDef[] = [
+    { header: "Customer", width: 34 },
+    { header: "Type", width: 13, align: "center" },
+    { header: "GSTIN", width: 26 },
+    { header: "Invoice #", width: 24 },
+    { header: "Invoice Date", width: 22 },
+    { header: "Due Date", width: 22 },
+    { header: "Grand Total", width: 25, align: "right" },
+    { header: "Paid", width: 23, align: "right" },
+    { header: "Balance", width: 24, align: "right" },
+    { header: "Days", width: 13, align: "right" },
+    { header: "Bucket", width: 18, align: "center" },
+    { header: "Status", width: 13, align: "center" },
+  ];
+
+  const arTableRows = arRows.map(r => [
+    r.customerName,
+    r.customerType ?? "\u2014",
+    r.customerGSTIN ?? "\u2014",
+    r.invoiceNumber,
+    r.invoiceDate?.slice(0, 10) ?? "",
+    r.dueDate?.slice(0, 10) ?? "\u2014",
+    fmtINR(r.grandTotal),
+    fmtINR(r.totalPaid),
+    fmtINR(r.balance),
+    r.daysOverdue > 0 ? String(r.daysOverdue) : "Current",
+    r.bucket,
+    r.status,
+  ]);
+
+  drawTable(doc, arCols, arTableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
 export function generatePricingPDF(products: PricingProductPDF[], portfolio: PortfolioPDF, filterDesc: string): Blob {
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "Daily Pricing Report", filterDesc || "FIFO Pricing & Margin Summary");

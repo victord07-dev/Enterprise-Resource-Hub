@@ -18,7 +18,7 @@ import {
   Flame, TrendingDown, Shield, Search, ChevronDown,
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
-import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF } from "@/lib/reports-pdf";
+import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF } from "@/lib/reports-pdf";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -697,11 +697,14 @@ function DailyPricingTab() {
     if (atRiskOnly) filtered = filtered.filter(p => p.pressureLevel === "High Risk" || p.pressureLevel === "Medium");
   }
 
+  const pricingStatus = (p: PricingProduct) =>
+    p.hasConfirmedToday ? "Confirmed" : p.hasUnconfirmedSheet ? "Pending" : "No Sheet";
+
   const handleExportCSV = () => {
     downloadCSV(
       `itfi-daily-pricing-${todayISO()}.csv`,
-      ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Sell Priority"],
-      filtered.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, p.sellPriority ? "Yes" : "No"])
+      ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Pricing Status", "Sell Priority"],
+      filtered.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, pricingStatus(p), p.sellPriority ? "Yes" : "No"])
     );
   };
 
@@ -991,27 +994,91 @@ export default function Reports() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
+  // ── Shared AP/AR export functions (using query cache, full unfiltered data) ──
+
+  const buildAPSummary = (rows: APAgingRow[]) =>
+    rows.filter(r => r.balance > 0).reduce(
+      (acc, r) => {
+        acc.totalOutstanding += r.balance;
+        if (r.bucket === "current") acc.current += r.balance;
+        else if (r.bucket === "1-30") acc.days1_30 += r.balance;
+        else if (r.bucket === "31-60") acc.days31_60 += r.balance;
+        else if (r.bucket === "61-90") acc.days61_90 += r.balance;
+        else acc.days90plus += r.balance;
+        return acc;
+      },
+      { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
+    );
+
+  const buildARSummary = (rows: ARAgingRow[]) =>
+    rows.filter(r => r.balance > 0).reduce(
+      (acc, r) => {
+        acc.totalOutstanding += r.balance;
+        if (r.bucket === "current") acc.current += r.balance;
+        else if (r.bucket === "1-30") acc.days1_30 += r.balance;
+        else if (r.bucket === "31-60") acc.days31_60 += r.balance;
+        else if (r.bucket === "61-90") acc.days61_90 += r.balance;
+        else acc.days90plus += r.balance;
+        return acc;
+      },
+      { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
+    );
+
   const exportCurrentTab = (format: "csv" | "pdf") => {
-    const selectorMap: Record<string, string> = {
-      "ap-aging": `[data-testid="button-ap-aging-${format}"]`,
-      "ar-aging": `[data-testid="button-ar-aging-${format}"]`,
-      "daily-pricing": `[data-testid="button-pricing-${format}"]`,
-    };
-    const selector = selectorMap[activeTab];
-    if (!selector) {
+    const apData = queryClient.getQueryData<APAgingResponse>(["/api/reports/ap-aging"]);
+    const arData = queryClient.getQueryData<ARAgingResponse>(["/api/reports/ar-aging"]);
+    const pricingData = queryClient.getQueryData<PricingSummary>(["/api/reports/pricing-summary"]);
+
+    if (activeTab === "ap-aging") {
+      if (!apData?.rows?.length) {
+        toast({ title: "No AP Aging data", description: "Open the AP Aging tab to load data first." });
+        return;
+      }
+      const outstandingRows = apData.rows.filter(r => r.balance > 0);
+      const summary = buildAPSummary(outstandingRows);
+      if (format === "csv") {
+        downloadCSV(
+          `itfi-ap-aging-${todayISO()}.csv`,
+          ["Supplier", "Invoice #", "PO #", "Invoice Date", "Due Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
+          outstandingRows.map(r => [r.supplierName, r.invoiceNumber, r.poNumber ?? "", r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
+        );
+      } else {
+        downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, generateAPAgingPDF(outstandingRows, summary, "All Suppliers"));
+      }
+    } else if (activeTab === "ar-aging") {
+      if (!arData?.rows?.length) {
+        toast({ title: "No AR Aging data", description: "Open the AR Aging tab to load data first." });
+        return;
+      }
+      const outstandingRows = arData.rows.filter(r => r.balance > 0);
+      const summary = buildARSummary(outstandingRows);
+      if (format === "csv") {
+        downloadCSV(
+          `itfi-ar-aging-${todayISO()}.csv`,
+          ["Customer", "Type", "GSTIN", "Invoice #", "Invoice Date", "Due Date", "Grand Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
+          outstandingRows.map(r => [r.customerName, r.customerType, r.customerGSTIN ?? "", r.invoiceNumber, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
+        );
+      } else {
+        downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, generateARAgingPDF(outstandingRows, summary, "All Customers"));
+      }
+    } else if (activeTab === "daily-pricing") {
+      if (!pricingData?.products?.length) {
+        toast({ title: "No Pricing data", description: "Open the Daily Pricing tab to load data first." });
+        return;
+      }
+      const ps = (p: PricingProduct) => p.hasConfirmedToday ? "Confirmed" : p.hasUnconfirmedSheet ? "Pending" : "No Sheet";
+      if (format === "csv") {
+        downloadCSV(
+          `itfi-daily-pricing-${todayISO()}.csv`,
+          ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Pricing Status", "Sell Priority"],
+          pricingData.products.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, ps(p), p.sellPriority ? "Yes" : "No"])
+        );
+      } else {
+        downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, generatePricingPDF(pricingData.products, pricingData.portfolio, "All Products"));
+      }
+    } else {
       toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
-      return;
     }
-    const el = document.querySelector<HTMLButtonElement>(selector);
-    if (!el) {
-      toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
-      return;
-    }
-    if (el.disabled) {
-      toast({ title: "No data to export", description: "Load the tab first or adjust filters." });
-      return;
-    }
-    el.click();
   };
 
   const handleOverviewCard = (title: string) => {
@@ -1019,14 +1086,19 @@ export default function Reports() {
     if (title === "Staff Report") { navigate("/employees"); return; }
     if (title === "Project Report") { navigate("/projects"); return; }
     if (title === "Tax Report") {
-      const apBtn = document.querySelector<HTMLButtonElement>('[data-testid="button-ap-aging-pdf"]');
-      const arBtn = document.querySelector<HTMLButtonElement>('[data-testid="button-ar-aging-pdf"]');
-      if (apBtn && !apBtn.disabled) apBtn.click();
-      if (arBtn && !arBtn.disabled) arBtn.click();
-      if (!apBtn || !arBtn) {
+      const apData = queryClient.getQueryData<APAgingResponse>(["/api/reports/ap-aging"]);
+      const arData = queryClient.getQueryData<ARAgingResponse>(["/api/reports/ar-aging"]);
+      if (!apData?.rows?.length || !arData?.rows?.length) {
+        toast({ title: "Loading AP & AR data…", description: "Navigating to AP Aging tab — click Tax Report again once data loads." });
         setActiveTab("ap-aging");
-        toast({ title: "Switch to AP/AR Aging tabs to generate a Tax Report PDF", description: "Each tab has its own PDF export button." });
+        return;
       }
+      const apOutstanding = apData.rows.filter(r => r.balance > 0);
+      const arOutstanding = arData.rows.filter(r => r.balance > 0);
+      const apSummary = buildAPSummary(apOutstanding);
+      const arSummary = buildARSummary(arOutstanding);
+      const blob = generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
+      downloadPDF(`itfi-tax-report-${todayISO()}.pdf`, blob);
       return;
     }
     toast({ title: "Coming soon", description: "Data pipelines for this report are not yet connected." });

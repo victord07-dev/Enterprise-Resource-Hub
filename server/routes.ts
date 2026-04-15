@@ -250,25 +250,44 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
 }
 
 // ─── FIFO Lot Engine ───────────────────────────────────────────────────────
-const FLOOR_MARGIN = 0.05; // 5% minimum margin
 
-async function computeFifoLots(productId: string): Promise<Array<{
+interface FifoLot {
   grnId: string;
   grnNumber: string;
   lotDate: Date | null;
   remainingQty: number;
   landedCost: number;
   floorPrice: number;
-}>> {
+}
+
+async function computeFifoLots(
+  productId: string,
+  opts: { warehouseId?: string; minMarginPct?: number } = {}
+): Promise<FifoLot[]> {
+  const { warehouseId, minMarginPct: overrideMargin } = opts;
+
+  // Resolve per-product minMarginPct if not supplied by caller
+  let minMarginPct = overrideMargin ?? 5;
+  if (overrideMargin === undefined) {
+    const marginRes = await db.execute(sql`
+      SELECT min_margin_pct FROM products WHERE id = ${productId} LIMIT 1
+    `);
+    if (marginRes.rows.length > 0) {
+      minMarginPct = Number((marginRes.rows[0] as any).min_margin_pct ?? 5);
+    }
+  }
+
   // Step 1: confirmed GRN lots for this product, oldest first
+  // Use receivedQuantity and buyingPrice (correct field names; landedCostPerUnit does not exist).
+  // Landed cost = buyingPrice + deliveryCost apportioned by total GRN qty.
   const grnRes = await db.execute(sql`
     SELECT
       gi.grn_id,
       grn.grn_number,
       grn.received_date,
-      gi.received_quantity::numeric   AS received_qty,
-      gi.buying_price::numeric        AS buying_price,
-      COALESCE(grn.delivery_cost::numeric, 0) AS delivery_cost,
+      gi.received_quantity::numeric              AS received_qty,
+      gi.buying_price::numeric                   AS buying_price,
+      COALESCE(grn.delivery_cost::numeric, 0)    AS delivery_cost,
       GREATEST(
         (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
            FROM goods_receipt_note_items i2 WHERE i2.grn_id = grn.id),
@@ -282,32 +301,52 @@ async function computeFifoLots(productId: string): Promise<Array<{
   `);
 
   // Step 2: net dispatched quantity (out minus returns)
-  // Handles both RETURN_IN movement_type (used by sales return flow)
-  // and 'in' with reference_type='SALES_RETURN' (alternate pattern)
-  const netRes = await db.execute(sql`
-    SELECT
-      COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
-      COALESCE(SUM(CASE
-        WHEN movement_type = 'RETURN_IN' THEN quantity
-        WHEN movement_type = 'in' AND reference_type = 'SALES_RETURN' THEN quantity
-        ELSE 0
-      END), 0)::numeric AS total_return
-    FROM stock_movements
-    WHERE product_id = ${productId}
-  `);
+  // Movement type strings in use: "out" for dispatch/adjustments, "RETURN_IN" for sales returns,
+  // "in" with reference_type="SALES_RETURN" for alternate return pattern.
+  // Filter by warehouse_id when provided so lot engine is warehouse-scoped.
+  let netRes;
+  if (warehouseId) {
+    netRes = await db.execute(sql`
+      SELECT
+        COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'RETURN_IN' THEN quantity
+          WHEN movement_type = 'in' AND reference_type = 'SALES_RETURN' THEN quantity
+          ELSE 0
+        END), 0)::numeric AS total_return
+      FROM stock_movements
+      WHERE product_id = ${productId}
+        AND warehouse_id = ${warehouseId}
+    `);
+  } else {
+    netRes = await db.execute(sql`
+      SELECT
+        COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'RETURN_IN' THEN quantity
+          WHEN movement_type = 'in' AND reference_type = 'SALES_RETURN' THEN quantity
+          ELSE 0
+        END), 0)::numeric AS total_return
+      FROM stock_movements
+      WHERE product_id = ${productId}
+    `);
+  }
+
   const nr = netRes.rows[0] as any;
   let toDeplete = Math.max(0, Number(nr.total_out) - Number(nr.total_return));
 
-  // Step 3: FIFO assignment
-  const lots: Array<{ grnId: string; grnNumber: string; lotDate: Date | null; remainingQty: number; landedCost: number; floorPrice: number }> = [];
+  // Step 3: FIFO assignment — oldest lots consumed first
+  const lots: FifoLot[] = [];
 
   for (const row of grnRes.rows as any[]) {
-    const receivedQty   = Number(row.received_qty);
-    const buyingPrice   = Number(row.buying_price ?? 0);
-    const deliveryCost  = Number(row.delivery_cost ?? 0);
-    const totalGrnQty   = Number(row.total_grn_qty ?? receivedQty) || 1;
-    const landedCost    = buyingPrice + deliveryCost / totalGrnQty;
-    const floorPrice    = parseFloat((landedCost * (1 + FLOOR_MARGIN)).toFixed(2));
+    const receivedQty  = Number(row.received_qty);
+    const buyingPrice  = Number(row.buying_price ?? 0);
+    const deliveryCost = Number(row.delivery_cost ?? 0);
+    const totalGrnQty  = Number(row.total_grn_qty ?? receivedQty) || 1;
+    // landedCost = buyingPrice + apportioned delivery cost per unit (no landedCostPerUnit field)
+    const landedCost   = buyingPrice + deliveryCost / totalGrnQty;
+    // floorPrice uses per-product minMarginPct — blendedCost × (1 + minMarginPct/100)
+    const floorPrice   = parseFloat((landedCost * (1 + minMarginPct / 100)).toFixed(2));
 
     let lotRemaining: number;
     if (toDeplete >= receivedQty) {
@@ -327,6 +366,23 @@ async function computeFifoLots(productId: string): Promise<Array<{
         landedCost:   parseFloat(landedCost.toFixed(2)),
         floorPrice,
       });
+    }
+  }
+
+  // Step 4: compute blendedCost and floors for logging
+  const totalRemQty = lots.reduce((s, l) => s + l.remainingQty, 0);
+  const blendedCost = totalRemQty > 0
+    ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemQty
+    : 0;
+  // globalFloor = blendedCost × (1 + minMarginPct/100)  ← NOT min(lotFloors)
+  const globalFloor = blendedCost > 0 ? parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2)) : 0;
+  const strictFloor = lots.length > 0 ? Math.max(...lots.map(l => l.floorPrice)) : 0;
+
+  console.log(`[FIFO] productId=${productId} warehouseId=${warehouseId ?? "all"} movementRows=${netRes.rows.length} lots=${lots.length} blendedCost=${blendedCost.toFixed(2)} globalFloor=${globalFloor} strictFloor=${strictFloor} minMarginPct=${minMarginPct}`);
+
+  if (process.env.DEBUG_LOT_ENGINE === "true") {
+    for (const l of lots) {
+      console.log(`  [FIFO LOT] grnId=${l.grnId} grnNumber=${l.grnNumber} remainingQty=${l.remainingQty} landedCost=${l.landedCost} floorPrice=${l.floorPrice}`);
     }
   }
 
@@ -2285,14 +2341,15 @@ export async function registerRoutes(
       quantity: number;
       referenceType?: string;
       referenceId?: string;
+      grnId?: string;
       notes?: string;
       createdBy: string;
     }
   ) {
     const mvResult = await tx.execute(sql`
-      INSERT INTO stock_movements (id, product_id, warehouse_id, movement_type, quantity, reference_type, reference_id, notes, created_by, created_at)
+      INSERT INTO stock_movements (id, product_id, warehouse_id, movement_type, quantity, reference_type, reference_id, grn_id, notes, created_by, created_at)
       VALUES (gen_random_uuid(), ${params.productId}, ${params.warehouseId}, ${params.movementType}, ${params.quantity},
-              ${params.referenceType ?? null}, ${params.referenceId ?? null}, ${params.notes ?? null}, ${params.createdBy}, now())
+              ${params.referenceType ?? null}, ${params.referenceId ?? null}, ${params.grnId ?? null}, ${params.notes ?? null}, ${params.createdBy}, now())
       RETURNING *
     `);
     const movement = mvResult.rows[0];
@@ -2587,6 +2644,55 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to fetch inventory ledger" });
     }
   });
+
+  // GET /api/inventory/stock-lot-summary — FIFO lot breakdown for a product, optionally scoped to a warehouse
+  app.get("/api/inventory/stock-lot-summary", authenticateToken, async (req: any, res) => {
+    try {
+      const { productId, warehouseId } = req.query as { productId?: string; warehouseId?: string };
+      if (!productId) return res.status(400).json({ message: "productId is required" });
+
+      const product = await storage.getProduct(productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+
+      const lots = await computeFifoLots(productId, { warehouseId: warehouseId || undefined });
+
+      const activeLots = lots.filter(l => l.remainingQty > 0);
+      const totalRemQty = activeLots.reduce((s, l) => s + l.remainingQty, 0);
+
+      let blendedCost: number | null = null;
+      let globalFloor: number | null = null;
+      let strictFloor: number | null = null;
+
+      if (totalRemQty > 0) {
+        blendedCost = parseFloat(
+          (activeLots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemQty).toFixed(2)
+        );
+        const minMarginPct = Number((product as any).minMarginPct ?? 5);
+        globalFloor = parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2));
+        strictFloor = parseFloat(Math.max(...activeLots.map(l => l.floorPrice)).toFixed(2));
+      }
+
+      res.json({
+        productId,
+        warehouseId: warehouseId || null,
+        lots: activeLots.map(l => ({
+          grnId: l.grnId,
+          grnNumber: l.grnNumber,
+          receivedDate: l.lotDate,
+          remainingQty: l.remainingQty,
+          landedCost: l.landedCost,
+          lotFloorPrice: l.floorPrice,
+        })),
+        blendedCost,
+        globalFloor,
+        strictFloor,
+      });
+    } catch (error) {
+      console.error("Stock lot summary error:", error);
+      res.status(500).json({ message: "Failed to compute stock lot summary" });
+    }
+  });
+
 
   app.post("/api/stock-movements", authenticateToken, async (req: any, res) => {
     try {
@@ -3000,6 +3106,20 @@ export async function registerRoutes(
 
       const batchId = crypto.randomUUID();
 
+      // Pre-compute FIFO lots per product BEFORE entering the transaction (uses main DB pool).
+      // This determines which GRN lots each dispatched unit is attributed to (for grn_id tracking).
+      // Note: concurrency risk is low but acknowledged — a TODO for optimistic locking in future.
+      const fifoLotsPerProduct: Record<string, FifoLot[]> = {};
+      if (challan.sourceType === "warehouse") {
+        for (const item of items) {
+          try {
+            fifoLotsPerProduct[item.productId] = await computeFifoLots(item.productId, { warehouseId: challan.sourceId });
+          } catch (e) {
+            fifoLotsPerProduct[item.productId] = [];
+          }
+        }
+      }
+
       await db.transaction(async (tx) => {
         const [lockedChallan] = await tx.execute(sql`
           SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
@@ -3027,16 +3147,41 @@ export async function registerRoutes(
         if (challan.sourceType === "warehouse") {
           for (const item of items) {
             const qty = dispatchQtys[item.id];
-            await addLedgerEntry(tx, {
-              productId: item.productId,
-              warehouseId: challan.sourceId,
-              movementType: "out",
-              quantity: qty,
-              referenceType: "challan",
-              referenceId: challan.id,
-              notes: `Dispatched via challan ${challan.challanNumber} (batch ${batchId})`,
-              createdBy: req.user.id,
-            });
+            const lots = fifoLotsPerProduct[item.productId] ?? [];
+            let remaining = qty;
+
+            // Create one movement per FIFO lot consumed so grn_id is correctly attributed
+            for (const lot of lots) {
+              if (remaining <= 0) break;
+              const consumed = Math.min(remaining, Math.floor(lot.remainingQty));
+              if (consumed <= 0) continue;
+              await addLedgerEntry(tx, {
+                productId: item.productId,
+                warehouseId: challan.sourceId,
+                movementType: "out",
+                quantity: consumed,
+                referenceType: "challan",
+                referenceId: challan.id,
+                grnId: lot.grnId,
+                notes: `Dispatched via challan ${challan.challanNumber} (FIFO from GRN ${lot.grnNumber}, batch ${batchId})`,
+                createdBy: req.user.id,
+              });
+              remaining -= consumed;
+            }
+
+            // If qty is not fully covered by known lots (e.g. manual stock adjustments), record remainder without grnId
+            if (remaining > 0) {
+              await addLedgerEntry(tx, {
+                productId: item.productId,
+                warehouseId: challan.sourceId,
+                movementType: "out",
+                quantity: remaining,
+                referenceType: "challan",
+                referenceId: challan.id,
+                notes: `Dispatched via challan ${challan.challanNumber} (no FIFO lot — manual/adjusted stock, batch ${batchId})`,
+                createdBy: req.user.id,
+              });
+            }
           }
         }
 
@@ -3482,19 +3627,21 @@ export async function registerRoutes(
           const lots = await computeFifoLots(pid);
           if (lots.length === 0) continue;
           const totalRemainingQty = lots.reduce((s, l) => s + l.remainingQty, 0);
-          const blendedLandedCost = totalRemainingQty > 0
+          const blendedCost = totalRemainingQty > 0
             ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemainingQty
             : 0;
-          const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
+          // globalFloor = blendedCost × (1 + minMarginPct/100) — fetched from product row
+          const prodMarginRes = await db.execute(sql`SELECT min_margin_pct FROM products WHERE id = ${pid} LIMIT 1`);
+          const minMarginPct = Number((prodMarginRes.rows[0] as any)?.min_margin_pct ?? 5);
+          const globalFloorPrice = parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2));
           const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
-          // blendedInventoryPrice always comes from FIFO lot engine, never from product.costPrice (WAC)
-          const blendedInventoryPrice = blendedLandedCost;
+          // blendedCost always comes from FIFO lot engine, never from product.costPrice (WAC)
           const sheet = await storage.createDailyPriceSheet({
             productId: pid,
             sheetDate: today,
             status: "draft",
             proposedPrice: null,
-            blendedInventoryPrice: blendedInventoryPrice.toFixed(2),
+            blendedCost: blendedCost.toFixed(2),
             globalFloorPrice: globalFloorPrice.toFixed(2),
             strictFloorPrice: strictFloorPrice.toFixed(2),
             overrideRequired: false,
@@ -5167,7 +5314,7 @@ export async function registerRoutes(
       // Fetch today's confirmed sheet (7-day window)
       const sheetRes = await db.execute(sql`
         SELECT DISTINCT ON (product_id)
-          product_id, sheet_date, proposed_price, blended_inventory_price,
+          product_id, sheet_date, proposed_price, blended_cost,
           global_floor_price, strict_floor_price, status
         FROM daily_price_sheets
         WHERE status = 'confirmed' AND proposed_price IS NOT NULL
@@ -6131,7 +6278,7 @@ export async function registerRoutes(
           dps.product_id,
           dps.sheet_date,
           dps.proposed_price,
-          dps.blended_inventory_price,
+          dps.blended_cost,
           dps.global_floor_price,
           dps.strict_floor_price
         FROM daily_price_sheets dps
@@ -6146,7 +6293,7 @@ export async function registerRoutes(
         sheetDate: string | null;
         noConfirmedPrice: boolean;
         hasConfirmedToday: boolean;
-        blendedInventoryPrice: string | null;
+        blendedCost: string | null;
         globalFloorPrice: string | null;
         strictFloorPrice: string | null;
       }> = {};
@@ -6157,7 +6304,7 @@ export async function registerRoutes(
           sheetDate: null,
           noConfirmedPrice: true,
           hasConfirmedToday: false,
-          blendedInventoryPrice: null,
+          blendedCost: null,
           globalFloorPrice: null,
           strictFloorPrice: null,
         };
@@ -6172,7 +6319,7 @@ export async function registerRoutes(
           sheetDate: sheetDateStr,
           noConfirmedPrice: false,
           hasConfirmedToday: sheetDateStr === today,
-          blendedInventoryPrice: row.blended_inventory_price ?? null,
+          blendedCost: row.blended_cost ?? null,
           globalFloorPrice: row.global_floor_price ?? null,
           strictFloorPrice: row.strict_floor_price ?? null,
         };
@@ -6232,15 +6379,16 @@ export async function registerRoutes(
 
       const lots = await computeFifoLots(productId);
       const totalRemainingQty = lots.reduce((s, l) => s + l.remainingQty, 0);
-      const blendedLandedCost = totalRemainingQty > 0
+      const blendedCost = totalRemainingQty > 0
         ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemainingQty
         : 0;
-      const globalFloorPrice = parseFloat((blendedLandedCost * 1.05).toFixed(2));
+      // globalFloor = blendedCost × (1 + minMarginPct/100); per-product margin from computeFifoLots
+      const prodMR = await db.execute(sql`SELECT min_margin_pct FROM products WHERE id = ${productId} LIMIT 1`);
+      const minMarginPct = Number((prodMR.rows[0] as any)?.min_margin_pct ?? 5);
+      const globalFloorPrice = parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2));
       const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
 
-      // blendedInventoryPrice always comes from FIFO lot engine, never from product.costPrice (WAC)
-      const blendedInventoryPrice = blendedLandedCost;
-
+      // blendedCost always comes from FIFO lot engine, never from product.costPrice (WAC)
       const proposedPriceNum = proposedPrice != null ? parseFloat(proposedPrice) : null;
       if (proposedPriceNum !== null && (isNaN(proposedPriceNum) || proposedPriceNum < 0)) {
         return res.status(400).json({ message: "proposedPrice must be a non-negative number" });
@@ -6253,10 +6401,10 @@ export async function registerRoutes(
         productId,
         sheetDate,
         status: "draft",
-        proposedPrice:         proposedPriceNum != null ? proposedPriceNum.toFixed(2) : null,
-        blendedInventoryPrice: blendedInventoryPrice.toFixed(2),
-        globalFloorPrice:      globalFloorPrice.toFixed(2),
-        strictFloorPrice:      strictFloorPrice.toFixed(2),
+        proposedPrice:  proposedPriceNum != null ? proposedPriceNum.toFixed(2) : null,
+        blendedCost:    blendedCost.toFixed(2),
+        globalFloorPrice: globalFloorPrice.toFixed(2),
+        strictFloorPrice: strictFloorPrice.toFixed(2),
         overrideRequired,
         overrideReason:   overrideReason || null,
         rejectionNotes:   null,

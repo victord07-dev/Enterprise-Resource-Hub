@@ -51,6 +51,7 @@ export const products = pgTable("products", {
   hsnCode: text("hsn_code"),
   gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   needsPricingReview: boolean("needs_pricing_review").notNull().default(false),
+  minMarginPct: decimal("min_margin_pct", { precision: 5, scale: 2 }).notNull().default("5.00"),
 });
 
 export const warehouses = pgTable("warehouses", {
@@ -348,6 +349,7 @@ export const supplierProducts = pgTable("supplier_products", {
   supplierSku: text("supplier_sku"),
   leadTimeDays: integer("lead_time_days"),
   isPreferred: boolean("is_preferred").notNull().default(false),
+  isPrimary: boolean("is_primary").notNull().default(false),
   notes: text("notes"),
 });
 
@@ -369,10 +371,14 @@ export const stockMovements = pgTable("stock_movements", {
   quantity: integer("quantity").notNull(),
   referenceType: text("reference_type"),
   referenceId: varchar("reference_id"),
+  grnId: varchar("grn_id"),
   notes: text("notes"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-});
+}, (t) => [
+  index("idx_stock_movements_product_id").on(t.productId),
+  index("idx_stock_movements_created_at").on(t.createdAt),
+]);
 
 export const deliveryChallans = pgTable("delivery_challans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -456,7 +462,9 @@ export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
   receivedQuantity: integer("received_quantity").notNull(),
   buyingPrice: decimal("buying_price", { precision: 12, scale: 2 }).notNull(),
   totalCost: decimal("total_cost", { precision: 12, scale: 2 }),
-});
+}, (t) => [
+  index("idx_grn_items_product_id").on(t.productId),
+]);
 
 export const supplierInvoices = pgTable("supplier_invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -587,7 +595,7 @@ export const dailyPriceSheets = pgTable("daily_price_sheets", {
   sheetDate: text("sheet_date").notNull(),
   status: text("status").notNull().default("draft"),
   proposedPrice: decimal("proposed_price", { precision: 12, scale: 2 }),
-  blendedInventoryPrice: decimal("blended_inventory_price", { precision: 12, scale: 2 }),
+  blendedCost: decimal("blended_cost", { precision: 12, scale: 2 }),
   globalFloorPrice: decimal("global_floor_price", { precision: 12, scale: 2 }),
   strictFloorPrice: decimal("strict_floor_price", { precision: 12, scale: 2 }),
   overrideRequired: boolean("override_required").notNull().default(false),
@@ -797,3 +805,4 @@ export type CreditNote = typeof creditNotes.$inferSelect;
 export type InsertSalesReturn = z.infer<typeof insertSalesReturnSchema>;
 export type InsertSalesReturnItem = z.infer<typeof insertSalesReturnItemSchema>;
 export type InsertCreditNote = z.infer<typeof insertCreditNoteSchema>;
+

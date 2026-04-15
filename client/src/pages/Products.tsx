@@ -37,7 +37,7 @@ export default function Products() {
   const [productForm, setProductForm] = useState({
     name: "", sku: "", category: "Solar Panels", description: "",
     unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
-    hsnCode: "", gstRate: "18",
+    hsnCode: "", gstRate: "18", minMarginPct: "5.00",
   });
 
   const productsOnly = allProducts?.filter(p => p.type !== "service") ?? [];
@@ -123,6 +123,7 @@ export default function Products() {
       type: p.type || "product",
       hsnCode: p.hsnCode || "",
       gstRate: p.gstRate ? String(p.gstRate) : "18",
+      minMarginPct: (p as any).minMarginPct ? String((p as any).minMarginPct) : "5.00",
     });
     setProductDialogOpen(true);
   };
@@ -155,6 +156,7 @@ export default function Products() {
       brand: productForm.brand || null,
       hsnCode: productForm.hsnCode || null,
       gstRate: productForm.gstRate || "0",
+      minMarginPct: productForm.minMarginPct ? String(parseFloat(productForm.minMarginPct).toFixed(2)) : "5.00",
     };
     if (data.type === "service" && !data.sku) {
       data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
@@ -196,7 +198,16 @@ export default function Products() {
                     className="border-b last:border-0"
                     data-testid={`row-${isServiceTab ? "service" : "product"}-${item.id}`}
                   >
-                    <td className="p-3 font-medium" data-testid={`text-item-name-${item.id}`}>{item.name}</td>
+                    <td className="p-3 font-medium" data-testid={`text-item-name-${item.id}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {item.name}
+                        {(item as any).needsPricingReview && (
+                          <Badge variant="outline" className="text-xs border-amber-400 text-amber-600 dark:text-amber-400" data-testid={`badge-pricing-review-${item.id}`}>
+                            Pricing Review
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
                     {!isServiceTab && <td className="p-3 text-muted-foreground" data-testid={`text-item-sku-${item.id}`}>{item.sku}</td>}
                     <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>{item.brand || "—"}</td>
                     <td className="p-3">
@@ -486,6 +497,20 @@ export default function Products() {
                 <div className="space-y-2">
                   <Label htmlFor="prodMinStock">Min Stock Level</Label>
                   <Input id="prodMinStock" type="number" data-testid="input-product-min-stock" value={productForm.minStockLevel} onChange={(e) => setProductForm({ ...productForm, minStockLevel: e.target.value })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="prodMinMargin">Min Margin % (FIFO pricing floor)</Label>
+                  <Input
+                    id="prodMinMargin"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    data-testid="input-product-min-margin"
+                    value={productForm.minMarginPct}
+                    onChange={(e) => setProductForm({ ...productForm, minMarginPct: e.target.value })}
+                    placeholder="5.00"
+                  />
                 </div>
               </div>
             )}

@@ -1849,7 +1849,7 @@ export default function Inventory() {
                     ) : (products ?? []).filter(p => p.type === "product").map((product) => {
                       const sheet = (todaySheets ?? []).find((s: any) => s.productId === product.id);
                       const totalStock = getProductTotalStock(product.id);
-                      const blendedCost = sheet ? Number(sheet.blendedInventoryPrice) : null;
+                      const blendedCost = sheet ? Number(sheet.blendedCost) : null;
                       const globalFloor = sheet ? Number(sheet.globalFloorPrice) : null;
                       const strictFloor = sheet?.strictFloorPrice ? Number(sheet.strictFloorPrice) : null;
                       const supplierPrice = product.costPrice ? Number(product.costPrice) : null;
@@ -2043,7 +2043,7 @@ export default function Inventory() {
               {/* Cost summary chips */}
               <div className="grid grid-cols-3 gap-3 text-xs">
                 {[
-                  { label: "Blended Inventory Cost", val: pricingSheet.blendedInventoryPrice, color: "text-foreground" },
+                  { label: "Blended Inventory Cost", val: pricingSheet.blendedCost, color: "text-foreground" },
                   { label: "Global Floor (5% margin)", val: pricingSheet.globalFloorPrice, color: "text-amber-600 dark:text-amber-400" },
                   { label: "Strict Floor (highest lot)", val: pricingSheet.strictFloorPrice, color: "text-red-600 dark:text-red-400" },
                 ].map(({ label, val, color }) => (
@@ -2116,7 +2116,7 @@ export default function Inventory() {
                     {(() => {
                       const pp = Number(pricingProposed);
                       const qty = Math.max(1, Number(pricingSimQty) || 1);
-                      const cost = pricingSheet.blendedInventoryPrice ? Number(pricingSheet.blendedInventoryPrice) : null;
+                      const cost = pricingSheet.blendedCost ? Number(pricingSheet.blendedCost) : null;
                       const gFloor = pricingSheet.globalFloorPrice ? Number(pricingSheet.globalFloorPrice) : null;
                       const sFloor = pricingSheet.strictFloorPrice ? Number(pricingSheet.strictFloorPrice) : null;
                       const revenue = pp * qty;

@@ -138,14 +138,14 @@ type EffectivePriceEntry = {
   sheetDate: string | null;
   noConfirmedPrice: boolean;
   hasConfirmedToday: boolean;
-  blendedInventoryPrice: string | null;
+  blendedCost: string | null;
   globalFloorPrice: string | null;
   strictFloorPrice: string | null;
 };
 
 function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry }) {
   const price = item.unitPrice;
-  const blended = ep.blendedInventoryPrice ? Number(ep.blendedInventoryPrice) : null;
+  const blended = ep.blendedCost ? Number(ep.blendedCost) : null;
   const gFloor = ep.globalFloorPrice ? Number(ep.globalFloorPrice) : null;
   const sFloor = ep.strictFloorPrice ? Number(ep.strictFloorPrice) : null;
   const margin = blended && price > 0 ? ((price - blended) / price * 100) : null;

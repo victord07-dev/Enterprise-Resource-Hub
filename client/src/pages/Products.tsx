@@ -10,7 +10,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product } from "@shared/schema";
@@ -20,9 +19,6 @@ const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Main
 
 export default function Products() {
   const { toast } = useToast();
-  const { data: currentUser } = useCurrentUser();
-  const canSeePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
-
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
   const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean; source: string; blendedCost: string | null; globalFloorPrice: string | null; strictFloorPrice: string | null }>>({
@@ -32,7 +28,6 @@ export default function Products() {
       if (!res.ok) return {};
       return res.json();
     },
-    enabled: canSeePricing,
   });
 
   const [activeTab, setActiveTab] = useState("products");
@@ -291,12 +286,10 @@ export default function Products() {
             <Wrench className="w-4 h-4" />
             Services ({servicesOnly.length})
           </TabsTrigger>
-          {canSeePricing && (
-            <TabsTrigger value="prices" data-testid="tab-today-prices" className="gap-1.5">
-              <TrendingUp className="w-4 h-4" />
-              Today's Prices
-            </TabsTrigger>
-          )}
+          <TabsTrigger value="prices" data-testid="tab-today-prices" className="gap-1.5">
+            <TrendingUp className="w-4 h-4" />
+            Today's Prices
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4 mt-4">
@@ -387,8 +380,7 @@ export default function Products() {
           {renderTable(filteredItems, true)}
         </TabsContent>
 
-        {canSeePricing && (
-          <TabsContent value="prices" className="space-y-4 mt-4">
+        <TabsContent value="prices" className="space-y-4 mt-4">
             <Card>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -466,7 +458,6 @@ export default function Products() {
               </CardContent>
             </Card>
           </TabsContent>
-        )}
       </Tabs>
 
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>

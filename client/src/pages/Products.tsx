@@ -388,6 +388,7 @@ export default function Products() {
                     <thead>
                       <tr className="border-b">
                         <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground">Unit</th>
                         <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (₹)</th>
                         <th className="text-center p-3 font-medium text-muted-foreground">Source</th>
                         <th className="text-right p-3 font-medium text-muted-foreground">Floor Price (₹)</th>
@@ -400,13 +401,13 @@ export default function Products() {
                       {!effectivePricesMap || productsLoading ? (
                         Array.from({ length: 5 }).map((_, i) => (
                           <tr key={i} className="border-b">
-                            {Array.from({ length: 7 }).map((_, j) => (
+                            {Array.from({ length: 8 }).map((_, j) => (
                               <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
                             ))}
                           </tr>
                         ))
                       ) : productsOnly.length === 0 ? (
-                        <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">No products found</td></tr>
+                        <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No products found</td></tr>
                       ) : (
                         productsOnly.map((product) => {
                           const ep = effectivePricesMap?.[product.id];
@@ -423,6 +424,9 @@ export default function Products() {
                                   <div>{product.name}</div>
                                   <div className="text-xs text-muted-foreground">{product.sku}</div>
                                 </div>
+                              </td>
+                              <td className="p-3 text-muted-foreground text-xs" data-testid={`text-price-unit-${product.id}`}>
+                                {product.unit || "—"}
                               </td>
                               <td className="p-3 text-right font-semibold" data-testid={`text-price-effective-${product.id}`}>
                                 {ep ? `₹${Number(ep.effectivePrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}

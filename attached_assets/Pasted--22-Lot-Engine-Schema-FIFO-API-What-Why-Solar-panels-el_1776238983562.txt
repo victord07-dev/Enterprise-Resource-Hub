@@ -1,0 +1,223 @@
+#22 — Lot Engine: Schema & FIFO API
+What & Why
+Solar panels, electronics, and commodity products arrive in discrete purchase batches (lots) with different landed costs. The current system uses a single weighted-average cost (WAC) on the product record, which is correct for financial and accounting reporting but too coarse for daily pricing decisions. This task adds the schema and a FIFO-based lot engine API that computes per-lot remaining quantity, landed cost, and floor prices — the foundation every other feature in this feature set depends on.
+
+Cost Strategy (mandatory rule — executor must follow)
+WAC on product.costPrice — remains unchanged. Continues to be updated on each GRN confirmation and used for accounting, AP, and financial reports. Never touch this in the lot engine.
+FIFO via lot engine — used exclusively for pricing decisions and margin calculation. Runs in parallel to WAC. Never replace WAC with FIFO in accounting flows. These are two separate systems serving two separate purposes.
+
+Done Looks Like
+
+GET /api/inventory/stock-lot-summary?productId=&warehouseId= returns a correct lot breakdown. Each GRN lot shows its remaining quantity, landed cost (buying price + allocated delivery cost), and lot floor price. The response also includes blendedCost, globalFloor, and strictFloor.
+Products admin page shows an editable minMarginPct field and a read-only needsPricingReview badge.
+Delivery challan dispatch creates one stock_movements row per GRN lot consumed (not one aggregate row), each row carrying that lot's grnId and the quantity consumed from it. FIFO determines allocation order.
+RETURN_IN movements from sales returns carry grnId traced from the original dispatch movement (challan_item → dispatch movement with grnId), not a best-effort guess. See V1 deviation note below.
+
+
+Out of Scope
+
+The pricing engine UI, daily price sheet creation, and approval workflow (Task #23).
+Purchase Return lot reversal — stub with comment: // PURCHASE_RETURN: will reduce from original lot — reserved for future module
+Caching or snapshotting lot state for performance — stub with comment: // TODO: cache lot snapshots at scale — currently replays all movements per request
+Changing movementType string values for existing historical records.
+
+
+Schema Changes
+products (add columns)
+sqlmin_margin_pct       DECIMAL(5,2)  NOT NULL DEFAULT 5.00,
+needs_pricing_review BOOLEAN       NOT NULL DEFAULT FALSE
+supplier_products (add column)
+sqlis_primary BOOLEAN NOT NULL DEFAULT FALSE
+Used in Task #23 to determine the primary supplier price for pricing review triggers.
+stock_movements (add column)
+sqlgrn_id VARCHAR(36) NULL
+Nullable. Populated on new GRN movements and new dispatch movements going forward. Old rows without grn_id are handled by fallback logic in the lot engine at read time — no migration required.
+daily_price_sheets (new table)
+sqlid                    UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+product_id            UUID          NOT NULL REFERENCES products(id),
+applies_date          DATE          NOT NULL,
+
+blended_cost          NUMERIC(10,2),
+global_floor_price    NUMERIC(10,2),
+strict_floor_price    NUMERIC(10,2),
+
+proposed_market_price NUMERIC(10,2) NULL,
+
+status                VARCHAR(20)   NOT NULL DEFAULT 'draft'
+                      CHECK (status IN ('draft', 'submitted', 'confirmed', 'rejected')),
+
+override_required     BOOLEAN       NOT NULL DEFAULT FALSE,
+override_reason       TEXT          NULL,
+
+confirmed_by          UUID          NULL REFERENCES users(id),
+rejected_by           UUID          NULL REFERENCES users(id),
+
+created_at            TIMESTAMP     NOT NULL DEFAULT NOW(),
+updated_at            TIMESTAMP     NOT NULL DEFAULT NOW(),
+
+UNIQUE (product_id, applies_date)
+The UNIQUE(product_id, applies_date) constraint enforces one price sheet per product per day. This prevents duplicate drafts from race conditions and ensures the effective-price endpoint returns deterministic results.
+Field naming rule — no exceptions: The column is blended_cost (not blended_inventory_price, not blendedInventoryPrice). Use this name consistently in the schema, Drizzle model, API response, and all TypeScript types. Inconsistency here caused a naming bug in the prior draft.
+daily_price_sheet_lots (new table)
+sqlid              UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+price_sheet_id  UUID          NOT NULL REFERENCES daily_price_sheets(id) ON DELETE CASCADE,
+grn_id          UUID          NULL,  -- NULL for synthetic lots (ADJUSTMENT_IN) — expected, not a bug
+
+remaining_qty   NUMERIC(10,3) NOT NULL,
+landed_cost     NUMERIC(10,2) NOT NULL,
+lot_floor_price NUMERIC(10,2) NOT NULL,
+
+proposed_price  NUMERIC(10,2) NULL
+proposed_price here is per-lot and used only for override floor validation — compared against lot_floor_price to determine if override_required should be set. It is NOT the final selling price. The final selling price is proposed_market_price at the sheet level.
+Required indexes (not optional — add alongside schema)
+sqlCREATE INDEX idx_stock_movements_product_id ON stock_movements(product_id);
+CREATE INDEX idx_stock_movements_grn_id     ON stock_movements(grn_id);
+CREATE INDEX idx_grn_items_product_id       ON goods_receipt_note_items(product_id);
+CREATE INDEX idx_daily_price_sheets_product ON daily_price_sheets(product_id, applies_date);
+The lot engine replays all movements for a product on every call. Without these indexes, every price sheet load does a full table scan. At a year of operational data these become load-bearing, not a nice-to-have.
+
+Pricing Field Definitions (mandatory clarity)
+proposed_market_price (sheet level):
+The single final selling price for the day. Entered by the user at the sheet level. Returned by the effective-price API. Used by sales order and quotation forms to auto-populate unit price.
+proposed_price (per lot, in daily_price_sheet_lots):
+Used only for override floor validation. Compared against lot_floor_price to set override_required. Not used as the final selling price. Not returned to sales forms.
+
+Lot Engine: Movement Replay Rules
+Sort order (mandatory, correctness-critical)
+All movements must be loaded and replayed in this order:
+ORDER BY created_at ASC, id ASC
+id is the tie-breaker for movements created within the same timestamp. Wrong sort order produces wrong FIFO allocation, which produces wrong margins. This is not a preference — it is the definition of FIFO correctness in this system.
+Movement type handling
+GRN / STOCK_IN where reference_type = 'grn':
+Create a new lot. Set remaining_qty to the received quantity. Compute landed_cost per the formula below. Set grn_id from the movement's grn_id column; if null (old data), use reference_id as fallback.
+DISPATCH / STOCK_OUT where reference_type = 'challan':
+Consume FIFO. Deduct from the oldest lot with remaining_qty > 0 first. If the oldest lot doesn't cover the full quantity, continue to the next oldest. Skip any lot where remaining_qty = 0 — treat it as exhausted and move on without error.
+RETURN_IN:
+If grn_id is present, restore quantity to that specific lot. If grn_id is null (old data), assign to the oldest currently-depleted lot (best-effort for historical data only).
+ADJUSTMENT_IN:
+Create a synthetic lot. Set landed_cost = product.costPrice. Set grn_id = NULL. This is expected — synthetic lots have no GRN origin.
+ADJUSTMENT_OUT:
+Consume FIFO, same logic as dispatch.
+PURCHASE_RETURN:
+typescript// PURCHASE_RETURN: will reduce from original lot — reserved for future module
+Skip for now. Do not throw an error.
+Landed cost formula
+allocated_delivery_cost = grn.delivery_cost × (line_item_qty / total_grn_qty)
+
+landed_cost = (buying_price × qty + allocated_delivery_cost) / qty
+If grn.delivery_cost is null or zero, allocated_delivery_cost = 0 and landed_cost = buying_price.
+Floor price formulas
+lot_floor_price  = landed_cost × (1 + min_margin_pct / 100)
+
+blended_cost     = SUM(remaining_qty × landed_cost) / SUM(remaining_qty)
+
+global_floor     = blended_cost × (1 + min_margin_pct / 100)
+
+strict_floor     = MAX(lot_floor_price) across all remaining lots
+blended_cost is a quantity-weighted average. A lot with 100 units at ₹50 has more weight than a lot with 5 units at ₹80. Do not compute it as a simple average of landed costs.
+If SUM(remaining_qty) = 0 across all lots (all stock depleted), return blended_cost = null, global_floor = null, strict_floor = null. Do not divide by zero.
+
+V1 Return Deviation (explicitly documented)
+The RETURN_IN grnId resolution for new returns follows this rule: if multiple lots were consumed for the same line item, assign the return to the most recently consumed lot's grnId.
+This is a known, intentional deviation from pure FIFO returns (which would proportionally restore across all consumed lots). It is a V1 simplification accepted for implementation speed.
+Place this comment at the RETURN_IN movement creation in the sales return handler:
+typescript// FIFO DEVIATION (V1): Return assigned to most recently consumed lot when multiple
+// lots were consumed for this item. True proportional allocation deferred.
+// TODO: Support proportional return allocation across multiple lots.
+
+Old Data Fallback (no migration)
+Do not backfill the database. Do not modify historical records. Apply these rules in the lot engine at read time only.
+typescript// GRN movements created before this task (no grn_id column populated):
+if (!movement.grnId && movement.referenceType === 'grn') {
+  grnId = movement.referenceId; // same value, different column — safe fallback
+}
+
+// Dispatch movements with no grn_id (pre-task history):
+if (!movement.grnId && movement.referenceType === 'challan') {
+  // Consume FIFO without lot attribution — deduct from oldest lot
+}
+
+// RETURN_IN with no grn_id (historical returns):
+if (movement.movementType === 'RETURN_IN' && !movement.grnId) {
+  // Assign to oldest currently-depleted lot — best-effort for old data only
+}
+
+Dispatch: Per-Lot Movement Splitting (architectural change)
+When a delivery challan is dispatched, the existing dispatch handler must be refactored:
+BEGIN TRANSACTION
+
+  1. Call lot engine to determine FIFO allocation
+     → returns: [ { grnId, qtyToConsume }, ... ]
+
+  2. For each lot in the allocation:
+     INSERT INTO stock_movements (product_id, grn_id, qty, movement_type, ...)
+     VALUES (productId, lot.grnId, lot.qtyToConsume, 'DISPATCH', ...)
+
+  3. UPDATE inventory_stock
+     SET total_qty = total_qty - totalDispatchedQty
+     WHERE product_id = productId AND warehouse_id = warehouseId
+     -- Use total dispatched qty, not per-lot — balance is at product level
+
+COMMIT
+
+On any error → ROLLBACK
+No partial writes permitted under any circumstances.
+Invariant to verify in testing: SUM(qty across all movement rows for this dispatch) = total dispatched quantity. Write a test for this.
+
+API Response Shape
+GET /api/inventory/stock-lot-summary?productId=&warehouseId=
+typescript{
+  productId: string,
+  warehouseId: string,
+  lots: [
+    {
+      grnId: string | null,       // null for synthetic lots
+      grnNumber: string | null,
+      receivedDate: string | null,
+      remainingQty: number,
+      landedCost: number,
+      lotFloorPrice: number,
+    }
+  ],
+  blendedCost: number | null,     // null if all stock depleted
+  globalFloor: number | null,
+  strictFloor: number | null,
+}
+Only return lots where remaining_qty > 0. Exhausted lots are not included in the response — they are used internally during replay but not exposed.
+
+Logging (mandatory)
+Log on every lot engine execution — every API call and every internal call from dispatch or return handlers:
+typescriptlog({
+  productId,
+  warehouseId,
+  movementCount,
+  lotCount,
+  blendedCost,
+  globalFloor,
+  strictFloor,
+});
+Debug mode:
+typescriptif (process.env.DEBUG_LOT_ENGINE === 'true') {
+  log({ lotBreakdown }); // per-lot detail including landed cost per lot
+}
+
+Tasks
+1. Schema + indexes — Add min_margin_pct and needs_pricing_review to products. Add is_primary to supplier_products. Add nullable grn_id to stock_movements. Create daily_price_sheets and daily_price_sheet_lots tables. Add all four required indexes. Push schema with npm run db:push.
+2. GRN confirmation: populate grn_id — When a GRN is confirmed and its stock_movements row is written, set grn_id = grn.id on that row. No migration for old rows — the lot engine fallback handles them at read time.
+3. Dispatch: per-lot movement splitting — Refactor the delivery challan dispatch handler to call the lot engine, split movement writes per lot with grn_id set, and keep the inventory_stock balance update using the total dispatched quantity. Wrap in a transaction. Write a test that validates SUM(split rows) = total qty.
+4. Sales return: grn_id from dispatch trail — In the sales return processing endpoint, resolve grn_id for each RETURN_IN movement by querying dispatch movements for the originating challan item. Apply the V1 deviation rule (most recently consumed lot) and add the mandatory deviation comment.
+5. FIFO lot engine API — Build GET /api/inventory/stock-lot-summary. Load all movements for the product+warehouse, sort by created_at ASC, id ASC, replay in order using the movement type rules above. Apply old-data fallbacks at read time. Compute and return all floor values. Add the performance TODO comment. Add mandatory logging.
+6. Products UI — Expose minMarginPct as an editable field and needsPricingReview as a read-only badge in the Products admin screen.
+
+Validation Checklist (before marking complete)
+
+ SUM(dispatch movement rows for one challan) = total dispatched quantity
+ All movements sorted created_at ASC, id ASC before replay
+ blended_cost computed as quantity-weighted average, not simple average
+ blended_cost = null when all stock depleted, not a divide-by-zero
+ Synthetic lots (ADJUSTMENT_IN) have grn_id = NULL — confirmed as expected, not a bug
+ Old GRN rows (no grn_id) resolve via reference_id fallback
+ V1 deviation comment present at RETURN_IN creation
+ All four indexes created
+ PURCHASE_RETURN stubbed with comment, does not throw
+ Debug logging gated on DEBUG_LOT_ENGINE env var

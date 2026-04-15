@@ -1,0 +1,215 @@
+#22 — Lot Engine: Schema, FIFO Engine & API (FINAL — PRODUCTION LOCKED)
+🧠 What & Why
+
+Products are procured in batches (lots) with varying landed costs over time.
+
+Your system:
+
+Uses WAC (Weighted Average Cost) → accounting ✔
+Needs FIFO (Lot Engine) → pricing & margin ✔
+🔒 Cost Strategy (MANDATORY — DO NOT CHANGE)
+WAC (product.costPrice):
+- Used for accounting, financial reporting
+- MUST NOT be modified
+
+FIFO (Lot Engine):
+- Used for pricing, margin control, discount decisions
+- Runs in parallel to WAC
+- MUST NOT replace WAC
+✅ Done Looks Like
+API (MANDATORY)
+GET /api/inventory/stock-lot-summary?productId=&warehouseId=
+Response:
+Per Lot:
+grnId
+grnNumber
+receivedDate
+remainingQty
+landedCost
+lotFloorPrice
+Aggregates:
+blendedCost
+globalFloor
+strictFloor
+🧱 Schema (FINAL — NO CHANGES AFTER THIS)
+products
+minMarginPct DECIMAL(5,2) DEFAULT 5.00,
+needsPricingReview BOOLEAN DEFAULT FALSE
+supplier_products
+isPrimary BOOLEAN DEFAULT FALSE
+
+👉 Used in #23 for pricing source selection.
+
+stock_movements
+grn_id UUID NULL
+daily_price_sheets
+id UUID PRIMARY KEY,
+product_id UUID NOT NULL,
+applies_date DATE NOT NULL,
+
+blendedCost NUMERIC(10,2),
+globalFloor NUMERIC(10,2),
+strictFloor NUMERIC(10,2),
+
+proposedMarketPrice NUMERIC(10,2) NULL,
+
+status VARCHAR(20)
+  CHECK (status IN ('draft','submitted','confirmed','rejected')),
+
+overrideRequired BOOLEAN DEFAULT FALSE,
+overrideReason TEXT NULL,
+
+confirmedBy UUID NULL,
+rejectedBy UUID NULL,
+
+created_at TIMESTAMP DEFAULT NOW(),
+
+UNIQUE(product_id, applies_date)
+daily_price_sheet_lots
+id UUID PRIMARY KEY,
+price_sheet_id UUID NOT NULL,
+grn_id UUID NULL, -- NULL for synthetic lots
+
+remaining_qty NUMERIC(10,3),
+landed_cost NUMERIC(10,2),
+lot_floor_price NUMERIC(10,2),
+
+proposedPrice NUMERIC(10,2) NULL
+🧠 Pricing Field Definitions (MANDATORY)
+proposedMarketPrice:
+- Final selling price for the day
+- Entered at sheet level
+- Used by Sales & effective price API
+
+proposedPrice (per lot):
+- Used ONLY for validation (floor checks)
+- Enables overrideRequired logic
+- NOT used for actual selling price
+🔴 CRITICAL ENGINE RULES
+1. Dispatch MUST be Atomic (MANDATORY)
+BEGIN TRANSACTION
+
+1. Compute FIFO allocation
+2. Insert stock_movement rows (per lot)
+3. Update inventory_stock
+
+COMMIT
+
+On error → ROLLBACK
+2. Dispatch = Per-Lot Splitting
+[{ qty, grn_id }]
+
+Rule:
+
+SUM(split rows) = total dispatch qty
+3. Sales Return Mapping
+invoice → challan → dispatch movement → grn_id
+V1 Rule:
+Assign return to most recently consumed lot
+Mandatory Code Comment:
+// TODO: Support proportional return allocation across multiple lots
+4. Warehouse-Aware FIFO (MANDATORY)
+Filter ALL lot engine queries by:
+product_id + warehouse_id
+5. Old Data Fallback (NO MIGRATION)
+GRN:
+if (!grn_id && referenceType === 'grn') {
+  grn_id = referenceId
+}
+Dispatch:
+if (!grn_id) {
+  consume FIFO without attribution
+}
+Returns:
+if (!grn_id) {
+  assign to oldest depleted lot
+}
+⚙️ Lot Engine Logic
+1. Load Data
+Load movements WHERE:
+product_id AND warehouse_id
+2. Sort Order (MANDATORY)
+ORDER BY created_at ASC, id ASC
+3. Landed Cost Formula (FINAL)
+allocatedDeliveryCost =
+GRN.deliveryCost × (lineItemQty / totalGRNQty)
+landedCost =
+(buyingPrice × qty + allocatedDeliveryCost) ÷ qty
+4. Movement Replay
+GRN:
+create lot
+DISPATCH:
+consume FIFO
+SALES_RETURN:
+restore using grn_id
+ADJUSTMENT_IN:
+create synthetic lot (cost = product.costPrice)
+// grn_id is NULL (expected)
+ADJUSTMENT_OUT:
+consume FIFO
+PURCHASE_RETURN:
+// TODO: implement in future module
+📊 Floor Calculations (FINAL — NO DEVIATION)
+lotFloor    = landedCost × (1 + minMarginPct / 100)
+
+blendedCost = weighted avg of remaining lots
+
+globalFloor = blendedCost × (1 + minMarginPct / 100)
+
+strictFloor = MAX(lotFloor)
+📡 API Implementation (MANDATORY)
+Endpoint:
+GET /api/inventory/stock-lot-summary
+Required:
+Must call FIFO engine
+Must return per-lot + aggregates
+Must support warehouse filter
+📈 DB Indexes (MANDATORY — PRODUCTION REQUIREMENT)
+CREATE INDEX idx_stock_movements_product ON stock_movements(product_id);
+CREATE INDEX idx_stock_movements_grn ON stock_movements(grn_id);
+CREATE INDEX idx_stock_movements_created ON stock_movements(created_at);
+CREATE INDEX idx_grn_items_product ON goods_receipt_note_items(product_id);
+📜 Logging (MANDATORY)
+log({
+  productId,
+  warehouseId,
+  movementCount,
+  lotCount,
+  blendedCost,
+  globalFloor,
+  strictFloor
+})
+Debug Mode:
+if (process.env.DEBUG_LOT_ENGINE === 'true') {
+  log(lotBreakdown)
+}
+🖥️ UI (Products Module)
+
+Add:
+
+minMarginPct (editable)
+needsPricingReview (read-only)
+🚫 Out of Scope
+Pricing workflow (#23)
+UI (#24)
+Reports (#25)
+Purchase return logic
+Performance caching
+✅ VALIDATION CHECKLIST (MUST PASS BEFORE NEXT TASK)
+
+✔ FIFO works correctly
+✔ Dispatch writes per-lot rows
+✔ No partial writes (transaction works)
+✔ Returns map to correct lot
+✔ Synthetic lots don’t break
+✔ Old data works
+✔ API returns correct lot breakdown
+✔ Warehouse filter works
+✔ Logs generated
+✔ Queries are fast (indexes working)
+
+🔥 FINAL STATUS
+
+👉 This is now:
+
+💡 Enterprise-grade, audit-safe, build-ready specification

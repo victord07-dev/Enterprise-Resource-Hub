@@ -1,0 +1,490 @@
+Task #22 Hardening — Complete Implementation
+
+Execution order: Schema → Lot Engine → API Endpoint → Products UI → Column-rename sweeps
+Run npm run db:push once after the schema section. Do not push partial schemas.
+
+
+TASK 1 — Schema: columns + rename + indexes
+File: shared/schema.ts
+1-A. Add minMarginPct to products
+Locate your products table definition. Add this column:
+ts// Inside pgTable("products", { ... })
+minMarginPct: decimal("min_margin_pct", { precision: 5, scale: 2 }).default("5.00").notNull(),
+needsPricingReview: boolean("needs_pricing_review").default(false).notNull(),
+1-B. Add isPrimary to supplier_products
+Locate your supplier_products table. Add:
+ts// Inside pgTable("supplier_products", { ... })
+isPrimary: boolean("is_primary").default(false).notNull(),
+1-C. Rename column in daily_price_sheets
+Find the existing blendedInventoryPrice column and replace it:
+ts// BEFORE (remove this line):
+blendedInventoryPrice: decimal("blended_inventory_price", { precision: 15, scale: 4 }),
+
+// AFTER (replace with):
+blendedCost: decimal("blended_cost", { precision: 15, scale: 4 }),
+1-D. Add the four required DB indexes
+Add these at the bottom of schema.ts, after all table definitions:
+ts// ─── Required lot-engine performance indexes ───────────────────────────────
+export const stockMovementsProductIdx = index(
+  "idx_stock_movements_product_id"
+).on(stockMovements.productId);
+
+export const stockMovementsGrnIdx = index(
+  "idx_stock_movements_grn_id"
+).on(stockMovements.grnId);
+
+export const stockMovementsCreatedAtIdx = index(
+  "idx_stock_movements_created_at"
+).on(stockMovements.createdAt);
+
+export const grnItemsProductIdx = index(
+  "idx_grn_items_product_id"
+).on(goodsReceiptNoteItems.productId);
+
+Verify that stockMovements has a warehouseId column (warehouse_id).
+If it doesn't exist yet, add it now:
+tswarehouseId: integer("warehouse_id").references(() => warehouses.id),
+
+1-E. Run push and verify
+bashnpm run db:push
+Confirm in your DB console:
+sqlSELECT column_name FROM information_schema.columns
+WHERE table_name = 'daily_price_sheets';
+-- Must show 'blended_cost', NOT 'blended_inventory_price'
+
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'products'
+AND column_name IN ('min_margin_pct', 'needs_pricing_review');
+-- Must show both rows
+
+SELECT indexname FROM pg_indexes
+WHERE tablename IN ('stock_movements', 'goods_receipt_note_items')
+AND indexname LIKE 'idx_%';
+-- Must show all 4 indexes
+
+TASK 2 — Lot Engine: per-product margin + warehouse filter + logging
+File: server/storage.ts (wherever computeFifoLots currently lives)
+Replace the entire computeFifoLots function with the implementation below.
+ts// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface LotDetail {
+  grnId: number;
+  grnNumber: string;
+  receivedDate: Date;
+  remainingQty: number;
+  landedCost: number;     // per-unit landed cost for this lot
+  lotFloorPrice: number;  // landedCost × (1 + minMarginPct/100)
+}
+
+export interface FifoLotResult {
+  lots: LotDetail[];                // only lots with remainingQty > 0
+  blendedCost:  number | null;      // null when all stock depleted
+  globalFloor:  number | null;      // min(lotFloorPrice) across active lots
+  strictFloor:  number | null;      // max(lotFloorPrice) across active lots
+  // engine meta (not in API response, used for logging)
+  _meta: {
+    productId:     number;
+    warehouseId:   number | undefined;
+    movementCount: number;
+    lotCount:      number;
+  };
+}
+
+// ─── Engine ───────────────────────────────────────────────────────────────────
+
+/**
+ * Compute FIFO lot breakdown for a product.
+ *
+ * @param productId     - required
+ * @param warehouseId   - optional; when provided, filters stock_movements by warehouse_id
+ * @param minMarginPct  - optional; pass the product's value to avoid a DB round-trip.
+ *                        If omitted the engine fetches it from the products table.
+ */
+export async function computeFifoLots(
+  productId: number,
+  warehouseId?: number,
+  minMarginPctOverride?: number,
+): Promise<FifoLotResult> {
+
+  // ── 1. Resolve per-product margin ─────────────────────────────────────────
+  let marginPct: number;
+  if (minMarginPctOverride !== undefined) {
+    marginPct = minMarginPctOverride;
+  } else {
+    const [product] = await db
+      .select({ minMarginPct: products.minMarginPct })
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+    marginPct = product ? Number(product.minMarginPct) : 5.0; // safe fallback
+  }
+  const marginMultiplier = 1 + marginPct / 100;
+
+  // ── 2. Load GRN receipts for this product (FIFO order) ────────────────────
+  const receipts = await db
+    .select({
+      grnId:        goodsReceiptNoteItems.grnId,
+      grnNumber:    goodsReceiptNotes.grnNumber,
+      receivedDate: goodsReceiptNotes.receivedDate,
+      receivedQty:  goodsReceiptNoteItems.quantity,
+      landedCost:   goodsReceiptNoteItems.landedCostPerUnit,  // adjust field name to match your schema
+    })
+    .from(goodsReceiptNoteItems)
+    .innerJoin(goodsReceiptNotes, eq(goodsReceiptNoteItems.grnId, goodsReceiptNotes.id))
+    .where(eq(goodsReceiptNoteItems.productId, productId))
+    .orderBy(asc(goodsReceiptNotes.receivedDate), asc(goodsReceiptNoteItems.grnId));
+
+  // ── 3. Load outbound movements (dispatch, adjustments) ───────────────────
+  let movementsQuery = db
+    .select({
+      grnId:    stockMovements.grnId,
+      qty:      stockMovements.quantity,
+      type:     stockMovements.movementType,
+    })
+    .from(stockMovements)
+    .where(
+      and(
+        eq(stockMovements.productId, productId),
+        inArray(stockMovements.movementType, ["dispatch", "adjustment_out", "return_out"]),
+      )
+    );
+
+  // Warehouse filter — applied only when warehouseId is provided
+  if (warehouseId !== undefined) {
+    movementsQuery = movementsQuery.where(
+      and(
+        eq(stockMovements.productId, productId),
+        inArray(stockMovements.movementType, ["dispatch", "adjustment_out", "return_out"]),
+        eq(stockMovements.warehouseId, warehouseId),
+      )
+    ) as typeof movementsQuery;
+  }
+
+  const movements = await movementsQuery;
+  const movementCount = movements.length;
+
+  // ── 4. Build consumed-qty map per GRN ────────────────────────────────────
+  // For dispatch movements linked to a specific GRN lot (from the splitting done in task #22)
+  const consumedByGrn = new Map<number, number>();
+  let unlinkedConsumed = 0;
+
+  for (const m of movements) {
+    if (m.grnId) {
+      consumedByGrn.set(m.grnId, (consumedByGrn.get(m.grnId) ?? 0) + Number(m.qty));
+    } else {
+      unlinkedConsumed += Number(m.qty);
+    }
+  }
+
+  // ── 5. Apply FIFO to unlinked consumed qty ───────────────────────────────
+  // Work through receipts oldest-first, draining unlinked consumption
+  const receiptRemaining = new Map<number, number>();
+  for (const r of receipts) {
+    receiptRemaining.set(r.grnId, Number(r.receivedQty) - (consumedByGrn.get(r.grnId) ?? 0));
+  }
+
+  let toConsume = unlinkedConsumed;
+  for (const r of receipts) {
+    if (toConsume <= 0) break;
+    const remaining = receiptRemaining.get(r.grnId) ?? 0;
+    const drain = Math.min(remaining, toConsume);
+    receiptRemaining.set(r.grnId, remaining - drain);
+    toConsume -= drain;
+  }
+
+  // ── 6. Build active lot list ──────────────────────────────────────────────
+  const activeLots: LotDetail[] = [];
+
+  for (const r of receipts) {
+    const remaining = receiptRemaining.get(r.grnId) ?? 0;
+    if (remaining <= 0) continue;
+
+    const landedCost = Number(r.landedCost);
+    activeLots.push({
+      grnId:         r.grnId,
+      grnNumber:     r.grnNumber,
+      receivedDate:  r.receivedDate,
+      remainingQty:  remaining,
+      landedCost,
+      lotFloorPrice: parseFloat((landedCost * marginMultiplier).toFixed(4)),
+    });
+  }
+
+  // ── 7. Compute aggregates ─────────────────────────────────────────────────
+  let blendedCost:  number | null = null;
+  let globalFloor:  number | null = null;
+  let strictFloor:  number | null = null;
+
+  if (activeLots.length > 0) {
+    const totalQty   = activeLots.reduce((s, l) => s + l.remainingQty, 0);
+    const totalValue = activeLots.reduce((s, l) => s + l.remainingQty * l.landedCost, 0);
+
+    blendedCost = parseFloat((totalValue / totalQty).toFixed(4));
+    globalFloor = parseFloat(Math.min(...activeLots.map(l => l.lotFloorPrice)).toFixed(4));
+    strictFloor = parseFloat(Math.max(...activeLots.map(l => l.lotFloorPrice)).toFixed(4));
+  }
+
+  const result: FifoLotResult = {
+    lots:        activeLots,
+    blendedCost,
+    globalFloor,
+    strictFloor,
+    _meta: {
+      productId,
+      warehouseId,
+      movementCount,
+      lotCount: activeLots.length,
+    },
+  };
+
+  // ── 8. Mandatory logging ──────────────────────────────────────────────────
+  console.log(
+    `[LOT_ENGINE] productId=${productId} warehouseId=${warehouseId ?? "global"} ` +
+    `movements=${movementCount} lots=${activeLots.length} ` +
+    `blendedCost=${blendedCost ?? "null"} ` +
+    `globalFloor=${globalFloor ?? "null"} strictFloor=${strictFloor ?? "null"}`,
+  );
+
+  if (process.env.DEBUG_LOT_ENGINE === "true") {
+    for (const lot of activeLots) {
+      console.log(
+        `  [LOT_ENGINE_DEBUG] grnId=${lot.grnId} grnNumber=${lot.grnNumber} ` +
+        `receivedDate=${lot.receivedDate.toISOString().slice(0, 10)} ` +
+        `remainingQty=${lot.remainingQty} landedCost=${lot.landedCost} ` +
+        `lotFloorPrice=${lot.lotFloorPrice}`,
+      );
+    }
+  }
+
+  return result;
+}
+
+Dispatch transaction check — find where dispatch splitting writes to stock_movements.
+It MUST be wrapped in a transaction. If it isn't, wrap it now (non-optional):
+tsawait db.transaction(async (tx) => {
+  // all dispatch + stock_movement inserts go here
+  await tx.insert(stockMovements).values(parentRow);
+  for (const split of lotSplits) {
+    await tx.insert(stockMovements).values(split);
+  }
+});
+
+
+TASK 3 — GET /api/inventory/stock-lot-summary endpoint
+File: server/routes.ts
+Add this route. Insert it near the other /api/inventory/ routes (around line 3480–3520 as noted in the spec):
+ts// ─── GET /api/inventory/stock-lot-summary ────────────────────────────────────
+app.get(
+  "/api/inventory/stock-lot-summary",
+  authenticateToken,
+  async (req: Request, res: Response) => {
+    try {
+      const productIdRaw  = req.query.productId  as string | undefined;
+      const warehouseIdRaw = req.query.warehouseId as string | undefined;
+
+      // productId is required
+      if (!productIdRaw) {
+        return res.status(400).json({ error: "productId query parameter is required" });
+      }
+
+      const productId = parseInt(productIdRaw, 10);
+      if (isNaN(productId)) {
+        return res.status(400).json({ error: "productId must be a valid integer" });
+      }
+
+      const warehouseId = warehouseIdRaw ? parseInt(warehouseIdRaw, 10) : undefined;
+      if (warehouseIdRaw && isNaN(warehouseId!)) {
+        return res.status(400).json({ error: "warehouseId must be a valid integer" });
+      }
+
+      // Fetch minMarginPct upfront to pass into engine (avoids double DB hit)
+      const [product] = await db
+        .select({ minMarginPct: products.minMarginPct })
+        .from(products)
+        .where(eq(products.id, productId))
+        .limit(1);
+
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+
+      const result = await computeFifoLots(
+        productId,
+        warehouseId,
+        Number(product.minMarginPct),
+      );
+
+      // Shape the response — omit internal _meta
+      const { _meta, ...publicResult } = result;
+
+      return res.json({
+        productId,
+        warehouseId: warehouseId ?? null,
+        lots:        publicResult.lots,          // [] when all stock depleted
+        blendedCost: publicResult.blendedCost,   // null when all stock depleted
+        globalFloor: publicResult.globalFloor,   // null when all stock depleted
+        strictFloor: publicResult.strictFloor,   // null when all stock depleted
+      });
+    } catch (err) {
+      console.error("[LOT_SUMMARY_API] Error:", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  },
+);
+Response shape reference
+jsonc// Successful response with stock
+{
+  "productId": 42,
+  "warehouseId": 3,
+  "lots": [
+    {
+      "grnId": 101,
+      "grnNumber": "GRN-2025-0041",
+      "receivedDate": "2025-01-10T00:00:00.000Z",
+      "remainingQty": 120,
+      "landedCost": 850.0000,
+      "lotFloorPrice": 892.5000
+    }
+  ],
+  "blendedCost": 862.3400,
+  "globalFloor": 892.5000,
+  "strictFloor": 910.2500
+}
+
+// When all stock is depleted
+{
+  "productId": 42,
+  "warehouseId": null,
+  "lots": [],
+  "blendedCost": null,
+  "globalFloor": null,
+  "strictFloor": null
+}
+
+TASK 4 — Products UI: minMarginPct + needsPricingReview badge
+File: client/src/pages/Products.tsx
+4-A. Add minMarginPct to the form state
+In your form defaultValues / useForm / useState initializer, add:
+ts// In form defaultValues or initial state
+minMarginPct: product?.minMarginPct ?? 5.00,
+4-B. Add the input field
+Find the section of the form where product cost / price fields are grouped and add:
+tsx{/* Min Margin % — drives FIFO floor price calculations */}
+<div className="space-y-2">
+  <Label htmlFor="minMarginPct">
+    Min Margin %
+    <span className="ml-1 text-xs text-muted-foreground font-normal">
+      (used for FIFO floor price)
+    </span>
+  </Label>
+  <Input
+    id="minMarginPct"
+    type="number"
+    step="0.01"
+    min="0"
+    max="100"
+    {...register("minMarginPct", {
+      required: "Min margin % is required",
+      min: { value: 0,   message: "Cannot be negative" },
+      max: { value: 100, message: "Cannot exceed 100%" },
+      valueAsNumber: true,
+    })}
+  />
+  {errors.minMarginPct && (
+    <p className="text-xs text-destructive">{errors.minMarginPct.message}</p>
+  )}
+</div>
+
+If you use react-hook-form with a Zod schema, add to the Zod schema:
+tsminMarginPct: z.number().min(0).max(100).default(5.00),
+
+4-C. Add the needsPricingReview badge
+In the product list table rows (and/or in the product detail card header), add:
+tsx{/* Read-only badge — shown when product.needsPricingReview === true */}
+{product.needsPricingReview && (
+  <Badge
+    variant="outline"
+    className="border-amber-500 bg-amber-50 text-amber-700 text-xs"
+  >
+    Needs Pricing Review
+  </Badge>
+)}
+4-D. Include in the API payload
+In your product create/update onSubmit handler, ensure minMarginPct is sent:
+tsconst payload = {
+  // ... existing fields ...
+  minMarginPct: formData.minMarginPct,
+  // NOTE: never send needsPricingReview from client — it's server-controlled
+};
+4-E. Update product API handler in routes.ts
+In the PUT /api/products/:id (and POST /api/products) handler, add minMarginPct to the fields being updated:
+ts// Inside the update/insert body:
+minMarginPct: body.minMarginPct ?? 5.00,
+// needsPricingReview is NOT updated here — it's set by pricing workflow (task #23)
+
+TASK 5 — Column rename sweeps (blendedInventoryPrice → blendedCost)
+After running npm run db:push, grep for all occurrences of the old name and fix each:
+bashgrep -rn "blendedInventoryPrice\|blended_inventory_price" \
+  server/routes.ts server/storage.ts \
+  client/src/pages/Inventory.tsx \
+  client/src/pages/Sales.tsx
+For each match, apply the rename:
+Old name (TypeScript)New nameblendedInventoryPriceblendedCostblended_inventory_priceblended_cost
+Known locations per the spec
+server/routes.ts lines 253–334 and 3480–3520 — any SELECT or INSERT referencing blendedInventoryPrice:
+ts// BEFORE:
+.select({ blendedInventoryPrice: dailyPriceSheets.blendedInventoryPrice })
+// AFTER:
+.select({ blendedCost: dailyPriceSheets.blendedCost })
+server/storage.ts — any function reading or writing the daily price sheet row:
+ts// BEFORE:
+blendedInventoryPrice: result.blendedCost,
+// AFTER:
+blendedCost: result.blendedCost,
+client/src/pages/Inventory.tsx — any display of the blended cost column:
+tsx// BEFORE:
+{row.blendedInventoryPrice}
+// AFTER:
+{row.blendedCost}
+client/src/pages/Sales.tsx lines 141–148 — any reference in sales margin display:
+tsx// BEFORE:
+const margin = salePrice - item.blendedInventoryPrice;
+// AFTER:
+const margin = salePrice - item.blendedCost;
+
+Verification checklist
+Run these after all changes and npm run db:push:
+bash# 1. No old column name references remain
+grep -rn "blendedInventoryPrice\|blended_inventory_price" server/ client/src/
+
+# 2. No hardcoded FLOOR_MARGIN or 0.05 constant in lot engine
+grep -n "FLOOR_MARGIN\|0\.05" server/storage.ts
+
+# 3. Indexes exist in DB
+psql $DATABASE_URL -c "
+  SELECT indexname FROM pg_indexes
+  WHERE tablename IN ('stock_movements','goods_receipt_note_items')
+  AND indexname LIKE 'idx_%';"
+
+# 4. New columns exist
+psql $DATABASE_URL -c "
+  SELECT column_name, data_type
+  FROM information_schema.columns
+  WHERE table_name = 'products'
+  AND column_name IN ('min_margin_pct','needs_pricing_review');"
+
+# 5. API endpoint responds
+curl -s -H "Authorization: Bearer $TEST_TOKEN" \
+  "http://localhost:5000/api/inventory/stock-lot-summary?productId=1" | jq .
+
+# 6. Lot engine logs appear in stdout for every call
+DEBUG_LOT_ENGINE=true node -e "
+  require('./server/storage').computeFifoLots(1).then(console.log)
+"
+
+Out of scope (do not touch)
+
+costPrice / WAC logic anywhere
+Pricing workflow UI (task #23 / #24)
+Purchase return lot reversal (stub already exists — leave it)
+Performance caching (TODO comment already exists — leave it)

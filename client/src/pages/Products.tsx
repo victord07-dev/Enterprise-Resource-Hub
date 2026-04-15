@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product } from "@shared/schema";
@@ -19,15 +20,19 @@ const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Main
 
 export default function Products() {
   const { toast } = useToast();
+  const { data: currentUser } = useCurrentUser();
+  const canSeePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
-  const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean }>>({
+  const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean; source: string; blendedCost: string | null; globalFloorPrice: string | null; strictFloorPrice: string | null }>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
       const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
       if (!res.ok) return {};
       return res.json();
     },
+    enabled: canSeePricing,
   });
 
   const [activeTab, setActiveTab] = useState("products");
@@ -43,7 +48,7 @@ export default function Products() {
   const productsOnly = allProducts?.filter(p => p.type !== "service") ?? [];
   const servicesOnly = allProducts?.filter(p => p.type === "service") ?? [];
 
-  const currentList = activeTab === "products" ? productsOnly : servicesOnly;
+  const currentList = activeTab === "services" ? servicesOnly : productsOnly;
 
   const filteredItems = currentList.filter((p) => {
     if (!searchQuery) return true;
@@ -268,10 +273,12 @@ export default function Products() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Products & Services</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage your product catalog and service offerings</p>
         </div>
-        <Button data-testid="button-add-item" onClick={openNewItem}>
-          <Plus className="w-4 h-4 mr-2" />
-          {activeTab === "services" ? "Add Service" : "Add Product"}
-        </Button>
+        {activeTab !== "prices" && (
+          <Button data-testid="button-add-item" onClick={openNewItem}>
+            <Plus className="w-4 h-4 mr-2" />
+            {activeTab === "services" ? "Add Service" : "Add Product"}
+          </Button>
+        )}
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSearchQuery(""); }}>
@@ -284,6 +291,12 @@ export default function Products() {
             <Wrench className="w-4 h-4" />
             Services ({servicesOnly.length})
           </TabsTrigger>
+          {canSeePricing && (
+            <TabsTrigger value="prices" data-testid="tab-today-prices" className="gap-1.5">
+              <TrendingUp className="w-4 h-4" />
+              Today's Prices
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="products" className="space-y-4 mt-4">
@@ -373,6 +386,87 @@ export default function Products() {
 
           {renderTable(filteredItems, true)}
         </TabsContent>
+
+        {canSeePricing && (
+          <TabsContent value="prices" className="space-y-4 mt-4">
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
+                        <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (₹)</th>
+                        <th className="text-center p-3 font-medium text-muted-foreground">Source</th>
+                        <th className="text-right p-3 font-medium text-muted-foreground">Floor Price (₹)</th>
+                        <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground">Last Sold Date</th>
+                        <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!effectivePricesMap || productsLoading ? (
+                        Array.from({ length: 5 }).map((_, i) => (
+                          <tr key={i} className="border-b">
+                            {Array.from({ length: 7 }).map((_, j) => (
+                              <td key={j} className="p-3"><Skeleton className="h-4 w-20" /></td>
+                            ))}
+                          </tr>
+                        ))
+                      ) : productsOnly.length === 0 ? (
+                        <tr><td colSpan={7} className="text-center py-8 text-muted-foreground">No products found</td></tr>
+                      ) : (
+                        productsOnly.map((product) => {
+                          const ep = effectivePricesMap?.[product.id];
+                          const ls = lastSoldPrices?.[product.id];
+                          const source = ep?.source ?? "none";
+                          const sourceBadge =
+                            source === "today" ? <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 border-green-300 text-[10px] px-1.5 py-0.5">🟢 Confirmed Today</Badge> :
+                            source === "fallback" ? <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border-amber-300 text-[10px] px-1.5 py-0.5">🟡 Prev Sheet ({ep?.sheetDate})</Badge> :
+                            <Badge className="bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 border-red-300 text-[10px] px-1.5 py-0.5">🔴 No Price</Badge>;
+                          return (
+                            <tr key={product.id} className="border-b last:border-0" data-testid={`row-price-${product.id}`}>
+                              <td className="p-3 font-medium" data-testid={`text-price-name-${product.id}`}>
+                                <div>
+                                  <div>{product.name}</div>
+                                  <div className="text-xs text-muted-foreground">{product.sku}</div>
+                                </div>
+                              </td>
+                              <td className="p-3 text-right font-semibold" data-testid={`text-price-effective-${product.id}`}>
+                                {ep ? `₹${Number(ep.effectivePrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                              </td>
+                              <td className="p-3 text-center" data-testid={`badge-price-source-${product.id}`}>
+                                {sourceBadge}
+                              </td>
+                              <td className="p-3 text-right text-muted-foreground" data-testid={`text-price-floor-${product.id}`}>
+                                {ep?.globalFloorPrice ? `₹${Number(ep.globalFloorPrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                              </td>
+                              <td className="p-3 text-right" data-testid={`text-price-lastsold-${product.id}`}>
+                                {ls ? `₹${Number(ls.price).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                              </td>
+                              <td className="p-3 text-xs text-muted-foreground" data-testid={`text-price-lastsold-date-${product.id}`}>
+                                {ls?.lastSoldAt ? new Date(ls.lastSoldAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                              </td>
+                              <td className="p-3 text-center">
+                                {ep?.hasConfirmedToday ? (
+                                  <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 text-[10px]" data-testid={`badge-price-status-${product.id}`}>Confirmed Today</Badge>
+                                ) : ep && !ep.noConfirmedPrice ? (
+                                  <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 text-[10px]" data-testid={`badge-price-status-${product.id}`}>Prior Sheet</Badge>
+                                ) : (
+                                  <Badge className="bg-muted text-muted-foreground text-[10px]" data-testid={`badge-price-status-${product.id}`}>No Sheet</Badge>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>

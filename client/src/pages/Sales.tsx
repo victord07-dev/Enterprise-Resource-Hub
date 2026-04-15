@@ -201,7 +201,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   onDiscountChange?: (d: DiscountState) => void;
   effectivePrices?: Record<string, EffectivePriceEntry>;
 }) {
-  const [expandedSim, setExpandedSim] = useState<Set<number>>(new Set());
+  const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
   const productItems = products.filter(p => p.type === "product");
   const serviceItems = products.filter(p => p.type === "service");
 
@@ -319,6 +319,19 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             <div>
               <Label className="text-xs text-muted-foreground">Unit Price (₹)</Label>
               <Input className="h-8 text-xs" type="number" min="0" step="0.01" value={item.unitPrice} onChange={(e) => updateItem(i, "unitPrice", parseFloat(e.target.value) || 0)} data-testid={`input-item-price-${i}`} />
+              {(() => {
+                const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
+                if (!ep) return null;
+                const src = ep.noConfirmedPrice ? "none" : ep.hasConfirmedToday ? "today" : "fallback";
+                return (
+                  <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+                    {src === "today" && <span className="text-[10px] bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 rounded px-1.5 py-0.5">🟢 Confirmed Today</span>}
+                    {src === "fallback" && <span className="text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 rounded px-1.5 py-0.5">🟡 Prev ({ep.sheetDate})</span>}
+                    {src === "none" && <span className="text-[10px] bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 rounded px-1.5 py-0.5">🔴 No Sheet</span>}
+                    {ep.globalFloorPrice && <span className="text-[10px] text-muted-foreground">Floor: ₹{Number(ep.globalFloorPrice).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</span>}
+                  </div>
+                );
+              })()}
             </div>
             <div>
               <Label className="text-xs text-muted-foreground">GST %</Label>
@@ -348,30 +361,22 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <span className="font-semibold text-green-700 dark:text-green-400" data-testid={`input-item-total-${i}`}>₹{(item.totalPrice + item.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
-          {/* Margin simulation toggle — only shown when product has pricing data */}
+          {/* Check Margin button — opens modal dialog when product has pricing data */}
           {(() => {
             const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
             if (!ep) return null;
-            const isOpen = expandedSim.has(i);
             return (
-              <div>
-                <button
-                  type="button"
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                  onClick={() => setExpandedSim(prev => {
-                    const next = new Set(prev);
-                    if (next.has(i)) next.delete(i); else next.add(i);
-                    return next;
-                  })}
-                  data-testid={`button-margin-sim-toggle-${i}`}
-                >
-                  <BarChart3 className="w-3 h-3" />
-                  {isOpen ? "Hide" : "Show"} Margin Simulation
-                  {ep.noConfirmedPrice && <AlertTriangle className="w-3 h-3 text-red-500 ml-0.5" title="No confirmed price sheet exists" />}
-                  {!ep.noConfirmedPrice && !ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet for today" />}
-                </button>
-                {isOpen && <MarginSimPanel item={item} ep={ep} />}
-              </div>
+              <button
+                type="button"
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setMarginDialogIdx(i)}
+                data-testid={`button-check-margin-${i}`}
+              >
+                <BarChart3 className="w-3 h-3" />
+                Check Margin
+                {ep.noConfirmedPrice && <AlertTriangle className="w-3 h-3 text-red-500 ml-0.5" title="No confirmed price sheet exists" />}
+                {!ep.noConfirmedPrice && !ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet for today" />}
+              </button>
             );
           })()}
         </div>
@@ -439,6 +444,29 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
           </div>
         </div>
       )}
+      {/* Check Margin Dialog */}
+      {marginDialogIdx !== null && (() => {
+        const dialogItem = items[marginDialogIdx];
+        const ep = dialogItem?.productId ? effectivePrices?.[dialogItem.productId] : undefined;
+        if (!ep) return null;
+        return (
+          <Dialog open={true} onOpenChange={() => setMarginDialogIdx(null)}>
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4" />
+                  Margin Check
+                </DialogTitle>
+                <DialogDescription className="text-xs truncate">{dialogItem.description || "Line item"}</DialogDescription>
+              </DialogHeader>
+              <MarginSimPanel item={dialogItem} ep={ep} />
+              <DialogFooter>
+                <Button variant="outline" size="sm" onClick={() => setMarginDialogIdx(null)} data-testid="button-close-margin-dialog">Close</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        );
+      })()}
     </div>
   );
 }

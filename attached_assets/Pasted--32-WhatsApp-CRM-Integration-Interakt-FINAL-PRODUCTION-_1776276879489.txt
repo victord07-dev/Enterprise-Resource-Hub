@@ -1,0 +1,432 @@
+#32 — WhatsApp CRM Integration (Interakt) (FINAL, PRODUCTION-READY)
+What & Why
+Integrate Interakt's WhatsApp Business API into the ERP so employees can conduct
+sales conversations, send quotations/invoices, run bulk campaigns, and receive
+automated owner alerts — all without leaving the app.
+This transforms the system from a pure ERP into an ERP + CRM + WhatsApp sales channel.
+
+Done Looks Like
+
+A full-featured /inbox page exists in the sidebar (visible to admin,
+sales_manager, field_staff) showing a list of WhatsApp conversations on the
+left, a live chat window in the centre, and a customer timeline panel on the right.
+Within the chat window, employees can type and send free-text messages (when
+the 24-hour session window is open) or send approved template messages at any
+time. A banner is shown when the window is closed.
+A "Send via WhatsApp" button on each quotation/sales order opens a modal
+to pick a template, preview it, and send via Interakt.
+A /campaigns page (sidebar: admin + sales_manager) lets the user select
+customers, pick a template, and send bulk WhatsApp messages in rate-limited batches.
+A /settings/whatsapp-templates page (admin only) allows creating, editing,
+and deleting internal template records.
+A CRON job fires at 09:00 and 18:00 daily, sending a summary WhatsApp alert
+to all admin phone numbers.
+Incoming messages from Interakt arrive at POST /api/whatsapp/webhook and are
+persisted to the DB; the inbox polls every 10 seconds to show them.
+Message delivery status (sent / delivered / read / failed) is shown with tick
+indicators (✓ / ✓✓ / ✓✓ blue / ✗) in the chat window.
+Conversations support assignment, internal notes, and conversation tags.
+Opening a conversation in the inbox immediately resets its unread count to zero.
+
+
+Out of Scope
+
+AI chatbots or automated conversation flows
+WhatsApp analytics dashboard
+Multi-language bot responses
+Green-tick verification (handled on Meta/Interakt side)
+Interakt contact sync (customers managed in existing tables)
+Campaign scheduling, drafts, and partial retry
+
+
+Architecture Notes
+Provider
+Interakt (https://api.interakt.ai). Outbound messages go to:
+POST https://api.interakt.ai/v1/public/message/
+Authorization: Basic <base64(INTERAKT_API_KEY)>
+Webhook
+Interakt POSTs incoming messages and status updates to
+POST /api/whatsapp/webhook.
+Security (MANDATORY — two layers):
+
+HMAC Signature Verification (primary):
+Interakt sends an X-Interakt-Signature header containing an
+HMAC-SHA256 signature of the raw request body, signed with your
+webhook secret. Verify this on every incoming request:
+
+typescript   import crypto from 'crypto';
+
+   function verifyInteraktSignature(
+     rawBody: Buffer,
+     signature: string,
+     secret: string
+   ): boolean {
+     const expected = crypto
+       .createHmac('sha256', secret)
+       .update(rawBody)
+       .digest('hex');
+     return crypto.timingSafeEqual(
+       Buffer.from(expected),
+       Buffer.from(signature)
+     );
+   }
+
+   // In webhook route — use express.raw() to get raw body for HMAC:
+   // If verification fails → return HTTP 401, log the attempt, do not process.
+
+Token query param (secondary):
+Also verify ?token=<WHATSAPP_WEBHOOK_TOKEN> query param as a
+secondary layer. Reject if missing or mismatched.
+
+Environment Secrets Required
+The executor must prompt for all three values before wiring up any live sends:
+VariablePurposeINTERAKT_API_KEYAuthenticates outbound API callsWHATSAPP_WEBHOOK_TOKENSecondary webhook query-param checkINTERAKT_WEBHOOK_SECRETHMAC signature verification on inbound webhooks
+
+Phone Number Normalisation (MANDATORY — apply everywhere)
+WhatsApp numbers must be in E.164 format: digits only, with country code, no +.
+Example: +91 98765 43210 → 919876543210
+Create a utility in server/whatsapp.ts:
+typescriptexport function normalisePhone(raw: string): string {
+  // Strip all non-digit characters
+  const digits = raw.replace(/\D/g, '');
+  // If Indian number entered without country code (10 digits starting with 6-9)
+  if (digits.length === 10 && /^[6-9]/.test(digits)) {
+    return `91${digits}`;
+  }
+  return digits;
+}
+Apply normalisePhone() on:
+
+Webhook inbound: before looking up customer by phone
+Outbound send: before calling Interakt API
+Campaign fan-out: before each recipient send
+CRON alerts: before sending to admin phones
+
+All phone numbers stored in whatsapp_conversations must be normalised.
+Run normalisePhone() at write time, not read time.
+
+DB Tables (add to shared/schema.ts)
+whatsapp_conversations
+sqlid                  VARCHAR PRIMARY KEY,          -- uuid
+customerId          VARCHAR NULL,                 -- FK to customers; NULL if no match
+phoneNumber         VARCHAR NOT NULL,             -- normalised E.164, always set
+assignedEmployeeId  VARCHAR NULL,
+status              VARCHAR(20)
+                    CHECK (status IN ('open', 'closed')),
+lastMessageAt       TIMESTAMP,
+windowExpiresAt     TIMESTAMP NULL,               -- NULL when closed or window elapsed
+tags                TEXT[]
+                    CHECK (tags <@ ARRAY[
+                      'Hot','Negotiation','Closed Won','Lost','Follow-up'
+                    ]),                           -- fixed tag values
+unreadCount         INTEGER DEFAULT 0
+
+phoneNumber is always stored (normalised). customerId is nullable for
+cases where the incoming phone does not match any customer record.
+
+whatsapp_messages
+sqlid                  VARCHAR PRIMARY KEY,
+conversationId      VARCHAR NOT NULL,             -- FK → whatsapp_conversations.id
+direction           VARCHAR(10)
+                    CHECK (direction IN ('inbound', 'outbound')),
+type                VARCHAR(20)
+                    CHECK (type IN ('text', 'template', 'note', 'document')),
+body                TEXT,
+templateName        VARCHAR NULL,
+status              VARCHAR(20)
+                    CHECK (status IN ('sent', 'delivered', 'read', 'failed'))
+                    NULL,                         -- NULL for inbound and notes
+interaktMessageId   VARCHAR NULL,                 -- stored from Interakt API response;
+                                                  -- required for status tick matching
+senderEmployeeId    VARCHAR NULL,                 -- NULL for inbound messages
+createdAt           TIMESTAMP DEFAULT NOW()
+whatsapp_templates
+sqlid                    VARCHAR PRIMARY KEY,
+name                  VARCHAR NOT NULL,           -- internal display name
+interaktTemplateName  VARCHAR NOT NULL,           -- exact name in Interakt dashboard
+languageCode          VARCHAR DEFAULT 'en',
+category              VARCHAR(30)
+                      CHECK (category IN (
+                        'quotation','invoice','payment_reminder','alert','custom'
+                      )),
+bodyContent           TEXT,                       -- with {{1}} placeholders
+variables             TEXT[],                     -- ordered list of variable names
+isActive              BOOLEAN DEFAULT TRUE
+
+Conversation Lifecycle (CRITICAL — follow exactly)
+Inbound message arrives at webhook:
+1. Verify HMAC signature → reject HTTP 401 if invalid
+2. Verify ?token query param → reject HTTP 401 if invalid
+3. normalisePhone(incoming phone number)
+4. Look up customer WHERE normalisePhone(phone) = normalisedPhone
+5. Search for conversation WHERE status = 'open'
+   AND (customerId matches OR phoneNumber matches)
+
+   IF found:
+     - Add message to that conversation
+     - Set windowExpiresAt = NOW() + 24 hours
+     - Increment unreadCount + 1
+     - Update lastMessageAt = NOW()
+
+   IF NOT found:
+     - Create new conversation with status = 'open'
+     - Set customerId = matched customer id (or NULL if no match)
+     - Set phoneNumber = normalised incoming phone
+     - Set windowExpiresAt = NOW() + 24 hours
+     - Set unreadCount = 1
+     - Add the inbound message to the new conversation
+Rules:
+
+Closed conversations are NEVER reopened. Always create a fresh one.
+Only inbound messages extend windowExpiresAt. Outbound messages and
+notes do NOT reset it.
+On status → 'closed', set windowExpiresAt = NULL.
+The manual POST /api/whatsapp/conversations endpoint must NOT auto-create
+conversations — it is for explicit admin creation only. If an open conversation
+already exists for the same customer, return it (HTTP 200) instead of creating
+a duplicate.
+
+
+Unread Count Behaviour
+
+Incremented by 1 on the conversation row on every inbound webhook message.
+When an employee opens a conversation (selects it in the left panel), the
+frontend immediately calls:
+
+  PATCH /api/whatsapp/conversations/:id  { unreadCount: 0 }
+The unread badge then disappears from the conversation list.
+
+24-Hour Window
+The UI checks windowExpiresAt > NOW() to decide:
+
+Window open: show free-text composer + template button
+Window closed/null: show "24-hour window closed — use a template" banner +
+template-only button
+
+Only inbound messages extend the window.
+
+Notes vs Messages
+Internal notes:
+
+direction = 'outbound', type = 'note'
+Never sent to Interakt
+Displayed in chat window with yellow background and 🔒 label
+Visible to employees only
+
+
+PDF Attachment via WhatsApp
+Interakt's document message type requires a publicly accessible URL.
+Client-side jsPDF blobs cannot be used.
+Flow:
+
+Frontend calls POST /api/whatsapp/generate-pdf with document type and ID.
+Backend first verifies the requesting user has read access to that document
+(apply the same role checks as the existing quotation/invoice GET endpoints).
+Return HTTP 403 if not authorised.
+Backend generates PDF server-side, uploads to Replit Object Storage
+(follow same pattern as server/attachments.ts), returns a public URL.
+Frontend sends that URL to Interakt as a Document type message with filename.
+
+
+Direct Send Rate Limiting
+POST /api/whatsapp/conversations/:id/send must enforce server-side:
+If more than 20 messages are sent to the same conversationId 
+within a rolling 60-second window → return HTTP 429.
+Use an in-memory counter keyed by conversationId (acceptable for single-instance
+deployment). Add a // TODO: move to Redis at scale comment at the counter logic.
+
+Campaign Rate Limiting
+POST /api/whatsapp/campaigns/send must:
+
+Process recipients in batches of 10
+Apply a 100ms delay between batches
+Return a per-recipient result array:
+
+json  [
+    { "customerId": "...", "phone": "...", "status": "sent" },
+    { "customerId": "...", "phone": "...", "status": "failed", "error": "..." }
+  ]
+Campaign scheduling, drafts, and partial retry are out of scope.
+
+CRON Alert Template
+Pre-approved Interakt template details:
+Template name (in Interakt dashboard): owner_daily_alert
+Body: "Hi {{1}}, daily ERP summary: {{2}} overdue invoices,
+       {{3}} unpaid supplier bills, {{4}} pending salary approvals.
+       Please review."
+Variables: [ownerName, overdueCount, supplierDueCount, salaryPendingCount]
+This template must be created and approved in the Interakt dashboard before
+the CRON task can send in production.
+Admin phone number resolution (MANDATORY):
+1. Fetch users WHERE role = 'admin'
+2. Join to employees table to get phone number
+3. Apply normalisePhone() to each number
+4. Skip admins with no phone number on record — log a warning:
+   logger.warn(`Admin user ${userId} has no phone number — skipping CRON alert`)
+5. On send failure (e.g. template not yet approved):
+   logger.warn(`owner_daily_alert send failed for ${phone}: ${error}`)
+   — do NOT throw, do NOT crash the process
+
+Polling Note
+The inbox polls /api/whatsapp/conversations and the active conversation's
+messages every 10 seconds.
+Optimisation (implement now):
+typescript// Pause polling when tab is not visible — saves unnecessary load
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    pausePolling();
+  } else {
+    resumePolling();
+  }
+});
+
+// TODO: replace polling with WebSocket at scale
+
+interaktMessageId — Storage on Send (MANDATORY)
+After every successful outbound Interakt API call, store the returned message ID:
+typescriptconst response = await sendTemplateMessage(...);
+// Interakt returns: { result: true, id: "msg_abc123" }
+
+await db.update(whatsappMessages)
+  .set({ interaktMessageId: response.id, status: 'sent' })
+  .where(eq(whatsappMessages.id, localMessageId));
+This is required for status tick matching. When Interakt sends a status
+webhook (delivered / read), it includes the original message ID.
+Without storing it, tick indicators (✓✓ blue) cannot work.
+
+Tasks
+1. Install Dependencies & Environment Setup
+
+Install node-cron package
+Prompt for INTERAKT_API_KEY, WHATSAPP_WEBHOOK_TOKEN, and
+INTERAKT_WEBHOOK_SECRET via the environment-secrets skill
+Create server/whatsapp.ts exporting:
+
+normalisePhone(raw: string): string
+verifyInteraktSignature(rawBody, signature, secret): boolean
+sendTextMessage(phone, text)
+sendTemplateMessage(phone, templateName, languageCode, bodyValues, headerValues?)
+sendDocumentMessage(phone, url, filename)
+All using Interakt's API with proper Basic auth header
+
+
+
+2. Database Schema
+
+Add all three tables to shared/schema.ts with insert/select types
+Run npm run db:push to sync
+
+3. Backend API Routes (server/routes.ts)
+Implement all WhatsApp routes:
+MethodRouteNotesPOST/api/whatsapp/webhookHMAC + token verify; full lifecycle logic; store interaktMessageId on status updates; increment unreadCount on inboundGET/api/whatsapp/conversationsList with last message, unreadCount, customerName, assignedEmployee, window-open status (windowExpiresAt > NOW())GET/api/whatsapp/conversations/:id/messagesPaginated message historyPOST/api/whatsapp/conversations/:id/sendCheck window for text; rate limit 20/60s; persist with status='sent'; store interaktMessageId from responsePOST/api/whatsapp/conversations/:id/notedirection='outbound', type='note'; never forwarded to InteraktPATCH/api/whatsapp/conversations/:idUpdate assignedEmployeeId, status, tags, or reset unreadCount=0; set windowExpiresAt=NULL when status→'closed'POST/api/whatsapp/conversationsAdmin creation only; return existing open conversation (HTTP 200) if duplicatePOST/api/whatsapp/generate-pdfAuth check first → generate → upload → return public URLGET/POST/PATCH/DELETE/api/whatsapp/templatesFull CRUD for template recordsPOST/api/whatsapp/campaigns/sendBatched fan-out; 10 per batch; 100ms delay; return per-recipient result array
+4. CRON Owner Alerts (server/index.ts)
+
+Register two node-cron jobs: 0 9 * * * and 0 18 * * *
+Each job queries: overdue AR invoices, unpaid supplier invoices, pending salary approvals
+Fetch admin users' phones, apply normalisePhone()
+Send owner_daily_alert template via Interakt
+Skip admins with no phone (log warning)
+On send failure: log warning, do not crash process
+
+5. Inbox UI (/inbox → client/src/pages/Inbox.tsx)
+Three-panel layout:
+Left — Conversation List:
+
+Search bar
+Tabs: All / Assigned to me / Unassigned
+Per conversation: customer name, last message preview, timestamp, tags,
+unread badge, green dot when windowExpiresAt > NOW()
+On conversation select: immediately call PATCH /:id { unreadCount: 0 },
+clear badge
+
+Centre — Chat Window:
+
+Inbound: grey bubble, left-aligned
+Outbound: blue bubble, right-aligned
+Notes: yellow bubble, right-aligned, 🔒 label
+Delivery ticks per outbound message: ✓ sent / ✓✓ delivered / ✓✓ blue read / ✗ failed
+Composer (window open): free-text input + template button + attachment button
+(calls generate-pdf, then sends document message)
+Composer (window closed/null): "24-hour window closed — use a template" banner
+
+template-only button
+
+
+/ quick-reply picker
+Polls messages every 10 seconds:
+
+typescript  // TODO: replace with WebSocket at scale
+
+Pause polling when document.visibilityState === 'hidden'
+
+Right — Customer Timeline:
+
+Linked Quotations, Orders, Invoices, Payments
+Assignment dropdown (employees)
+Tag picker: Hot / Negotiation / Closed Won / Lost / Follow-up
+"Create Quotation" and "Create Order" quick actions (pre-fill customerId)
+
+6. Campaigns UI (/campaigns → client/src/pages/Campaigns.tsx)
+
+Customer multi-select with search
+Template picker
+Variable value inputs (per template variable)
+Send button with batch progress bar
+Results table: per-customer sent ✓ / failed ✗ with error reason
+
+7. Template Manager (/settings/whatsapp-templates)
+Admin-only. Table of templates + create/edit dialog for:
+
+Display name
+Interakt template name (exact)
+Language code
+Category
+Body content with {{1}} placeholder syntax
+Variables list
+Active toggle
+
+8. Sales Integration
+Add "Send via WhatsApp" button to:
+
+Quotation expanded view
+Sales Order detail view
+
+(client/src/pages/Sales.tsx)
+Clicking opens a modal that:
+
+Pre-selects quotation template category
+Pre-fills customer phone (normalisePhone() applied)
+Auto-populates variables (quotation number, amount)
+Previews the filled template
+Sends via POST /api/whatsapp/conversations/:id/send
+
+9. Sidebar & Routing
+Register in client/src/App.tsx and client/src/components/app-sidebar.tsx:
+PageIconRoles/inboxMessageCircleadmin, sales_manager, field_staff/campaignsMegaphoneadmin, sales_manager/settings/whatsapp-templatesSettingsadmin
+
+Relevant Files
+shared/schema.ts
+server/routes.ts
+server/index.ts
+server/whatsapp.ts          ← new
+client/src/App.tsx
+client/src/components/app-sidebar.tsx
+client/src/pages/Inbox.tsx          ← new
+client/src/pages/Campaigns.tsx      ← new
+client/src/pages/Sales.tsx
+client/src/pages/Leads.tsx
+
+End of Task #32 (FINAL, LOCKED)
+After this task is complete:
+
+✔ Employees can send and receive WhatsApp messages without leaving the ERP
+✔ Quotations and invoices are sendable via WhatsApp in one click
+✔ Inbound messages are correctly matched to customers
+✔ Phone numbers are normalised — no silent lookup failures
+✔ Webhook is secured with HMAC signature verification
+✔ Delivery ticks work via interaktMessageId matching
+✔ CRON alerts reach all admins with phones on record
+✔ Campaigns are rate-limited and return per-recipient results
+✔ PDF attachments are served from Object Storage (public URL)
+✔ Conversation close clears the session window correctly
+✔ Polling pauses on hidden tabs — no unnecessary server load

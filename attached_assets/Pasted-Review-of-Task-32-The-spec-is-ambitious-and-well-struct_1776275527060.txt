@@ -1,0 +1,41 @@
+Review of Task #32
+The spec is ambitious and well-structured. Here's the honest assessment:
+What's well-defined:
+The three-table schema is clean and complete. The 24-hour session window rule is correctly understood and surfaced in the UI. The webhook token verification is a good security addition. The conversation assignment model (assigned employee can send, others view-only, admin override) is precise enough to build from. The V message tick indicators (✓/✓✓/✓✓ blue/✗) map correctly to Interakt's actual status webhook payloads.
+Issues that will cause problems during build:
+1. The "find or create conversation" logic is underspecified — this is the most critical gap.
+POST /api/whatsapp/conversations says "create/find conversation by customer phone number" in one line. This hides real complexity. A customer can close a conversation and start a new one. Do you create a new conversation record or reopen the old one? The status field has open/closed but there's no rule defined for what happens when an inbound message arrives for a closed conversation. The executor will guess. Define it explicitly:
+Inbound message arrives for a phone number:
+  → Find conversation WHERE status = 'open' AND customerId matches
+  → If found: add message to that conversation, reset windowExpiresAt
+  → If not found (no open conversation): auto-create new conversation 
+     with status = 'open', link to customer record by phone number match
+  → If phone number doesn't match any customer: create conversation 
+     with customerId = NULL, flag as unidentified
+2. The windowExpiresAt update logic isn't defined.
+The 24-hour window opens when a customer messages you. The spec stores windowExpiresAt on the conversation but never says when to set it or reset it. It should be: every time an inbound message arrives, set windowExpiresAt = NOW() + 24 hours. Outbound messages don't reset the window. The UI should check windowExpiresAt > NOW() to decide whether to allow free-text sending.
+3. The CRON alert template is assumed to exist but never defined.
+Task 4 says "sends a summary WhatsApp alert via Interakt using a dedicated alert template." But templates must be pre-approved by Meta via Interakt before you can send them. The spec never defines what this template looks like or what its registered Interakt name should be. This will block implementation the moment the developer tries to test. Add this to the spec:
+Template name: owner_daily_alert
+Content: "Hi {{1}}, daily summary: {{2}} overdue invoices, 
+{{3}} unpaid supplier bills, {{4}} pending salary approvals. 
+Please review in the ERP."
+Variables: [ownerName, overdueCount, supplierDueCount, salaryPendingCount]
+And note that this template needs to be created and approved in the Interakt dashboard before the CRON task can work in production.
+4. The campaigns fan-out has no rate limiting.
+POST /api/whatsapp/campaigns/send accepts a list of customerIds and fans out sends. Interakt has rate limits (typically 80 messages/second on business tiers, lower on starter). If someone selects 500 customers and hits send, the server will fire 500 simultaneous fetch() calls. The spec needs to mandate either:
+typescript// Process in batches of 10 with 100ms delay between batches
+// or use a queue (bull/pg-boss) for large campaigns
+For your SMB use case, a simple batched loop with await delay(100) between groups of 10 is enough. But the spec must state this or it won't be implemented.
+5. The PDF attachment flow has a gap.
+The chat window has an "attachment button (attach quotation/invoice PDF by selecting from a dropdown)." But Interakt's API for sending documents requires a publicly accessible URL to the PDF, not a file upload. Your PDFs are currently generated client-side with jsPDF and never stored server-side. You have two options and the spec must pick one:
+
+Generate the PDF server-side, upload to Replit Object Storage (which you already use for GRN attachments), get a public URL, send that URL via Interakt's document message type
+Use a WhatsApp template that includes a link to a web-viewable version of the quotation in your app
+
+As written, the developer will hit this wall and stop.
+6. Minor: direction field should be an enum, not just described as inbound/outbound.
+The schema shows direction (inbound/outbound) but then Task 5 references direction="note" for internal notes. That's three values, so either the column needs a third valid value or notes should be stored with a separate type = 'note' check. The type column already has note as a value, so direction for notes should probably be outbound with type = 'note'. Clarify this — the executor will make it inconsistent otherwise.
+
+Overall: 7/10. Solid architecture, but the conversation lifecycle, window management, CRON template, and PDF attachment flow each need one more paragraph before this is build-ready. The campaign rate limiting is a production correctness issue, not just polish.
+Do you want me to write the fully revised Task #32 with all these fixed, the same way I did for #22?

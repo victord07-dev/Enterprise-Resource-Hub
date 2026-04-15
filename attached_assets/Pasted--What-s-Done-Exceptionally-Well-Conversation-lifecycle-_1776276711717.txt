@@ -1,0 +1,71 @@
+✅ What's Done Exceptionally Well
+Conversation lifecycle rules are precise. The "follow exactly" section with the 5-step inbound flow, the "closed conversations are never reopened" rule, and the explicit separation of what resets windowExpiresAt (only inbound) vs what doesn't (outbound/notes) — this is the kind of detail that prevents the most common WhatsApp CRM bugs.
+The PDF attachment architecture is correct and practical. Identifying upfront that jsPDF client-side blobs can't be used with Interakt (requires a public URL) and routing through Object Storage — already set up in your project — is exactly the right call. Many developers discover this problem after building the UI.
+Campaign rate limiting is specific. Batches of 10 with 100ms delay is a concrete rule, not vague guidance. The per-recipient result array requirement means the UI can show meaningful feedback.
+The CRON alert template body is fully defined. Including the exact Interakt template name, body text, and variable list means there's no ambiguity when creating it in the Interakt dashboard. The graceful skip on failure is also correct.
+Notes vs messages distinction is clean. direction='outbound', type='note', never sent to Interakt, yellow background — unambiguous.
+The unread count reset flow is precisely specified. Frontend calls PATCH immediately on conversation selection. Many CRM specs leave this implied and it never gets implemented consistently.
+
+🔴 Issues That Must Be Fixed
+1. Webhook security is too weak for production.
+The spec uses a shared token as a query param (?token=<WHATSAPP_WEBHOOK_TOKEN>). This is the minimum viable approach but has two problems: query params appear in server logs (token exposure), and there's no payload signature verification. Interakt supports HMAC signature verification on the webhook payload. The spec should require:
+Verify X-Interakt-Signature header (HMAC-SHA256 of raw request body 
+using INTERAKT_WEBHOOK_SECRET) before processing any webhook payload.
+If verification fails → return HTTP 401, log the attempt, do not process.
+Add INTERAKT_WEBHOOK_SECRET as a third environment variable. The query param token can remain as a secondary layer but shouldn't be the only one.
+2. windowExpiresAt is never cleared on conversation close.
+The spec says closed conversations are never reopened — a new one is always created. But if a conversation is manually closed while windowExpiresAt is still in the future, the old window timestamp sits on a closed record. This is harmless for the closed conversation, but the spec never says what windowExpiresAt should be set to on close. Specify:
+When status is set to 'closed', set windowExpiresAt = NULL.
+3. The POST /api/whatsapp/conversations/:id/send endpoint has no rate limit.
+The campaigns endpoint has a 100ms batch delay, but the direct send endpoint has no throttling. An employee could spam-click "Send" and hit Interakt's API rate limit (300 req/min on Growth plan), causing failures mid-conversation. Add:
+Implement per-conversation send debounce of 500ms server-side, 
+or return HTTP 429 if more than 20 messages are sent to the 
+same conversation within 60 seconds.
+4. Phone number format is never standardised.
+The webhook receives numbers from Interakt in one format (likely 919876543210 — no +). Your customers table stores numbers in whatever format was entered (could be +91 98765 43210, 09876543210, etc.). The lookup WHERE phone = incomingPhone will fail silently, creating orphaned conversations with customerId = NULL for every customer.
+Add a mandatory normalisation step:
+All phone numbers must be normalised to E.164 format (digits only, 
+with country code, no +) before any DB lookup or Interakt API call.
+Create a normalisePhone(raw: string): string utility in server/whatsapp.ts.
+Apply on: webhook inbound lookup, outbound send, campaign fan-out.
+5. generate-pdf endpoint has no access control.
+POST /api/whatsapp/generate-pdf takes a document type and ID and returns a public Object Storage URL. There's no mention of auth checking whether the requesting employee has access to that quotation/invoice. An authenticated but low-privilege user (e.g. field_staff) could request a PDF for any invoice in the system by guessing IDs. Add:
+Before generating, verify the requesting user's role has read 
+access to the referenced document (same role checks as the 
+existing quotation/invoice GET endpoints).
+
+🟡 Issues Worth Addressing
+6. Polling every 10 seconds from multiple browser tabs will multiply load.
+If three employees have the inbox open simultaneously, that's 18 requests per 10 seconds against your Express server. The TODO comment for WebSocket is noted, but add a short-term mitigation now:
+Use a single polling interval per browser tab (not per conversation).
+If the tab is hidden (document.visibilityState === 'hidden'), 
+pause polling. Resume on visibility change.
+This is a one-line addition to the frontend polling logic and halves unnecessary load for tabbed users.
+7. The tags field is text[] (Postgres array) but the task never defines valid tag values.
+The right panel shows Hot / Negotiation / Closed Won / Lost / Follow-up as pickers. But text[] allows any string. If tags are a fixed enum for the pipeline stages, use a CHECK constraint or a separate conversation_tags enum. If they're free-form user-defined tags, say so explicitly. As written, a developer will implement it differently than the UI expects.
+Specify either:
+sql-- Fixed tags:
+tags text[] CHECK (tags <@ ARRAY['Hot','Negotiation','Closed Won','Lost','Follow-up'])
+
+-- OR: free-form (state this explicitly)
+tags text[]  -- free-form, no constraint
+8. CRON job admin phone number source is ambiguous.
+The spec says "fetches all admin users' phone numbers from the employees table." But your employee records don't necessarily have a phone field that matches the WhatsApp-formatted number (same normalisation issue as #4). Specify:
+Admin users are identified by role = 'admin' in the users table.
+Phone numbers are fetched from employees.whatsappPhone (or employees.phone 
+normalised via normalisePhone()). Skip admins with no phone on record 
+and log a warning.
+9. The /campaigns page has no scheduling or draft saving.
+This is a minor scope gap — campaigns are fire-and-forget. For a small solar distributor this is probably fine, but it means there's no way to recover if a campaign partially fails mid-send (the per-recipient result array helps with visibility but not retry). Add to Out of Scope explicitly:
+Campaign scheduling, drafts, and partial retry are out of scope.
+This prevents a developer from asking about it or implementing it ad-hoc.
+10. interaktMessageId on outbound messages is never described.
+The outbound send flow calls Interakt's API and presumably gets back a message ID for status tracking. The spec mentions interaktMessageId in the schema but the send flow in Task 3 doesn't say "store the returned message ID from Interakt's response." Add to the send endpoint spec:
+After a successful Interakt API call, store the returned message ID 
+in whatsapp_messages.interaktMessageId. This is required for matching 
+incoming status update webhooks (delivered/read) to the correct message row.
+Without this, the tick indicators (✓✓ blue) can never work — you can't match a status webhook to a message without the Interakt message ID.
+
+📊 Summary
+IssueSeverityWebhook HMAC signature verification missing🔴 Must fixwindowExpiresAt not cleared on close🔴 Must fixNo rate limit on direct send endpoint🔴 Must fixPhone number normalisation missing🔴 Must fixgenerate-pdf has no access control🔴 Must fixPolling in hidden tabs🟡 Fixtags enum vs free-form undefined🟡 FixCRON admin phone source ambiguous🟡 FixCampaign partial retry out of scope not stated🟡 FixinteraktMessageId storage on send not specified🟡 Fix — tick indicators won't work without this
+The bones of this spec are strong — the conversation lifecycle, the PDF architecture, the CRON alert, and the campaign rate limiting are all production-quality thinking. Fix the five red items (especially phone normalisation and interaktMessageId storage — both will cause silent, hard-to-debug failures) and the spec is ready to implement.

@@ -1,0 +1,319 @@
+You’ve already covered the core WhatsApp use cases (quotes, chat, campaigns, alerts). What’s left isn’t more features for the sake of it—it’s the high-leverage pieces that make this feel like a real CRM instead of just “WhatsApp inside ERP”.
+
+I’ll split this into two parts:
+
+🧠 PART 1 — What You’re Missing (High-Impact Additions)
+
+These are industry-standard CRM capabilities tied to WhatsApp that you haven’t explicitly included yet.
+
+🟢 1. Conversation Timeline (VERY IMPORTANT — don’t skip)
+
+Right now you’re thinking “chat only”.
+
+👉 That’s incomplete.
+
+✅ Add:
+
+Inside Inbox → customer view:
+
+Messages
+Quotations sent
+Orders
+Invoices
+Payments
+Notes
+Why:
+Sales decisions need context, not just chat
+
+👉 This is how HubSpot / Zoho CRM work
+
+🟡 2. Click-to-Create Actions from Chat
+From WhatsApp chat:
+
+Add buttons:
+
+[ Create Quotation ]
+[ Create Order ]
+[ Add Note ]
+Why:
+Conversation → Action → Revenue
+
+👉 Without this:
+
+user switches tabs ❌
+friction increases ❌
+🔵 3. Message Status Tracking
+
+Track:
+
+Sent
+Delivered
+Read
+Failed
+
+👉 Show ticks like WhatsApp:
+
+✓ sent
+✓✓ delivered
+✓✓ blue = read
+
+👉 This is critical for sales follow-up
+
+🟣 4. Unread + Assignment Queue (Sales Control)
+
+Inbox should support:
+
+Unassigned conversations
+Assigned to me
+All conversations
+
+👉 Helps:
+
+distribute leads
+avoid missed customers
+🟠 5. Message Templates Manager
+
+You mentioned templates—but not management.
+
+Add:
+Settings → WhatsApp Templates
+
+Store:
+
+name
+content
+variables
+
+👉 Use for:
+
+quotation
+invoice
+payment reminder
+🔴 6. Attach Any Document (Not Just Quotation)
+
+From chat:
+
+Attach:
+- invoice
+- receipt
+- delivery challan
+- PDF
+
+👉 Real-world usage = beyond quotations
+
+🟤 7. Internal Notes (VERY USEFUL)
+
+Inside conversation:
+
+[ Add Internal Note ]
+
+Visible only to employees:
+
+"Customer negotiating heavily"
+
+👉 Sales coordination becomes strong
+
+⚫ 8. Conversation Tags / Status
+
+Tag customers:
+
+Hot 🔥
+Negotiation
+Closed Won
+Lost
+Follow-up
+
+👉 Helps filtering + prioritization
+
+🟢 9. Quick Reply Templates (Speed)
+
+In chat:
+
+/price
+/followup
+/payment
+
+Auto-fill message
+
+👉 Speeds up employees
+
+🟡 10. Payment Reminder via WhatsApp (Connected to Alerts)
+
+You already have owner alerts.
+
+👉 Extend:
+
+Send reminder to customer also
+
+Example:
+
+Your payment of ₹2,50,000 is pending.
+Please clear at the earliest.
+🚀 PRIORITY (WHAT TO BUILD NOW)
+MUST INCLUDE in your task:
+
+✔ Inbox (chat + documents)
+✔ Assignment system
+✔ Timeline (messages + documents)
+✔ Send quotation from sales
+✔ Owner alerts (cron)
+
+SHOULD INCLUDE:
+
+✔ message status
+✔ internal notes
+✔ templates
+
+LATER:
+
+❌ AI
+❌ bots
+❌ analytics
+
+🧾 PART 2 — FINAL REVISED TASK (#30)
+🧾 #30 — WhatsApp CRM Integration (Inbox + Campaigns + Alerts)
+🧠 What & Why
+
+Enable WhatsApp as a primary communication + sales channel integrated with:
+
+quotations
+customers
+payments
+internal workflow
+🟢 MODULE 1 — INBOX (CORE CRM)
+📍 Route:
+/inbox
+✅ Features
+1. Conversation List
+Customer name
+last message
+unread count
+assigned employee
+2. Chat Window
+
+Show:
+
+messages
+documents
+timestamps
+status (✓✓)
+3. Send Message
+POST /api/whatsapp/send-message
+4. Attach Documents
+
+Send:
+
+quotation
+invoice
+receipt
+5. Timeline Panel (RIGHT SIDE)
+
+Show:
+
+Quotations
+Orders
+Invoices
+Payments
+Notes
+6. Internal Notes
+Add note (internal only)
+7. Assignment System
+owner = employee
+
+Rules:
+
+only owner can send
+others view
+request takeover
+admin override
+8. Quick Actions
+
+Buttons:
+
+Create Quotation
+Create Order
+🟡 MODULE 2 — SALES INTEGRATION
+From Quotation:
+
+Add button:
+
+[ Send via WhatsApp ]
+Behavior:
+open modal OR inbox
+prefill template
+attach PDF
+🔵 MODULE 3 — CAMPAIGNS
+📍 Route:
+/campaigns
+Features:
+select customers
+choose template
+send bulk
+🔴 MODULE 4 — OWNER ALERTS (CRON)
+Schedule:
+9 AM
+6 PM
+Logic:
+if pending items exist:
+  send WhatsApp alert
+repeat until resolved
+Alerts:
+pending payments
+supplier dues
+salary approvals
+🟣 MODULE 5 — TEMPLATE SYSTEM
+📍 Route:
+/settings/whatsapp-templates
+Store:
+template name
+content
+variables
+⚙️ BACKEND
+Tables:
+whatsapp_messages
+customerId
+employeeId
+message
+type
+status
+timestamp
+whatsapp_conversations
+customerId
+assignedTo
+status
+lastMessageAt
+whatsapp_templates
+name
+content
+variables
+🕒 CRON
+node-cron
+
+Schedules:
+
+0 9 * * *
+0 18 * * *
+🎨 UI
+Sidebar:
+Inbox
+Campaigns
+Contacts (existing)
+⚠️ RULES
+use approved templates
+respect 24h WhatsApp window
+log all messages
+handle failures
+🔄 FINAL WORKFLOW
+Sales:
+Create quote → Send → Chat → Close deal
+Owner:
+Gets alerts → takes action
+Business:
+Faster sales
+Better follow-ups
+No missed payments
+🔥 FINAL RESULT
+
+👉 You now have:
+
+🚀 ERP + CRM + WhatsApp Sales System

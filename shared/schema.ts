@@ -378,6 +378,7 @@ export const stockMovements = pgTable("stock_movements", {
 }, (t) => [
   index("idx_stock_movements_product_id").on(t.productId),
   index("idx_stock_movements_created_at").on(t.createdAt),
+  index("idx_stock_movements_grn_id").on(t.grnId),
 ]);
 
 export const deliveryChallans = pgTable("delivery_challans", {

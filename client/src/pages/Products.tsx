@@ -97,13 +97,13 @@ export default function Products() {
       setProductForm({
         name: "", sku: `SVC-${Date.now().toString(36).toUpperCase()}`, category: "Installation", description: "",
         unitPrice: "", brand: "", unit: "service", minStockLevel: "0", type: "service",
-        hsnCode: "", gstRate: "18",
+        hsnCode: "", gstRate: "18", minMarginPct: "5.00",
       });
     } else {
       setProductForm({
         name: "", sku: "", category: "Solar Panels", description: "",
         unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
-        hsnCode: "", gstRate: "18",
+        hsnCode: "", gstRate: "18", minMarginPct: "5.00",
       });
     }
     setProductDialogOpen(true);
@@ -123,7 +123,7 @@ export default function Products() {
       type: p.type || "product",
       hsnCode: p.hsnCode || "",
       gstRate: p.gstRate ? String(p.gstRate) : "18",
-      minMarginPct: (p as any).minMarginPct ? String((p as any).minMarginPct) : "5.00",
+      minMarginPct: p.minMarginPct ? String(p.minMarginPct) : "5.00",
     });
     setProductDialogOpen(true);
   };
@@ -201,7 +201,7 @@ export default function Products() {
                     <td className="p-3 font-medium" data-testid={`text-item-name-${item.id}`}>
                       <div className="flex items-center gap-2 flex-wrap">
                         {item.name}
-                        {(item as any).needsPricingReview && (
+                        {item.needsPricingReview && (
                           <Badge variant="outline" className="text-xs border-amber-400 text-amber-600 dark:text-amber-400" data-testid={`badge-pricing-review-${item.id}`}>
                             Pricing Review
                           </Badge>

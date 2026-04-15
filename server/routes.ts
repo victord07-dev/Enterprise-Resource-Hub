@@ -277,37 +277,60 @@ async function computeFifoLots(
     }
   }
 
-  // Step 1: confirmed GRN lots for this product, oldest first
-  // Use receivedQuantity and buyingPrice (correct field names; landedCostPerUnit does not exist).
-  // Landed cost = buyingPrice + deliveryCost apportioned by total GRN qty.
-  const grnRes = await db.execute(sql`
-    SELECT
-      gi.grn_id,
-      grn.grn_number,
-      grn.received_date,
-      gi.received_quantity::numeric              AS received_qty,
-      gi.buying_price::numeric                   AS buying_price,
-      COALESCE(grn.delivery_cost::numeric, 0)    AS delivery_cost,
-      GREATEST(
-        (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
-           FROM goods_receipt_note_items i2 WHERE i2.grn_id = grn.id),
-        1
-      ) AS total_grn_qty
-    FROM goods_receipt_note_items gi
-    JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
-    WHERE gi.product_id = ${productId}
-      AND grn.status = 'confirmed'
-    ORDER BY grn.received_date ASC, grn.id ASC
-  `);
+  // Step 1: confirmed GRN lots for this product, oldest first, optionally scoped to a warehouse.
+  // When warehouseId is supplied, only GRNs received into that warehouse are included so
+  // the FIFO lot pool reflects the warehouse's own stock — not cross-warehouse lots.
+  const grnRes = warehouseId
+    ? await db.execute(sql`
+        SELECT
+          gi.grn_id,
+          grn.grn_number,
+          grn.received_date,
+          gi.received_quantity::numeric              AS received_qty,
+          gi.buying_price::numeric                   AS buying_price,
+          COALESCE(grn.delivery_cost::numeric, 0)    AS delivery_cost,
+          GREATEST(
+            (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
+               FROM goods_receipt_note_items i2 WHERE i2.grn_id = grn.id),
+            1
+          ) AS total_grn_qty
+        FROM goods_receipt_note_items gi
+        JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+        WHERE gi.product_id = ${productId}
+          AND grn.status = 'confirmed'
+          AND grn.warehouse_id = ${warehouseId}
+        ORDER BY grn.received_date ASC, grn.id ASC
+      `)
+    : await db.execute(sql`
+        SELECT
+          gi.grn_id,
+          grn.grn_number,
+          grn.received_date,
+          gi.received_quantity::numeric              AS received_qty,
+          gi.buying_price::numeric                   AS buying_price,
+          COALESCE(grn.delivery_cost::numeric, 0)    AS delivery_cost,
+          GREATEST(
+            (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
+               FROM goods_receipt_note_items i2 WHERE i2.grn_id = grn.id),
+            1
+          ) AS total_grn_qty
+        FROM goods_receipt_note_items gi
+        JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+        WHERE gi.product_id = ${productId}
+          AND grn.status = 'confirmed'
+        ORDER BY grn.received_date ASC, grn.id ASC
+      `);
 
-  // Step 2: net dispatched quantity (out minus returns)
+  // Step 2: net dispatched quantity (out minus returns) + actual movement count for logging.
   // Movement type strings in use: "out" for dispatch/adjustments, "RETURN_IN" for sales returns,
   // "in" with reference_type="SALES_RETURN" for alternate return pattern.
   // Filter by warehouse_id when provided so lot engine is warehouse-scoped.
   let netRes;
+  let movementCount = 0;
   if (warehouseId) {
     netRes = await db.execute(sql`
       SELECT
+        COUNT(*)::integer AS movement_count,
         COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
         COALESCE(SUM(CASE
           WHEN movement_type = 'RETURN_IN' THEN quantity
@@ -321,6 +344,7 @@ async function computeFifoLots(
   } else {
     netRes = await db.execute(sql`
       SELECT
+        COUNT(*)::integer AS movement_count,
         COALESCE(SUM(CASE WHEN movement_type = 'out' THEN quantity ELSE 0 END), 0)::numeric AS total_out,
         COALESCE(SUM(CASE
           WHEN movement_type = 'RETURN_IN' THEN quantity
@@ -333,6 +357,7 @@ async function computeFifoLots(
   }
 
   const nr = netRes.rows[0] as any;
+  movementCount = Number((nr as any).movement_count ?? 0);
   let toDeplete = Math.max(0, Number(nr.total_out) - Number(nr.total_return));
 
   // Step 3: FIFO assignment — oldest lots consumed first
@@ -378,7 +403,7 @@ async function computeFifoLots(
   const globalFloor = blendedCost > 0 ? parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2)) : 0;
   const strictFloor = lots.length > 0 ? Math.max(...lots.map(l => l.floorPrice)) : 0;
 
-  console.log(`[FIFO] productId=${productId} warehouseId=${warehouseId ?? "all"} movementRows=${netRes.rows.length} lots=${lots.length} blendedCost=${blendedCost.toFixed(2)} globalFloor=${globalFloor} strictFloor=${strictFloor} minMarginPct=${minMarginPct}`);
+  console.log(`[FIFO] productId=${productId} warehouseId=${warehouseId ?? "all"} movementCount=${movementCount} lotCount=${lots.length} blendedCost=${blendedCost.toFixed(2)} globalFloor=${globalFloor} strictFloor=${strictFloor} minMarginPct=${minMarginPct}`);
 
   if (process.env.DEBUG_LOT_ENGINE === "true") {
     for (const l of lots) {

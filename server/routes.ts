@@ -788,9 +788,12 @@ export async function registerRoutes(
         ) combined
         ORDER BY product_id, created_at DESC
       `);
-      const priceMap: Record<string, string> = {};
+      const priceMap: Record<string, { price: string; lastSoldAt: string }> = {};
       for (const row of result.rows as any[]) {
-        priceMap[row.product_id] = row.last_price;
+        priceMap[row.product_id] = {
+          price: row.last_price,
+          lastSoldAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+        };
       }
       res.json(priceMap);
     } catch (error) {

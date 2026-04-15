@@ -31,6 +31,7 @@ import Leads from "@/pages/Leads";
 import Products from "@/pages/Products";
 import MyPortal from "@/pages/MyPortal";
 import SalesInvoices from "@/pages/SalesInvoices";
+import Pricing from "@/pages/Pricing";
 
 interface NotificationBellProps {
   open: boolean;
@@ -59,6 +60,18 @@ function NotificationBell({ open, onOpenChange }: NotificationBellProps) {
     expense_approved: "✅",
     expense_rejected: "❌",
     payroll_disbursed: "💰",
+    pricing: "📊",
+    leave_approved: "✅",
+    leave_rejected: "❌",
+  };
+
+  const handleNotificationClick = (n: Notification) => {
+    if (!n.isRead) markReadMutation.mutate(n.id);
+    if (n.type === "pricing" && n.relatedId) {
+      onOpenChange(false);
+      window.history.pushState({}, "", `/pricing?sheet=${n.relatedId}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
   };
 
   function timeAgo(dateStr: string) {
@@ -121,7 +134,7 @@ function NotificationBell({ open, onOpenChange }: NotificationBellProps) {
                   key={n.id}
                   data-testid={`notification-item-${n.id}`}
                   className={`px-4 py-3 flex gap-3 cursor-pointer hover:bg-muted/50 transition-colors ${!n.isRead ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
-                  onClick={() => { if (!n.isRead) markReadMutation.mutate(n.id); }}
+                  onClick={() => handleNotificationClick(n)}
                 >
                   <span className="text-base mt-0.5 shrink-0">{typeIcon[n.type] ?? "🔔"}</span>
                   <div className="flex-1 min-w-0">
@@ -171,6 +184,7 @@ function Router() {
       <Route path="/reports" component={() => <ProtectedRoute component={Reports} path="/reports" />} />
       <Route path="/audit-trail" component={() => <ProtectedRoute component={AuditTrail} path="/audit-trail" />} />
       <Route path="/sales-invoices" component={() => <ProtectedRoute component={SalesInvoices} path="/sales-invoices" />} />
+      <Route path="/pricing" component={() => <ProtectedRoute component={Pricing} path="/pricing" />} />
       <Route component={NotFound} />
     </Switch>
   );

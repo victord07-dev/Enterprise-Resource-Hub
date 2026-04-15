@@ -16,6 +16,7 @@ import {
   Box,
   User,
   FileText,
+  TrendingUp,
 } from "lucide-react";
 import {
   Sidebar,
@@ -38,6 +39,7 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Products & Services", url: "/products", icon: Box },
   { title: "Leads", url: "/leads", icon: UserPlus },
   { title: "Sales", url: "/sales", icon: ShoppingCart },
+  { title: "Pricing", url: "/pricing", icon: TrendingUp },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Inventory", url: "/inventory", icon: Package },
   { title: "Supply Chain", url: "/supply-chain", icon: Truck },
@@ -53,9 +55,9 @@ const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
   field_staff: ["/my-portal", "/field-staff"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/sales-invoices", "/reports"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/reports"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
-  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/reports"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
 };
 
 const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };

@@ -20,7 +20,7 @@ const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Main
 export default function Products() {
   const { toast } = useToast();
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
-  const { data: lastSoldPrices } = useQuery<Record<string, string>>({ queryKey: ["/api/products/last-sold-prices"] });
+  const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
   const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean }>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
@@ -230,7 +230,7 @@ export default function Products() {
                     </td>
                     <td className="p-3 text-right" data-testid={`text-item-last-sold-${item.id}`}>
                       {lastSoldPrices && lastSoldPrices[item.id]
-                        ? `₹${Number(lastSoldPrices[item.id]).toLocaleString()}`
+                        ? `₹${Number(lastSoldPrices[item.id].price).toLocaleString()}`
                         : "—"}
                     </td>
                     <td className="p-3 text-right">

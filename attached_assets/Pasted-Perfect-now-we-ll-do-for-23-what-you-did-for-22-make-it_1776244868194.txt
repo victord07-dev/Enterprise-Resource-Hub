@@ -1,0 +1,208 @@
+Perfect — now we’ll do for #23 what you did for #22:
+👉 make it production-grade, unambiguous, and aligned with real business operations
+
+🚀 #23 — Daily Pricing Engine Backend (FINAL — PRODUCTION LOCKED)
+🧠 What & Why
+
+You operate a price-volatile distribution business where:
+
+purchase cost changes frequently
+stock is mixed across batches
+pricing decisions must be controlled daily
+💡 This module creates:
+Daily Price Control System
+→ staff proposes price
+→ CEO approves
+→ system enforces
+🔒 CORE PRINCIPLES (MANDATORY)
+1. Separation of concerns
+#22 (Lot Engine) → calculates cost + floor
+
+#23 (Pricing Engine) → decides selling price
+
+#24 (UI) → displays + allows actions
+2. Pricing DOES NOT overwrite product.unitPrice
+product.unitPrice = fallback only
+3. Sales ALWAYS use:
+GET /api/daily-price-sheets/effective-price
+🧾 SCHEMA REQUIREMENTS (ALREADY FROM #22 — DO NOT CHANGE)
+daily_price_sheets
+
+Must include:
+
+proposed_market_price NUMERIC(10,2) NULL
+
+status CHECK ('draft','submitted','confirmed','rejected')
+
+override_required BOOLEAN DEFAULT FALSE
+override_reason TEXT NULL
+
+confirmed_by UUID NULL
+rejected_by UUID NULL
+daily_price_sheet_lots
+proposed_price NUMERIC(10,2) NULL
+🔄 DAILY WORKFLOW (REAL BUSINESS FLOW)
+Step 1 — System prepares draft
+
+Triggered by:
+
+GRN confirmation
+manual creation
+Step 2 — Staff enters price
+proposedMarketPrice = manual input
+
+👉 Based on:
+
+supplier updates
+market rate
+owner guidance
+Step 3 — Submit
+draft → submitted
+Step 4 — CEO Approval
+submitted → confirmed / rejected
+Step 5 — Sales use approved price
+📡 API ENDPOINTS (FINAL)
+1. Create Draft
+POST /api/daily-price-sheets
+Behavior:
+requires: productId, appliesDate
+MUST include: proposedMarketPrice (manual input)
+System actions:
+call lot engine (#22)
+populate:
+blendedCost
+globalFloor
+strictFloor
+insert into:
+daily_price_sheets
+daily_price_sheet_lots
+2. List / Get
+GET /api/daily-price-sheets?productId=&date=
+GET /api/daily-price-sheets/:id
+3. Submit
+POST /api/daily-price-sheets/:id/submit
+status: draft → submitted
+4. Confirm (CEO / Admin)
+POST /api/daily-price-sheets/:id/confirm
+Rules:
+only admin / accountant
+cannot confirm twice → return 403
+Validation:
+🔴 FLOOR CHECK (MANDATORY)
+
+For each lot:
+
+if proposedPrice < lotFloorPrice
+→ overrideRequired = true
+Behavior:
+Case A — Safe price
+confirm normally
+Case B — Below floor
+require overrideReason
+On success:
+status = confirmed
+confirmed_by = userId
+needsPricingReview = false
+5. Reject
+POST /api/daily-price-sheets/:id/reject
+status = rejected
+rejected_by = userId
+6. Effective Price (CRITICAL ENDPOINT)
+GET /api/daily-price-sheets/effective-price?productId=&date=
+Logic:
+Priority:
+1. today confirmed price
+2. latest previous confirmed price (≤ 7 days)
+3. fallback
+Response:
+{
+  "effectivePrice": number | null,
+  "sheetDate": "YYYY-MM-DD" | null,
+  "noConfirmedPrice": boolean,
+  "source": "today" | "fallback" | "none"
+}
+🔴 FALLBACK RULE (MANDATORY — BUSINESS CRITICAL)
+Case 1 — fallback exists
+Use last confirmed price
+Show warning: "Using previous day's price"
+Case 2 — no confirmed price (new product)
+Use product.unitPrice
+Show RED warning: "No approved price"
+
+👉 SALES MUST NOT STOP
+
+🔔 TRIGGERS (AUTOMATION)
+1. GRN trigger
+
+After GRN confirmation:
+
+If no sheet exists today:
+→ auto-create draft
+2. Supplier price change
+PATCH supplier_products
+→ product.needsPricingReview = true
+3. Notification trigger (MANDATORY ADDITION)
+
+On draft creation:
+
+Notify:
+- admin
+- accountant
+- sales manager
+
+👉 Prevents “silent drafts”
+
+⚠️ OVERRIDE LOGIC (CLARIFIED)
+overrideRequired is evaluated at CONFIRM time
+not permanent unless stored
+driven by lot comparison
+📊 MULTI-LOT vs FINAL PRICE (CLARIFICATION)
+proposedMarketPrice = final selling price
+
+proposedPrice per lot = validation only
+
+👉 NOT used for actual selling
+
+🔒 RULES FOR SALES SYSTEM (IMPORTANT)
+
+Sales must:
+
+ALWAYS use effective price API
+
+Sales must NOT:
+
+use product.unitPrice directly (except fallback)
+🚫 OUT OF SCOPE
+UI (#24)
+reporting (#25)
+cron reminders
+purchase return pricing
+✅ VALIDATION CHECKLIST
+
+Before moving to #24:
+
+✔ draft creation works
+✔ lot data pulled correctly
+✔ submit/confirm/reject works
+✔ override enforced
+✔ fallback works
+✔ noConfirmedPrice handled
+✔ notifications triggered
+✔ API returns correct source
+✔ product.unitPrice untouched
+
+🧠 REAL-WORLD BEHAVIOR GUARANTEE
+
+This system ensures:
+
+🟢 If team does nothing
+System continues with last price
+🟢 If CEO delays approval
+Sales continue safely
+🔴 If pricing missing
+Fallback used + warning shown
+🔥 FINAL STATUS
+
+👉 This is now:
+
+💡 Enterprise-grade daily pricing control system

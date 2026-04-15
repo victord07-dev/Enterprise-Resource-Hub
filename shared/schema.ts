@@ -605,6 +605,7 @@ export const dailyPriceSheets = pgTable("daily_price_sheets", {
   notes: text("notes"),
   createdBy: varchar("created_by").notNull(),
   confirmedBy: varchar("confirmed_by"),
+  rejectedBy: varchar("rejected_by"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [uniqueIndex("daily_price_sheets_product_date_uniq").on(t.productId, t.sheetDate)]);
 

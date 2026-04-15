@@ -69,6 +69,18 @@ async function notifyEmployee(employeeId: string, type: string, title: string, m
   }
 }
 
+async function notifyPricingReviewers(title: string, message: string, sheetId: string) {
+  try {
+    const allUsers = await storage.getUsers();
+    const reviewers = allUsers.filter(u => ["admin", "accountant", "sales_manager"].includes(u.role) && u.isActive);
+    for (const u of reviewers) {
+      await storage.createNotification({ userId: u.id, type: "pricing", title, message, relatedId: sheetId });
+    }
+  } catch (e) {
+    console.error("Pricing reviewer notification error:", e);
+  }
+}
+
 async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
   const reservedStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
   const allOrders = await storage.getSalesOrders();
@@ -3660,8 +3672,9 @@ export async function registerRoutes(
             ? lots.reduce((s, l) => s + l.landedCost * l.remainingQty, 0) / totalRemainingQty
             : 0;
           // globalFloor = blendedCost × (1 + minMarginPct/100) — fetched from product row
-          const prodMarginRes = await db.execute(sql`SELECT min_margin_pct FROM products WHERE id = ${pid} LIMIT 1`);
+          const prodMarginRes = await db.execute(sql`SELECT min_margin_pct, name FROM products WHERE id = ${pid} LIMIT 1`);
           const minMarginPct = Number((prodMarginRes.rows[0] as any)?.min_margin_pct ?? 5);
+          const grnProdName: string = (prodMarginRes.rows[0] as any)?.name ?? pid;
           const globalFloorPrice = parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2));
           const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
           // blendedCost always comes from FIFO lot engine, never from product.costPrice (WAC)
@@ -3679,6 +3692,7 @@ export async function registerRoutes(
             notes: `Auto-created after GRN ${grn.grnNumber}`,
             createdBy: req.user.id,
             confirmedBy: null,
+            rejectedBy: null,
           });
           await storage.upsertDailyPriceSheetLots(sheet.id, lots.map(l => ({
             sheetId: sheet.id,
@@ -3690,6 +3704,11 @@ export async function registerRoutes(
             floorPrice: l.floorPrice.toFixed(2),
             proposedPrice: null,
           })));
+          notifyPricingReviewers(
+            "Price Sheet Awaiting Review",
+            `A draft price sheet for ${grnProdName} on ${today} was auto-created after GRN ${grn.grnNumber}.`,
+            sheet.id
+          );
         }
       } catch (pricingErr) {
         console.error("Failed to auto-create price sheets from GRN:", pricingErr);
@@ -6321,17 +6340,19 @@ export async function registerRoutes(
         effectivePrice: string;
         sheetDate: string | null;
         noConfirmedPrice: boolean;
+        source: "today" | "fallback" | "none";
         hasConfirmedToday: boolean;
         blendedCost: string | null;
         globalFloorPrice: string | null;
         strictFloorPrice: string | null;
       }> = {};
-      // Seed all products with noConfirmedPrice=true as baseline
+      // Seed all products with noConfirmedPrice=true as baseline — unitPrice is last-resort fallback
       for (const prod of allProducts.rows as any[]) {
         priceMap[prod.id] = {
           effectivePrice: prod.unit_price ?? "0",
           sheetDate: null,
           noConfirmedPrice: true,
+          source: "none",
           hasConfirmedToday: false,
           blendedCost: null,
           globalFloorPrice: null,
@@ -6343,11 +6364,13 @@ export async function registerRoutes(
         const sheetDateStr = typeof row.sheet_date === "string"
           ? row.sheet_date.slice(0, 10)
           : new Date(row.sheet_date).toISOString().slice(0, 10);
+        const isToday = sheetDateStr === today;
         priceMap[row.product_id] = {
           effectivePrice: row.proposed_price,
           sheetDate: sheetDateStr,
           noConfirmedPrice: false,
-          hasConfirmedToday: sheetDateStr === today,
+          source: isToday ? "today" : "fallback",
+          hasConfirmedToday: isToday,
           blendedCost: row.blended_cost ?? null,
           globalFloorPrice: row.global_floor_price ?? null,
           strictFloorPrice: row.strict_floor_price ?? null,
@@ -6440,6 +6463,7 @@ export async function registerRoutes(
         notes:            notes || null,
         createdBy:        req.user.id,
         confirmedBy:      null,
+        rejectedBy:       null,
       });
 
       await storage.upsertDailyPriceSheetLots(sheet.id, lots.map(l => ({
@@ -6455,6 +6479,13 @@ export async function registerRoutes(
 
       const sheetLots = await storage.getDailyPriceSheetLots(sheet.id);
       await logAction(req.user.id, "CREATE", "DailyPriceSheet", `Created price sheet for product ${productId} on ${sheetDate}`);
+      const prodNameRes = await db.execute(sql`SELECT name FROM products WHERE id = ${productId} LIMIT 1`);
+      const prodName = (prodNameRes.rows[0] as any)?.name ?? productId;
+      notifyPricingReviewers(
+        "Price Sheet Awaiting Review",
+        `A draft price sheet for ${prodName} on ${sheetDate} is ready for review.`,
+        sheet.id
+      );
       res.status(201).json({ ...sheet, lots: sheetLots });
     } catch (err) {
       console.error("Create price sheet error:", err);
@@ -6593,9 +6624,12 @@ export async function registerRoutes(
       if (sheet.status !== "submitted") return res.status(409).json({ message: "Only submitted sheets can be rejected" });
 
       const rejectionNotes = req.body?.rejectionNotes;
-      // Return to draft with rejection notes — submitter must revise and resubmit
-      const updated = await storage.updateDailyPriceSheet(sheet.id, { status: "draft", rejectionNotes: rejectionNotes || null });
-      await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId} — returned to draft`);
+      const updated = await storage.updateDailyPriceSheet(sheet.id, {
+        status: "rejected",
+        rejectedBy: req.user.id,
+        rejectionNotes: rejectionNotes || null,
+      });
+      await logAction(req.user.id, "REJECT", "DailyPriceSheet", `Rejected price sheet ${sheet.id} for product ${sheet.productId} — status set to rejected`);
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: "Failed to reject price sheet" });

@@ -149,7 +149,7 @@ function addPageFooter(doc: jsPDF) {
 
 function drawSummaryBand(
   doc: jsPDF,
-  items: { label: string; value: number; color?: [number, number, number] }[],
+  items: { label: string; value: number; valueStr?: string; color?: [number, number, number] }[],
   y: number
 ): number {
   const bandH = 14;
@@ -165,7 +165,7 @@ function drawSummaryBand(
     doc.setFont("helvetica", "bold");
     doc.setFontSize(9);
     doc.setTextColor(...(item.color ?? C.textPrimary));
-    doc.text(fmtINR(item.value), cx + cellW / 2, y + 11, { align: "center" });
+    doc.text(item.valueStr ?? fmtINR(item.value), cx + cellW / 2, y + 11, { align: "center" });
     if (i < items.length - 1) {
       doc.setDrawColor(...C.tableBorder);
       doc.setLineWidth(0.3);
@@ -457,6 +457,249 @@ export function generateTaxReportPDF(
   ]);
 
   drawTable(doc, arCols, arTableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── Inventory Report PDF ──────────────────────────────────────────────────────
+
+export interface ProductRowPDF {
+  id: string;
+  name: string;
+  sku: string;
+  category: string;
+  unit: string;
+  costPrice: string | null;
+  unitPrice: string;
+}
+
+export function generateInventoryPDF(products: ProductRowPDF[], stockMap: Map<string, number>): Blob {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Inventory Report", `${products.length} products — as of ${todayStr()}`);
+
+  const totalCost = products.reduce((sum, p) => {
+    const qty = stockMap.get(p.id) ?? 0;
+    return sum + qty * Number(p.costPrice ?? 0);
+  }, 0);
+  const totalValue = products.reduce((sum, p) => {
+    const qty = stockMap.get(p.id) ?? 0;
+    return sum + qty * Number(p.unitPrice);
+  }, 0);
+
+  y = drawSummaryBand(doc, [
+    { label: "Total Products", value: products.length, valueStr: String(products.length), color: C.textPrimary },
+    { label: "Inventory Cost Value", value: totalCost, color: C.amber },
+    { label: "Inventory List Value", value: totalValue, color: C.green },
+  ], y + 2);
+
+  const cols: ColDef[] = [
+    { header: "Product", width: 52 },
+    { header: "SKU", width: 30 },
+    { header: "Category", width: 30 },
+    { header: "Unit", width: 16, align: "center" },
+    { header: "Total Stock", width: 24, align: "right" },
+    { header: "Cost Price", width: 30, align: "right" },
+    { header: "List Price", width: 30, align: "right" },
+    { header: "Stock Value (Cost)", width: 35, align: "right" },
+  ];
+
+  const tableRows = products.map(p => {
+    const qty = stockMap.get(p.id) ?? 0;
+    const cost = Number(p.costPrice ?? 0);
+    return [p.name, p.sku, p.category, p.unit, qty, fmtINR(cost), fmtINR(Number(p.unitPrice)), fmtINR(qty * cost)];
+  });
+
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── Staff Report PDF ──────────────────────────────────────────────────────────
+
+export interface EmployeeRowPDF {
+  name: string;
+  email: string;
+  department: string;
+  designation: string;
+  isActive: boolean;
+  joinDate?: string | null;
+}
+
+export function generateStaffPDF(employees: EmployeeRowPDF[]): Blob {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const active = employees.filter(e => e.isActive).length;
+  let y = drawHeader(doc, "Staff Report", `${employees.length} employees — ${active} active`);
+
+  y = drawSummaryBand(doc, [
+    { label: "Total Employees", value: employees.length, valueStr: String(employees.length), color: C.textPrimary },
+    { label: "Active", value: active, valueStr: String(active), color: C.green },
+    { label: "Inactive", value: employees.length - active, valueStr: String(employees.length - active), color: C.red },
+  ], y + 2);
+
+  const cols: ColDef[] = [
+    { header: "Name", width: 50 },
+    { header: "Email", width: 55 },
+    { header: "Department", width: 40 },
+    { header: "Designation", width: 45 },
+    { header: "Join Date", width: 28 },
+    { header: "Status", width: 24, align: "center" },
+  ];
+
+  const tableRows = employees.map(e => [
+    e.name,
+    e.email,
+    e.department,
+    e.designation,
+    e.joinDate ? String(e.joinDate).slice(0, 10) : "\u2014",
+    e.isActive ? "Active" : "Inactive",
+  ]);
+
+  drawTable(doc, cols, tableRows, y + 2, (_i, row) => {
+    if (row[5] === "Inactive") return [255, 245, 245] as [number, number, number];
+    return null;
+  });
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── Sales Report PDF ──────────────────────────────────────────────────────────
+
+export function generateSalesReportPDF(rows: ARAgingRowPDF[]): Blob {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Sales Report", `${rows.length} invoices — as of ${todayStr()}`);
+
+  const totalRevenue = rows.reduce((s, r) => s + r.grandTotal, 0);
+  const totalCollected = rows.reduce((s, r) => s + r.totalPaid, 0);
+  const totalBalance = rows.reduce((s, r) => s + r.balance, 0);
+
+  y = drawSummaryBand(doc, [
+    { label: "Total Invoiced", value: totalRevenue, color: C.textPrimary },
+    { label: "Total Collected", value: totalCollected, color: C.green },
+    { label: "Outstanding", value: totalBalance, color: C.red },
+  ], y + 2);
+
+  const cols: ColDef[] = [
+    { header: "Invoice #", width: 30 },
+    { header: "Customer", width: 40 },
+    { header: "Type", width: 14, align: "center" },
+    { header: "Invoice Date", width: 24 },
+    { header: "Due Date", width: 24 },
+    { header: "Grand Total", width: 28, align: "right" },
+    { header: "Collected", width: 26, align: "right" },
+    { header: "Balance", width: 26, align: "right" },
+    { header: "Status", width: 22, align: "center" },
+    { header: "Bucket", width: 20, align: "center" },
+  ];
+
+  const tableRows = rows.map(r => [
+    r.invoiceNumber,
+    r.customerName,
+    r.customerType ?? "\u2014",
+    r.invoiceDate?.slice(0, 10) ?? "",
+    r.dueDate?.slice(0, 10) ?? "\u2014",
+    fmtINR(r.grandTotal),
+    fmtINR(r.totalPaid),
+    fmtINR(r.balance),
+    r.status,
+    r.bucket,
+  ]);
+
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── Financial Report PDF (Revenue + Payables) ─────────────────────────────────
+
+export function generateFinancialReportPDF(arRows: ARAgingRowPDF[], apRows: APAgingRowPDF[]): Blob {
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+
+  const totalRevenue = arRows.reduce((s, r) => s + r.grandTotal, 0);
+  const totalCollected = arRows.reduce((s, r) => s + r.totalPaid, 0);
+  const totalARBalance = arRows.reduce((s, r) => s + r.balance, 0);
+  const totalExpenses = apRows.reduce((s, r) => s + r.totalAmount, 0);
+  const totalAPPaid = apRows.reduce((s, r) => s + r.totalPaid, 0);
+  const totalAPBalance = apRows.reduce((s, r) => s + r.balance, 0);
+
+  // ── Revenue section ────────────────────────────────────────────────────────
+  let y = drawHeader(doc, "Financial Report", "Revenue & Payables Overview");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...C.textPrimary);
+  doc.text("REVENUE (ACCOUNTS RECEIVABLE)", M, y + 4);
+  y += 7;
+
+  y = drawSummaryBand(doc, [
+    { label: "Total Invoiced", value: totalRevenue, color: C.green },
+    { label: "Total Collected", value: totalCollected, color: C.green },
+    { label: "Outstanding AR", value: totalARBalance, color: C.amber },
+  ], y);
+
+  const arCols: ColDef[] = [
+    { header: "Invoice #", width: 28 },
+    { header: "Customer", width: 40 },
+    { header: "Type", width: 14, align: "center" },
+    { header: "Invoice Date", width: 24 },
+    { header: "Grand Total", width: 28, align: "right" },
+    { header: "Collected", width: 26, align: "right" },
+    { header: "Balance", width: 26, align: "right" },
+    { header: "Status", width: 22, align: "center" },
+    { header: "Bucket", width: 20, align: "center" },
+    { header: "Days", width: 14, align: "right" },
+  ];
+
+  const arTableRows = arRows.map(r => [
+    r.invoiceNumber, r.customerName, r.customerType ?? "\u2014",
+    r.invoiceDate?.slice(0, 10) ?? "",
+    fmtINR(r.grandTotal), fmtINR(r.totalPaid), fmtINR(r.balance),
+    r.status, r.bucket, r.daysOverdue > 0 ? String(r.daysOverdue) : "Current",
+  ]);
+
+  y = drawTable(doc, arCols, arTableRows, y + 2);
+
+  // ── Payables section ───────────────────────────────────────────────────────
+  if (y + 50 > PH - 12) {
+    addPageFooter(doc);
+    doc.addPage("a4", "landscape");
+    y = M;
+  } else {
+    y += 8;
+  }
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.setTextColor(...C.textPrimary);
+  doc.text("PAYABLES (ACCOUNTS PAYABLE)", M, y + 4);
+  y += 7;
+
+  y = drawSummaryBand(doc, [
+    { label: "Total Invoiced (AP)", value: totalExpenses, color: C.red },
+    { label: "Total Paid (AP)", value: totalAPPaid, color: C.amber },
+    { label: "Outstanding AP", value: totalAPBalance, color: C.red },
+  ], y);
+
+  const apCols: ColDef[] = [
+    { header: "Invoice #", width: 28 },
+    { header: "Supplier", width: 40 },
+    { header: "PO #", width: 22 },
+    { header: "Invoice Date", width: 24 },
+    { header: "Total", width: 28, align: "right" },
+    { header: "Paid", width: 26, align: "right" },
+    { header: "Balance", width: 26, align: "right" },
+    { header: "Status", width: 22, align: "center" },
+    { header: "Bucket", width: 20, align: "center" },
+    { header: "Days", width: 14, align: "right" },
+  ];
+
+  const apTableRows = apRows.map(r => [
+    r.invoiceNumber, r.supplierName, r.poNumber ?? "\u2014",
+    r.invoiceDate?.slice(0, 10) ?? "",
+    fmtINR(r.totalAmount), fmtINR(r.totalPaid), fmtINR(r.balance),
+    r.status, r.bucket, r.daysOverdue > 0 ? String(r.daysOverdue) : "Current",
+  ]);
+
+  drawTable(doc, apCols, apTableRows, y + 2);
   addPageFooter(doc);
   return doc.output("blob");
 }

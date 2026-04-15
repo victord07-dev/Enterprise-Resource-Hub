@@ -15,10 +15,10 @@ import { useToast } from "@/hooks/use-toast";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
-  Flame, TrendingDown, Shield, Search, ChevronDown,
+  Flame, TrendingDown, Shield, Search, ChevronDown, Loader2,
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
-import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF } from "@/lib/reports-pdf";
+import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF, generateInventoryPDF, generateStaffPDF, generateSalesReportPDF, generateFinancialReportPDF } from "@/lib/reports-pdf";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -166,6 +166,31 @@ interface ARAgingRow {
 interface ARAgingResponse {
   rows: ARAgingRow[];
   summary: APAgingSummary;
+}
+
+interface ProductRow {
+  id: string;
+  name: string;
+  sku: string;
+  category: string;
+  unit: string;
+  costPrice: string | null;
+  unitPrice: string;
+}
+
+interface InventoryStockRow {
+  productId: string;
+  quantity: number;
+}
+
+interface EmployeeRow {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  designation: string;
+  isActive: boolean;
+  joinDate?: string | null;
 }
 
 function APAgingTab() {
@@ -987,12 +1012,22 @@ const TAB_LABELS: Record<string, string> = {
   "daily-pricing": "Daily Pricing",
 };
 
+const cardFormats: Record<string, ("csv" | "pdf")[]> = {
+  "Sales Report": ["csv", "pdf"],
+  "Inventory Report": ["csv", "pdf"],
+  "Financial Report": ["csv", "pdf"],
+  "Staff Report": ["csv", "pdf"],
+  "Project Report": [],
+  "Tax Report": ["pdf"],
+};
+
 export default function Reports() {
   const { data: currentUser } = useCurrentUser();
   const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
   const [activeTab, setActiveTab] = useState("overview");
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const [loadingCard, setLoadingCard] = useState<string | null>(null);
 
   // ── Shared AP/AR export functions (using query cache, full unfiltered data) ──
 
@@ -1081,27 +1116,91 @@ export default function Reports() {
     }
   };
 
-  const handleOverviewCard = (title: string) => {
-    if (title === "Inventory Report") { navigate("/inventory"); return; }
-    if (title === "Staff Report") { navigate("/employees"); return; }
+  const handleCardExport = async (title: string, format: "csv" | "pdf") => {
     if (title === "Project Report") { navigate("/projects"); return; }
-    if (title === "Tax Report") {
-      const apData = queryClient.getQueryData<APAgingResponse>(["/api/reports/ap-aging"]);
-      const arData = queryClient.getQueryData<ARAgingResponse>(["/api/reports/ar-aging"]);
-      if (!apData?.rows?.length || !arData?.rows?.length) {
-        toast({ title: "Loading AP & AR data…", description: "Navigating to AP Aging tab — click Tax Report again once data loads." });
-        setActiveTab("ap-aging");
-        return;
+
+    setLoadingCard(title);
+    try {
+      if (title === "Inventory Report") {
+        const [products, inventoryStock] = await Promise.all([
+          queryClient.fetchQuery<ProductRow[]>({ queryKey: ["/api/products"], staleTime: 30_000 }),
+          queryClient.fetchQuery<InventoryStockRow[]>({ queryKey: ["/api/inventory-stock"], staleTime: 30_000 }),
+        ]);
+        const stockMap = new Map<string, number>();
+        for (const s of inventoryStock) {
+          stockMap.set(s.productId, (stockMap.get(s.productId) ?? 0) + s.quantity);
+        }
+        if (format === "csv") {
+          downloadCSV(
+            `itfi-inventory-${todayISO()}.csv`,
+            ["Product", "SKU", "Category", "Unit", "Total Stock", "Cost Price (₹)", "List Price (₹)", "Stock Value (Cost ₹)"],
+            products.map(p => {
+              const qty = stockMap.get(p.id) ?? 0;
+              const cost = Number(p.costPrice ?? 0);
+              return [p.name, p.sku, p.category, p.unit, qty, cost || "", p.unitPrice, qty * cost];
+            })
+          );
+        } else {
+          downloadPDF(`itfi-inventory-${todayISO()}.pdf`, generateInventoryPDF(products, stockMap));
+        }
+      } else if (title === "Staff Report") {
+        const employees = await queryClient.fetchQuery<EmployeeRow[]>({ queryKey: ["/api/employees"], staleTime: 30_000 });
+        if (format === "csv") {
+          downloadCSV(
+            `itfi-staff-${todayISO()}.csv`,
+            ["Name", "Email", "Department", "Designation", "Join Date", "Status"],
+            employees.map(e => [e.name, e.email, e.department, e.designation, e.joinDate ? String(e.joinDate).slice(0, 10) : "", e.isActive ? "Active" : "Inactive"])
+          );
+        } else {
+          downloadPDF(`itfi-staff-${todayISO()}.pdf`, generateStaffPDF(employees));
+        }
+      } else if (title === "Sales Report") {
+        const arData = await queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 });
+        const rows = arData?.rows ?? [];
+        if (format === "csv") {
+          downloadCSV(
+            `itfi-sales-report-${todayISO()}.csv`,
+            ["Invoice #", "Customer", "Type", "Invoice Date", "Due Date", "Grand Total (₹)", "Collected (₹)", "Balance (₹)", "Status", "Bucket"],
+            rows.map(r => [r.invoiceNumber, r.customerName, r.customerType, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status, r.bucket])
+          );
+        } else {
+          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, generateSalesReportPDF(rows));
+        }
+      } else if (title === "Financial Report") {
+        const [arData, apData] = await Promise.all([
+          queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 }),
+          queryClient.fetchQuery<APAgingResponse>({ queryKey: ["/api/reports/ap-aging"], staleTime: 30_000 }),
+        ]);
+        const arRows = arData?.rows ?? [];
+        const apRows = apData?.rows ?? [];
+        if (format === "csv") {
+          const revenueRows = arRows.map(r => [r.invoiceNumber, r.customerName, "Income", r.invoiceDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
+          const expenseRows = apRows.map(r => [r.invoiceNumber, r.supplierName, "Expense", r.invoiceDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
+          downloadCSV(
+            `itfi-financial-report-${todayISO()}.csv`,
+            ["Invoice #", "Entity", "Type", "Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Status"],
+            [...revenueRows, ...expenseRows]
+          );
+        } else {
+          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, generateFinancialReportPDF(arRows, apRows));
+        }
+      } else if (title === "Tax Report") {
+        const [apData, arData] = await Promise.all([
+          queryClient.fetchQuery<APAgingResponse>({ queryKey: ["/api/reports/ap-aging"], staleTime: 30_000 }),
+          queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 }),
+        ]);
+        const apOutstanding = (apData?.rows ?? []).filter(r => r.balance > 0);
+        const arOutstanding = (arData?.rows ?? []).filter(r => r.balance > 0);
+        const apSummary = buildAPSummary(apOutstanding);
+        const arSummary = buildARSummary(arOutstanding);
+        const blob = generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
+        downloadPDF(`itfi-tax-report-${todayISO()}.pdf`, blob);
       }
-      const apOutstanding = apData.rows.filter(r => r.balance > 0);
-      const arOutstanding = arData.rows.filter(r => r.balance > 0);
-      const apSummary = buildAPSummary(apOutstanding);
-      const arSummary = buildARSummary(arOutstanding);
-      const blob = generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
-      downloadPDF(`itfi-tax-report-${todayISO()}.pdf`, blob);
-      return;
+    } catch {
+      toast({ title: "Export failed", description: "Could not generate the report. Please try again.", variant: "destructive" });
+    } finally {
+      setLoadingCard(null);
     }
-    toast({ title: "Coming soon", description: "Data pipelines for this report are not yet connected." });
   };
 
   return (
@@ -1143,25 +1242,58 @@ export default function Reports() {
 
         <TabsContent value="overview" className="space-y-6 mt-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {reportCards.map((report) => (
-              <Card key={report.title} className="hover-elevate cursor-pointer" data-testid={`card-report-${report.title.toLowerCase().replace(/\s+/g, "-")}`}>
-                <CardContent className="p-5">
-                  <div className="flex items-center gap-4 mb-3">
-                    <div className={`w-10 h-10 rounded-md flex items-center justify-center ${report.bg}`}>
-                      <report.icon className={`w-5 h-5 ${report.color}`} />
+            {reportCards.map((report) => {
+              const formats = cardFormats[report.title] ?? [];
+              const isLoading = loadingCard === report.title;
+              const testId = `button-generate-${report.title.toLowerCase().replace(/\s+/g, "-")}`;
+              return (
+                <Card key={report.title} className="hover-elevate" data-testid={`card-report-${report.title.toLowerCase().replace(/\s+/g, "-")}`}>
+                  <CardContent className="p-5">
+                    <div className="flex items-center gap-4 mb-3">
+                      <div className={`w-10 h-10 rounded-md flex items-center justify-center ${report.bg}`}>
+                        <report.icon className={`w-5 h-5 ${report.color}`} />
+                      </div>
+                      <div>
+                        <p className="font-semibold">{report.title}</p>
+                        <p className="text-xs text-muted-foreground">{report.description}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-semibold">{report.title}</p>
-                      <p className="text-xs text-muted-foreground">{report.description}</p>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="sm" className="w-full" onClick={() => handleOverviewCard(report.title)} data-testid={`button-generate-${report.title.toLowerCase().replace(/\s+/g, "-")}`}>
-                    <Download className="w-3.5 h-3.5 mr-2" />
-                    Generate Report
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
+                    {formats.length === 0 ? (
+                      <Button variant="outline" size="sm" className="w-full" onClick={() => handleCardExport(report.title, "pdf")} data-testid={testId}>
+                        <BarChart3 className="w-3.5 h-3.5 mr-2" />
+                        Open Report
+                      </Button>
+                    ) : formats.length === 1 ? (
+                      <Button variant="outline" size="sm" className="w-full" disabled={isLoading} onClick={() => handleCardExport(report.title, formats[0])} data-testid={testId}>
+                        {isLoading ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-2" />}
+                        {isLoading ? "Generating…" : "Generate PDF"}
+                      </Button>
+                    ) : (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" size="sm" className="w-full" disabled={isLoading} data-testid={testId}>
+                            {isLoading ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-2" />}
+                            {isLoading ? "Generating…" : "Generate Report"}
+                            <ChevronDown className="w-3 h-3 ml-auto" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-40">
+                          <DropdownMenuItem onClick={() => handleCardExport(report.title, "csv")} data-testid={`${testId}-csv`}>
+                            <Download className="w-4 h-4 mr-2" />
+                            Export CSV
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => handleCardExport(report.title, "pdf")} data-testid={`${testId}-pdf`}>
+                            <FileText className="w-4 h-4 mr-2" />
+                            Export PDF
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

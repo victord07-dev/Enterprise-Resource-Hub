@@ -239,6 +239,12 @@ interface SupplierInvoiceRow {
   status: string;
 }
 
+interface SupplierPaymentRow {
+  id: string;
+  supplierInvoiceId: string | null;
+  amount: string;
+}
+
 function APAgingTab() {
   const [supplierFilter, setSupplierFilter] = useState<string>("all");
   const [showPaid, setShowPaid] = useState(false);
@@ -1167,7 +1173,7 @@ export default function Reports() {
 
     setLoadingCard(title);
     if (title === "Tax Report") {
-      toast({ title: "Generating Tax Report…", description: "Fetching AP & AR data, please wait." });
+      toast({ title: "⏳ Generating Tax Report…", description: "Fetching AP & AR aging data — download will start automatically." });
     }
 
     try {
@@ -1255,12 +1261,13 @@ export default function Reports() {
         }
 
       } else if (title === "Financial Report") {
-        const [invoices, customers, payments, supplierInvoices, suppliers] = await Promise.all([
+        const [invoices, customers, payments, supplierInvoices, suppliers, supplierPayments] = await Promise.all([
           queryClient.fetchQuery<SalesInvoiceRow[]>({ queryKey: ["/api/sales-invoices"], staleTime: 30_000 }),
           queryClient.fetchQuery<CustomerRow[]>({ queryKey: ["/api/customers"], staleTime: 30_000 }),
           queryClient.fetchQuery<CustomerPaymentRow[]>({ queryKey: ["/api/customer-payments"], staleTime: 30_000 }),
           queryClient.fetchQuery<SupplierInvoiceRow[]>({ queryKey: ["/api/supplier-invoices"], staleTime: 30_000 }),
           queryClient.fetchQuery<SupplierRow[]>({ queryKey: ["/api/suppliers"], staleTime: 30_000 }),
+          queryClient.fetchQuery<SupplierPaymentRow[]>({ queryKey: ["/api/supplier-payments"], staleTime: 30_000 }),
         ]);
         const customerMap = new Map(customers.map(c => [c.id, c.name]));
         const supplierMap = new Map(suppliers.map(s => [s.id, s.name]));
@@ -1268,20 +1275,30 @@ export default function Reports() {
         for (const p of payments) {
           paidMap.set(p.invoiceId, (paidMap.get(p.invoiceId) ?? 0) + Number(p.amount));
         }
+        const apPaidMap = new Map<string, number>();
+        for (const p of supplierPayments) {
+          if (p.supplierInvoiceId) {
+            apPaidMap.set(p.supplierInvoiceId, (apPaidMap.get(p.supplierInvoiceId) ?? 0) + Number(p.amount));
+          }
+        }
         const arRows = invoices.map(inv => {
           const totalPaid = paidMap.get(inv.id) ?? 0;
           const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
           return { ...inv, customerName: customerMap.get(inv.customerId) ?? inv.customerId, totalPaid, balance };
         });
-        const apRows = supplierInvoices.map(inv => ({
-          ...inv,
-          supplierName: supplierMap.get(inv.supplierId) ?? inv.supplierId,
-          totalPaid: 0,
-          balance: Number(inv.totalAmount),
-          poNumber: null as string | null,
-          daysOverdue: 0,
-          bucket: "current",
-        }));
+        const apRows = supplierInvoices.map(inv => {
+          const totalPaid = apPaidMap.get(inv.id) ?? 0;
+          const balance = Math.max(0, Number(inv.totalAmount) - totalPaid);
+          return {
+            ...inv,
+            supplierName: supplierMap.get(inv.supplierId) ?? inv.supplierId,
+            totalPaid,
+            balance,
+            poNumber: null as string | null,
+            daysOverdue: 0,
+            bucket: "current",
+          };
+        });
         if (format === "csv") {
           const revenueRows = arRows.map(r => [r.invoiceNumber, r.customerName, "Income", r.invoiceDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
           const expenseRows = apRows.map(r => [r.invoiceNumber, r.supplierName, "Expense", r.invoiceDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.status] as (string | number | null)[]);

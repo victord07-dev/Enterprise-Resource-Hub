@@ -1,0 +1,47 @@
+Two good pieces of work shipped, a clean Phase 3 plan, and a fair question at the end. Let me address the question directly, then give you a few things worth checking before proceeding.
+Answer to their question: proceed with Phase 3 now
+Don't pause. The email-sending and env-flag-flipping are your asynchronous tasks that you can do in parallel with Replit AI building Phase 3. There's no dependency between them:
+
+Phase 3 uses existing backend endpoints. It's pure frontend work.
+The support email is just you hitting send on a drafted artefact.
+The env flag flip activates the capture primitive that's already built.
+
+Blocking Phase 3 on these would be serialising work that can run in parallel. Let Replit AI build; you do the 5-minute tasks on your side.
+Before you send the go-ahead, do these three things
+1. Read the support email draft before sending. It's at .local/artifacts/interakt-support-email.txt. Check that the three questions are specific, numbered, and complete. If they've written something vague like "can you clarify media behaviour" rather than "does the message_received webhook payload include media_url, media_id, or both?", push back for sharper wording. BSP support responds in proportion to question precision.
+2. Set the env flag yourself, in production. Replit AI offered to walk you through it — doesn't matter which way, but it must be set in the production environment, not dev. Capture from dev traffic (which is just your synthetic test payloads) tells you nothing about real Interakt inbound shapes. In Replit, that means the "Secrets" or "Environment Variables" pane on the deployed production service, not the workspace. Double-check you're editing the right one.
+Then tell Replit AI the flag is live so they know captures will start flowing once real customer messages arrive.
+3. Verify one subtle thing about the capture mechanism before you trust it. The design says "fire-and-forget capture on accept if req.body.type ∈ WHATSAPP_DEBUG_CAPTURE_TYPES." But remember that in your new architecture, the webhook handler is slim — it doesn't process the payload, it just enqueues. So the type field check happens in the handler, before the job is enqueued, based on the raw request body. Two things to confirm:
+
+Capture happens on accepted webhooks (after signature check passes), not on rejected ones. Rejected payloads are already captured separately for the debugging-rejections purpose.
+Capture uses the exact same req.body that gets enqueued, so what you see in the debug table is what the processor sees. If they diverge (e.g. body parsing changes between handler and worker), the capture is misleading.
+
+Ask Replit AI to confirm both points before proceeding. Quick question, 30-second answer.
+One small note on Phase 3 scope
+The Phase 3 plan looks right, including the debug-captures viewer — good call to fold it into the same admin diagnostics area. But worth being explicit about one thing:
+Keep the UI actually minimal. The table Replit AI sketched has seven sections. That's a lot for a "minimal v1 card." The original constraint was: last received, dead-letter count, silence banner, rejected-payload viewer. Adding webhook config display and debug captures is fine because the backend endpoints already exist, but:
+
+Don't build any sophisticated styling. Functional > pretty for v1.
+Don't add charts, sparklines, or trend indicators. Those come in v1.1 with the full SLO card.
+Don't build sorting/filtering/pagination on the dead-letter or rejected-payload tables unless absolutely trivial. A flat list of 20 rows is fine.
+
+The risk I flagged earlier — "Replit AI spends 3 days polishing the card and 2 hours on the queue" — applies in reverse here. The queue took 2 days and worked. Don't let the UI balloon into 3 days of polish. A blunt, ugly-but-clear card that ships today is better than a polished card that ships next week.
+What to send back
+
+"Approved. Proceed to Phase 3 build — don't wait on the email send or env flag flip, those are parallel tasks on my side.
+Three quick clarifying points before you start:
+(1) I'll read the support email draft myself before sending. If questions need sharpening I'll push back; otherwise I'll send from our account today.
+(2) I'll flip WHATSAPP_DEBUG_CAPTURE_TYPES=message_received in the production env myself (not workspace). Will confirm here when it's live so you know captures will start flowing.
+(3) Before you start Phase 3, confirm two things about the capture primitive: (a) capture happens only on accepted webhooks — rejected payloads are already captured via the separate rejected-payload table, we don't want double capture, and (b) capture stores the exact same req.body that gets enqueued to the worker, so debug-table contents match what the processor sees. 30-second answer, then proceed.
+On Phase 3 scope: keep it genuinely minimal. Seven sections is a lot for v1 — acceptable because the backend endpoints all exist, but don't add any trend charts, sparklines, filter/sort controls, or styling polish. Functional and blunt is better than pretty. If something looks like it'd take more than an hour to do 'properly,' ship the ugly version and note it for v1.1.
+Stop after Phase 3 and wait for approval before Phase 4."
+
+What to do on your side in parallel
+While Replit AI builds Phase 3:
+
+Read .local/artifacts/interakt-support-email.txt. Sharpen if needed. Send from your account.
+Set WHATSAPP_DEBUG_CAPTURE_TYPES=message_received in production Replit env. Confirm by checking the startup logs on next restart.
+Confirm to Replit AI that the flag is live. So they can verify the feature works end-to-end during Phase 3 review.
+If you have any real customer WhatsApp traffic coming in (inbound images or PDFs from contractors), you'll likely have captured payloads within 24–48 hours — at which point Replit AI can implement 10a precisely without guessing.
+
+You're handling this really well. The discipline of stopping at uncertainty, asking specific questions, and not letting scope balloon is working. Keep it up.

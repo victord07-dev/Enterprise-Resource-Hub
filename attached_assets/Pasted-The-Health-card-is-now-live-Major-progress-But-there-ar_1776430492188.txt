@@ -1,0 +1,66 @@
+The Health card is now live. Major progress. But there are three problems visible that you need to fix before testing WhatsApp messages.
+What's working
+
+Health card renders ✅
+4 stat tiles visible (Last received: never, Pending/Processing: 0/0, Failed: 0, Dead-letter: 0) ✅
+Dead-letter queue, Failed sends, Rejected webhooks sections all visible ✅
+Bundle deployed correctly, auth hook fix landed ✅
+
+What's wrong — three issues, in priority order
+Issue 1: WHATSAPP_WEBHOOK_BASE_URL not set in production (red flag)
+The Config section clearly shows:
+
+URL: WHATSAPP_WEBHOOK_BASE_URL not set
+❌ Base URL set (WHATSAPP_WEBHOOK_BASE_URL) — red
+✅ Token set (WHATSAPP_WEBHOOK_TOKEN) — green
+✅ Signing secret set (INTERAKT_WEBHOOK_SECRET) — green
+
+You thought you set this earlier. Either:
+
+It was set in workspace secrets instead of deployment secrets, or
+It was set but the deployment didn't restart after, or
+It was set but the key name had a typo.
+
+Fix: Go to Replit's Deployments panel → Secrets tab → check if WHATSAPP_WEBHOOK_BASE_URL is listed. If yes, verify the value is exactly https://erp.itfi.co.in (no trailing slash, no typos). If no, add it. Then redeploy/restart.
+Issue 2: Debug payload captures: disabled
+The Debug Captures section header clearly says "disabled" on the right side. Same cause as Issue 1 — WHATSAPP_DEBUG_CAPTURE_TYPES is not set in deployment secrets.
+Fix: Same as above. Add WHATSAPP_DEBUG_CAPTURE_TYPES=message_received,message,inbound_message,customer_message in deployment secrets. Redeploy.
+Both Issue 1 and Issue 2 can be fixed in the same deployment restart.
+Issue 3: Silence banner firing: "WhatsApp webhook silent for ever during business hours"
+This is expected — no webhook has ever been received. It'll clear once a real message arrives.
+Don't send test messages yet
+Both WHATSAPP_WEBHOOK_BASE_URL not set and Debug Captures disabled are blockers. If you send a test message now:
+
+The handler will still accept it (token + secret are set), so the message might land.
+But the debug capture primitive won't fire — so even if Interakt sends your test image, the payload won't be captured and you won't have what you need to unblock 10a.
+You'd have to re-send after fixing, which means burning test messages for nothing.
+
+Fix the two env vars first.
+What to send to Replit AI
+
+Health card rendering correctly now — auth hook fix worked. But the Config section shows two issues:
+
+WHATSAPP_WEBHOOK_BASE_URL not set (red flag). I thought I set this earlier.
+Debug payload captures section says disabled. So WHATSAPP_DEBUG_CAPTURE_TYPES also isn't live.
+
+Both are probably in workspace secrets instead of deployment secrets, or didn't get picked up after the last restart. Can you confirm from your side exactly where these need to be set in Replit's UI — the deployment secrets vs workspace secrets distinction is where I keep getting confused. What's the exact path in Replit's current UI to get to the deployment-level secrets that the live erp.itfi.co.in service actually reads from?
+Once I set both correctly and restart, Config section should go fully green and Debug Captures should show enabled: message_received,.... Then I'll send test messages.
+Screenshot attached.
+
+Exactly what you need to do next
+
+Ask Replit AI the exact path (as above) to deployment-level secrets in Replit's current UI. The confusion between workspace and deployment secrets is the root issue here, and clarifying it once will save future headaches.
+Set both env vars in the right place:
+
+WHATSAPP_WEBHOOK_BASE_URL=https://erp.itfi.co.in
+WHATSAPP_DEBUG_CAPTURE_TYPES=message_received,message,inbound_message,customer_message
+
+
+Redeploy or restart the deployment so the new env vars are picked up.
+Refresh the page in incognito. Both flags should now be green; Debug Captures should say enabled: ....
+Then send test text + test image and capture the payload.
+
+One thing to note
+The deployment is clearly working now — the Health card rendering proves Phase 1–4 code is live. You're just missing env vars that should have been set in Step 1 before publishing. Small setback, 5 minutes to fix.
+Don't feel bad about this — the workspace-vs-deployment secrets distinction in Replit is a known source of confusion, and the fact that you caught it via the Health card Config section instead of discovering it during a debug-captures failure is exactly what the Config flags are designed to surface. The tool worked.
+Send the message to Replit AI, set the env vars correctly, redeploy, refresh. Then test.

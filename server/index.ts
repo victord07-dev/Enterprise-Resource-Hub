@@ -5,7 +5,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import cron from "node-cron";
 import { storage } from "./storage";
-import { sendTemplateMessage } from "./whatsapp";
+import { sendTemplateMessage, syncInteraktTemplates } from "./whatsapp";
 import { setupWhatsappWebSocket } from "./wsHub";
 
 const app = express();
@@ -126,6 +126,22 @@ app.use((req, res, next) => {
 
   cron.schedule("0 9 * * *", sendOwnerDailyAlert, { timezone: "Asia/Kolkata" });
   cron.schedule("0 18 * * *", sendOwnerDailyAlert, { timezone: "Asia/Kolkata" });
+
+  // ── Daily Interakt template sync ───────────────────────────────────────────
+  async function runDailyTemplateSync() {
+    if (!process.env.INTERAKT_API_KEY) {
+      console.warn("[WA TEMPLATE SYNC] INTERAKT_API_KEY not set — skipping scheduled sync");
+      return;
+    }
+    try {
+      const result = await syncInteraktTemplates(storage);
+      console.log(`[WA TEMPLATE SYNC] Daily sync complete: ${result.total} fetched, ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
+    } catch (err) {
+      console.error("[WA TEMPLATE SYNC] Daily sync failed:", err);
+    }
+  }
+
+  cron.schedule("30 3 * * *", runDailyTemplateSync, { timezone: "Asia/Kolkata" });
 
   // return JSON 404 for unmatched /api/* routes in both dev and production
   app.use("/api/{*path}", (_req: Request, res: Response) => {

@@ -196,6 +196,64 @@ export function mapInteraktTemplate(t: InteraktTemplate) {
   };
 }
 
+// ── Shared sync helper (used by manual route + scheduled job) ────────────────
+export interface SyncTemplatesResult {
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+}
+
+export async function syncInteraktTemplates(storage: {
+  getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
+  updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
+  createWhatsappTemplate: (data: any) => Promise<any>;
+}): Promise<SyncTemplatesResult> {
+  if (!process.env.INTERAKT_API_KEY) {
+    throw new Error("INTERAKT_API_KEY is not configured");
+  }
+  const remote = await fetchInteraktTemplates();
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  for (const t of remote) {
+    if (!t?.name) { skipped++; continue; }
+    const mapped = mapInteraktTemplate(t);
+    if (!mapped.body) { skipped++; continue; }
+    const existing = await storage.getWhatsappTemplateByInteraktName(mapped.interaktTemplateName, mapped.languageCode);
+    if (existing) {
+      // Preserve manual variable edits, but backfill any blank/missing slots
+      // with generated defaults from the (possibly longer) remote body.
+      const existingVars = Array.isArray(existing.variables) ? existing.variables : [];
+      const mergedLen = Math.max(existingVars.length, mapped.variables.length);
+      const mergedVars = Array.from({ length: mergedLen }, (_, i) => {
+        const existingName = (existingVars[i] || "").trim();
+        return existingName || mapped.variables[i] || `var${i + 1}`;
+      });
+      await storage.updateWhatsappTemplate(existing.id, {
+        name: existing.name || mapped.name,
+        category: mapped.category,
+        body: mapped.body,
+        variables: mergedVars,
+        isActive: mapped.isActive,
+      });
+      updated++;
+    } else {
+      await storage.createWhatsappTemplate({
+        name: mapped.name,
+        interaktTemplateName: mapped.interaktTemplateName,
+        category: mapped.category,
+        languageCode: mapped.languageCode,
+        body: mapped.body,
+        variables: mapped.variables,
+        isActive: mapped.isActive,
+      });
+      created++;
+    }
+  }
+  return { total: remote.length, created, updated, skipped };
+}
+
 // ── Rolling-window rate limiter (20 msg / 60s per conversation) ──────────────
 // Stores timestamps of recent sends per conversation for a true sliding window.
 const rateLimitMap = new Map<string, number[]>();

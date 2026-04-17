@@ -25,7 +25,7 @@ import {
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
-import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, fetchInteraktTemplates, mapInteraktTemplate } from "./whatsapp";
+import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates } from "./whatsapp";
 import { broadcastWhatsappEvent } from "./wsHub";
 import multer from "multer";
 
@@ -7147,53 +7147,9 @@ export async function registerRoutes(
       if (req.user.role !== "admin") {
         return res.status(403).json({ message: "Only admin may sync WhatsApp templates" });
       }
-      if (!process.env.INTERAKT_API_KEY) {
-        return res.status(500).json({ message: "INTERAKT_API_KEY is not configured" });
-      }
-      const remote = await fetchInteraktTemplates();
-      let created = 0;
-      let updated = 0;
-      let skipped = 0;
-      for (const t of remote) {
-        if (!t?.name) { skipped++; continue; }
-        const mapped = mapInteraktTemplate(t);
-        if (!mapped.body) { skipped++; continue; }
-        const existing = await storage.getWhatsappTemplateByInteraktName(mapped.interaktTemplateName, mapped.languageCode);
-        if (existing) {
-          // Preserve manual variable edits. Only fill in / extend names when
-          // the operator hasn't named them yet, or when the body now has more
-          // placeholders than the saved variable list.
-          const existingVars = Array.isArray(existing.variables) ? existing.variables : [];
-          // Preserve manual edits, but backfill any blank/missing slots with
-          // generated defaults from the (possibly longer) remote body.
-          const mergedLen = Math.max(existingVars.length, mapped.variables.length);
-          const mergedVars = Array.from({ length: mergedLen }, (_, i) => {
-            const existingName = (existingVars[i] || "").trim();
-            return existingName || mapped.variables[i] || `var${i + 1}`;
-          });
-          await storage.updateWhatsappTemplate(existing.id, {
-            name: existing.name || mapped.name,
-            category: mapped.category,
-            body: mapped.body,
-            variables: mergedVars,
-            isActive: mapped.isActive,
-          });
-          updated++;
-        } else {
-          await storage.createWhatsappTemplate({
-            name: mapped.name,
-            interaktTemplateName: mapped.interaktTemplateName,
-            category: mapped.category,
-            languageCode: mapped.languageCode,
-            body: mapped.body,
-            variables: mapped.variables,
-            isActive: mapped.isActive,
-          });
-          created++;
-        }
-      }
-      await logAction(req.user.id, "SYNC", "WhatsappTemplate", `Synced templates from Interakt: ${created} created, ${updated} updated, ${skipped} skipped`);
-      res.json({ ok: true, total: remote.length, created, updated, skipped });
+      const result = await syncInteraktTemplates(storage);
+      await logAction(req.user.id, "SYNC", "WhatsappTemplate", `Synced templates from Interakt: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
+      res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to sync templates" });
     }

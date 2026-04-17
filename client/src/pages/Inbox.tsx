@@ -273,9 +273,11 @@ export default function Inbox() {
               <InboxIcon className="w-4 h-4" />
               WhatsApp Inbox
             </h2>
-            <Button size="sm" onClick={() => setNewConvOpen(true)} data-testid="button-new-conversation">
-              <Plus className="w-3.5 h-3.5 mr-1" /> New
-            </Button>
+            {currentUser?.role === "admin" && (
+              <Button size="sm" onClick={() => setNewConvOpen(true)} data-testid="button-new-conversation">
+                <Plus className="w-3.5 h-3.5 mr-1" /> New
+              </Button>
+            )}
           </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />

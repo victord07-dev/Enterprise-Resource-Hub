@@ -6707,14 +6707,14 @@ export async function registerRoutes(
       const contactName = body?.data?.customer?.name || body?.data?.message?.customerName || null;
 
       // Find or create conversation — closed conversations are NEVER reopened; create a fresh one
-      const existingConv = await storage.getWhatsappConversationByPhone(normPhone);
-      const windowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      let conv: typeof existingConv;
-
+      // Match by customerId OR normalised phone to prevent duplicate open conversations
       const allCustomers = await storage.getCustomers();
       const allLeads = await storage.getLeads();
       const matchedCustomer = allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
       const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+      const existingConv = await storage.getWhatsappConversationByPhoneOrCustomer(normPhone, matchedCustomer?.id);
+      const windowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      let conv: typeof existingConv;
 
       if (!existingConv || existingConv.status === "closed") {
         // Create a new conversation (fresh start even if previous was closed)
@@ -6775,6 +6775,13 @@ export async function registerRoutes(
     next();
   }
 
+  function requireAdminForConvCreation(req: any, res: any, next: any) {
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ message: "Only admins can create new WhatsApp conversations" });
+    }
+    next();
+  }
+
   app.get("/api/whatsapp/conversations", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const conversations = await storage.getWhatsappConversations();
@@ -6792,18 +6799,19 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/whatsapp/conversations", authenticateToken, requireWhatsappRole, async (req: any, res) => {
+  app.post("/api/whatsapp/conversations", authenticateToken, requireAdminForConvCreation, async (req: any, res) => {
     try {
       const { phone, contactName, customerId, leadId } = req.body;
       if (!phone) return res.status(400).json({ message: "phone required" });
       const normPhone = normalisePhone(String(phone));
 
-      let conv = await storage.getWhatsappConversationByPhone(normPhone);
-      if (conv) return res.json(conv);
-
       const allCustomers = await storage.getCustomers();
       const allLeads = await storage.getLeads();
       const matchedCustomer = customerId ? allCustomers.find(c => c.id === customerId) : allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
+
+      // Match by (customerId OR phone) to prevent duplicate conversations
+      let conv = await storage.getWhatsappConversationByPhoneOrCustomer(normPhone, matchedCustomer?.id);
+      if (conv) return res.json(conv);
       const matchedLead = leadId ? allLeads.find(l => l.id === leadId) : allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
 
       conv = await storage.createWhatsappConversation({

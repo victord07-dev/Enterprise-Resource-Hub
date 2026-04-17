@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, sql, and, gte, lte } from "drizzle-orm";
+import { eq, desc, sql, and, or, gte, lte } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
@@ -337,6 +337,7 @@ export interface IStorage {
   getWhatsappConversations(): Promise<WhatsappConversation[]>;
   getWhatsappConversation(id: string): Promise<WhatsappConversation | undefined>;
   getWhatsappConversationByPhone(phone: string): Promise<WhatsappConversation | undefined>;
+  getWhatsappConversationByPhoneOrCustomer(phone: string, customerId?: string | null): Promise<WhatsappConversation | undefined>;
   createWhatsappConversation(data: InsertWhatsappConversation): Promise<WhatsappConversation>;
   updateWhatsappConversation(id: string, data: Partial<Omit<WhatsappConversation, "id" | "createdAt">>): Promise<WhatsappConversation | undefined>;
   getWhatsappMessages(conversationId: string, opts?: { limit?: number; before?: string }): Promise<WhatsappMessage[]>;
@@ -1570,6 +1571,21 @@ export class DatabaseStorage implements IStorage {
     // Return the most recent OPEN conversation for this phone, if any
     const [c] = await db.select().from(whatsappConversations)
       .where(and(eq(whatsappConversations.phoneNumber, phone), eq(whatsappConversations.status, "open")))
+      .orderBy(desc(whatsappConversations.lastMessageAt))
+      .limit(1);
+    return c;
+  }
+  async getWhatsappConversationByPhoneOrCustomer(phone: string, customerId?: string | null): Promise<WhatsappConversation | undefined> {
+    // Match open conversation by (phone OR customerId) — prevents duplicates for same customer
+    const phoneMatch = and(eq(whatsappConversations.phoneNumber, phone), eq(whatsappConversations.status, "open"))!;
+    const whereClause = customerId
+      ? and(
+          or(eq(whatsappConversations.phoneNumber, phone), eq(whatsappConversations.customerId, customerId))!,
+          eq(whatsappConversations.status, "open")
+        )!
+      : phoneMatch;
+    const [c] = await db.select().from(whatsappConversations)
+      .where(whereClause)
       .orderBy(desc(whatsappConversations.lastMessageAt))
       .limit(1);
     return c;

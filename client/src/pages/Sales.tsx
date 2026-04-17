@@ -1202,7 +1202,7 @@ export default function Sales() {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
           const normPhone = phone.length === 10 && /^[6-9]/.test(phone) ? "91" + phone : phone;
-          const match = list.find((c: any) => c.phone === normPhone);
+          const match = list.find((c: any) => c.phoneNumber === normPhone);
           if (match?.windowExpiresAt) setWaConvWindow(new Date(match.windowExpiresAt));
         }
       } catch {}
@@ -1233,7 +1233,7 @@ export default function Sales() {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
           const normPhone = phone.length === 10 && /^[6-9]/.test(phone) ? "91" + phone : phone;
-          const match = list.find((c: any) => c.phone === normPhone);
+          const match = list.find((c: any) => c.phoneNumber === normPhone);
           if (match?.windowExpiresAt) setWaConvWindow(new Date(match.windowExpiresAt));
         }
       } catch {}

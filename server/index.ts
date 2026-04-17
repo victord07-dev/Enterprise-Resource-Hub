@@ -5,7 +5,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import cron from "node-cron";
 import { storage } from "./storage";
-import { sendTemplateMessage, syncInteraktTemplates } from "./whatsapp";
+import { sendTemplateMessage, syncInteraktTemplates, pruneOldTemplateSyncLogs, TEMPLATE_SYNC_LOG_RETENTION_DAYS } from "./whatsapp";
 import { setupWhatsappWebSocket } from "./wsHub";
 
 const app = express();
@@ -252,6 +252,25 @@ app.use((req, res, next) => {
   }
 
   cron.schedule("30 3 * * *", runDailyTemplateSync, { timezone: "Asia/Kolkata" });
+
+  // ── Daily prune of old WhatsApp template sync logs ─────────────────────────
+  // Keeps the `whatsapp_template_sync_logs` table small by deleting rows
+  // older than TEMPLATE_SYNC_LOG_RETENTION_DAYS (currently 90 days).
+  // Inline pruning also runs after every sync; this cron guarantees pruning
+  // even if syncs stop happening.
+  async function runWhatsappSyncLogCleanup() {
+    try {
+      const removed = await pruneOldTemplateSyncLogs(storage);
+      if (removed > 0) {
+        console.log(`[WA TEMPLATE SYNC] Pruned ${removed} sync log row(s) older than ${TEMPLATE_SYNC_LOG_RETENTION_DAYS} days`);
+      }
+    } catch (err) {
+      console.error("[WA TEMPLATE SYNC] Sync log cleanup failed:", err);
+    }
+  }
+  cron.schedule("0 4 * * *", runWhatsappSyncLogCleanup, { timezone: "Asia/Kolkata" });
+  // Also run once shortly after startup so a long-stopped instance prunes quickly.
+  setTimeout(runWhatsappSyncLogCleanup, 30_000).unref();
 
   // return JSON 404 for unmatched /api/* routes in both dev and production
   app.use("/api/{*path}", (_req: Request, res: Response) => {

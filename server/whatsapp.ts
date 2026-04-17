@@ -247,12 +247,18 @@ export interface TemplateSyncStatus {
   history: TemplateSyncHistoryEntry[];
 }
 
+// Sync log retention window. Rows older than this are pruned by
+// `pruneOldTemplateSyncLogs` (called after each sync and by a daily cron).
+// To change retention, update this constant — it is the single source of truth.
+export const TEMPLATE_SYNC_LOG_RETENTION_DAYS = 90;
+
 interface SyncStorage {
   getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
   updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
   createWhatsappTemplate: (data: any) => Promise<any>;
   createWhatsappTemplateSyncLog: (data: any) => Promise<any>;
   getRecentWhatsappTemplateSyncLogs: (limit: number) => Promise<any[]>;
+  deleteWhatsappTemplateSyncLogsOlderThan?: (cutoff: Date) => Promise<number>;
   createWhatsappTemplateStatusHistory?: (data: {
     templateId: string;
     previousStatus: string | null;
@@ -262,6 +268,22 @@ interface SyncStorage {
 }
 
 const HISTORY_LIMIT = 10;
+
+// Delete sync log rows older than the retention window. Safe to call
+// frequently — failures are swallowed so they never break a sync.
+export async function pruneOldTemplateSyncLogs(
+  storage: Pick<SyncStorage, "deleteWhatsappTemplateSyncLogsOlderThan">,
+  retentionDays: number = TEMPLATE_SYNC_LOG_RETENTION_DAYS,
+): Promise<number> {
+  if (!storage.deleteWhatsappTemplateSyncLogsOlderThan) return 0;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  try {
+    return await storage.deleteWhatsappTemplateSyncLogsOlderThan(cutoff);
+  } catch (err) {
+    console.error("[WA TEMPLATE SYNC] Failed to prune old sync logs:", err);
+    return 0;
+  }
+}
 
 function toHistoryEntry(row: any): TemplateSyncHistoryEntry {
   return {
@@ -348,6 +370,7 @@ export async function syncInteraktTemplates(
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist success log:", logErr);
     }
+    await pruneOldTemplateSyncLogs(storage);
     return result;
   } catch (err: any) {
     try {
@@ -365,6 +388,7 @@ export async function syncInteraktTemplates(
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist failure log:", logErr);
     }
+    await pruneOldTemplateSyncLogs(storage);
     throw err;
   }
 }

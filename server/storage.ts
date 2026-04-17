@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { eq, desc, sql, and, or, gte, lte } from "drizzle-orm";
+import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
 import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
@@ -356,6 +356,7 @@ export interface IStorage {
   backfillWhatsappTemplateStatusHistory(): Promise<number>;
   createWhatsappTemplateSyncLog(data: InsertWhatsappTemplateSyncLog): Promise<WhatsappTemplateSyncLog>;
   getRecentWhatsappTemplateSyncLogs(limit: number): Promise<WhatsappTemplateSyncLog[]>;
+  deleteWhatsappTemplateSyncLogsOlderThan(cutoff: Date): Promise<number>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1710,6 +1711,13 @@ export class DatabaseStorage implements IStorage {
       .from(whatsappTemplateSyncLogs)
       .orderBy(desc(whatsappTemplateSyncLogs.attemptAt))
       .limit(limit);
+  }
+  async deleteWhatsappTemplateSyncLogsOlderThan(cutoff: Date): Promise<number> {
+    const deleted = await db
+      .delete(whatsappTemplateSyncLogs)
+      .where(lt(whatsappTemplateSyncLogs.attemptAt, cutoff))
+      .returning({ id: whatsappTemplateSyncLogs.id });
+    return deleted.length;
   }
 
   // Dashboard

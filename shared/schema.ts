@@ -852,14 +852,26 @@ export const whatsappTemplates = pgTable("whatsapp_templates", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const whatsappTemplateStatusHistory = pgTable("whatsapp_template_status_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull(),
+  previousStatus: text("previous_status"),
+  newStatus: text("new_status").notNull(),
+  source: text("source").notNull().default("scheduled"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("idx_wa_tmpl_status_hist_template").on(t.templateId, t.createdAt)]);
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });
+export const insertWhatsappTemplateStatusHistorySchema = createInsertSchema(whatsappTemplateStatusHistory).omit({ id: true, createdAt: true });
 
 export type WhatsappConversation = typeof whatsappConversations.$inferSelect;
 export type WhatsappMessage = typeof whatsappMessages.$inferSelect;
 export type WhatsappTemplate = typeof whatsappTemplates.$inferSelect;
+export type WhatsappTemplateStatusHistory = typeof whatsappTemplateStatusHistory.$inferSelect;
 export type InsertWhatsappConversation = z.infer<typeof insertWhatsappConversationSchema>;
 export type InsertWhatsappMessage = z.infer<typeof insertWhatsappMessageSchema>;
 export type InsertWhatsappTemplate = z.infer<typeof insertWhatsappTemplateSchema>;
+export type InsertWhatsappTemplateStatusHistory = z.infer<typeof insertWhatsappTemplateStatusHistorySchema>;
 

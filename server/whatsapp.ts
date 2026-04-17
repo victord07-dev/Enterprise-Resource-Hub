@@ -244,12 +244,20 @@ export function getTemplateSyncStatus(): TemplateSyncStatus {
   return { ...lastTemplateSyncStatus };
 }
 
+export interface TemplateSyncStorage {
+  getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
+  updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
+  createWhatsappTemplate: (data: any) => Promise<any>;
+  createWhatsappTemplateStatusHistory?: (data: {
+    templateId: string;
+    previousStatus: string | null;
+    newStatus: string;
+    source: string;
+  }) => Promise<any>;
+}
+
 export async function syncInteraktTemplates(
-  storage: {
-    getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
-    updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
-    createWhatsappTemplate: (data: any) => Promise<any>;
-  },
+  storage: TemplateSyncStorage,
   trigger: "manual" | "scheduled" = "manual",
 ): Promise<SyncTemplatesResult> {
   const attemptAt = new Date().toISOString();
@@ -262,7 +270,7 @@ export async function syncInteraktTemplates(
     if (!process.env.INTERAKT_API_KEY) {
       throw new Error("INTERAKT_API_KEY is not configured");
     }
-    const result = await runSyncInteraktTemplates(storage);
+    const result = await runSyncInteraktTemplates(storage, trigger);
     lastTemplateSyncStatus = {
       lastAttemptAt: attemptAt,
       lastSuccessAt: attemptAt,
@@ -282,11 +290,10 @@ export async function syncInteraktTemplates(
   }
 }
 
-async function runSyncInteraktTemplates(storage: {
-  getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
-  updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
-  createWhatsappTemplate: (data: any) => Promise<any>;
-}): Promise<SyncTemplatesResult> {
+async function runSyncInteraktTemplates(
+  storage: TemplateSyncStorage,
+  trigger: "manual" | "scheduled" = "manual",
+): Promise<SyncTemplatesResult> {
   const remote = await fetchInteraktTemplates();
   let created = 0;
   let updated = 0;
@@ -307,6 +314,18 @@ async function runSyncInteraktTemplates(storage: {
           previousStatus,
           newStatus: mapped.isActive,
         });
+        if (storage.createWhatsappTemplateStatusHistory) {
+          try {
+            await storage.createWhatsappTemplateStatusHistory({
+              templateId: existing.id,
+              previousStatus,
+              newStatus: mapped.isActive,
+              source: trigger,
+            });
+          } catch (e) {
+            console.error("[WA TEMPLATE SYNC] Failed to persist status history:", e);
+          }
+        }
       }
       // Preserve manual variable edits, but backfill any blank/missing slots
       // with generated defaults from the (possibly longer) remote body.
@@ -332,7 +351,7 @@ async function runSyncInteraktTemplates(storage: {
       });
       updated++;
     } else {
-      await storage.createWhatsappTemplate({
+      const createdTmpl = await storage.createWhatsappTemplate({
         name: mapped.name,
         interaktTemplateName: mapped.interaktTemplateName,
         category: mapped.category,
@@ -342,6 +361,18 @@ async function runSyncInteraktTemplates(storage: {
         exampleValues: mapped.exampleValues,
         isActive: mapped.isActive,
       });
+      if (createdTmpl?.id && storage.createWhatsappTemplateStatusHistory) {
+        try {
+          await storage.createWhatsappTemplateStatusHistory({
+            templateId: createdTmpl.id,
+            previousStatus: null,
+            newStatus: mapped.isActive,
+            source: trigger,
+          });
+        } catch (e) {
+          console.error("[WA TEMPLATE SYNC] Failed to persist initial status history:", e);
+        }
+      }
       created++;
     }
   }

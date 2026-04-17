@@ -4,12 +4,12 @@ import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
-  whatsappConversations, whatsappMessages, whatsappTemplates,
+  whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
-  type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate,
+  type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -350,6 +350,8 @@ export interface IStorage {
   createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate>;
   updateWhatsappTemplate(id: string, data: Partial<Omit<WhatsappTemplate, "id" | "createdAt">>): Promise<WhatsappTemplate | undefined>;
   deleteWhatsappTemplate(id: string): Promise<boolean>;
+  getWhatsappTemplateStatusHistory(templateId: string): Promise<WhatsappTemplateStatusHistory[]>;
+  createWhatsappTemplateStatusHistory(data: InsertWhatsappTemplateStatusHistory): Promise<WhatsappTemplateStatusHistory>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1655,8 +1657,20 @@ export class DatabaseStorage implements IStorage {
     return t;
   }
   async deleteWhatsappTemplate(id: string): Promise<boolean> {
+    await db.delete(whatsappTemplateStatusHistory).where(eq(whatsappTemplateStatusHistory.templateId, id));
     const result = await db.delete(whatsappTemplates).where(eq(whatsappTemplates.id, id));
     return (result.rowCount ?? 0) > 0;
+  }
+  async getWhatsappTemplateStatusHistory(templateId: string): Promise<WhatsappTemplateStatusHistory[]> {
+    return db
+      .select()
+      .from(whatsappTemplateStatusHistory)
+      .where(eq(whatsappTemplateStatusHistory.templateId, templateId))
+      .orderBy(desc(whatsappTemplateStatusHistory.createdAt));
+  }
+  async createWhatsappTemplateStatusHistory(data: InsertWhatsappTemplateStatusHistory): Promise<WhatsappTemplateStatusHistory> {
+    const [h] = await db.insert(whatsappTemplateStatusHistory).values(data).returning();
+    return h;
   }
 
   // Dashboard

@@ -10,8 +10,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle } from "lucide-react";
-import type { WhatsappTemplate } from "@shared/schema";
+import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle, History } from "lucide-react";
+import type { WhatsappTemplate, WhatsappTemplateStatusHistory } from "@shared/schema";
 import { COMMON_MERGE_FIELDS, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
 interface TemplateSyncStatus {
@@ -142,6 +142,12 @@ export default function WhatsAppTemplates() {
   const [form, setForm] = useState<TemplateForm>(emptyForm());
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [historyTemplate, setHistoryTemplate] = useState<WhatsappTemplate | null>(null);
+
+  const { data: history = [], isLoading: historyLoading } = useQuery<WhatsappTemplateStatusHistory[]>({
+    queryKey: ["/api/whatsapp/templates", historyTemplate?.id, "history"],
+    enabled: !!historyTemplate,
+  });
 
   const { data: templates = [], isLoading } = useQuery<WhatsappTemplate[]>({
     queryKey: ["/api/whatsapp/templates"],
@@ -402,6 +408,15 @@ export default function WhatsAppTemplates() {
                       )}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setHistoryTemplate(t)}
+                        title="Status history"
+                        data-testid={`button-history-template-${t.id}`}
+                      >
+                        <History className="w-4 h-4" />
+                      </Button>
                       <Button size="sm" variant="ghost" onClick={() => openEdit(t)} data-testid={`button-edit-template-${t.id}`}>
                         <Pencil className="w-4 h-4" />
                       </Button>
@@ -606,6 +621,69 @@ export default function WhatsAppTemplates() {
             >
               {saveMutation.isPending ? "Saving..." : editingTemplate ? "Update" : "Create"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Status History Dialog */}
+      <Dialog open={!!historyTemplate} onOpenChange={(open) => { if (!open) setHistoryTemplate(null); }}>
+        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Status History{historyTemplate ? `: ${historyTemplate.name}` : ""}</DialogTitle>
+          </DialogHeader>
+          <div className="py-2">
+            {historyLoading ? (
+              <div className="text-sm text-muted-foreground text-center py-6">Loading history...</div>
+            ) : history.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-6 space-y-1" data-testid="text-history-empty">
+                <History className="w-8 h-8 mx-auto opacity-30" />
+                <p>No status changes recorded yet.</p>
+                <p className="text-xs">Future syncs will record any status transitions here.</p>
+              </div>
+            ) : (
+              <ol className="relative border-l border-muted-foreground/30 ml-3 space-y-4" data-testid="list-history">
+                {history.map((h) => {
+                  const Icon = STATUS_ICONS[h.newStatus] || Clock;
+                  const colorClass = STATUS_COLORS[h.newStatus] || STATUS_COLORS["pending_approval"];
+                  const sourceLabel = h.source === "scheduled"
+                    ? "daily sync"
+                    : h.source === "manual"
+                      ? "manual sync"
+                      : h.source === "manual_edit"
+                        ? "manual edit"
+                        : h.source;
+                  return (
+                    <li key={h.id} className="ml-4" data-testid={`history-entry-${h.id}`}>
+                      <span className={`absolute -left-[9px] flex items-center justify-center w-4 h-4 rounded-full ${colorClass}`}>
+                        <Icon className="w-2.5 h-2.5" />
+                      </span>
+                      <div className="text-xs text-muted-foreground" title={formatExactTime(h.createdAt as unknown as string)}>
+                        {formatRelativeTime(h.createdAt as unknown as string)} · via {sourceLabel}
+                      </div>
+                      <div className="text-sm flex items-center gap-2 flex-wrap mt-0.5">
+                        {h.previousStatus ? (
+                          <>
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium ${STATUS_COLORS[h.previousStatus] || STATUS_COLORS["pending_approval"]}`}>
+                              {h.previousStatus.replace(/_/g, " ")}
+                            </span>
+                            <span aria-hidden>→</span>
+                          </>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">created as</span>
+                        )}
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium ${colorClass}`}>
+                          {h.newStatus.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground/80 mt-0.5">{formatExactTime(h.createdAt as unknown as string)}</div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setHistoryTemplate(null)} data-testid="button-close-history">Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -7135,11 +7135,35 @@ export async function registerRoutes(
       if (req.user.role !== "admin") {
         return res.status(403).json({ message: "Only admin may manage WhatsApp templates" });
       }
+      const before = await storage.getWhatsappTemplate(req.params.id);
       const tmpl = await storage.updateWhatsappTemplate(req.params.id, req.body);
       if (!tmpl) return res.status(404).json({ message: "Template not found" });
+      if (before && before.isActive !== tmpl.isActive) {
+        try {
+          await storage.createWhatsappTemplateStatusHistory({
+            templateId: tmpl.id,
+            previousStatus: before.isActive,
+            newStatus: tmpl.isActive,
+            source: "manual_edit",
+          });
+        } catch (e) {
+          console.error("[WA] Failed to record manual status change:", e);
+        }
+      }
       res.json(tmpl);
     } catch (err) {
       res.status(500).json({ message: "Failed to update template" });
+    }
+  });
+
+  app.get("/api/whatsapp/templates/:id/history", authenticateToken, async (req: any, res) => {
+    try {
+      const tmpl = await storage.getWhatsappTemplate(req.params.id);
+      if (!tmpl) return res.status(404).json({ message: "Template not found" });
+      const history = await storage.getWhatsappTemplateStatusHistory(req.params.id);
+      res.json(history);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch template history" });
     }
   });
 

@@ -1,0 +1,118 @@
+This is a textbook Phase 0 handoff. Genuinely well done by Replit AI — and crucially, the root cause is specific, verifiable, and names the actual gap rather than just the symptom.
+Let me walk you through what to actually do now.
+The diagnosis checks out
+The story is coherent and matches the evidence pattern exactly:
+
+05:48 UTC — Task #32 merged (routes in code, running in dev)
+05:48 → 09:25 UTC — ~3h37m window where prod ran old bundle without the routes
+During this window — Interakt POSTs kept hitting an endpoint that didn't exist → 404s
+~09:25 UTC — Publish pressed, routes finally deployed to prod
+After 09:25 — Routes live, but Interakt already in backoff state, so deliveries didn't auto-resume
+
+This is exactly the "deployment gap, not code bug" pattern I flagged as a possibility earlier. The reason it matters: the fix isn't just to add queue hardening (that's still needed for resilience), it's to close the deployment-process gap so this class of failure can't repeat silently. Replit AI correctly identified both layers of fix.
+The three-part permanent fix they proposed is also correct:
+
+Runbook rule tying webhook-affecting changes to an immediate publish — process fix for the root cause.
+Discoverable URL in Health card — makes future config drift self-diagnosing.
+Silence detector — reduces detection time from "whenever someone notices" to ≤6h.
+
+Before you approve, verify two things yourself
+These aren't because you don't trust Replit AI — they're because this is the one moment where verification is cheap and retroactive debugging is expensive.
+1. Read the actual markdown file. docs/whatsapp-webhook-404-rca.md, commit a9513ff3. Open it. Check that it covers the four required points explicitly:
+
+(a) what was different pre-/post-redeploy → should be "prod bundle missing the route"
+(b) exact URL Interakt is pointing at → should be a specific URL, not "the production URL"
+(c) env var / feature flag gating → should be "none — routes unconditionally registered"
+(d) permanent fix → should be the three-part fix above
+
+If any of these are vague or hand-wavy in the actual file, push back now. The commit message sounds good, but the artefact is what future-you reads when something breaks again.
+2. Ask one clarifying question that matters. In the summary, Replit AI says "there's no continuous deployment, so a git push to main does nothing to prod until an operator publishes." That's the current state, but it raises a question worth asking:
+
+"Is the lack of continuous deployment a deliberate choice, or just how Replit's default setup works? If deliberate, the runbook rule is fine. If it's just the default and we could enable auto-publish on merge to main, that would remove an entire class of deploy-gap bugs at one stroke — not just for WhatsApp but for every future integration."
+
+This isn't a scope expansion for #67. It's a separate decision for you to make about your deploy pipeline, surfaced now because this incident revealed it. File it as a follow-up to think about, not a blocker.
+One small thing worth calling out
+The decision "the diagnosis surfaced nothing that changes the scope of Phase 1" is correct — the queue hardening is still right for different reasons (synchronous processing at scale is fragile regardless of the deploy gap). But just make sure Replit AI internalizes that both layers of fix are needed:
+
+The deploy process rule prevents this specific failure from recurring.
+The async queue prevents a different class of failure (slow processing → timeout → backoff) that hasn't hit you yet but will.
+
+If they mentally collapse these into "queue hardening fixes everything," that's wrong. The explicit three-part permanent fix in the writeup tells me they didn't collapse them, so this is probably fine — just worth confirming in your approval message.
+What to send back
+
+"Reviewed the writeup — diagnosis is specific and coherent, permanent fix is right. Approved to proceed to Phase 1.
+Before you start: confirm you understand both layers of fix are independent. The queue hardening prevents slow-processing timeouts (a different failure mode than what just happened). The deploy-process rule prevents the specific deploy-gap failure that actually caused this incident. Neither replaces the other.
+One separate question, not blocking Phase 1: is the manual-publish step a deliberate choice, or just Replit's default? If we could enable auto-publish on merge to main, that removes this entire class of bug for every future integration, not just WhatsApp. Please answer in your next update — I'll decide separately whether to change the deploy model, it's not part of #67.
+Proceed with Phase 1: job queue tables, processing function extraction, slim handler + worker loop, async media sub-job, end-to-end smoke. Stop after the smoke test works. Don't proceed to Phase 2 until I confirm Phase 1."
+
+That's it. Send that and let them get on with Phase 1.
+What to expect next
+Phase 1 is the meatiest phase technically. Expect Replit AI to come back with:
+
+The queue tables created via a Drizzle migration.
+The extracted processing function with its single definition and one caller.
+The slim webhook handler (should be maybe 30–50 lines total now).
+The worker loop (~50-100 lines).
+The media sub-job worker.
+A synthetic webhook test confirming the full flow works end-to-end.
+
+When reviewing Phase 1, the three things I'd look at hardest:
+
+Is the webhook handler actually slim? If it's still doing DB queries, phone normalisation, customer linking, etc. inline, they regressed.
+Is the processing function actually a single function called by one caller? Grep it. If there are two near-copies ("processWebhookMessage" and "processMessageForDb" or similar), that's the drift we warned about.
+Does the worker loop actually have SELECT ... FOR UPDATE SKIP LOCKED? Read the SQL yourself, don't take their word for it.
+
+But that's for Phase 1 review. For now: approve Phase 0, send the Phase 1 go-ahead, and wait.Phase 0 approved. Two confirmations + answering the auto-publish question, then starting Phase 1.
+
+Both layers internalized. The deploy-process rule fixes the specific gap that caused this incident (route exists in main, doesn't exist in the running prod bundle). The async queue fixes a different pasted4:05 PMPhase 1 is genuinely well-executed. Every verification artefact you asked for is in the handoff, the code patterns are correct, and the caveat on media re-hosting is exactly the kind of honest surfacing we hoped for. Let me walk through what to check before approving Phase 2, because there are two substantive items here that need your attention — not blockers, but worth resolving explicitly.
+What landed correctly
+
+Handler slim: 40 lines, zero business logic inline. Grep-verifiable.
+Single processor: one definition, one caller. Grep output confirms no drift.
+Correct SQL: the CTE pattern with FOR UPDATE SKIP LOCKED and the stuck-job reclaim folded into the same predicate is actually better than what we specced. One atomic query doing pickup + reclaim eliminates the race window I flagged earlier when I worried about a separate reclaim query. This is a cleaner implementation than the original ticket asked for.
+Smoke test numbers: p95 of 154ms is well under the 500ms budget. Idempotency via payload_hash de-dup works on re-POST (returned {duplicate: true}).
+Dead-letter + retry-cap + graceful SIGTERM + exponential backoff: all present.
+
+This is real progress.
+Two things that need explicit confirmation before Phase 2
+1. The media deferral — legitimate scope change, needs your approval
+Replit AI made a call to defer media re-hosting to Phase 2, with their reasoning: they don't want to guess at Interakt's media payload shape without seeing real payloads, and the rejected-payload capture (Phase 2) will give them ground truth.
+This is a defensible decision, but it's a scope move you should approve explicitly, not absorb silently. Here's how I'd think about it:
+Arguments for accepting it: The media downloader built on guesswork could ship broken in ways that only surface when real media arrives. Waiting for real payloads to be captured (which needs the rejected-payload table from Phase 2) is a reasonable stance. The current state still lands media messages in the inbox — just without the file attached, which means inbound images/PDFs will show up as "media placeholder" rows rather than not showing up at all. That's a degraded mode, not a broken one.
+Arguments against accepting it: The Phase 5 verification includes "(c) inbound image" and "(d) inbound PDF." If media isn't actually re-hosted yet, those two verification cases will show placeholders, not actual images and PDFs. That means either (a) Phase 5 verification gets split across phases, or (b) it waits until the media work is properly done.
+My recommendation: Accept the deferral, but re-label it so expectations are clear.
+
+"Accepted that media re-hosting ships in Phase 2 instead of Phase 1 — the reasoning (avoid guessing at Interakt's shape without real payloads) is sound. But update the plan: Phase 5's four-case verification only runs after media re-hosting is complete. Phases 2–4 can proceed as specced; the four-case verification is the last thing before Phase 5 is signed off. Don't mark #67 done until inbound image and inbound PDF both render with the actual file, not a placeholder."
+
+2. The sub-job that "only persists URL-shape payloads and logs id-only payloads"
+This phrasing deserves a clarifying question. It sounds like Replit AI is saying: if Interakt sends a webhook with a direct media URL, they save that URL; if Interakt sends only a media ID (requiring a separate fetch to resolve to a URL), they log it and move on.
+The concern: Interakt's webhook format for media might be ID-only in most cases — that's how Meta's own API works. If so, the current Phase 1 state means inbound media messages are being silently skipped at the media layer. Messages themselves land, but attachments don't.
+Ask Replit AI directly:
+
+"Clarify the media sub-job behaviour: when Interakt sends a media webhook, what percentage of real payloads contain a direct URL vs an ID-only reference? If ID-only is the majority case, the current Phase 1 state means most inbound media is being silently skipped at the attachment layer — which is worse than I thought. If that's the case, Phase 2 needs to include the ID→URL resolution call to Interakt's API as a prerequisite for any media landing in the inbox properly. Confirm which world we're in before I green-light Phase 2."
+
+This is the kind of question that's cheap to ask now and expensive to skip. The answer determines whether Phase 2 has one extra dependency or not.
+What to do with the "stale auto-injected messages" comment
+Replit AI mentioned they ignored some stale auto-injected messages about Task #32 and Live Tracking. That's the correct behaviour — the discipline of "I noticed this, I'm ignoring it for stated reasons" is good. No action needed from you other than noting it happened, so if anything weird surfaces later about those systems you can remember the context.
+The SQL is actually worth a compliment
+The CTE query is cleaner than what the ticket asked for. The ticket described two separate operations (pickup + stuck-job reclaim as a separate query or UNION). What landed is a single predicate in the WHERE clause that handles both cases atomically. This is the right way to do it in Postgres — it eliminates an entire class of bugs around reclaim-and-immediate-reprocess races. If Replit AI is making architectural calls like this independently, that's a good signal about the rest of the implementation.
+What to send back
+
+"Phase 1 approved. Verification artefacts are all present; SQL is clean — the single-CTE pickup-plus-reclaim is actually better than the ticket specced, good call.
+Two things before you start Phase 2:
+(1) Accepting the media re-hosting deferral — reasoning is sound. But update the plan: Phase 5's four-case verification only runs after media re-hosting is actually complete. Phases 2–4 proceed as specced; the four-case check is the last thing before #67 is marked done. Do not mark #67 done until inbound image and inbound PDF render with the actual file, not a placeholder.
+(2) One clarifying question before Phase 2: in the media sub-job, what percentage of real Interakt media webhooks contain a direct URL versus an ID-only reference? If ID-only is the majority, the current state means most inbound media is being silently dropped at the attachment layer. If so, Phase 2 needs to include Interakt's ID→URL resolution call as a prerequisite. Answer this before touching Phase 2 code.
+Once that's clarified, proceed with Phase 2 as originally specced: env-var URL, fail-closed secret check, reason codes, rejected-payload capture. Stop after Phase 2 and wait for approval before Phase 3.
+Also noted: you correctly ignored the stale auto-injected Task #32 / Live Tracking messages. Good instinct. Keep doing that."
+
+What to expect from Phase 2
+Phase 2 is small and unglamorous — security + observability primitives. Expect:
+
+An env var WHATSAPP_WEBHOOK_BASE_URL wired in wherever the URL is constructed or displayed (probably just 2-3 places).
+A startup log line [WA] webhook signing secret OK or MISSING.
+In production, 503 response if secret is missing — worth testing this by temporarily unsetting the env var locally in NODE_ENV=production mode.
+Reason-code strings in the reject responses and logs.
+A rolling table capturing the last 20 rejected payloads with Authorization / X-Interakt-Signature / any *token* query params redacted.
+
+Keep reviewing in the same careful way — check the redaction logic specifically (easy to miss a token field), and check the 503 actually fires in production-mode local testing. Everything else in Phase 2 is relatively safe.
+Then Phase 3 (UI v1) is the first user-visible milestone.

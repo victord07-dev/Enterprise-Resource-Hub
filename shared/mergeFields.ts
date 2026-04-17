@@ -91,6 +91,43 @@ function formatDate(v: string | Date | null | undefined): string | null {
   return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/**
+ * Returns a short, human-readable label describing where a known merge-field key
+ * would be auto-filled from. Used by the WhatsApp send dialogs to tell operators
+ * whether a variable came from the document, the customer record, or the lead.
+ * Returns null for unknown keys.
+ */
+export function mergeFieldSourceLabel(
+  key: string,
+  docType?: "order" | "invoice" | "quote" | null,
+): string | null {
+  switch (key) {
+    case "customer_name":
+    case "contact_person":
+    case "phone":
+    case "email":
+    case "address":
+    case "gst_number":
+      return "customer";
+    case "company_name":
+      return "lead";
+    case "order_number":
+      return "order";
+    case "invoice_number":
+      return "invoice";
+    case "quote_number":
+      return "quote";
+    case "amount":
+    case "balance_due":
+    case "due_date":
+    case "payment_link":
+    case "status":
+      return docType || "document";
+    default:
+      return null;
+  }
+}
+
 export function resolveMergeField(key: string, ctx: MergeFieldContext): string | null {
   const c = ctx.customer || null;
   const l = ctx.lead || null;

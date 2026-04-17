@@ -17,7 +17,7 @@ import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
-import { resolveMergeField, isCommonMergeField, type MergeFieldDocumentContext } from "@shared/mergeFields";
+import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
 interface LineItem {
   itemType: string;
@@ -1172,6 +1172,9 @@ export default function Sales() {
   const [waDialogTitle, setWaDialogTitle] = useState("Send via WhatsApp");
   // Template variable values for preview and sending
   const [waTemplateVars, setWaTemplateVars] = useState<string[]>([]);
+  // Per-variable provenance: "auto:<source>" when filled from document/customer
+  // context, "manual" when the operator typed/edited it, undefined when empty.
+  const [waVarSources, setWaVarSources] = useState<(string | undefined)[]>([]);
   const [waAutoContext, setWaAutoContext] = useState<Record<string, string>>({});
   const [waDocContext, setWaDocContext] = useState<MergeFieldDocumentContext | null>(null);
   const [waCustomerContext, setWaCustomerContext] = useState<{ name?: string | null; email?: string | null; phone?: string | null; address?: string | null; gstNumber?: string | null; contactPerson?: string | null } | null>(null);
@@ -1188,7 +1191,7 @@ export default function Sales() {
     setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nYour sales order *${order.orderNumber}* is being processed.\n\nStatus: ${order.status}\nAmount: ₹${Number(order.totalAmount || 0).toLocaleString("en-IN")}\n\nThank you for your business!`);
     setWaQuoteRef(order.orderNumber || order.id);
     setWaSelectedTemplate("");
-    setWaTemplateVars([]);
+    setWaTemplateVars([]); setWaVarSources([]);
     setWaAutoContext({
       "1": customer?.name || "",
       "2": order.orderNumber || "",
@@ -1225,7 +1228,7 @@ export default function Sales() {
     setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nPlease find your quotation *${q.quoteNumber}* attached.\n\nAmount: ₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}\nValid until: ${q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "—"}\n\nThank you for your business!`);
     setWaQuoteRef(q.quoteNumber);
     setWaSelectedTemplate("");
-    setWaTemplateVars([]);
+    setWaTemplateVars([]); setWaVarSources([]);
     setWaAutoContext({
       "1": customer?.name || "",
       "2": q.quoteNumber || "",
@@ -2483,17 +2486,26 @@ export default function Sales() {
                   if (tpl?.body) {
                     const matches = tpl.body.match(/\{\{(\d+)\}\}/g) || [];
                     const tplVars = tpl.variables || [];
-                    const autoVars = matches.map((_: string, i: number) => {
+                    const autoVars: string[] = [];
+                    const autoSources: (string | undefined)[] = [];
+                    matches.forEach((_: string, i: number) => {
                       const key = tplVars[i];
                       if (key && isCommonMergeField(key)) {
                         const resolved = resolveMergeField(key, { customer: waCustomerContext, document: waDocContext });
-                        if (resolved) return resolved;
+                        if (resolved) {
+                          autoVars.push(resolved);
+                          autoSources.push(`auto:${mergeFieldSourceLabel(key, waDocContext?.type ?? null) || "context"}`);
+                          return;
+                        }
                       }
-                      return waAutoContext[(i + 1).toString()] || "";
+                      const fallback = waAutoContext[(i + 1).toString()] || "";
+                      autoVars.push(fallback);
+                      autoSources.push(fallback ? "auto:context" : undefined);
                     });
                     setWaTemplateVars(autoVars);
+                    setWaVarSources(autoSources);
                   } else {
-                    setWaTemplateVars([]);
+                    setWaTemplateVars([]); setWaVarSources([]);
                   }
                 }}>
                   <SelectTrigger data-testid="select-wa-template">
@@ -2520,22 +2532,48 @@ export default function Sales() {
                   {matches.length > 0 && (
                     <div className="space-y-1.5">
                       <Label className="text-xs">Template Variables</Label>
-                      {matches.map((_: string, i: number) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground w-16 shrink-0">{`{{${i + 1}}}`}</span>
-                          <Input
-                            className="h-7 text-xs"
-                            value={waTemplateVars[i] || ""}
-                            onChange={e => {
-                              const v = [...waTemplateVars];
-                              v[i] = e.target.value;
-                              setWaTemplateVars(v);
-                            }}
-                            placeholder={waAutoContext[(i + 1).toString()] || `Variable ${i + 1}`}
-                            data-testid={`input-wa-var-${i + 1}`}
-                          />
-                        </div>
-                      ))}
+                      {matches.map((_: string, i: number) => {
+                        const src = waVarSources[i];
+                        const auto = src && src.startsWith("auto:") ? src.slice(5) : null;
+                        return (
+                          <div key={i} className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground w-16 shrink-0">{`{{${i + 1}}}`}</span>
+                            <Input
+                              className="h-7 text-xs"
+                              value={waTemplateVars[i] || ""}
+                              onChange={e => {
+                                const v = [...waTemplateVars];
+                                v[i] = e.target.value;
+                                setWaTemplateVars(v);
+                                const s = [...waVarSources];
+                                s[i] = "manual";
+                                setWaVarSources(s);
+                              }}
+                              placeholder={waAutoContext[(i + 1).toString()] || `Variable ${i + 1}`}
+                              data-testid={`input-wa-var-${i + 1}`}
+                            />
+                            {auto ? (
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px] px-1.5 py-0 h-5 shrink-0 bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+                                title={`Auto-filled from ${auto}`}
+                                data-testid={`badge-wa-var-source-${i + 1}`}
+                              >
+                                auto · {auto}
+                              </Badge>
+                            ) : src === "manual" ? (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0 h-5 shrink-0"
+                                title="Manual override"
+                                data-testid={`badge-wa-var-source-${i + 1}`}
+                              >
+                                manual
+                              </Badge>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                   <div className="bg-muted/50 rounded-md p-3 text-xs whitespace-pre-wrap border">

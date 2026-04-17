@@ -20,7 +20,7 @@ import {
   MessageCircle, AlertTriangle
 } from "lucide-react";
 import type { SalesInvoice, SalesInvoiceItem, CustomerPayment, DeliveryChallan, Customer } from "@shared/schema";
-import { resolveMergeField, isCommonMergeField, type MergeFieldDocumentContext } from "@shared/mergeFields";
+import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 const fmt = (n: number | string | null | undefined) =>
@@ -907,6 +907,9 @@ function SendInvoiceWhatsappDialog({
   const [phone, setPhone] = useState(customer.phone || "");
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [vars, setVars] = useState<string[]>([]);
+  // Per-variable provenance: "auto:<source>" when filled from invoice/customer
+  // context, "manual" when the operator typed/edited it, undefined when empty.
+  const [varSources, setVarSources] = useState<(string | undefined)[]>([]);
 
   const docContext: MergeFieldDocumentContext = {
     type: "invoice",
@@ -988,18 +991,26 @@ function SendInvoiceWhatsappDialog({
                 onValueChange={(v) => {
                   setSelectedTemplate(v);
                   const t = templates.find((x) => x.interaktTemplateName === v);
-                  if (!t) { setVars([]); return; }
+                  if (!t) { setVars([]); setVarSources([]); return; }
                   const ms = t.body?.match(/\{\{(\d+)\}\}/g) || [];
                   const tplVars = t.variables || [];
-                  const next = ms.map((_: string, i: number) => {
+                  const next: string[] = [];
+                  const nextSources: (string | undefined)[] = [];
+                  ms.forEach((_: string, i: number) => {
                     const key = tplVars[i];
                     if (key && isCommonMergeField(key)) {
                       const r = resolveMergeField(key, { customer: customerContext, document: docContext });
-                      if (r) return r;
+                      if (r) {
+                        next.push(r);
+                        nextSources.push(`auto:${mergeFieldSourceLabel(key, docContext.type ?? null) || "context"}`);
+                        return;
+                      }
                     }
-                    return "";
+                    next.push("");
+                    nextSources.push(undefined);
                   });
                   setVars(next);
+                  setVarSources(nextSources);
                 }}
               >
                 <SelectTrigger data-testid="select-wa-invoice-template">
@@ -1019,6 +1030,8 @@ function SendInvoiceWhatsappDialog({
               <Label className="text-xs">Template Variables</Label>
               {matches.map((_: string, i: number) => {
                 const key = (tpl.variables || [])[i];
+                const src = varSources[i];
+                const auto = src && src.startsWith("auto:") ? src.slice(5) : null;
                 return (
                   <div key={i} className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground w-28 shrink-0">
@@ -1031,10 +1044,32 @@ function SendInvoiceWhatsappDialog({
                         const v = [...vars];
                         v[i] = e.target.value;
                         setVars(v);
+                        const s = [...varSources];
+                        s[i] = "manual";
+                        setVarSources(s);
                       }}
                       placeholder={`Variable ${i + 1}`}
                       data-testid={`input-wa-invoice-var-${i + 1}`}
                     />
+                    {auto ? (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] px-1.5 py-0 h-5 shrink-0 bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+                        title={`Auto-filled from ${auto}`}
+                        data-testid={`badge-wa-invoice-var-source-${i + 1}`}
+                      >
+                        auto · {auto}
+                      </Badge>
+                    ) : src === "manual" ? (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] px-1.5 py-0 h-5 shrink-0"
+                        title="Manual override"
+                        data-testid={`badge-wa-invoice-var-source-${i + 1}`}
+                      >
+                        manual
+                      </Badge>
+                    ) : null}
                   </div>
                 );
               })}

@@ -914,6 +914,27 @@ export const whatsappWebhookJobsDeadLetter = pgTable("whatsapp_webhook_jobs_dead
 export type WhatsappWebhookJob = typeof whatsappWebhookJobs.$inferSelect;
 export type WhatsappWebhookJobDeadLetter = typeof whatsappWebhookJobsDeadLetter.$inferSelect;
 
+// ── WhatsApp Webhook Rejected Payloads (Task #67 Phase 2 — rolling 20) ───────
+// Captures the last 20 rejected webhook calls so an admin can diagnose
+// without log access. `Authorization`, `X-Interakt-Signature`, and any
+// query param matching /token/i are redacted before storage.
+export const whatsappWebhookRejectedPayloads = pgTable("whatsapp_webhook_rejected_payloads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  reason: text("reason").notNull(), // token_mismatch | hmac_mismatch | secret_missing | parse_error | enqueue_error
+  httpStatus: integer("http_status").notNull(),
+  method: text("method").notNull(),
+  path: text("path").notNull(),
+  query: jsonb("query"), // redacted
+  headers: jsonb("headers"), // redacted
+  rawBody: text("raw_body"), // capped at 16KB
+  rawBodyTruncated: boolean("raw_body_truncated").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_wa_rejected_created").on(t.createdAt),
+]);
+
+export type WhatsappWebhookRejectedPayload = typeof whatsappWebhookRejectedPayloads.$inferSelect;
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });

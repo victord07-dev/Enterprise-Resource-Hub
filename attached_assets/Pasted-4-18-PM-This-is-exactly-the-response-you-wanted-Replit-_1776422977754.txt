@@ -1,0 +1,52 @@
+4:18 PM
+This is exactly the response you wanted. Replit AI handled the clarifying question with genuine intellectual honesty — they acknowledged the uncertainty they glossed over in Phase 1, proposed a defensive solution that removes the need to guess, and explicitly flagged the one remaining unknown (the Interakt endpoint path) with a plan to verify from docs rather than guess.
+
+Read this paragraph again carefully, because it matters:
+
+"I should have flagged the uncertainty more sharply in the Phase 1 wrap-up rather than just saying 'deferred to Phase 2.'"
+
+That's Replit AI admitting a process miss, not just a technical one. That's the behaviour you want to reinforce — it means future uncertainties are more likely to be flagged upfront rather than buried in a wrap-up comment.
+
+The defensive resolver approach is the right call
+The proposal — inspect the payload, use direct URL if present, resolve ID if not, log which path was taken — is architecturally correct. Three reasons it's better than trying to figure out the ratio first:
+
+It's robust to Interakt changing their behaviour. BSPs occasionally change payload shapes without fanfare. Code that handles both shapes survives those changes; code that assumes one shape breaks silently.
+It produces the ground-truth ratio as a byproduct. The media_resolve_path log field means after 24 hours in production you'll know exactly what Interakt is sending, without any investigation work.
+It's small. Both code paths are short — direct URL path is just "use the URL," ID path is one extra API call. Not a scope balloon.
+Accept it.
+
+One thing to call out on the endpoint path
+Replit AI flagged that they put a placeholder (GET /v1/public/track/messages/<id> or equivalent) with a note to verify from Interakt's current docs before implementing. This is the right instinct, but worth reinforcing:
+
+If they can't find an authoritative endpoint in Interakt's docs, they should stop and ask, not guess. Interakt's docs are thin in places. If the media-resolution endpoint isn't explicitly documented, the correct move is to:
+
+Check Interakt's docs first (their public API reference).
+If not found, check their SDK code or support forums.
+If still unclear, contact Interakt support or check your account's dashboard for API explorer/sandbox.
+Do not guess the endpoint path. A wrong endpoint gives 404s that silently drop media and look like "Interakt didn't send media" in logs.
+Call this out in your go-ahead.
+
+The auto-publish question is still worth thinking about separately
+Replit AI correctly left it open as a non-blocking decision. You should think about this in the next week or so, because it's genuinely important — not for #67, but for every future integration. Manual publish means every future webhook-affecting change has the same deploy-gap risk. Worth discussing with your tech team whether to set up even a simple GitHub Actions workflow that hits Replit's deployment API on merge to main. Not urgent, not part of #67, but don't let it drop off your radar.
+
+What to send back
+"Approved Phase 2 with the added defensive resolver (task 10a). Go ahead.
+
+One reinforcement on the endpoint path unknown: if you can't find an authoritative Interakt docs entry for the media-resolution endpoint, stop and flag it rather than guess. Check their public API reference first; if that's insufficient, check their SDK code or support forums or the sandbox/API explorer in your Interakt dashboard. A wrong endpoint path gives 404s that look like 'Interakt didn't send media' in logs — worst possible failure mode.
+
+Also — the intellectual honesty in your Phase 1 uncertainty callout is the right behaviour. Keep doing that. When you're not certain, say so upfront rather than at wrap-up time.
+
+Proceed with Phase 2: env-var URL, fail-closed secret check, reason codes, rejected-payload capture, defensive media resolver (task 10a). Stop after Phase 2 and wait for approval before Phase 3.
+
+Auto-publish question noted separately — I'll come back to that outside of #67's flow."
+
+Quick note on where we are
+You've now resolved the one real uncertainty in #67's execution path. Phases 2–4 should be more mechanical from here:
+
+Phase 2 (next): security primitives + defensive media resolver. Small code changes, mostly plumbing. Expect a clean delivery.
+Phase 3: Admin UI v1 — minimal card with last received, dead-letter count, silence banner, rejected-payload viewer. Also relatively mechanical.
+Phase 4: silence detector cron, failed-delivery UI touches, idempotency verification script, replit.md section. Straightforward.
+Phase 5: you manually run the four verification cases.
+The hardest technical phase was Phase 1 (queue architecture), and that's behind you. The hardest judgement call was the media shape question, and that's now resolved. From here it's execution.
+
+Send the approval, continue reviewing each phase with the same rigour, and you'll have #67 shipped in reasonable shape within the next few phases. Then the 24-hour production bake, then #68.

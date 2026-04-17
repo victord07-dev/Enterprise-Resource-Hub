@@ -5,7 +5,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import cron from "node-cron";
 import { storage } from "./storage";
-import { sendTemplateMessage, syncInteraktTemplates, pruneOldTemplateSyncLogs, TEMPLATE_SYNC_LOG_RETENTION_DAYS } from "./whatsapp";
+import { sendTemplateMessage, syncInteraktTemplates, pruneOldTemplateSyncLogs, TEMPLATE_SYNC_LOG_RETENTION_DAYS, getWebhookUrl } from "./whatsapp";
 import { setupWhatsappWebSocket } from "./wsHub";
 import { processWhatsappWebhookJob, nextRunAtForAttempt, MAX_ATTEMPTS } from "./whatsappProcessor";
 
@@ -272,6 +272,28 @@ app.use((req, res, next) => {
   cron.schedule("0 4 * * *", runWhatsappSyncLogCleanup, { timezone: "Asia/Kolkata" });
   // Also run once shortly after startup so a long-stopped instance prunes quickly.
   setTimeout(runWhatsappSyncLogCleanup, 30_000).unref();
+
+  // ── WhatsApp Webhook Config Smoke Log (Task #67 Phase 2) ───────────────────
+  // Surface every webhook-related config decision at boot so an operator can
+  // diagnose misconfiguration from the logs alone. In prod, missing secret
+  // is logged as ERROR (matches the fail-closed behaviour in the handler).
+  {
+    const cfg = getWebhookUrl();
+    const secretOk = !!process.env.INTERAKT_WEBHOOK_SECRET;
+    const tokenOk = !!process.env.WHATSAPP_WEBHOOK_TOKEN;
+    const isProd = process.env.NODE_ENV === "production";
+    console.log(`[WA] webhook URL: ${cfg.url}${cfg.configured ? "" : " (set WHATSAPP_WEBHOOK_BASE_URL to enable)"}`);
+    if (secretOk) {
+      console.log(`[WA] webhook signing secret OK`);
+    } else if (isProd) {
+      console.error(`[WA] webhook signing secret MISSING — production WILL REJECT all calls with 503 until INTERAKT_WEBHOOK_SECRET is set`);
+    } else {
+      console.warn(`[WA] webhook signing secret MISSING — handler will reject with 503 (dev mirrors prod posture)`);
+    }
+    if (!tokenOk) {
+      console.warn(`[WA] WHATSAPP_WEBHOOK_TOKEN not set — token check will reject every webhook`);
+    }
+  }
 
   // ── WhatsApp Webhook Worker Loop (Task #67 Phase 1) ─────────────────────────
   // Polls the whatsapp_webhook_jobs queue every WORKER_POLL_MS. Pickup uses

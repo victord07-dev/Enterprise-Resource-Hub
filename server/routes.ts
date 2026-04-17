@@ -32,7 +32,7 @@ const CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD = (() => {
 })();
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
-import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus } from "./whatsapp";
+import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus, getWebhookUrl } from "./whatsapp";
 import { broadcastWhatsappEvent } from "./wsHub";
 import crypto from "crypto";
 import multer from "multer";
@@ -6667,49 +6667,109 @@ export async function registerRoutes(
     }
   });
 
-  // ── WhatsApp Webhook (no auth — verified by HMAC + token) ──────────────────
-  // ── WhatsApp Webhook (Task #67 Phase 1: slim handler) ──────────────────────
+  // ── WhatsApp Webhook (Task #67 Phase 1+2: slim handler) ────────────────────
   // Handler ONLY validates and enqueues. All DB processing is done by the
   // worker loop in server/index.ts via processWhatsappWebhookJob (single
   // source of truth). Goal: return 200 to Interakt in <500ms so a slow DB
   // never causes Interakt to back off and silently stop deliveries.
+  //
+  // Phase 2: explicit reason codes on every reject + rolling-20 capture of
+  // rejected payloads (with secrets redacted) so admins can diagnose
+  // misconfiguration without log access.
+  function redactHeaders(h: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(h || {})) {
+      const lk = k.toLowerCase();
+      if (lk === "authorization" || lk === "x-interakt-signature" || lk === "cookie" || lk === "set-cookie" || /token|secret|api[-_]?key/i.test(k)) {
+        out[k] = "[REDACTED]";
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+  function redactQuery(q: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(q || {})) {
+      out[k] = /token|secret|signature|api[-_]?key/i.test(k) ? "[REDACTED]" : v;
+    }
+    return out;
+  }
+  async function captureRejection(req: any, status: number, reason: string) {
+    try {
+      const rawBody = (req.rawBody as Buffer | undefined)?.toString("utf8") ?? null;
+      await storage.recordWhatsappWebhookRejection({
+        reason,
+        httpStatus: status,
+        method: req.method,
+        path: req.path,
+        query: redactQuery(req.query || {}),
+        headers: redactHeaders(req.headers || {}),
+        rawBody,
+      });
+    } catch (err) {
+      console.error("[WA WEBHOOK] Failed to record rejection:", err);
+    }
+  }
+
   app.post("/api/whatsapp/webhook", async (req: any, res) => {
     try {
+      // 1) Token check
       const token = req.query.token as string;
       const expectedToken = process.env.WHATSAPP_WEBHOOK_TOKEN;
       if (!expectedToken || token !== expectedToken) {
-        return res.status(401).json({ message: "Invalid webhook token" });
+        console.warn(`[WA WEBHOOK] reject reason=token_mismatch ip=${req.ip}`);
+        await captureRejection(req, 401, "token_mismatch");
+        return res.status(401).json({ message: "Invalid webhook token", reason: "token_mismatch" });
       }
 
-      // HMAC: fail-closed. Missing secret → 503, missing/invalid signature → 401.
-      const signature = req.headers["x-interakt-signature"] as string;
-      const rawBody = req.rawBody as Buffer;
+      // 2) Fail-closed secret check (prod posture; dev mirrors prod here so behaviour is identical).
       const secret = process.env.INTERAKT_WEBHOOK_SECRET;
       if (!secret) {
-        console.warn("[WA WEBHOOK] INTERAKT_WEBHOOK_SECRET not configured — rejecting");
-        return res.status(503).json({ message: "Webhook secret not configured" });
-      }
-      if (!signature || !rawBody) {
-        return res.status(401).json({ message: "Missing HMAC signature" });
-      }
-      if (!verifyInteraktSignature(rawBody, signature)) {
-        console.warn("[WA WEBHOOK] HMAC mismatch — rejecting");
-        return res.status(401).json({ message: "Invalid signature" });
+        console.warn(`[WA WEBHOOK] reject reason=secret_missing — INTERAKT_WEBHOOK_SECRET not set`);
+        await captureRejection(req, 503, "secret_missing");
+        return res.status(503).json({ message: "Webhook secret not configured", reason: "secret_missing" });
       }
 
-      // Idempotency: hash the raw body. If we've already enqueued this exact
-      // payload, return 200 without enqueuing again.
+      // 3) HMAC signature check
+      const signature = req.headers["x-interakt-signature"] as string;
+      const rawBody = req.rawBody as Buffer;
+      if (!signature || !rawBody) {
+        console.warn(`[WA WEBHOOK] reject reason=hmac_missing`);
+        await captureRejection(req, 401, "hmac_missing");
+        return res.status(401).json({ message: "Missing HMAC signature", reason: "hmac_missing" });
+      }
+      if (!verifyInteraktSignature(rawBody, signature)) {
+        console.warn(`[WA WEBHOOK] reject reason=hmac_mismatch`);
+        await captureRejection(req, 401, "hmac_mismatch");
+        return res.status(401).json({ message: "Invalid signature", reason: "hmac_mismatch" });
+      }
+
+      // 4) Parse check (req.body should already be parsed by express.json; rawBody is the source of truth for hashing)
+      if (!req.body || typeof req.body !== "object") {
+        console.warn(`[WA WEBHOOK] reject reason=parse_error`);
+        await captureRejection(req, 400, "parse_error");
+        return res.status(400).json({ message: "Invalid JSON payload", reason: "parse_error" });
+      }
+
+      // 5) Idempotency by payload hash
       const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
       const dup = await storage.hasWhatsappWebhookJobByPayloadHash(payloadHash);
       if (dup) {
+        const eventType = (req.body as any)?.type || "unknown";
+        console.log(`[WA WEBHOOK] accept type=${eventType} duplicate=true hash=${payloadHash.slice(0, 12)}`);
         return res.json({ ok: true, duplicate: true });
       }
 
+      // 6) Enqueue
       const job = await storage.enqueueWhatsappWebhookJob("process_inbound", req.body, payloadHash);
+      const eventType = (req.body as any)?.type || "unknown";
+      console.log(`[WA WEBHOOK] accept type=${eventType} jobId=${job.id}`);
       res.json({ ok: true, jobId: job.id });
-    } catch (err) {
-      console.error("[WA WEBHOOK] Enqueue error:", err);
-      res.status(500).json({ message: "Webhook enqueue error" });
+    } catch (err: any) {
+      console.error(`[WA WEBHOOK] reject reason=enqueue_error:`, err?.message || err);
+      await captureRejection(req, 500, "enqueue_error");
+      res.status(500).json({ message: "Webhook enqueue error", reason: "enqueue_error" });
     }
   });
 
@@ -6776,6 +6836,32 @@ export async function registerRoutes(
       console.error("[WA WEBHOOK DLQ] delete error:", err);
       res.status(500).json({ message: err?.message || "Delete failed" });
     }
+  });
+
+  // Rejected-payload viewer (rolling 20). Phase 3 Health card consumes this.
+  app.get("/api/whatsapp/webhook/rejected", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 20);
+      const rows = await storage.getWhatsappWebhookRejectedPayloads(limit);
+      res.json(rows);
+    } catch (err: any) {
+      console.error("[WA WEBHOOK REJECTED] list error:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch rejected payloads" });
+    }
+  });
+
+  // Webhook config (URL + secret/token configured flags). Admin-only. Phase 3 Health card uses this.
+  app.get("/api/whatsapp/webhook/config", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    const cfg = getWebhookUrl();
+    res.json({
+      url: cfg.url,
+      baseUrlConfigured: cfg.configured,
+      tokenConfigured: cfg.tokenConfigured,
+      secretConfigured: !!process.env.INTERAKT_WEBHOOK_SECRET,
+      env: process.env.NODE_ENV || "development",
+    });
   });
 
   // ── WhatsApp Conversations ─────────────────────────────────────────────────

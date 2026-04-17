@@ -5,7 +5,8 @@ import {
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
-  whatsappWebhookJobs, whatsappWebhookJobsDeadLetter,
+  whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
+  type WhatsappWebhookRejectedPayload,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
@@ -371,6 +372,18 @@ export interface IStorage {
   deleteWhatsappWebhookDeadLetterJob(id: string): Promise<boolean>;
   incrementWhatsappWebhookDeadLetterManualRetries(id: string): Promise<number>;
   getWhatsappWebhookJobStats(): Promise<{ pending: number; processing: number; failed: number; deadLetter: number; lastJobAt: string | null }>;
+
+  // WhatsApp Webhook Rejected Payloads (Task #67 Phase 2 — rolling 20)
+  recordWhatsappWebhookRejection(args: {
+    reason: string;
+    httpStatus: number;
+    method: string;
+    path: string;
+    query: Record<string, any>;
+    headers: Record<string, any>;
+    rawBody: string | null;
+  }): Promise<void>;
+  getWhatsappWebhookRejectedPayloads(limit?: number): Promise<WhatsappWebhookRejectedPayload[]>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1882,6 +1895,50 @@ export class DatabaseStorage implements IStorage {
       deadLetter: Number(dl?.c || 0),
       lastJobAt: agg?.last_job_at ? new Date(agg.last_job_at).toISOString() : null,
     };
+  }
+
+  // ── WhatsApp Webhook Rejected Payloads (Task #67 Phase 2) ──────────────────
+  // Insert + trim to 20 rows. Headers/query are already redacted by caller.
+  async recordWhatsappWebhookRejection(args: {
+    reason: string;
+    httpStatus: number;
+    method: string;
+    path: string;
+    query: Record<string, any>;
+    headers: Record<string, any>;
+    rawBody: string | null;
+  }): Promise<void> {
+    const MAX_BODY = 16 * 1024;
+    const bodyStr = args.rawBody || "";
+    const truncated = bodyStr.length > MAX_BODY;
+    const body = truncated ? bodyStr.slice(0, MAX_BODY) : bodyStr;
+    await db.insert(whatsappWebhookRejectedPayloads).values({
+      reason: args.reason,
+      httpStatus: args.httpStatus,
+      method: args.method,
+      path: args.path,
+      query: args.query,
+      headers: args.headers,
+      rawBody: body,
+      rawBodyTruncated: truncated,
+    });
+    // Trim to 20 most recent.
+    await db.execute(sql`
+      DELETE FROM whatsapp_webhook_rejected_payloads
+      WHERE id NOT IN (
+        SELECT id FROM whatsapp_webhook_rejected_payloads
+        ORDER BY created_at DESC
+        LIMIT 20
+      )
+    `);
+  }
+
+  async getWhatsappWebhookRejectedPayloads(limit = 20): Promise<WhatsappWebhookRejectedPayload[]> {
+    return db
+      .select()
+      .from(whatsappWebhookRejectedPayloads)
+      .orderBy(desc(whatsappWebhookRejectedPayloads.createdAt))
+      .limit(limit);
   }
 
   // Dashboard

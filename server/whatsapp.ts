@@ -26,6 +26,26 @@ export function verifyInteraktSignature(rawBody: Buffer, signature: string): boo
   }
 }
 
+// ── Webhook URL builder (Task #67 Phase 2) ───────────────────────────────────
+// Source the webhook URL from WHATSAPP_WEBHOOK_BASE_URL env var. Falls back
+// to a placeholder so misconfiguration is loud, never silent. The Health card
+// (Phase 3) and operator runbook both read from this single function.
+export function getWebhookUrl(): { url: string; configured: boolean; tokenConfigured: boolean } {
+  const base = (process.env.WHATSAPP_WEBHOOK_BASE_URL || "").trim().replace(/\/+$/, "");
+  const token = process.env.WHATSAPP_WEBHOOK_TOKEN || "";
+  if (!base) {
+    return {
+      url: "WHATSAPP_WEBHOOK_BASE_URL not set",
+      configured: false,
+      tokenConfigured: !!token,
+    };
+  }
+  const url = token
+    ? `${base}/api/whatsapp/webhook?token=${encodeURIComponent(token)}`
+    : `${base}/api/whatsapp/webhook`;
+  return { url, configured: true, tokenConfigured: !!token };
+}
+
 // ── Auth header ───────────────────────────────────────────────────────────────
 function authHeader(): string {
   const key = process.env.INTERAKT_API_KEY || "";

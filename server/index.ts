@@ -128,6 +128,11 @@ app.use((req, res, next) => {
   cron.schedule("0 18 * * *", sendOwnerDailyAlert, { timezone: "Asia/Kolkata" });
 
   // ── Daily Interakt template sync ───────────────────────────────────────────
+  // Track the failure streak so admins aren't spammed when the same error
+  // recurs day after day. We only send a new alert when the error message
+  // changes (or after a successful sync resets the streak).
+  let lastNotifiedSyncFailure: string | null = null;
+
   async function runDailyTemplateSync() {
     if (!process.env.INTERAKT_API_KEY) {
       console.warn("[WA TEMPLATE SYNC] INTERAKT_API_KEY not set — skipping scheduled sync");
@@ -139,9 +144,54 @@ app.use((req, res, next) => {
       if (result.statusChanges.length > 0) {
         await notifyAdminsOfTemplateStatusChanges(result.statusChanges);
       }
-    } catch (err) {
+      lastNotifiedSyncFailure = null;
+    } catch (err: any) {
       console.error("[WA TEMPLATE SYNC] Daily sync failed:", err);
+      const errorMessage = (err?.message || String(err) || "Unknown error").slice(0, 500);
+      if (errorMessage !== lastNotifiedSyncFailure) {
+        try {
+          const notified = await notifyAdminsOfSyncFailure(errorMessage);
+          // Only treat the streak as "alerted" if at least one admin
+          // notification was actually persisted — otherwise we'd silence
+          // future alerts despite never having delivered one.
+          if (notified > 0) {
+            lastNotifiedSyncFailure = errorMessage;
+          }
+        } catch (notifErr) {
+          console.error("[WA TEMPLATE SYNC] Failed to send failure alert:", notifErr);
+        }
+      } else {
+        console.log("[WA TEMPLATE SYNC] Suppressing duplicate failure alert for repeated error");
+      }
     }
+  }
+
+  async function notifyAdminsOfSyncFailure(errorMessage: string): Promise<number> {
+    const allUsers = await storage.getUsers();
+    const admins = allUsers.filter((u: any) => u.role === "admin" && u.isActive);
+    if (admins.length === 0) {
+      console.warn("[WA TEMPLATE SYNC] No active admin users — skipping failure notification");
+      return 0;
+    }
+    const title = "WhatsApp template sync failed";
+    const message = `The scheduled daily Interakt template sync failed: ${errorMessage}`;
+    let notified = 0;
+    for (const u of admins) {
+      try {
+        await storage.createNotification({
+          userId: u.id,
+          type: "whatsapp_template",
+          title,
+          message,
+          relatedId: null,
+        });
+        notified++;
+      } catch (notifErr) {
+        console.warn(`[WA TEMPLATE SYNC] Failed to notify admin ${u.username} of failure:`, notifErr);
+      }
+    }
+    console.log(`[WA TEMPLATE SYNC] Notified ${notified}/${admins.length} admin(s) of sync failure`);
+    return notified;
   }
 
   function formatStatusLabel(s: string): string {

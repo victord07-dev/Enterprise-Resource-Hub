@@ -52,7 +52,7 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Employees", url: "/employees", icon: Users },
   { title: "WhatsApp Inbox", url: "/inbox", icon: MessageCircle },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
-  { title: "WA Templates", url: "/whatsapp-templates", icon: Tag },
+  { title: "WA Templates", url: "/settings/whatsapp-templates", icon: Tag },
   { title: "Reports", url: "/reports", icon: BarChart3 },
   { title: "Audit Trail", url: "/audit-trail", icon: FileSearch },
 ];
@@ -63,7 +63,7 @@ const ROLE_NAV: Record<string, string[]> = {
   field_staff: ["/my-portal", "/field-staff", "/inbox"],
   sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
-  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/whatsapp-templates", "/reports"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
 };
 
 const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };

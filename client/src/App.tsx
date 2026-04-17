@@ -191,6 +191,7 @@ function Router() {
       <Route path="/inbox" component={() => <ProtectedRoute component={Inbox} path="/inbox" />} />
       <Route path="/campaigns" component={() => <ProtectedRoute component={Campaigns} path="/campaigns" />} />
       <Route path="/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/whatsapp-templates" />} />
+      <Route path="/settings/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/settings/whatsapp-templates" />} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -6705,16 +6705,18 @@ export async function registerRoutes(
       const normPhone = normalisePhone(String(waPhone));
       const contactName = body?.data?.customer?.name || body?.data?.message?.customerName || null;
 
-      // Find or create conversation — only inbound resets the 24h window
-      let conv = await storage.getWhatsappConversationByPhone(normPhone);
+      // Find or create conversation — closed conversations are NEVER reopened; create a fresh one
+      const existingConv = await storage.getWhatsappConversationByPhone(normPhone);
       const windowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      let conv: typeof existingConv;
 
-      if (!conv) {
-        // Try to match against existing customers/leads
-        const allCustomers = await storage.getCustomers();
-        const allLeads = await storage.getLeads();
-        const matchedCustomer = allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
-        const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+      const allCustomers = await storage.getCustomers();
+      const allLeads = await storage.getLeads();
+      const matchedCustomer = allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
+      const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+
+      if (!existingConv || existingConv.status === "closed") {
+        // Create a new conversation (fresh start even if previous was closed)
         conv = await storage.createWhatsappConversation({
           phone: normPhone,
           contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
@@ -6722,20 +6724,21 @@ export async function registerRoutes(
           leadId: matchedLead?.id || null,
           status: "open",
           windowExpiresAt,
+          unreadCount: 1,
         });
       } else {
-        // Inbound messages always reset the 24h window and reopen closed conversations
-        await storage.updateWhatsappConversation(conv.id, {
+        // Open conversation: reset 24h window, increment unread
+        const updated = await storage.updateWhatsappConversation(existingConv.id, {
           windowExpiresAt,
           lastMessageAt: new Date(),
-          status: "open",
-          contactName: conv.contactName || contactName || undefined,
-          unreadCount: (conv.unreadCount || 0) + 1,
+          contactName: existingConv.contactName || contactName || undefined,
+          unreadCount: (existingConv.unreadCount || 0) + 1,
         });
+        conv = updated || existingConv;
       }
 
       await storage.createWhatsappMessage({
-        conversationId: conv.id,
+        conversationId: conv!.id,
         direction: "inbound",
         body: messageText,
         messageType,
@@ -6744,7 +6747,7 @@ export async function registerRoutes(
         sentBy: null,
       });
       
-      console.log(`[WA] Inbound message from ${normPhone} stored in conv ${conv.id}`);
+      console.log(`[WA] Inbound message from ${normPhone} stored in conv ${conv!.id}`);
 
       res.json({ ok: true });
     } catch (err) {
@@ -6826,6 +6829,7 @@ export async function registerRoutes(
       if (contactName !== undefined) updates.contactName = contactName;
       if (customerId !== undefined) updates.customerId = customerId;
       if (leadId !== undefined) updates.leadId = leadId;
+      if (req.body.unreadCount !== undefined) updates.unreadCount = req.body.unreadCount;
       const updated = await storage.updateWhatsappConversation(conv.id, updates);
       res.json(updated);
     } catch (err) {
@@ -6954,8 +6958,8 @@ export async function registerRoutes(
 
   app.post("/api/whatsapp/templates", authenticateToken, async (req: any, res) => {
     try {
-      if (!["admin", "accountant"].includes(req.user.role)) {
-        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only admin may manage WhatsApp templates" });
       }
       const parsed = insertWhatsappTemplateSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
@@ -6969,8 +6973,8 @@ export async function registerRoutes(
 
   app.patch("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
     try {
-      if (!["admin", "accountant"].includes(req.user.role)) {
-        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only admin may manage WhatsApp templates" });
       }
       const tmpl = await storage.updateWhatsappTemplate(req.params.id, req.body);
       if (!tmpl) return res.status(404).json({ message: "Template not found" });
@@ -6982,8 +6986,8 @@ export async function registerRoutes(
 
   app.delete("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
     try {
-      if (!["admin", "accountant"].includes(req.user.role)) {
-        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only admin may manage WhatsApp templates" });
       }
       const ok = await storage.deleteWhatsappTemplate(req.params.id);
       if (!ok) return res.status(404).json({ message: "Template not found" });

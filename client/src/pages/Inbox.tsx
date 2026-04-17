@@ -91,6 +91,20 @@ export default function Inbox() {
 
   const selectedConv = conversations.find(c => c.id === selectedConvId);
 
+  // Mark conversation as read when selected
+  const handleSelectConversation = useCallback(async (convId: string) => {
+    setSelectedConvId(convId);
+    const conv = conversations.find(c => c.id === convId);
+    if (conv && (conv.unreadCount || 0) > 0) {
+      try {
+        await apiRequest("PATCH", `/api/whatsapp/conversations/${convId}`, { unreadCount: 0 });
+        queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/conversations"] });
+      } catch {
+        // non-critical
+      }
+    }
+  }, [conversations]);
+
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
@@ -236,7 +250,7 @@ export default function Inbox() {
               <div
                 key={conv.id}
                 className={`flex items-start gap-3 px-3 py-3 cursor-pointer border-b transition-colors ${selectedConvId === conv.id ? "bg-blue-50 dark:bg-blue-950/20" : "hover:bg-muted/50"}`}
-                onClick={() => setSelectedConvId(conv.id)}
+                onClick={() => handleSelectConversation(conv.id)}
                 data-testid={`conversation-${conv.id}`}
               >
                 <Avatar className="w-9 h-9 shrink-0">

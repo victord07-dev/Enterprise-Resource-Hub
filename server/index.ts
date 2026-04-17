@@ -70,29 +70,51 @@ app.use((req, res, next) => {
   async function sendOwnerDailyAlert() {
     try {
       const templateName = "owner_daily_alert";
-      const allLeads = await storage.getLeads();
-      const allInvoices = await storage.getSupplierInvoices();
-      const allPayroll = await storage.getPayrollStatuses();
+      // Overdue AR: sales invoices with status pending/partial_paid and dueDate < today
+      const allArInvoices = await storage.getSalesInvoices();
+      const now = new Date();
+      const overdueArCount = allArInvoices.filter((inv: any) => {
+        if (inv.status === "paid") return false;
+        if (!inv.dueDate) return false;
+        return new Date(inv.dueDate) < now;
+      }).length;
 
-      const overdueLeadFollowups = 0;
-      const supplierDue = allInvoices.filter((inv: any) => inv.status === "pending").length;
+      // AP: supplier invoices still pending payment
+      const allApInvoices = await storage.getSupplierInvoices();
+      const supplierDue = allApInvoices.filter((inv: any) => inv.status === "pending").length;
+
+      // Payroll: employees not yet paid this month
+      const allPayroll = await storage.getPayrollStatuses();
       const salaryPending = allPayroll.filter((p: any) => p.status === "pending").length;
 
       const adminUsers = await storage.getUsers();
-      for (const user of adminUsers) {
-        if (user.role !== "admin") continue;
+      const admins = adminUsers.filter((u: any) => u.role === "admin");
+      if (admins.length === 0) {
+        console.warn("[WA CRON] No admin users found — skipping owner_daily_alert");
+        return;
+      }
+
+      for (const user of admins) {
         const emp = user.employeeId
           ? (await storage.getEmployee(user.employeeId))
           : null;
         const ownerName = emp?.name || user.fullName || user.username;
         const phone = emp?.phone;
-        if (!phone) continue;
-        await sendTemplateMessage(phone, templateName, [
-          ownerName,
-          String(overdueLeadFollowups),
-          String(supplierDue),
-          String(salaryPending),
-        ]);
+        if (!phone) {
+          console.warn(`[WA CRON] Admin user ${user.username} has no phone number — skipping daily alert`);
+          continue;
+        }
+        try {
+          await sendTemplateMessage(phone, templateName, [
+            ownerName,
+            String(overdueArCount),
+            String(supplierDue),
+            String(salaryPending),
+          ]);
+          console.log(`[WA CRON] Sent owner_daily_alert to ${user.username} (${phone})`);
+        } catch (sendErr) {
+          console.warn(`[WA CRON] Failed to send alert to ${user.username} (${phone}):`, sendErr);
+        }
       }
     } catch (err) {
       console.error("[WA CRON] owner_daily_alert error:", err);

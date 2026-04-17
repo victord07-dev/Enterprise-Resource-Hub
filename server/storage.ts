@@ -1567,7 +1567,11 @@ export class DatabaseStorage implements IStorage {
     return c;
   }
   async getWhatsappConversationByPhone(phone: string): Promise<WhatsappConversation | undefined> {
-    const [c] = await db.select().from(whatsappConversations).where(eq(whatsappConversations.phone, phone));
+    // Return the most recent OPEN conversation for this phone, if any
+    const [c] = await db.select().from(whatsappConversations)
+      .where(and(eq(whatsappConversations.phone, phone), eq(whatsappConversations.status, "open")))
+      .orderBy(desc(whatsappConversations.lastMessageAt))
+      .limit(1);
     return c;
   }
   async createWhatsappConversation(data: InsertWhatsappConversation): Promise<WhatsappConversation> {

@@ -1,0 +1,79 @@
+Here's a clean, self-contained task you can paste to Replit AI. Queue it up after #68 is shipped — it's intentionally small and low-risk.
+
+#70 — Rotate WHATSAPP_WEBHOOK_TOKEN
+What & Why
+The current WhatsApp webhook token (WHATSAPP_WEBHOOK_TOKEN env var) was exposed during a planning conversation and should be rotated as a hygiene step. The token is used only for inbound webhook authentication — it gates Interakt's POST requests via a ?token=... query parameter on https://erp.itfi.co.in/api/whatsapp/webhook?token=.... Rotating it has no blast radius beyond updating one env var and one URL in Interakt's dashboard, but leaving a known-exposed secret in place is a bad security posture even if practical risk is low.
+This task does three things: generate a new token, coordinate the switchover so no webhook is dropped during the rotation, and confirm end-to-end that Interakt is authenticating successfully with the new token.
+Prerequisite gate
+Do not start this task until #67 is fully done (Phase 5 verification passed, 10a shipped) and #68 has completed its first successful reconciliation run in production. Rotation during active integration work would conflate failures.
+Done looks like
+
+A new random token has been generated (format: itfi_wh_<24 random alphanumeric chars>_2026, or similar — just needs to be unpredictable and long).
+The new token is set as WHATSAPP_WEBHOOK_TOKEN in the production deployment's environment secrets.
+Interakt's webhook URL has been updated to use the new token in its ?token=... parameter.
+A test webhook from Interakt's dashboard returns 200 using the new token.
+A real test WhatsApp message sent to the business number appears in the inbox within 3 seconds.
+The Health card's Config section continues to show all three env flags green after rotation.
+The old token is no longer valid anywhere — any webhook arriving with the old token is rejected with reject reason=token_mismatch, visible in the rejected-payloads viewer.
+The rotation is logged in replit.md's WhatsApp runbook section under "Token rotation history" with date and reason ("hygiene rotation after planning-conversation exposure").
+
+Out of scope
+
+Rotating INTERAKT_WEBHOOK_SECRET (the HMAC signing secret) — that's a separate rotation if/when needed.
+Rotating any other Interakt credentials (API keys, account tokens) — not affected by this exposure.
+Changing the webhook URL structure or auth mechanism (query-token → HMAC-only, etc.) — that's a separate architectural decision.
+Adding automated token rotation on a schedule — out of scope for this one-off.
+
+Tasks
+
+Grep for hardcoded token usage. Before rotation, confirm the token is only referenced via process.env.WHATSAPP_WEBHOOK_TOKEN and never hardcoded anywhere in source, tests, scripts, or documentation. Run a grep for the current token value across the repo. If any file contains the literal token string, surface it before proceeding.
+Generate a new token. A 24-character random alphanumeric string prefixed with itfi_wh_ and suffixed with _2026. Do not paste the new token value in any chat or commit — only write it to production secrets directly.
+Coordinate the switchover sequence. The ideal order is:
+(a) Set the new WHATSAPP_WEBHOOK_TOKEN in production deployment secrets.
+(b) Redeploy / restart the production service so it picks up the new value.
+(c) Verify the Health card Config section still shows WHATSAPP_WEBHOOK_TOKEN flag green.
+(d) Update Interakt's webhook URL's ?token=... parameter to the new value.
+(e) Hit "Test webhook" in Interakt's dashboard — should return 200.
+There will be a brief window between (b) and (d) where Interakt sends webhooks with the old token, which now fails token_mismatch. This is acceptable for a few minutes; if it concerns us we can do the rotation during a low-traffic window (late evening IST).
+Real-message verification. After (e), send a real test WhatsApp message from a personal number to the business number. Confirm it appears in the inbox within 3 seconds and the Health card's "Last received" timestamp updates.
+Confirm old token is dead. Send a synthetic webhook POST (using scripts/whatsapp-webhook-smoke.ts or similar) against the endpoint with the OLD token. Should return 401 with reject reason=token_mismatch. Confirm the rejected-payload rolling table captures this attempt with the old token visible (redacted) in the captured request.
+Update replit.md. Add a "Token rotation history" subsection under the WhatsApp runbook. Log: date of rotation, reason ("hygiene — old token exposed in planning conversation"), person who performed rotation. Establish this as a standing section so future rotations are also logged here.
+PR description requirements.
+
+Confirmation that the grep in task 1 returned no hardcoded references.
+The timestamp range of the brief token_mismatch window between deploy and Interakt update.
+Screenshot or log line showing the Interakt test webhook returned 200 with the new token.
+Screenshot or log line showing a real inbound message landed in the inbox post-rotation.
+Log line showing a POST with the old token was rejected with token_mismatch after rotation.
+
+
+
+Relevant files
+
+Production deployment secrets (not in repo)
+Interakt dashboard webhook configuration
+replit.md — WhatsApp runbook section
+scripts/whatsapp-webhook-smoke.ts — for dead-token verification
+
+Dependencies
+
+#67 fully shipped (Phase 5 verified, 10a deployed)
+#68 first reconciliation run completed successfully
+
+
+How to use this
+Don't send it to Replit AI now. File it. Paste it at the bottom of your open-tasks list, or drop it in a notes doc, or keep this chat handy. It's deliberately scoped to be a clean standalone task for later.
+When to actually start it:
+
+#67 Phase 5 verification passes (all four cases — inbound text, outbound text, inbound image, inbound PDF — work correctly in the inbox).
+24-hour production bake after #67 completes with dead-letter count near zero.
+#68 backfill + reconciliation ships and the first reconciliation cron runs successfully.
+
+Then paste the task above into a fresh conversation with Replit AI and say: "Starting #70 as specced. Proceed per the task description."
+One operational note for when you do run it
+The "brief window of token_mismatch" in task 3 is worth thinking about practically. If you run this during business hours, you'll get maybe 2–5 minutes where Interakt is hitting your endpoint with the old token and being rejected. Interakt won't backoff from that few-minute window — backoff kicks in on sustained failures, not a handful. But to be safe:
+
+Run the rotation late evening IST (after 8pm), when customer message volume is low.
+Have the new token value ready to paste into Interakt before you set the env var and redeploy, so the window between steps (b) and (d) is as short as possible — 60 seconds if you're fast.
+
+That's it. Task is ready to file. Move on — you have a webhook to test and a payload to capture.

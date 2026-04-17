@@ -38,7 +38,8 @@ interface TemplateForm {
   category: string;
   languageCode: string;
   body: string;
-  variables: string;
+  variables: string[];
+  examples: string[];
   isActive: string;
 }
 
@@ -48,9 +49,58 @@ const emptyForm = (): TemplateForm => ({
   category: "quotation",
   languageCode: "en",
   body: "",
-  variables: "",
+  variables: [],
+  examples: [],
   isActive: "approved",
 });
+
+function placeholderNumbers(body: string): number[] {
+  const re = /\{\{\s*(\d+)\s*\}\}/g;
+  const set = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n > 0) set.add(n);
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+function isContiguousFromOne(nums: number[]): boolean {
+  if (nums.length === 0) return true;
+  for (let i = 0; i < nums.length; i++) {
+    if (nums[i] !== i + 1) return false;
+  }
+  return true;
+}
+
+function exampleFor(name: string, index: number): string {
+  const n = (name || "").toLowerCase();
+  if (!n) return `Sample ${index + 1}`;
+  if (n.includes("customer") || (n.includes("name") && !n.includes("file"))) return "Jane Doe";
+  if (n.includes("order")) return "ORD-1024";
+  if (n.includes("invoice")) return "INV-2026-001";
+  if (n.includes("quote") || n.includes("quotation")) return "QT-2026-014";
+  if (n.includes("amount") || n.includes("price") || n.includes("total") || n.includes("balance")) return "₹5,000";
+  if (n.includes("date") || n.includes("day")) return "15 Apr 2026";
+  if (n.includes("time")) return "3:30 PM";
+  if (n.includes("phone") || n.includes("mobile")) return "+91 98765 43210";
+  if (n.includes("email")) return "jane@example.com";
+  if (n.includes("link") || n.includes("url")) return "https://example.com/link";
+  if (n.includes("company")) return "Acme Pvt Ltd";
+  if (n.includes("product") || n.includes("item")) return "Steel Pipe 1\"";
+  if (n.includes("address")) return "12 MG Road, Bengaluru";
+  if (n.includes("status")) return "Confirmed";
+  return `Sample ${index + 1}`;
+}
+
+function renderPreview(body: string, variables: string[], examples: string[]): string {
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, num) => {
+    const i = parseInt(num, 10) - 1;
+    const explicit = examples[i]?.trim();
+    if (explicit) return explicit;
+    return exampleFor(variables[i] || "", i);
+  });
+}
 
 export default function WhatsAppTemplates() {
   const { toast } = useToast();
@@ -72,7 +122,14 @@ export default function WhatsAppTemplates() {
         category: form.category,
         languageCode: form.languageCode,
         body: form.body,
-        variables: form.variables ? form.variables.split(",").map(v => v.trim()).filter(Boolean) : [],
+        variables: (() => {
+          const nums = placeholderNumbers(form.body);
+          const max = nums.length > 0 ? nums[nums.length - 1] : form.variables.length;
+          const out: string[] = [];
+          for (let i = 0; i < max; i++) out.push((form.variables[i] || "").trim());
+          while (out.length > 0 && out[out.length - 1] === "") out.pop();
+          return out;
+        })(),
         isActive: form.isActive,
       };
       if (editingTemplate) {
@@ -139,7 +196,8 @@ export default function WhatsAppTemplates() {
       category: t.category,
       languageCode: t.languageCode,
       body: t.body,
-      variables: (t.variables || []).join(", "),
+      variables: [...(t.variables || [])],
+      examples: [],
       isActive: t.isActive,
     });
     setDialogOpen(true);
@@ -267,7 +325,7 @@ export default function WhatsAppTemplates() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingTemplate ? "Edit Template" : "Add Template"}</DialogTitle>
           </DialogHeader>
@@ -315,25 +373,92 @@ export default function WhatsAppTemplates() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Template Body (preview) *</Label>
+              <Label>Template Body *</Label>
               <Textarea
                 value={form.body}
                 onChange={e => setForm(f => ({ ...f, body: e.target.value }))}
                 placeholder="Hi {{1}}, your order {{2}} has been confirmed..."
-                className="min-h-[80px] text-sm resize-none"
+                className="min-h-[80px] text-sm resize-none font-mono"
                 data-testid="textarea-template-body"
               />
+              <p className="text-xs text-muted-foreground">Use &#123;&#123;1&#125;&#125;, &#123;&#123;2&#125;&#125;, &hellip; as placeholders. Name each one below.</p>
             </div>
 
+            {(() => {
+              const nums = placeholderNumbers(form.body);
+              if (nums.length === 0) {
+                return (
+                  <div className="text-xs text-muted-foreground border border-dashed rounded-md p-3" data-testid="text-no-placeholders">
+                    No placeholders detected. Add &#123;&#123;1&#125;&#125;, &#123;&#123;2&#125;&#125;, &hellip; in the body to define variables.
+                  </div>
+                );
+              }
+              const contiguous = isContiguousFromOne(nums);
+              return (
+                <div className="space-y-2">
+                  <Label>Variables &amp; Examples</Label>
+                  {!contiguous && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="text-noncontiguous-warning">
+                      Placeholders should be numbered &#123;&#123;1&#125;&#125;, &#123;&#123;2&#125;&#125;, &#123;&#123;3&#125;&#125; &hellip; without gaps. Found: {nums.map(n => `{{${n}}}`).join(", ")}.
+                    </p>
+                  )}
+                  <div className="space-y-2">
+                    {nums.map(num => {
+                      const i = num - 1;
+                      const varName = form.variables[i] || "";
+                      const exampleVal = form.examples[i] || "";
+                      const generatedExample = exampleFor(varName, i);
+                      return (
+                        <div
+                          key={num}
+                          className="grid grid-cols-[auto_1fr_1fr] gap-2 items-center"
+                          data-testid={`row-variable-${num}`}
+                        >
+                          <span className="text-xs font-mono bg-muted px-2 py-1.5 rounded shrink-0" data-testid={`label-placeholder-${num}`}>
+                            {`{{${num}}}`}
+                          </span>
+                          <Input
+                            value={varName}
+                            onChange={e => setForm(f => {
+                              const next = [...f.variables];
+                              while (next.length < num) next.push("");
+                              next[i] = e.target.value;
+                              return { ...f, variables: next };
+                            })}
+                            placeholder={`var${num}`}
+                            className="text-sm"
+                            data-testid={`input-variable-name-${num}`}
+                          />
+                          <Input
+                            value={exampleVal}
+                            onChange={e => setForm(f => {
+                              const next = [...f.examples];
+                              while (next.length < num) next.push("");
+                              next[i] = e.target.value;
+                              return { ...f, examples: next };
+                            })}
+                            placeholder={generatedExample}
+                            className="text-sm"
+                            data-testid={`input-variable-example-${num}`}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+
             <div className="space-y-1.5">
-              <Label>Variable Names (comma separated)</Label>
-              <Input
-                value={form.variables}
-                onChange={e => setForm(f => ({ ...f, variables: e.target.value }))}
-                placeholder="customerName, orderNumber, amount"
-                data-testid="input-template-vars"
-              />
-              <p className="text-xs text-muted-foreground">Name each variable in order of appearance &#123;&#123;1&#125;&#125;, &#123;&#123;2&#125;&#125;, &hellip;</p>
+              <Label>Live Preview</Label>
+              <div
+                className="rounded-md border bg-[#dcf8c6] dark:bg-green-950/30 text-sm text-foreground p-3 whitespace-pre-wrap min-h-[60px]"
+                data-testid="text-template-preview"
+              >
+                {form.body
+                  ? renderPreview(form.body, form.variables, form.examples)
+                  : <span className="text-muted-foreground italic">Type a body above to see the preview&hellip;</span>}
+              </div>
             </div>
 
             <div className="space-y-1.5">

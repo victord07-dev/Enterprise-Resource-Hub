@@ -235,6 +235,7 @@ export interface TemplateSyncHistoryEntry {
   updated: number;
   skipped: number;
   statusChangesCount: number;
+  statusChanges: TemplateStatusChange[];
 }
 
 export interface TemplateSyncStatus {
@@ -274,6 +275,15 @@ function toHistoryEntry(row: any): TemplateSyncHistoryEntry {
     updated: Number(row.updated ?? 0),
     skipped: Number(row.skipped ?? 0),
     statusChangesCount: Number(row.statusChangesCount ?? 0),
+    statusChanges: Array.isArray(row.statusChanges)
+      ? row.statusChanges.map((c: any) => ({
+          templateId: String(c?.templateId ?? ""),
+          name: String(c?.name ?? ""),
+          languageCode: String(c?.languageCode ?? ""),
+          previousStatus: String(c?.previousStatus ?? ""),
+          newStatus: String(c?.newStatus ?? ""),
+        }))
+      : [],
   };
 }
 
@@ -294,7 +304,7 @@ export async function getTemplateSyncStatus(
           created: lastSuccess.created,
           updated: lastSuccess.updated,
           skipped: lastSuccess.skipped,
-          statusChanges: [],
+          statusChanges: lastSuccess.statusChanges,
         }
       : null,
     lastTrigger: latest?.trigger ?? null,
@@ -333,6 +343,7 @@ export async function syncInteraktTemplates(
         updated: result.updated,
         skipped: result.skipped,
         statusChangesCount: result.statusChanges.length,
+        statusChanges: result.statusChanges,
       });
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist success log:", logErr);
@@ -349,6 +360,7 @@ export async function syncInteraktTemplates(
         updated: 0,
         skipped: 0,
         statusChangesCount: 0,
+        statusChanges: [],
       });
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist failure log:", logErr);

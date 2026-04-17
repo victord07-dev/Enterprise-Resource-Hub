@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -873,6 +873,7 @@ export const whatsappTemplateSyncLogs = pgTable("whatsapp_template_sync_logs", {
   updated: integer("updated").notNull().default(0),
   skipped: integer("skipped").notNull().default(0),
   statusChangesCount: integer("status_changes_count").notNull().default(0),
+  statusChanges: jsonb("status_changes").$type<Array<{ templateId: string; name: string; languageCode: string; previousStatus: string; newStatus: string }>>().notNull().default(sql`'[]'::jsonb`),
 }, (t) => [index("idx_wa_template_sync_logs_attempt_at").on(t.attemptAt)]);
 
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });

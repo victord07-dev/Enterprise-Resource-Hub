@@ -10,9 +10,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle, History } from "lucide-react";
+import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle, History, ChevronDown, ChevronRight, ArrowRight } from "lucide-react";
 import type { WhatsappTemplate, WhatsappTemplateStatusHistory } from "@shared/schema";
 import { COMMON_MERGE_FIELDS, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
+
+interface TemplateStatusChangeEntry {
+  templateId: string;
+  name: string;
+  languageCode: string;
+  previousStatus: string;
+  newStatus: string;
+}
 
 interface TemplateSyncHistoryEntry {
   id: string;
@@ -25,13 +33,14 @@ interface TemplateSyncHistoryEntry {
   updated: number;
   skipped: number;
   statusChangesCount: number;
+  statusChanges: TemplateStatusChangeEntry[];
 }
 
 interface TemplateSyncStatus {
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
-  lastResult: { total: number; created: number; updated: number; skipped: number } | null;
+  lastResult: { total: number; created: number; updated: number; skipped: number; statusChanges: TemplateStatusChangeEntry[] } | null;
   lastTrigger: "manual" | "scheduled" | null;
   history: TemplateSyncHistoryEntry[];
 }
@@ -157,6 +166,7 @@ export default function WhatsAppTemplates() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [historyTemplate, setHistoryTemplate] = useState<WhatsappTemplate | null>(null);
+  const [expandedSyncIds, setExpandedSyncIds] = useState<Record<string, boolean>>({});
 
   const { data: history = [], isLoading: historyLoading } = useQuery<(WhatsappTemplateStatusHistory & { changedByName: string | null })[]>({
     queryKey: ["/api/whatsapp/templates", historyTemplate?.id, "history"],
@@ -363,47 +373,108 @@ export default function WhatsAppTemplates() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="divide-y text-xs">
-              {syncStatus.history.map(h => (
-                <div
-                  key={h.id}
-                  className="flex items-start gap-3 px-4 py-2"
-                  data-testid={`row-sync-history-${h.id}`}
-                >
-                  {h.success ? (
-                    <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium" title={formatExactTime(h.attemptAt)}>
-                        {formatRelativeTime(h.attemptAt)}
-                      </span>
-                      <span className="text-muted-foreground">({formatExactTime(h.attemptAt)})</span>
-                      <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
-                        {h.trigger}
-                      </Badge>
-                      {h.success ? (
-                        <span className="text-muted-foreground">
-                          {h.total} fetched · {h.created} created · {h.updated} updated
-                          {h.skipped ? ` · ${h.skipped} skipped` : ""}
-                          {h.statusChangesCount ? ` · ${h.statusChangesCount} status change${h.statusChangesCount === 1 ? "" : "s"}` : ""}
-                        </span>
+              {syncStatus.history.map(h => {
+                const expandable = h.statusChangesCount > 0 && h.statusChanges.length > 0;
+                const isExpanded = !!expandedSyncIds[h.id];
+                return (
+                  <div
+                    key={h.id}
+                    className="px-4 py-2"
+                    data-testid={`row-sync-history-${h.id}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      {expandable ? (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedSyncIds(prev => ({ ...prev, [h.id]: !prev[h.id] }))}
+                          className="mt-0.5 shrink-0 text-muted-foreground hover-elevate active-elevate-2 rounded"
+                          aria-label={isExpanded ? "Collapse changes" : "Expand changes"}
+                          data-testid={`button-toggle-sync-history-${h.id}`}
+                        >
+                          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </button>
                       ) : (
-                        <span className="text-red-600 dark:text-red-400">Failed</span>
+                        <span className="w-4 h-4 mt-0.5 shrink-0" />
                       )}
+                      {h.success ? (
+                        <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium" title={formatExactTime(h.attemptAt)}>
+                            {formatRelativeTime(h.attemptAt)}
+                          </span>
+                          <span className="text-muted-foreground">({formatExactTime(h.attemptAt)})</span>
+                          <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
+                            {h.trigger}
+                          </Badge>
+                          {h.success ? (
+                            <span className="text-muted-foreground">
+                              {h.total} fetched · {h.created} created · {h.updated} updated
+                              {h.skipped ? ` · ${h.skipped} skipped` : ""}
+                              {h.statusChangesCount ? ` · ${h.statusChangesCount} status change${h.statusChangesCount === 1 ? "" : "s"}` : ""}
+                            </span>
+                          ) : (
+                            <span className="text-red-600 dark:text-red-400">Failed</span>
+                          )}
+                        </div>
+                        {!h.success && h.errorMessage && (
+                          <div
+                            className="text-red-600 dark:text-red-400 mt-0.5 break-words"
+                            data-testid={`text-sync-history-error-${h.id}`}
+                          >
+                            {h.errorMessage}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    {!h.success && h.errorMessage && (
+                    {expandable && isExpanded && (
                       <div
-                        className="text-red-600 dark:text-red-400 mt-0.5 break-words"
-                        data-testid={`text-sync-history-error-${h.id}`}
+                        className="mt-2 ml-7 border-l border-muted-foreground/20 pl-3 space-y-1.5"
+                        data-testid={`list-sync-changes-${h.id}`}
                       >
-                        {h.errorMessage}
+                        {h.statusChanges.map((c, idx) => {
+                          const PrevIcon = STATUS_ICONS[c.previousStatus] ?? Clock;
+                          const NextIcon = STATUS_ICONS[c.newStatus] ?? Clock;
+                          return (
+                            <div
+                              key={`${c.templateId}-${idx}`}
+                              className="flex items-center gap-2 flex-wrap"
+                              data-testid={`row-sync-change-${h.id}-${idx}`}
+                            >
+                              <span className="font-medium" data-testid={`text-sync-change-name-${h.id}-${idx}`}>
+                                {c.name || c.templateId}
+                              </span>
+                              {c.languageCode && (
+                                <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
+                                  {c.languageCode}
+                                </Badge>
+                              )}
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] no-default-hover-elevate no-default-active-elevate ${STATUS_COLORS[c.previousStatus] ?? ""}`}
+                              >
+                                <PrevIcon className="w-3 h-3 mr-1" />
+                                {c.previousStatus.replace(/_/g, " ") || "unknown"}
+                              </Badge>
+                              <ArrowRight className="w-3 h-3 text-muted-foreground" />
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] no-default-hover-elevate no-default-active-elevate ${STATUS_COLORS[c.newStatus] ?? ""}`}
+                              >
+                                <NextIcon className="w-3 h-3 mr-1" />
+                                {c.newStatus.replace(/_/g, " ") || "unknown"}
+                              </Badge>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>

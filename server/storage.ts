@@ -1600,12 +1600,14 @@ export class DatabaseStorage implements IStorage {
   }
   async getWhatsappMessages(conversationId: string, opts?: { limit?: number; before?: string }): Promise<WhatsappMessage[]> {
     const limit = opts?.limit || 50;
-    let q = db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, conversationId));
-    if (opts?.before) {
-      const cursor = new Date(opts.before);
-      q = q.where(and(eq(whatsappMessages.conversationId, conversationId), sql`${whatsappMessages.createdAt} < ${cursor}`) as any) as any;
-    }
-    return (q as any).orderBy(whatsappMessages.createdAt).limit(limit);
+    // Build the WHERE clause correctly to avoid double-wrapping
+    const whereClause = opts?.before
+      ? and(eq(whatsappMessages.conversationId, conversationId), sql`${whatsappMessages.createdAt} < ${new Date(opts.before)}`)!
+      : eq(whatsappMessages.conversationId, conversationId);
+    return db.select().from(whatsappMessages)
+      .where(whereClause)
+      .orderBy(whatsappMessages.createdAt)
+      .limit(limit);
   }
   async createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage> {
     const [m] = await db.insert(whatsappMessages).values(data).returning();

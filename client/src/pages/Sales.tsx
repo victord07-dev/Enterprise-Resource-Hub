@@ -1246,7 +1246,7 @@ export default function Sales() {
     mutationFn: async () => {
       let phone = waTargetPhone.replace(/\D/g, "");
       if (phone.length === 10 && /^[6-9]/.test(phone)) phone = "91" + phone;
-      const convRes = await apiRequest("POST", "/api/whatsapp/conversations", { phone });
+      const convRes = await apiRequest("POST", "/api/whatsapp/conversations/get-or-create", { phone });
       if (!convRes.ok) { const e = await convRes.json(); throw new Error(e.message || "Failed to open conversation"); }
       const conv = await convRes.json();
 

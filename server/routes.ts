@@ -6799,6 +6799,33 @@ export async function registerRoutes(
     }
   });
 
+  // Get-or-create open conversation for send flow (accessible to all WhatsApp roles)
+  // Used by Sales "Send via WhatsApp" — creates conversation only if no open one exists
+  app.post("/api/whatsapp/conversations/get-or-create", authenticateToken, requireWhatsappRole, async (req: any, res) => {
+    try {
+      const { phone, contactName, customerId } = req.body;
+      if (!phone) return res.status(400).json({ message: "phone required" });
+      const normPhone = normalisePhone(String(phone));
+      const allCustomers = await storage.getCustomers();
+      const matchedCustomer = customerId ? allCustomers.find(c => c.id === customerId) : allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
+      let conv = await storage.getWhatsappConversationByPhoneOrCustomer(normPhone, matchedCustomer?.id);
+      if (conv) return res.json(conv);
+      const allLeads = await storage.getLeads();
+      const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+      conv = await storage.createWhatsappConversation({
+        phoneNumber: normPhone,
+        contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
+        customerId: matchedCustomer?.id || null,
+        leadId: matchedLead?.id || null,
+        status: "open",
+        windowExpiresAt: null,
+      });
+      res.status(201).json(conv);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to get or create conversation" });
+    }
+  });
+
   app.post("/api/whatsapp/conversations", authenticateToken, requireAdminForConvCreation, async (req: any, res) => {
     try {
       const { phone, contactName, customerId, leadId } = req.body;

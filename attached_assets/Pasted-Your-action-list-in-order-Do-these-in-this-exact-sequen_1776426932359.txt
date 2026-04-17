@@ -1,0 +1,68 @@
+Your action list, in order
+Do these in this exact sequence. Each builds on the previous one, and getting them out of order wastes time or produces ambiguous results.
+1. Set the env flag in production (2 minutes)
+Open Replit's deployment settings for the production service (not workspace). Add:
+WHATSAPP_DEBUG_CAPTURE_TYPES=message_received
+Save and restart the production service. The env flag doesn't activate until restart.
+2. Confirm the flag is live (1 minute)
+Open the deployed app, log in as admin, go to WhatsApp Templates page. Look at the Health card's "Debug captures" section header. It should say enabled: message_received. If it still says disabled, the restart didn't pick up the env var — check the Replit deployment logs for the startup line and retry.
+3. Eyeball the rest of the Health card (2 minutes)
+While you're there, check the three config flags in the Config section. All three — WHATSAPP_WEBHOOK_BASE_URL, WHATSAPP_WEBHOOK_TOKEN, INTERAKT_WEBHOOK_SECRET — must be green. If any is red, fix it before re-enabling the webhook, otherwise every Interakt call will be rejected.
+Note the exact URL shown in the Config section. You'll need it in step 5.
+4. Send the Interakt support email (3 minutes)
+Open .local/artifacts/interakt-support-email.txt. Read it. If the three questions are specific and numbered, send as-is from your account to [email protected]. This starts the support-reply clock independent of everything else.
+5. Re-save the webhook in Interakt's dashboard (5 minutes)
+In Interakt's dashboard:
+
+Open the webhook configuration.
+Confirm the URL matches what the Health card Config section shows exactly. Same protocol, same domain, same path, no trailing slash differences.
+Confirm these event subscriptions are enabled: inbound message / message_received, message sent, message status (sent, delivered, read), failed message delivery, template status updates.
+Hit "Test webhook" if available, otherwise re-save.
+Check Interakt's "Webhook Deliveries" log — the test should show a 200 response from your endpoint.
+
+6. Send yourself a real text message (2 minutes)
+From your personal WhatsApp, send a plain text message to the business number. Something obvious like "test 1 — text".
+Within 3 seconds:
+
+The message should appear in the inbox under a conversation threaded to your number.
+The Health card's "Last received" tile should update to just now (may take up to 30s due to auto-refresh).
+
+If this works, the webhook is live. If not, go to the three diagnostic surfaces in this order: Interakt's webhook delivery log → Health card's rejected-payload viewer → your app logs. One of those three will tell you what's wrong.
+7. Send yourself a real image (2 minutes)
+From your personal WhatsApp, send an image — any image, no caption needed. Something obvious like a screenshot.
+Within 30 seconds:
+
+The message should appear in the inbox (possibly with a media placeholder, since 10a isn't done yet — that's expected).
+The Health card's "Debug captures" section should have a new entry. Expand it.
+
+8. Capture the payload and send it to Replit AI
+In the debug captures section, expand the captured entry. Copy the raw payload JSON. Redact:
+
+Your phone number (replace with +91XXXXXXXXXX).
+Any contact names or identifiers.
+Leave everything else — field names, structure, URL/ID values, hashes — intact. That's the data Replit AI needs.
+
+Paste that payload back to Replit AI with a short note: "Here's a real captured inbound image payload — implement 10a against this shape."
+9. Optionally, also send yourself a PDF (2 minutes)
+From your personal WhatsApp, send a PDF document. Check debug captures again. Paste that payload too if it has a different shape from the image (it might, or might not).
+10. Let Replit AI finish
+Once they have the real payload, 10a is straightforward — no guessing, just matching the actual field structure. They'll implement it, then you run Phase 5's four-case verification on the deployed app: (a) inbound text, (b) outbound text, (c) inbound image, (d) inbound PDF. All four must render correctly in the inbox with the actual media file, not a placeholder.
+What to do if something doesn't work
+You have four diagnostic surfaces now, so don't debug by guessing. Each surface tells you something specific:
+SymptomFirst place to lookMessage sent, nothing arrives at all within 60sInterakt dashboard's webhook delivery log — did Interakt try to send?Interakt shows it sent but your app didn't acceptHealth card's rejected-payload viewer — what's the reason code?Accepted but not appearing in inboxHealth card's pending/processing/failed stats + dead-letter listMessage appears but no media attachmentDebug captures — what does the payload actually look like?
+If the reason code is token_mismatch or hmac_mismatch or secret_missing, it's a config issue (token/secret mismatch between your env and Interakt) — fix that.
+If it's parse_error, Interakt sent something your handler doesn't understand — the rejected-payload viewer shows exactly what. Paste it to Replit AI.
+If nothing shows in any of these four surfaces within a few minutes of sending a test message, the webhook URL itself is probably wrong — go back to step 5 and double-check.
+The realistic timeline
+
+Steps 1–6 (text message flowing): 15–20 minutes if everything is configured right.
+Steps 7–8 (image captured): another 5 minutes.
+Reply to Replit AI with the payload, they implement 10a: a few hours to a day depending on their turnaround.
+Phase 5 verification: 10 minutes on your side once 10a is done.
+24-hour bake period: one day watching dead-letter count and silence banner stay at zero.
+Start #68: day after that.
+
+You're probably 2-3 days from having #67 fully done and ready to move to #68.
+One last thing
+If the text message (step 6) works but the image (step 7) doesn't produce a debug capture, that means WHATSAPP_DEBUG_CAPTURE_TYPES either isn't set correctly or the event type name isn't message_received. In that case, temporarily set WHATSAPP_DEBUG_CAPTURE_TYPES=* (or whatever wildcard the implementation uses) to capture every inbound event, so you can see what event type name Interakt actually uses. Then narrow it back down.
+Go. Send that test message. You're the closest you've been to a working WhatsApp inbox this whole thread.

@@ -76,7 +76,7 @@ export default function Inbox() {
 
   const { data: conversations = [], isLoading: convsLoading } = useQuery<EnrichedConversation[]>({
     queryKey: ["/api/whatsapp/conversations"],
-    refetchInterval: 10000,
+    refetchInterval: () => document.visibilityState === "visible" ? 10000 : false,
   });
 
   const { data: messagesData } = useQuery<{ messages: WhatsappMessage[]; hasMore: boolean }>({
@@ -110,6 +110,11 @@ export default function Inbox() {
     select: (d: any) => Array.isArray(d)
       ? d.filter((o: any) => o.customerId === selectedConv?.customerId).slice(0, 5)
       : [],
+  });
+
+  // Employees for assignment dropdown (all authenticated employees)
+  const { data: waUsers = [] } = useQuery<any[]>({
+    queryKey: ["/api/employees"],
   });
 
   const [, setLocation] = useLocation();
@@ -581,6 +586,27 @@ export default function Inbox() {
                   <SelectItem key={t} value={t}>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${TAG_COLORS[t]}`}>{t}</span>
                   </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Assigned To */}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground mb-1.5 flex items-center gap-1">
+              <User className="w-3.5 h-3.5" /> Assigned To
+            </p>
+            <Select
+              value={selectedConv.assignedTo?.toString() || "unassigned"}
+              onValueChange={v => patchConvMutation.mutate({ assignedTo: v === "unassigned" ? null : Number(v) })}
+            >
+              <SelectTrigger className="h-8 text-xs" data-testid="select-assigned-to">
+                <SelectValue placeholder="Unassigned" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {(waUsers as any[]).map((u: any) => (
+                  <SelectItem key={u.id} value={u.id}>{u.name || u.fullName || u.username}</SelectItem>
                 ))}
               </SelectContent>
             </Select>

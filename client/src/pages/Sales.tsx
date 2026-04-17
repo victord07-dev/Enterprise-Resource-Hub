@@ -1169,6 +1169,9 @@ export default function Sales() {
   const [waSelectedTemplate, setWaSelectedTemplate] = useState<string>("");
   const [waConvWindow, setWaConvWindow] = useState<Date | null>(null);
   const [waDialogTitle, setWaDialogTitle] = useState("Send via WhatsApp");
+  // Template variable values for preview and sending
+  const [waTemplateVars, setWaTemplateVars] = useState<string[]>([]);
+  const [waAutoContext, setWaAutoContext] = useState<Record<string, string>>({});
 
   const { data: waTemplates = [] } = useQuery<{ id: string; name: string; templateId: string; body: string }[]>({
     queryKey: ["/api/whatsapp/templates"],
@@ -1182,6 +1185,13 @@ export default function Sales() {
     setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nYour sales order *${order.orderNumber}* is being processed.\n\nStatus: ${order.status}\nAmount: ₹${Number(order.totalAmount || 0).toLocaleString("en-IN")}\n\nThank you for your business!`);
     setWaQuoteRef(order.orderNumber || order.id);
     setWaSelectedTemplate("");
+    setWaTemplateVars([]);
+    setWaAutoContext({
+      "1": customer?.name || "",
+      "2": order.orderNumber || "",
+      "3": order.status || "",
+      "4": `₹${Number(order.totalAmount || 0).toLocaleString("en-IN")}`,
+    });
     setWaConvWindow(null);
     setWaDialogTitle("Send Order Update via WhatsApp");
     setWaDialogOpen(true);
@@ -1205,6 +1215,13 @@ export default function Sales() {
     setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nPlease find your quotation *${q.quoteNumber}* attached.\n\nAmount: ₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}\nValid until: ${q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "—"}\n\nThank you for your business!`);
     setWaQuoteRef(q.quoteNumber);
     setWaSelectedTemplate("");
+    setWaTemplateVars([]);
+    setWaAutoContext({
+      "1": customer?.name || "",
+      "2": q.quoteNumber || "",
+      "3": `₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}`,
+      "4": q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "",
+    });
     setWaConvWindow(null);
     setWaDialogTitle("Send Quotation via WhatsApp");
     setWaDialogOpen(true);
@@ -1235,7 +1252,7 @@ export default function Sales() {
 
       let payload: Record<string, any>;
       if (waSelectedTemplate && waSelectedTemplate !== "__none__") {
-        payload = { type: "template", templateName: waSelectedTemplate, templateVariables: [] };
+        payload = { type: "template", templateName: waSelectedTemplate, templateVariables: waTemplateVars };
       } else if (windowIsOpen) {
         payload = { type: "text", text: waMessage };
       } else {
@@ -2432,7 +2449,18 @@ export default function Sales() {
             {waTemplates.length > 0 && (
               <div className="space-y-1.5">
                 <Label>Send via Template (recommended)</Label>
-                <Select value={waSelectedTemplate} onValueChange={setWaSelectedTemplate}>
+                <Select value={waSelectedTemplate} onValueChange={v => {
+                  setWaSelectedTemplate(v);
+                  // Auto-populate variable fields from context when template selected
+                  const tpl = waTemplates.find(t => t.templateId === v);
+                  if (tpl?.body) {
+                    const matches = tpl.body.match(/\{\{(\d+)\}\}/g) || [];
+                    const autoVars = matches.map((_: string, i: number) => waAutoContext[(i + 1).toString()] || "");
+                    setWaTemplateVars(autoVars);
+                  } else {
+                    setWaTemplateVars([]);
+                  }
+                }}>
                   <SelectTrigger data-testid="select-wa-template">
                     <SelectValue placeholder="Select an approved template..." />
                   </SelectTrigger>
@@ -2445,6 +2473,43 @@ export default function Sales() {
                 </Select>
               </div>
             )}
+
+            {/* Template preview with variable inputs */}
+            {waSelectedTemplate && waSelectedTemplate !== "__none__" && (() => {
+              const tpl = waTemplates.find(t => t.templateId === waSelectedTemplate);
+              if (!tpl) return null;
+              const matches = tpl.body?.match(/\{\{(\d+)\}\}/g) || [];
+              const previewBody = matches.reduce((body: string, ph: string, i: number) => body.replace(ph, waTemplateVars[i] || ph), tpl.body || "");
+              return (
+                <div className="space-y-2">
+                  {matches.length > 0 && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Template Variables</Label>
+                      {matches.map((_: string, i: number) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground w-16 shrink-0">{`{{${i + 1}}}`}</span>
+                          <Input
+                            className="h-7 text-xs"
+                            value={waTemplateVars[i] || ""}
+                            onChange={e => {
+                              const v = [...waTemplateVars];
+                              v[i] = e.target.value;
+                              setWaTemplateVars(v);
+                            }}
+                            placeholder={waAutoContext[(i + 1).toString()] || `Variable ${i + 1}`}
+                            data-testid={`input-wa-var-${i + 1}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="bg-muted/50 rounded-md p-3 text-xs whitespace-pre-wrap border">
+                    <p className="text-[10px] text-muted-foreground mb-1 font-medium">Preview</p>
+                    {previewBody}
+                  </div>
+                </div>
+              );
+            })()}
 
             {(!waSelectedTemplate || waSelectedTemplate === "__none__") && (
               <>

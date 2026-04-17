@@ -114,17 +114,19 @@ export async function sendDocumentMessage(
   return msgId;
 }
 
-// ── In-memory rate limiter (20 msg / 60s per conversation) ───────────────────
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+// ── Rolling-window rate limiter (20 msg / 60s per conversation) ──────────────
+// Stores timestamps of recent sends per conversation for a true sliding window.
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT_MAX = 20;
+const RATE_LIMIT_WINDOW_MS = 60_000;
 
 export function checkRateLimit(conversationId: string): boolean {
   const now = Date.now();
-  const entry = rateLimitMap.get(conversationId);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(conversationId, { count: 1, resetAt: now + 60000 });
-    return true;
-  }
-  if (entry.count >= 20) return false;
-  entry.count++;
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  // Get existing timestamps, evict those older than the window
+  const timestamps = (rateLimitMap.get(conversationId) || []).filter(t => t > cutoff);
+  if (timestamps.length >= RATE_LIMIT_MAX) return false;
+  timestamps.push(now);
+  rateLimitMap.set(conversationId, timestamps);
   return true;
 }

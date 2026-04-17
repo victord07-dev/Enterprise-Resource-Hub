@@ -45,6 +45,18 @@ export function exampleForMergeField(key: string | null | undefined): string | n
  * resolvable from a customer/lead alone and return null so the sender's manual value
  * is used instead.
  */
+export interface MergeFieldDocumentContext {
+  type?: "order" | "invoice" | "quote" | null;
+  orderNumber?: string | null;
+  invoiceNumber?: string | null;
+  quoteNumber?: string | null;
+  amount?: string | number | null;
+  balanceDue?: string | number | null;
+  dueDate?: string | Date | null;
+  paymentLink?: string | null;
+  status?: string | null;
+}
+
 export interface MergeFieldContext {
   customer?: {
     name?: string | null;
@@ -62,11 +74,27 @@ export interface MergeFieldContext {
     gstNumber?: string | null;
     company?: string | null;
   } | null;
+  document?: MergeFieldDocumentContext | null;
+}
+
+function formatAmount(v: string | number | null | undefined): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return null;
+  return `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatDate(v: string | Date | null | undefined): string | null {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 export function resolveMergeField(key: string, ctx: MergeFieldContext): string | null {
   const c = ctx.customer || null;
   const l = ctx.lead || null;
+  const d = ctx.document || null;
   switch (key) {
     case "customer_name":
       return c?.name || l?.name || null;
@@ -82,6 +110,22 @@ export function resolveMergeField(key: string, ctx: MergeFieldContext): string |
       return c?.address || l?.address || null;
     case "gst_number":
       return c?.gstNumber || l?.gstNumber || null;
+    case "order_number":
+      return d?.orderNumber || null;
+    case "invoice_number":
+      return d?.invoiceNumber || null;
+    case "quote_number":
+      return d?.quoteNumber || null;
+    case "amount":
+      return formatAmount(d?.amount ?? null);
+    case "balance_due":
+      return formatAmount(d?.balanceDue ?? null);
+    case "due_date":
+      return formatDate(d?.dueDate ?? null);
+    case "payment_link":
+      return d?.paymentLink || null;
+    case "status":
+      return d?.status || null;
     default:
       return null;
   }

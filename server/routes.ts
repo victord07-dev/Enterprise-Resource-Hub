@@ -6966,9 +6966,36 @@ export async function registerRoutes(
         return res.status(429).json({ message: "Rate limit exceeded (20 messages per minute)" });
       }
 
-      const { type, text, body, messageType: rawMessageType, templateName, templateVariables, templateLanguage, mediaUrl, filename } = req.body;
+      const { type, text, body, messageType: rawMessageType, templateName, templateVariables, templateVariableNames, templateLanguage, documentContext, mediaUrl, filename } = req.body;
       const msgType = type || rawMessageType || "text";
       const msgText = text || body;
+
+      // Resolve any unfilled named template variables from the document/customer context.
+      // This lets one-off template sends from order/invoice/quote pages auto-fill
+      // fields like order_number, amount, due_date, payment_link, etc.
+      let resolvedTemplateVariables: string[] | undefined;
+      if (msgType === "template" && Array.isArray(templateVariables)) {
+        const names: string[] = Array.isArray(templateVariableNames) ? templateVariableNames : [];
+        if (names.length > 0 || documentContext) {
+          let convCustomer: any = null;
+          let convLead: any = null;
+          try {
+            if (conv.customerId) convCustomer = await storage.getCustomer(conv.customerId);
+            if (conv.leadId) convLead = await storage.getLead(conv.leadId);
+          } catch {}
+          const ctx = { customer: convCustomer, lead: convLead, document: documentContext || null };
+          resolvedTemplateVariables = (templateVariables as string[]).map((val, idx) => {
+            const fieldKey = names[idx];
+            const manual = (val || "").trim();
+            if (manual) return manual;
+            if (fieldKey && isCommonMergeField(fieldKey)) {
+              const resolved = resolveMergeField(fieldKey, ctx);
+              if (resolved) return resolved;
+            }
+            return val ?? "";
+          });
+        }
+      }
 
       // Enforce 24h messaging window for non-template messages
       const windowOpen = conv.windowExpiresAt && new Date(conv.windowExpiresAt) > new Date();
@@ -6982,7 +7009,7 @@ export async function registerRoutes(
 
       try {
         if (msgType === "template" && templateName) {
-          interaktMessageId = await sendTemplateMessage(conv.phoneNumber, templateName, templateVariables || [], templateLanguage || "en");
+          interaktMessageId = await sendTemplateMessage(conv.phoneNumber, templateName, resolvedTemplateVariables || templateVariables || [], templateLanguage || "en");
         } else if (msgType === "document" && mediaUrl) {
           interaktMessageId = await sendDocumentMessage(conv.phoneNumber, mediaUrl, filename || "document.pdf");
           msgBody = filename || "Document";

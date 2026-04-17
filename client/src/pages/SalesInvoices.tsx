@@ -16,9 +16,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import {
   FileText, Plus, IndianRupee, CheckCircle2, Clock, AlertCircle,
-  ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw
+  ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw,
+  MessageCircle, AlertTriangle
 } from "lucide-react";
 import type { SalesInvoice, SalesInvoiceItem, CustomerPayment, DeliveryChallan, Customer } from "@shared/schema";
+import { resolveMergeField, isCommonMergeField, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 const fmt = (n: number | string | null | undefined) =>
@@ -609,6 +611,7 @@ function InvoiceDetailPanel({
   const { toast } = useToast();
   const [payOpen, setPayOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
+  const [waOpen, setWaOpen] = useState(false);
 
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
     queryKey: ["/api/sales-invoices", invoiceId],
@@ -655,6 +658,18 @@ function InvoiceDetailPanel({
             <Badge variant="outline" className="gap-1"><Building2 className="w-3 h-3" />B2B</Badge>
           ) : (
             <Badge variant="outline" className="gap-1"><User className="w-3 h-3" />B2C</Badge>
+          )}
+          {customer?.phone && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20"
+              onClick={() => setWaOpen(true)}
+              data-testid={`button-wa-invoice-${inv.id}`}
+              title="Send WhatsApp template"
+            >
+              <MessageCircle className="w-4 h-4 mr-1" /> WhatsApp
+            </Button>
           )}
         </div>
       </div>
@@ -865,7 +880,187 @@ function InvoiceDetailPanel({
       {returnOpen && (
         <SalesReturnDialog invoice={inv} open={returnOpen} onClose={() => { setReturnOpen(false); }} />
       )}
+      {waOpen && customer && (
+        <SendInvoiceWhatsappDialog
+          open={waOpen}
+          onClose={() => setWaOpen(false)}
+          invoice={inv}
+          customer={customer}
+          balanceDue={netBalance}
+        />
+      )}
     </div>
+  );
+}
+
+// ─── Send WhatsApp template (with auto-fill from invoice context) ───────────
+function SendInvoiceWhatsappDialog({
+  open, onClose, invoice, customer, balanceDue,
+}: {
+  open: boolean;
+  onClose: () => void;
+  invoice: InvoiceWithExtras;
+  customer: Customer;
+  balanceDue: number;
+}) {
+  const { toast } = useToast();
+  const [phone, setPhone] = useState(customer.phone || "");
+  const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [vars, setVars] = useState<string[]>([]);
+
+  const docContext: MergeFieldDocumentContext = {
+    type: "invoice",
+    invoiceNumber: invoice.invoiceNumber,
+    amount: invoice.grandTotal,
+    balanceDue: balanceDue,
+    dueDate: invoice.dueDate ?? null,
+    status: invoice.status,
+  };
+  const customerContext = {
+    name: customer.name,
+    email: customer.email,
+    phone: customer.phone,
+    address: customer.address,
+    gstNumber: customer.gstNumber,
+    contactPerson: customer.contactPerson,
+  };
+
+  const { data: templates = [] } = useQuery<{ id: string; name: string; interaktTemplateName: string; body: string; variables: string[] }[]>({
+    queryKey: ["/api/whatsapp/templates"],
+    enabled: open,
+    select: (d: any[]) => d.filter((t) => t.isActive === "approved"),
+  });
+
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      let p = phone.replace(/\D/g, "");
+      if (p.length === 10 && /^[6-9]/.test(p)) p = "91" + p;
+      const convRes = await apiRequest("POST", "/api/whatsapp/conversations/get-or-create", { phone: p });
+      if (!convRes.ok) { const e = await convRes.json(); throw new Error(e.message || "Failed to open conversation"); }
+      const conv = await convRes.json();
+      const tpl = templates.find((t) => t.interaktTemplateName === selectedTemplate);
+      const sendRes = await apiRequest("POST", `/api/whatsapp/conversations/${conv.id}/send`, {
+        type: "template",
+        templateName: selectedTemplate,
+        templateVariables: vars,
+        templateVariableNames: tpl?.variables || [],
+        documentContext: docContext,
+      });
+      if (!sendRes.ok) { const e = await sendRes.json(); throw new Error(e.message || "Failed to send"); }
+    },
+    onSuccess: () => {
+      toast({ title: "WhatsApp message sent", description: invoice.invoiceNumber });
+      onClose();
+    },
+    onError: (e: Error) => toast({ title: "WhatsApp send failed", description: e.message, variant: "destructive" }),
+  });
+
+  const tpl = templates.find((t) => t.interaktTemplateName === selectedTemplate);
+  const matches = tpl?.body?.match(/\{\{(\d+)\}\}/g) || [];
+  const previewBody = matches.reduce(
+    (b: string, ph: string, i: number) => b.replace(ph, vars[i] || ph),
+    tpl?.body || "",
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <MessageCircle className="w-5 h-5 text-green-500" /> Send Invoice via WhatsApp
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <Label>Phone Number</Label>
+            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91 98765 43210" data-testid="input-wa-invoice-phone" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Template</Label>
+            {templates.length === 0 ? (
+              <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-3 py-2 rounded-md text-xs">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>No approved templates available.</span>
+              </div>
+            ) : (
+              <Select
+                value={selectedTemplate}
+                onValueChange={(v) => {
+                  setSelectedTemplate(v);
+                  const t = templates.find((x) => x.interaktTemplateName === v);
+                  if (!t) { setVars([]); return; }
+                  const ms = t.body?.match(/\{\{(\d+)\}\}/g) || [];
+                  const tplVars = t.variables || [];
+                  const next = ms.map((_: string, i: number) => {
+                    const key = tplVars[i];
+                    if (key && isCommonMergeField(key)) {
+                      const r = resolveMergeField(key, { customer: customerContext, document: docContext });
+                      if (r) return r;
+                    }
+                    return "";
+                  });
+                  setVars(next);
+                }}
+              >
+                <SelectTrigger data-testid="select-wa-invoice-template">
+                  <SelectValue placeholder="Select an approved template..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={t.interaktTemplateName}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          {tpl && matches.length > 0 && (
+            <div className="space-y-2">
+              <Label className="text-xs">Template Variables</Label>
+              {matches.map((_: string, i: number) => {
+                const key = (tpl.variables || [])[i];
+                return (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground w-28 shrink-0">
+                      {`{{${i + 1}}}`}{key ? ` · ${key}` : ""}
+                    </span>
+                    <Input
+                      className="h-7 text-xs"
+                      value={vars[i] || ""}
+                      onChange={(e) => {
+                        const v = [...vars];
+                        v[i] = e.target.value;
+                        setVars(v);
+                      }}
+                      placeholder={`Variable ${i + 1}`}
+                      data-testid={`input-wa-invoice-var-${i + 1}`}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {tpl && (
+            <div className="bg-muted/50 rounded-md p-3 text-xs whitespace-pre-wrap border">
+              <p className="text-[10px] text-muted-foreground mb-1 font-medium">Preview</p>
+              {previewBody}
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button
+            disabled={!phone || !selectedTemplate || sendMutation.isPending}
+            onClick={() => sendMutation.mutate()}
+            className="bg-green-600 hover:bg-green-700 text-white"
+            data-testid="button-wa-invoice-send"
+          >
+            {sendMutation.isPending ? "Sending..." : "Send"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

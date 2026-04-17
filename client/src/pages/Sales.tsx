@@ -17,6 +17,7 @@ import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
+import { resolveMergeField, isCommonMergeField, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
 interface LineItem {
   itemType: string;
@@ -1172,8 +1173,10 @@ export default function Sales() {
   // Template variable values for preview and sending
   const [waTemplateVars, setWaTemplateVars] = useState<string[]>([]);
   const [waAutoContext, setWaAutoContext] = useState<Record<string, string>>({});
+  const [waDocContext, setWaDocContext] = useState<MergeFieldDocumentContext | null>(null);
+  const [waCustomerContext, setWaCustomerContext] = useState<{ name?: string | null; email?: string | null; phone?: string | null; address?: string | null; gstNumber?: string | null; contactPerson?: string | null } | null>(null);
 
-  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; interaktTemplateName: string; body: string }[]>({
+  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; interaktTemplateName: string; body: string; variables: string[] }[]>({
     queryKey: ["/api/whatsapp/templates"],
     enabled: waDialogOpen,
     select: (d: any[]) => d.filter(t => t.isActive === "approved"),
@@ -1191,6 +1194,13 @@ export default function Sales() {
       "2": order.orderNumber || "",
       "3": order.status || "",
       "4": `₹${Number(order.totalAmount || 0).toLocaleString("en-IN")}`,
+    });
+    setWaCustomerContext(customer ? { name: customer.name, email: customer.email, phone: customer.phone, address: customer.address, gstNumber: customer.gstNumber, contactPerson: customer.contactPerson } : null);
+    setWaDocContext({
+      type: "order",
+      orderNumber: order.orderNumber || null,
+      amount: order.totalAmount ?? null,
+      status: order.status || null,
     });
     setWaConvWindow(null);
     setWaDialogTitle("Send Order Update via WhatsApp");
@@ -1222,6 +1232,14 @@ export default function Sales() {
       "3": `₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}`,
       "4": q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "",
     });
+    setWaCustomerContext(customer ? { name: customer.name, email: customer.email, phone: customer.phone, address: customer.address, gstNumber: customer.gstNumber, contactPerson: customer.contactPerson } : null);
+    setWaDocContext({
+      type: "quote",
+      quoteNumber: q.quoteNumber || null,
+      amount: q.totalAmount ?? null,
+      dueDate: q.validUntil ?? null,
+      status: q.status || null,
+    });
     setWaConvWindow(null);
     setWaDialogTitle("Send Quotation via WhatsApp");
     setWaDialogOpen(true);
@@ -1252,7 +1270,14 @@ export default function Sales() {
 
       let payload: Record<string, any>;
       if (waSelectedTemplate && waSelectedTemplate !== "__none__") {
-        payload = { type: "template", templateName: waSelectedTemplate, templateVariables: waTemplateVars };
+        const tpl = waTemplates.find(t => t.interaktTemplateName === waSelectedTemplate);
+        payload = {
+          type: "template",
+          templateName: waSelectedTemplate,
+          templateVariables: waTemplateVars,
+          templateVariableNames: tpl?.variables || [],
+          documentContext: waDocContext || undefined,
+        };
       } else if (windowIsOpen) {
         payload = { type: "text", text: waMessage };
       } else {
@@ -2451,11 +2476,21 @@ export default function Sales() {
                 <Label>Send via Template (recommended)</Label>
                 <Select value={waSelectedTemplate} onValueChange={v => {
                   setWaSelectedTemplate(v);
-                  // Auto-populate variable fields from context when template selected
+                  // Auto-populate variable fields from context when template selected.
+                  // Prefer resolving by named merge-field key (template.variables[i]) using
+                  // the document/customer context. Fall back to position-based defaults.
                   const tpl = waTemplates.find(t => t.interaktTemplateName === v);
                   if (tpl?.body) {
                     const matches = tpl.body.match(/\{\{(\d+)\}\}/g) || [];
-                    const autoVars = matches.map((_: string, i: number) => waAutoContext[(i + 1).toString()] || "");
+                    const tplVars = tpl.variables || [];
+                    const autoVars = matches.map((_: string, i: number) => {
+                      const key = tplVars[i];
+                      if (key && isCommonMergeField(key)) {
+                        const resolved = resolveMergeField(key, { customer: waCustomerContext, document: waDocContext });
+                        if (resolved) return resolved;
+                      }
+                      return waAutoContext[(i + 1).toString()] || "";
+                    });
                     setWaTemplateVars(autoVars);
                   } else {
                     setWaTemplateVars([]);

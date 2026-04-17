@@ -135,6 +135,21 @@ function extractBody(components?: InteraktTemplate["components"]): string {
   return body?.text || "";
 }
 
+// Parse {{1}}, {{2}}, ... placeholders from a template body and return
+// generic variable names. Only positions actually present in the body get
+// a name (sparse placeholders like {{1}} and {{3}} produce ["var1", "var3"]).
+export function extractVariableNames(body: string): string[] {
+  if (!body) return [];
+  const regex = /\{\{\s*(\d+)\s*\}\}/g;
+  const seen = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = regex.exec(body)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n) && n > 0) seen.add(n);
+  }
+  return Array.from(seen).sort((a, b) => a - b).map(n => `var${n}`);
+}
+
 function mapStatus(status?: string): string {
   const s = (status || "").toUpperCase();
   if (s === "APPROVED") return "approved";
@@ -169,12 +184,14 @@ export async function fetchInteraktTemplates(): Promise<InteraktTemplate[]> {
 }
 
 export function mapInteraktTemplate(t: InteraktTemplate) {
+  const body = extractBody(t.components);
   return {
     name: t.name,
     interaktTemplateName: t.name,
     category: (t.category || "custom").toLowerCase(),
     languageCode: t.language || "en",
-    body: extractBody(t.components),
+    body,
+    variables: extractVariableNames(body),
     isActive: mapStatus(t.status),
   };
 }

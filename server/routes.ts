@@ -7160,10 +7160,22 @@ export async function registerRoutes(
         if (!mapped.body) { skipped++; continue; }
         const existing = await storage.getWhatsappTemplateByInteraktName(mapped.interaktTemplateName, mapped.languageCode);
         if (existing) {
+          // Preserve manual variable edits. Only fill in / extend names when
+          // the operator hasn't named them yet, or when the body now has more
+          // placeholders than the saved variable list.
+          const existingVars = Array.isArray(existing.variables) ? existing.variables : [];
+          // Preserve manual edits, but backfill any blank/missing slots with
+          // generated defaults from the (possibly longer) remote body.
+          const mergedLen = Math.max(existingVars.length, mapped.variables.length);
+          const mergedVars = Array.from({ length: mergedLen }, (_, i) => {
+            const existingName = (existingVars[i] || "").trim();
+            return existingName || mapped.variables[i] || `var${i + 1}`;
+          });
           await storage.updateWhatsappTemplate(existing.id, {
             name: existing.name || mapped.name,
             category: mapped.category,
             body: mapped.body,
+            variables: mergedVars,
             isActive: mapped.isActive,
           });
           updated++;
@@ -7174,7 +7186,7 @@ export async function registerRoutes(
             category: mapped.category,
             languageCode: mapped.languageCode,
             body: mapped.body,
-            variables: [],
+            variables: mapped.variables,
             isActive: mapped.isActive,
           });
           created++;

@@ -125,6 +125,7 @@ export interface InteraktTemplate {
     type: string;
     text?: string;
     format?: string;
+    example?: { body_text?: string[][]; header_text?: string[]; [k: string]: any };
     buttons?: Array<{ type: string; text: string; url?: string; phone_number?: string }>;
   }>;
 }
@@ -133,6 +134,15 @@ function extractBody(components?: InteraktTemplate["components"]): string {
   if (!components) return "";
   const body = components.find(c => c.type?.toUpperCase() === "BODY");
   return body?.text || "";
+}
+
+export function extractBodyExamples(components?: InteraktTemplate["components"]): string[] {
+  if (!components) return [];
+  const body = components.find(c => c.type?.toUpperCase() === "BODY");
+  const ex = body?.example?.body_text;
+  if (!Array.isArray(ex) || ex.length === 0) return [];
+  const row = Array.isArray(ex[0]) ? ex[0] : [];
+  return row.map(v => (typeof v === "string" ? v : ""));
 }
 
 // Parse {{1}}, {{2}}, ... placeholders from a template body and return
@@ -192,6 +202,7 @@ export function mapInteraktTemplate(t: InteraktTemplate) {
     languageCode: t.language || "en",
     body,
     variables: extractVariableNames(body),
+    exampleValues: extractBodyExamples(t.components),
     isActive: mapStatus(t.status),
   };
 }
@@ -305,11 +316,18 @@ async function runSyncInteraktTemplates(storage: {
         const existingName = (existingVars[i] || "").trim();
         return existingName || mapped.variables[i] || `var${i + 1}`;
       });
+      const existingExamples = Array.isArray(existing.exampleValues) ? existing.exampleValues : [];
+      const exLen = Math.max(existingExamples.length, mapped.exampleValues.length);
+      const mergedExamples = Array.from({ length: exLen }, (_, i) => {
+        const existingEx = (existingExamples[i] || "").trim();
+        return existingEx || mapped.exampleValues[i] || "";
+      });
       await storage.updateWhatsappTemplate(existing.id, {
         name: existing.name || mapped.name,
         category: mapped.category,
         body: mapped.body,
         variables: mergedVars,
+        exampleValues: mergedExamples,
         isActive: mapped.isActive,
       });
       updated++;
@@ -321,6 +339,7 @@ async function runSyncInteraktTemplates(storage: {
         languageCode: mapped.languageCode,
         body: mapped.body,
         variables: mapped.variables,
+        exampleValues: mapped.exampleValues,
         isActive: mapped.isActive,
       });
       created++;

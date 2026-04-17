@@ -847,6 +847,7 @@ export const whatsappTemplates = pgTable("whatsapp_templates", {
   languageCode: text("language").notNull().default("en"),
   body: text("body").notNull(),
   variables: text("variables").array().notNull().default(sql`'{}'::text[]`),
+  exampleValues: text("example_values").array().notNull().default(sql`'{}'::text[]`),
   isActive: text("status").notNull().default("approved"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });

@@ -167,6 +167,14 @@ export default function WhatsAppTemplates() {
           while (out.length > 0 && out[out.length - 1] === "") out.pop();
           return out;
         })(),
+        exampleValues: (() => {
+          const nums = placeholderNumbers(form.body);
+          const max = nums.length > 0 ? nums[nums.length - 1] : form.examples.length;
+          const out: string[] = [];
+          for (let i = 0; i < max; i++) out.push((form.examples[i] || "").trim());
+          while (out.length > 0 && out[out.length - 1] === "") out.pop();
+          return out;
+        })(),
         isActive: form.isActive,
       };
       if (editingTemplate) {
@@ -238,7 +246,7 @@ export default function WhatsAppTemplates() {
       languageCode: t.languageCode,
       body: t.body,
       variables: [...(t.variables || [])],
-      examples: [],
+      examples: [...(t.exampleValues || [])],
       isActive: t.isActive,
     });
     setDialogOpen(true);

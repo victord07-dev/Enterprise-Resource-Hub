@@ -32,6 +32,9 @@ import Products from "@/pages/Products";
 import MyPortal from "@/pages/MyPortal";
 import SalesInvoices from "@/pages/SalesInvoices";
 import Pricing from "@/pages/Pricing";
+import Inbox from "@/pages/Inbox";
+import Campaigns from "@/pages/Campaigns";
+import WhatsAppTemplates from "@/pages/WhatsAppTemplates";
 
 interface NotificationBellProps {
   open: boolean;
@@ -185,6 +188,9 @@ function Router() {
       <Route path="/audit-trail" component={() => <ProtectedRoute component={AuditTrail} path="/audit-trail" />} />
       <Route path="/sales-invoices" component={() => <ProtectedRoute component={SalesInvoices} path="/sales-invoices" />} />
       <Route path="/pricing" component={() => <ProtectedRoute component={Pricing} path="/pricing" />} />
+      <Route path="/inbox" component={() => <ProtectedRoute component={Inbox} path="/inbox" />} />
+      <Route path="/campaigns" component={() => <ProtectedRoute component={Campaigns} path="/campaigns" />} />
+      <Route path="/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/whatsapp-templates" />} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -17,6 +17,9 @@ import {
   User,
   FileText,
   TrendingUp,
+  MessageCircle,
+  Megaphone,
+  Tag,
 } from "lucide-react";
 import {
   Sidebar,
@@ -47,6 +50,9 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Sales Invoices", url: "/sales-invoices", icon: FileText },
   { title: "Accounts", url: "/accounts", icon: CreditCard },
   { title: "Employees", url: "/employees", icon: Users },
+  { title: "WhatsApp Inbox", url: "/inbox", icon: MessageCircle },
+  { title: "Campaigns", url: "/campaigns", icon: Megaphone },
+  { title: "WA Templates", url: "/whatsapp-templates", icon: Tag },
   { title: "Reports", url: "/reports", icon: BarChart3 },
   { title: "Audit Trail", url: "/audit-trail", icon: FileSearch },
 ];
@@ -55,7 +61,7 @@ const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
   field_staff: ["/my-portal", "/field-staff"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/reports"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/whatsapp-templates", "/reports"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
   accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
 };

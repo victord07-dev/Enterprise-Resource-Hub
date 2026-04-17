@@ -3,6 +3,9 @@ import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import cron from "node-cron";
+import { storage } from "./storage";
+import { sendTemplateMessage } from "./whatsapp";
 
 const app = express();
 const httpServer = createServer(app);
@@ -62,6 +65,42 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+
+  // ── WhatsApp CRON Alerts ───────────────────────────────────────────────────
+  async function sendOwnerDailyAlert() {
+    try {
+      const templateName = "owner_daily_alert";
+      const allLeads = await storage.getLeads();
+      const allInvoices = await storage.getSupplierInvoices();
+      const allPayroll = await storage.getPayrollStatuses();
+
+      const overdueLeadFollowups = 0;
+      const supplierDue = allInvoices.filter((inv: any) => inv.status === "pending").length;
+      const salaryPending = allPayroll.filter((p: any) => p.status === "pending").length;
+
+      const adminUsers = await storage.getUsers();
+      for (const user of adminUsers) {
+        if (user.role !== "admin") continue;
+        const emp = user.employeeId
+          ? (await storage.getEmployee(user.employeeId))
+          : null;
+        const ownerName = emp?.name || user.fullName || user.username;
+        const phone = emp?.phone;
+        if (!phone) continue;
+        await sendTemplateMessage(phone, templateName, [
+          ownerName,
+          String(overdueLeadFollowups),
+          String(supplierDue),
+          String(salaryPending),
+        ]);
+      }
+    } catch (err) {
+      console.error("[WA CRON] owner_daily_alert error:", err);
+    }
+  }
+
+  cron.schedule("0 9 * * *", sendOwnerDailyAlert, { timezone: "Asia/Kolkata" });
+  cron.schedule("0 18 * * *", sendOwnerDailyAlert, { timezone: "Asia/Kolkata" });
 
   // return JSON 404 for unmatched /api/* routes in both dev and production
   app.use("/api/{*path}", (_req: Request, res: Response) => {

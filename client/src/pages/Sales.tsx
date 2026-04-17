@@ -1162,6 +1162,37 @@ export default function Sales() {
     }
   };
 
+  const [waDialogOpen, setWaDialogOpen] = useState(false);
+  const [waTargetPhone, setWaTargetPhone] = useState("");
+  const [waMessage, setWaMessage] = useState("");
+  const [waQuoteRef, setWaQuoteRef] = useState("");
+
+  const openWaDialog = (q: Quotation) => {
+    const customer = customers?.find(c => c.id === q.customerId);
+    setWaTargetPhone(customer?.phone || "");
+    setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nPlease find your quotation *${q.quoteNumber}* attached.\n\nAmount: ₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}\nValid until: ${q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "—"}\n\nThank you for your business!`);
+    setWaQuoteRef(q.quoteNumber);
+    setWaDialogOpen(true);
+  };
+
+  const sendWaMutation = useMutation({
+    mutationFn: async () => {
+      let phone = waTargetPhone.replace(/\D/g, "");
+      if (phone.length === 10 && /^[6-9]/.test(phone)) phone = "91" + phone;
+      const convRes = await apiRequest("POST", "/api/whatsapp/conversations", { phone });
+      if (!convRes.ok) { const e = await convRes.json(); throw new Error(e.message || "Failed to open conversation"); }
+      const conv = await convRes.json();
+      const sendRes = await apiRequest("POST", `/api/whatsapp/conversations/${conv.id}/send`, { type: "text", text: waMessage });
+      if (!sendRes.ok) { const e = await sendRes.json(); throw new Error(e.message || "Failed to send message"); }
+      return conv;
+    },
+    onSuccess: () => {
+      toast({ title: "WhatsApp message sent", description: waQuoteRef });
+      setWaDialogOpen(false);
+    },
+    onError: (e: Error) => toast({ title: "WhatsApp send failed", description: e.message, variant: "destructive" }),
+  });
+
   const getCustomerName = (id: string) => customers?.find(c => c.id === id)?.name || "—";
 
   return (
@@ -1607,6 +1638,9 @@ export default function Sales() {
                                 )}
                                 <Button size="icon" variant="ghost" title="Download PDF" data-testid={`button-download-quote-${q.id}`} onClick={() => downloadQuotePDF(q)}>
                                   <Download className="w-4 h-4" />
+                                </Button>
+                                <Button size="icon" variant="ghost" title="Send via WhatsApp" data-testid={`button-wa-quote-${q.id}`} className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20" onClick={() => openWaDialog(q)}>
+                                  <MessageCircle className="w-4 h-4" />
                                 </Button>
                                 {!isReadOnly && (
                                   <Button size="icon" variant="ghost" data-testid={`button-edit-quote-${q.id}`} onClick={() => openEditQuote(q)}>
@@ -2304,6 +2338,51 @@ export default function Sales() {
           <DialogFooter>
             <Button data-testid="button-submit-customer" disabled={customerMutation.isPending} onClick={() => customerMutation.mutate(customerForm)}>
               {customerMutation.isPending ? "Saving..." : editingCustomer ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* WhatsApp Send Dialog */}
+      <Dialog open={waDialogOpen} onOpenChange={setWaDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="w-5 h-5 text-green-500" />
+              Send via WhatsApp
+            </DialogTitle>
+            <DialogDescription>Send quotation details to the customer via WhatsApp</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Phone Number</Label>
+              <Input
+                value={waTargetPhone}
+                onChange={e => setWaTargetPhone(e.target.value)}
+                placeholder="+91 98765 43210"
+                data-testid="input-wa-phone"
+              />
+              <p className="text-xs text-muted-foreground">10-digit Indian numbers will be auto-formatted</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Message</Label>
+              <Textarea
+                value={waMessage}
+                onChange={e => setWaMessage(e.target.value)}
+                className="min-h-[120px] text-sm resize-none"
+                data-testid="textarea-wa-message"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWaDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={!waTargetPhone || !waMessage || sendWaMutation.isPending}
+              onClick={() => sendWaMutation.mutate()}
+              className="bg-green-600 hover:bg-green-700 text-white"
+              data-testid="button-wa-send"
+            >
+              {sendWaMutation.isPending ? "Sending..." : "Send Message"}
             </Button>
           </DialogFooter>
         </DialogContent>

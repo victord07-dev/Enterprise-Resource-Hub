@@ -42,6 +42,8 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
 
 - **Sales Returns & Credit Notes:** Full sales return workflow with GST reversal, stock ledger RETURN_IN entries, and CN-YYFYEND-NNNN numbered credit notes. Returns linked to invoice with qty validation, return type, reason, and AttachmentsPanel. `creditedAmount` tracked on invoices; AR outstanding net of credits. Credit Notes tab in Accounts page.
 
+- **WhatsApp CRM Integration (Interakt):** Full WhatsApp CRM module. DB tables: `whatsapp_conversations` (phone-keyed, links to customer/lead), `whatsapp_messages`, `whatsapp_templates`. Backend: HMAC-verified webhook (Interakt), inbound message storage, outbound text/template/document via Interakt API, rate limiting (20 msg/60s per conversation), CRON daily alerts (9am + 6pm IST) with overdue/supplier/salary counts. Frontend: `/inbox` (3-panel: conversation list + message thread + contact panel), `/campaigns` (bulk template send to customers/leads/custom), `/whatsapp-templates` (CRUD for template registry). "Send via WhatsApp" button on Sales quotation rows opens pre-filled dialog. Sidebar visible to admin + sales_manager roles. Phone normalisation (E.164, 10-digit Indian → prepend 91). Unknown callers get "Create Lead" button in inbox. Conversations never reopen after close.
+
 ## External Dependencies
 - **Database:** PostgreSQL.
 - **ORM:** Drizzle ORM.

@@ -21,9 +21,11 @@ import {
   insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
   insertAttachmentSchema, attachments as attachmentsTable,
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
+  insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
+import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit } from "./whatsapp";
 import multer from "multer";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
@@ -6653,6 +6655,366 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err) {
       res.status(500).json({ message: "Failed to reject price sheet" });
+    }
+  });
+
+  // ── WhatsApp Webhook (no auth — verified by HMAC + token) ──────────────────
+  app.post("/api/whatsapp/webhook", async (req: any, res) => {
+    try {
+      const token = req.query.token as string;
+      const expectedToken = process.env.WHATSAPP_WEBHOOK_TOKEN;
+      if (!expectedToken || token !== expectedToken) {
+        return res.status(401).json({ message: "Invalid webhook token" });
+      }
+
+      const signature = req.headers["x-interakt-signature"] as string;
+      const rawBody = req.rawBody as Buffer;
+      if (signature && rawBody) {
+        const valid = verifyInteraktSignature(rawBody, signature);
+        if (!valid) {
+          console.warn("[WA] Webhook HMAC mismatch — rejecting");
+          return res.status(401).json({ message: "Invalid signature" });
+        }
+      }
+
+      const body = req.body;
+      // Handle status updates (delivered, read, failed)
+      if (body?.data?.message?.id && body?.data?.message?.status) {
+        const { id, status } = body.data.message;
+        await storage.updateWhatsappMessageStatusByInteraktId(id, status);
+        return res.json({ ok: true });
+      }
+
+      // Handle inbound message
+      const waPhone = body?.data?.customer?.phone_number || body?.data?.message?.from;
+      const messageText = body?.data?.message?.message?.text?.body
+        || body?.data?.message?.message?.template?.name
+        || body?.data?.message?.message?.type
+        || "";
+      const messageType = body?.data?.message?.message?.type || "text";
+      const interaktMessageId = body?.data?.message?.id;
+
+      if (!waPhone) return res.json({ ok: true });
+
+      const normPhone = normalisePhone(String(waPhone));
+      const contactName = body?.data?.customer?.name || body?.data?.message?.customerName || null;
+
+      // Find or create conversation — only inbound resets the 24h window
+      let conv = await storage.getWhatsappConversationByPhone(normPhone);
+      const windowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      if (!conv) {
+        // Try to match against existing customers/leads
+        const allCustomers = await storage.getCustomers();
+        const allLeads = await storage.getLeads();
+        const matchedCustomer = allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
+        const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+        conv = await storage.createWhatsappConversation({
+          phone: normPhone,
+          contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
+          customerId: matchedCustomer?.id || null,
+          leadId: matchedLead?.id || null,
+          status: "open",
+          windowExpiresAt,
+        });
+      } else {
+        // Only inbound messages reset the conversation window
+        await storage.updateWhatsappConversation(conv.id, {
+          windowExpiresAt,
+          lastMessageAt: new Date(),
+          status: conv.status === "closed" ? conv.status : "open",
+          contactName: conv.contactName || contactName || undefined,
+        });
+      }
+
+      await storage.createWhatsappMessage({
+        conversationId: conv.id,
+        direction: "inbound",
+        body: messageText,
+        messageType,
+        interaktMessageId: interaktMessageId || null,
+        status: "received",
+        sentBy: null,
+      });
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[WA] Webhook error:", err);
+      res.status(500).json({ message: "Webhook error" });
+    }
+  });
+
+  // Webhook GET verification (Interakt may send a GET to verify the endpoint)
+  app.get("/api/whatsapp/webhook", (req: any, res) => {
+    const token = req.query.token as string;
+    if (token === process.env.WHATSAPP_WEBHOOK_TOKEN) {
+      return res.send(req.query["hub.challenge"] || "OK");
+    }
+    res.status(401).send("Forbidden");
+  });
+
+  // ── WhatsApp Conversations ─────────────────────────────────────────────────
+  app.get("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
+    try {
+      const conversations = await storage.getWhatsappConversations();
+      // Enrich with customer/lead name
+      const allCustomers = await storage.getCustomers();
+      const allLeads = await storage.getLeads();
+      const enriched = conversations.map(c => ({
+        ...c,
+        customerName: c.customerId ? allCustomers.find(cu => cu.id === c.customerId)?.name : null,
+        leadName: c.leadId ? allLeads.find(l => l.id === c.leadId)?.name : null,
+      }));
+      res.json(enriched);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch conversations" });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
+    try {
+      const { phone, contactName, customerId, leadId } = req.body;
+      if (!phone) return res.status(400).json({ message: "phone required" });
+      const normPhone = normalisePhone(String(phone));
+
+      let conv = await storage.getWhatsappConversationByPhone(normPhone);
+      if (conv) return res.json(conv);
+
+      const allCustomers = await storage.getCustomers();
+      const allLeads = await storage.getLeads();
+      const matchedCustomer = customerId ? allCustomers.find(c => c.id === customerId) : allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
+      const matchedLead = leadId ? allLeads.find(l => l.id === leadId) : allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
+
+      conv = await storage.createWhatsappConversation({
+        phone: normPhone,
+        contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
+        customerId: matchedCustomer?.id || null,
+        leadId: matchedLead?.id || null,
+        status: "open",
+        windowExpiresAt: null,
+      });
+      res.status(201).json(conv);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to create conversation" });
+    }
+  });
+
+  app.patch("/api/whatsapp/conversations/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const conv = await storage.getWhatsappConversation(req.params.id);
+      if (!conv) return res.status(404).json({ message: "Conversation not found" });
+      const { status, tag, assignedTo, contactName, customerId, leadId } = req.body;
+      const updates: any = {};
+      if (status !== undefined) {
+        if (conv.status === "closed" && status === "open") {
+          return res.status(409).json({ message: "Closed conversations cannot be reopened" });
+        }
+        updates.status = status;
+        if (status === "closed") updates.windowExpiresAt = null;
+      }
+      if (tag !== undefined) updates.tag = tag;
+      if (assignedTo !== undefined) updates.assignedTo = assignedTo;
+      if (contactName !== undefined) updates.contactName = contactName;
+      if (customerId !== undefined) updates.customerId = customerId;
+      if (leadId !== undefined) updates.leadId = leadId;
+      const updated = await storage.updateWhatsappConversation(conv.id, updates);
+      res.json(updated);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to update conversation" });
+    }
+  });
+
+  // ── WhatsApp Messages ──────────────────────────────────────────────────────
+  app.get("/api/whatsapp/conversations/:id/messages", authenticateToken, async (req: any, res) => {
+    try {
+      const messages = await storage.getWhatsappMessages(req.params.id);
+      res.json(messages);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch messages" });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations/:id/send", authenticateToken, async (req: any, res) => {
+    try {
+      const conv = await storage.getWhatsappConversation(req.params.id);
+      if (!conv) return res.status(404).json({ message: "Conversation not found" });
+      if (conv.status === "closed") return res.status(409).json({ message: "Cannot send to a closed conversation" });
+
+      if (!checkRateLimit(conv.id)) {
+        return res.status(429).json({ message: "Rate limit exceeded (20 messages per minute)" });
+      }
+
+      const { body, messageType = "text", templateName, templateVariables, mediaUrl, filename } = req.body;
+
+      let interaktMessageId: string | null = null;
+      let msgBody = body || "";
+
+      if (messageType === "template" && templateName) {
+        interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || []);
+      } else if (messageType === "document" && mediaUrl) {
+        interaktMessageId = await sendDocumentMessage(conv.phone, mediaUrl, filename || "document.pdf");
+        msgBody = filename || "Document";
+      } else {
+        if (!body) return res.status(400).json({ message: "body required for text messages" });
+        interaktMessageId = await sendTextMessage(conv.phone, body);
+      }
+
+      const msg = await storage.createWhatsappMessage({
+        conversationId: conv.id,
+        direction: "outbound",
+        body: msgBody,
+        messageType,
+        interaktMessageId,
+        status: interaktMessageId ? "sent" : "failed",
+        mediaUrl: mediaUrl || null,
+        sentBy: req.user.id,
+      });
+
+      await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
+      res.status(201).json(msg);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to send message" });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations/:id/note", authenticateToken, async (req: any, res) => {
+    try {
+      const { body } = req.body;
+      if (!body) return res.status(400).json({ message: "body required" });
+      const msg = await storage.createWhatsappMessage({
+        conversationId: req.params.id,
+        direction: "outbound",
+        body,
+        messageType: "note",
+        interaktMessageId: null,
+        status: "note",
+        sentBy: req.user.id,
+        isNote: true,
+      });
+      res.status(201).json(msg);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to add note" });
+    }
+  });
+
+  app.post("/api/whatsapp/conversations/:id/create-lead", authenticateToken, async (req: any, res) => {
+    try {
+      const conv = await storage.getWhatsappConversation(req.params.id);
+      if (!conv) return res.status(404).json({ message: "Conversation not found" });
+      if (conv.leadId) return res.status(409).json({ message: "Conversation already linked to a lead" });
+
+      const { name, source = "whatsapp" } = req.body;
+      const lead = await storage.createLead({
+        name: name || conv.contactName || conv.phone,
+        phone: conv.phone,
+        source,
+        status: "new",
+        email: null, company: null, address: null, gstNumber: null,
+        requirement: null, assignedTo: null, estimatedValue: null, notes: null, lossReason: null, quotationId: null,
+      });
+      await storage.updateWhatsappConversation(conv.id, {
+        leadId: lead.id,
+        contactName: conv.contactName || lead.name,
+      });
+      await logAction(req.user.id, "CREATE", "Lead", `Created lead ${lead.id} from WhatsApp conversation ${conv.id}`);
+      res.status(201).json({ lead, conversation: await storage.getWhatsappConversation(conv.id) });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to create lead" });
+    }
+  });
+
+  // ── WhatsApp Templates ─────────────────────────────────────────────────────
+  app.get("/api/whatsapp/templates", authenticateToken, async (req: any, res) => {
+    try {
+      res.json(await storage.getWhatsappTemplates());
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch templates" });
+    }
+  });
+
+  app.post("/api/whatsapp/templates", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertWhatsappTemplateSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
+      const tmpl = await storage.createWhatsappTemplate(parsed.data);
+      await logAction(req.user.id, "CREATE", "WhatsappTemplate", `Created template ${tmpl.id}: ${tmpl.name}`);
+      res.status(201).json(tmpl);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to create template" });
+    }
+  });
+
+  app.patch("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const tmpl = await storage.updateWhatsappTemplate(req.params.id, req.body);
+      if (!tmpl) return res.status(404).json({ message: "Template not found" });
+      res.json(tmpl);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to update template" });
+    }
+  });
+
+  app.delete("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const ok = await storage.deleteWhatsappTemplate(req.params.id);
+      if (!ok) return res.status(404).json({ message: "Template not found" });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to delete template" });
+    }
+  });
+
+  // ── WhatsApp Campaigns ─────────────────────────────────────────────────────
+  app.post("/api/whatsapp/campaigns/send", authenticateToken, async (req: any, res) => {
+    try {
+      const { templateId, templateName, variables = [], audience, phones = [] } = req.body;
+      if (!templateName) return res.status(400).json({ message: "templateName required" });
+
+      let targetPhones: string[] = phones.map((p: string) => normalisePhone(p));
+
+      if (audience === "customers") {
+        const allCustomers = await storage.getCustomers();
+        targetPhones = allCustomers.filter(c => c.phone).map(c => normalisePhone(c.phone!));
+      } else if (audience === "leads") {
+        const allLeads = await storage.getLeads();
+        targetPhones = allLeads.filter(l => l.phone).map(l => normalisePhone(l.phone!));
+      }
+
+      targetPhones = [...new Set(targetPhones)].filter(p => p.length >= 10);
+
+      const results: { phone: string; status: string; messageId: string | null }[] = [];
+      const BATCH = 10;
+      for (let i = 0; i < targetPhones.length; i += BATCH) {
+        const batch = targetPhones.slice(i, i + BATCH);
+        await Promise.all(batch.map(async phone => {
+          const messageId = await sendTemplateMessage(phone, templateName, variables);
+          results.push({ phone, status: messageId ? "sent" : "failed", messageId });
+
+          // Create/find conversation and log message
+          let conv = await storage.getWhatsappConversationByPhone(phone);
+          if (!conv) {
+            conv = await storage.createWhatsappConversation({ phone, contactName: null, customerId: null, leadId: null, status: "open", windowExpiresAt: null });
+          }
+          await storage.createWhatsappMessage({
+            conversationId: conv.id,
+            direction: "outbound",
+            body: `[Campaign] ${templateName}`,
+            messageType: "template",
+            interaktMessageId: messageId,
+            status: messageId ? "sent" : "failed",
+            sentBy: req.user.id,
+          });
+          await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
+        }));
+        if (i + BATCH < targetPhones.length) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
+      await logAction(req.user.id, "SEND", "WhatsappCampaign", `Sent campaign '${templateName}' to ${targetPhones.length} contacts`);
+      res.json({ sent: results.filter(r => r.status === "sent").length, failed: results.filter(r => r.status === "failed").length, results });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to send campaign" });
     }
   });
 

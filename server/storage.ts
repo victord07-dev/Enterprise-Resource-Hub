@@ -4,10 +4,12 @@ import {
   users, customers, suppliers, products, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
+  whatsappConversations, whatsappMessages, whatsappTemplates,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
+  type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -330,6 +332,22 @@ export interface IStorage {
   getDailyPriceSheetLots(sheetId: string): Promise<DailyPriceSheetLot[]>;
   upsertDailyPriceSheetLots(sheetId: string, lots: Omit<DailyPriceSheetLot, "id">[]): Promise<DailyPriceSheetLot[]>;
   getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string | null; sheetDate: string | null; noConfirmedPrice: boolean; source: "today" | "fallback" | "none" } | null>;
+
+  // WhatsApp CRM
+  getWhatsappConversations(): Promise<WhatsappConversation[]>;
+  getWhatsappConversation(id: string): Promise<WhatsappConversation | undefined>;
+  getWhatsappConversationByPhone(phone: string): Promise<WhatsappConversation | undefined>;
+  createWhatsappConversation(data: InsertWhatsappConversation): Promise<WhatsappConversation>;
+  updateWhatsappConversation(id: string, data: Partial<Omit<WhatsappConversation, "id" | "createdAt">>): Promise<WhatsappConversation | undefined>;
+  getWhatsappMessages(conversationId: string): Promise<WhatsappMessage[]>;
+  createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage>;
+  updateWhatsappMessageStatus(id: string, status: string): Promise<void>;
+  updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<void>;
+  getWhatsappTemplates(): Promise<WhatsappTemplate[]>;
+  getWhatsappTemplate(id: string): Promise<WhatsappTemplate | undefined>;
+  createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate>;
+  updateWhatsappTemplate(id: string, data: Partial<Omit<WhatsappTemplate, "id" | "createdAt">>): Promise<WhatsappTemplate | undefined>;
+  deleteWhatsappTemplate(id: string): Promise<boolean>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1538,6 +1556,59 @@ export class DatabaseStorage implements IStorage {
       noConfirmedPrice: true,
       source: "none",
     };
+  }
+
+  // WhatsApp CRM
+  async getWhatsappConversations(): Promise<WhatsappConversation[]> {
+    return db.select().from(whatsappConversations).orderBy(desc(whatsappConversations.lastMessageAt));
+  }
+  async getWhatsappConversation(id: string): Promise<WhatsappConversation | undefined> {
+    const [c] = await db.select().from(whatsappConversations).where(eq(whatsappConversations.id, id));
+    return c;
+  }
+  async getWhatsappConversationByPhone(phone: string): Promise<WhatsappConversation | undefined> {
+    const [c] = await db.select().from(whatsappConversations).where(eq(whatsappConversations.phone, phone));
+    return c;
+  }
+  async createWhatsappConversation(data: InsertWhatsappConversation): Promise<WhatsappConversation> {
+    const [c] = await db.insert(whatsappConversations).values(data).returning();
+    return c;
+  }
+  async updateWhatsappConversation(id: string, data: Partial<Omit<WhatsappConversation, "id" | "createdAt">>): Promise<WhatsappConversation | undefined> {
+    const [c] = await db.update(whatsappConversations).set(data).where(eq(whatsappConversations.id, id)).returning();
+    return c;
+  }
+  async getWhatsappMessages(conversationId: string): Promise<WhatsappMessage[]> {
+    return db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, conversationId)).orderBy(whatsappMessages.createdAt);
+  }
+  async createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage> {
+    const [m] = await db.insert(whatsappMessages).values(data).returning();
+    return m;
+  }
+  async updateWhatsappMessageStatus(id: string, status: string): Promise<void> {
+    await db.update(whatsappMessages).set({ status }).where(eq(whatsappMessages.id, id));
+  }
+  async updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<void> {
+    await db.update(whatsappMessages).set({ status }).where(eq(whatsappMessages.interaktMessageId, interaktMessageId));
+  }
+  async getWhatsappTemplates(): Promise<WhatsappTemplate[]> {
+    return db.select().from(whatsappTemplates).orderBy(whatsappTemplates.name);
+  }
+  async getWhatsappTemplate(id: string): Promise<WhatsappTemplate | undefined> {
+    const [t] = await db.select().from(whatsappTemplates).where(eq(whatsappTemplates.id, id));
+    return t;
+  }
+  async createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate> {
+    const [t] = await db.insert(whatsappTemplates).values(data).returning();
+    return t;
+  }
+  async updateWhatsappTemplate(id: string, data: Partial<Omit<WhatsappTemplate, "id" | "createdAt">>): Promise<WhatsappTemplate | undefined> {
+    const [t] = await db.update(whatsappTemplates).set(data).where(eq(whatsappTemplates.id, id)).returning();
+    return t;
+  }
+  async deleteWhatsappTemplate(id: string): Promise<boolean> {
+    const result = await db.delete(whatsappTemplates).where(eq(whatsappTemplates.id, id));
+    return (result.rowCount ?? 0) > 0;
   }
 
   // Dashboard

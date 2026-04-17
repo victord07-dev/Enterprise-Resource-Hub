@@ -23,7 +23,13 @@ import {
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
 } from "@shared/schema";
-import { isCommonMergeField, resolveMergeField } from "@shared/mergeFields";
+import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
+
+const CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD = (() => {
+  const parsed = Number(process.env.CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD);
+  const v = Number.isFinite(parsed) ? parsed : 0.2;
+  return Math.min(Math.max(v, 0), 1);
+})();
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus } from "./whatsapp";
@@ -7274,7 +7280,7 @@ export async function registerRoutes(
         if (tpl) templateBody = tpl.body || null;
       }
 
-      const sample = targets.slice(0, previewLimit).map(target => {
+      const resolveTargetMissing = (target: PreviewTarget) => {
         const resolvedVars: Array<{ index: number; fieldKey: string | null; label: string | null; value: string; source: "manual" | "auto" | "missing" }> = [];
         const missingFields: Array<{ index: number; fieldKey: string; label: string }> = [];
         (variables as string[]).forEach((val, idx) => {
@@ -7297,7 +7303,29 @@ export async function registerRoutes(
             if (!manualOverride) missingFields.push({ index: idx, fieldKey: fieldKey || `{{${idx + 1}}}`, label: fieldKey || `Variable ${idx + 1}` });
           }
         });
+        return { resolvedVars, missingFields };
+      };
 
+      // Aggregate missing-field counts across the ENTIRE audience
+      const missingCountByField = new Map<string, { fieldKey: string; label: string; count: number }>();
+      let recipientsMissingAny = 0;
+      for (const target of targets) {
+        const { missingFields } = resolveTargetMissing(target);
+        if (missingFields.length > 0) recipientsMissingAny++;
+        const seenForRecipient = new Set<string>();
+        for (const m of missingFields) {
+          if (seenForRecipient.has(m.fieldKey)) continue;
+          seenForRecipient.add(m.fieldKey);
+          const label = MERGE_FIELD_BY_KEY[m.fieldKey]?.label || m.label;
+          const existing = missingCountByField.get(m.fieldKey);
+          if (existing) existing.count++;
+          else missingCountByField.set(m.fieldKey, { fieldKey: m.fieldKey, label, count: 1 });
+        }
+      }
+      const missingByField = Array.from(missingCountByField.values()).sort((a, b) => b.count - a.count);
+
+      const sample = targets.slice(0, previewLimit).map(target => {
+        const { resolvedVars, missingFields } = resolveTargetMissing(target);
         let renderedBody = templateBody;
         if (renderedBody) {
           renderedBody = renderedBody.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n) => {
@@ -7307,7 +7335,6 @@ export async function registerRoutes(
             return v.value || `[missing: ${v.label || `var ${n}`}]`;
           });
         }
-
         return {
           phone: target.phone,
           contactName: target.contactName || null,
@@ -7317,7 +7344,18 @@ export async function registerRoutes(
         };
       });
 
-      res.json({ totalRecipients, sample });
+      const threshold = CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD;
+      const missingRatio = totalRecipients > 0 ? recipientsMissingAny / totalRecipients : 0;
+      const requiresConfirmation = totalRecipients > 0 && missingRatio >= threshold;
+
+      res.json({
+        totalRecipients,
+        recipientsMissingAny,
+        missingByField,
+        threshold,
+        requiresConfirmation,
+        sample,
+      });
     } catch (err) {
       console.error("[WA Campaign Preview] error:", err);
       res.status(500).json({ message: "Failed to build campaign preview" });
@@ -7329,7 +7367,7 @@ export async function registerRoutes(
       if (!["admin", "sales_manager"].includes(req.user.role)) {
         return res.status(403).json({ message: "Only admin or sales_manager may send campaigns" });
       }
-      const { templateId, templateName, variables = [], variableNames = [], audience, phones = [] } = req.body;
+      const { templateId, templateName, variables = [], variableNames = [], audience, phones = [], confirmSendWithMissing = false } = req.body;
       if (!templateName) return res.status(400).json({ message: "templateName required" });
 
       type CampaignTarget = {
@@ -7359,6 +7397,49 @@ export async function registerRoutes(
       // Deduplicate by phone
       const seen = new Set<string>();
       targets = targets.filter(t => { if (!t.phone || t.phone.length < 10 || seen.has(t.phone)) return false; seen.add(t.phone); return true; });
+
+      // Guard: block when too many recipients are missing required merge-field values
+      const missingCountByField = new Map<string, { fieldKey: string; label: string; count: number }>();
+      let recipientsMissingAny = 0;
+      for (const target of targets) {
+        const missingForRecipient = new Set<string>();
+        (variables as string[]).forEach((val, idx) => {
+          const fieldKey = (variableNames as string[])[idx] || null;
+          const manualOverride = (val || "").trim();
+          if (manualOverride) return;
+          let isMissing = false;
+          let key = fieldKey || `__var_${idx + 1}`;
+          let label = fieldKey || `Variable ${idx + 1}`;
+          if (fieldKey && isCommonMergeField(fieldKey)) {
+            const resolved = resolveMergeField(fieldKey, { customer: target.customer, lead: target.lead });
+            if (!resolved) { isMissing = true; label = MERGE_FIELD_BY_KEY[fieldKey]?.label || fieldKey; }
+          } else {
+            isMissing = true;
+          }
+          if (isMissing && !missingForRecipient.has(key)) {
+            missingForRecipient.add(key);
+            const existing = missingCountByField.get(key);
+            if (existing) existing.count++;
+            else missingCountByField.set(key, { fieldKey: key, label, count: 1 });
+          }
+        });
+        if (missingForRecipient.size > 0) recipientsMissingAny++;
+      }
+      const missingByField = Array.from(missingCountByField.values()).sort((a, b) => b.count - a.count);
+      const threshold = CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD;
+      const missingRatio = targets.length > 0 ? recipientsMissingAny / targets.length : 0;
+      const requiresConfirmation = targets.length > 0 && missingRatio >= threshold;
+      if (requiresConfirmation && !confirmSendWithMissing) {
+        return res.status(409).json({
+          message: "Confirmation required: too many recipients are missing required merge-field values.",
+          code: "MISSING_FIELDS_THRESHOLD_EXCEEDED",
+          totalRecipients: targets.length,
+          recipientsMissingAny,
+          missingByField,
+          threshold,
+          requiresConfirmation,
+        });
+      }
 
       const results: CampaignResult[] = [];
       const BATCH = 10;

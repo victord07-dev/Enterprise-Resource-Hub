@@ -15,7 +15,15 @@ import { MERGE_FIELD_BY_KEY, isCommonMergeField } from "@shared/mergeFields";
 
 type PreviewVar = { index: number; fieldKey: string | null; label: string | null; value: string; source: "manual" | "auto" | "missing" };
 type PreviewSample = { phone: string; contactName: string | null; renderedBody: string | null; variables: PreviewVar[]; missingFields: { index: number; fieldKey: string; label: string }[] };
-type PreviewResponse = { totalRecipients: number; sample: PreviewSample[] };
+type MissingFieldCount = { fieldKey: string; label: string; count: number };
+type PreviewResponse = {
+  totalRecipients: number;
+  recipientsMissingAny: number;
+  missingByField: MissingFieldCount[];
+  threshold: number;
+  requiresConfirmation: boolean;
+  sample: PreviewSample[];
+};
 
 const AUDIENCE_AUTOFILLABLE_KEYS: Record<string, Set<string>> = {
   customers: new Set(["customer_name", "contact_person", "phone", "email", "address", "gst_number"]),
@@ -42,6 +50,7 @@ export default function Campaigns() {
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [sendAnyway, setSendAnyway] = useState(false);
 
   const { data: templates = [] } = useQuery<WhatsappTemplate[]>({
     queryKey: ["/api/whatsapp/templates"],
@@ -61,6 +70,7 @@ export default function Campaigns() {
         variableNames: selectedTemplate?.variables || [],
         audience: audience !== "custom" ? audience : undefined,
         phones,
+        confirmSendWithMissing: sendAnyway,
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.message); }
       return res.json();
@@ -74,7 +84,14 @@ export default function Campaigns() {
     onError: (e: Error) => toast({ title: "Campaign failed", description: e.message, variant: "destructive" }),
   });
 
-  const canSend = !!selectedTemplate && (audience !== "custom" || customPhones.trim().length > 0);
+  const requiresConfirmation = !!preview && preview.requiresConfirmation;
+  const canSend = !!selectedTemplate
+    && (audience !== "custom" || customPhones.trim().length > 0)
+    && (!requiresConfirmation || sendAnyway);
+
+  useEffect(() => {
+    setSendAnyway(false);
+  }, [selectedTemplateId, audience, customPhones, JSON.stringify(templateVars)]);
 
   useEffect(() => {
     if (!selectedTemplate) { setPreview(null); setPreviewError(null); return; }
@@ -244,6 +261,45 @@ export default function Campaigns() {
             </CardContent>
           </Card>
 
+          {preview && preview.totalRecipients > 0 && preview.missingByField.length > 0 && (
+            <div
+              className={`rounded-lg border p-3 space-y-2 ${requiresConfirmation
+                ? "border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/20"
+                : "border-amber-300 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/20"}`}
+              data-testid="banner-missing-fields"
+            >
+              <div className="flex items-start gap-2">
+                <AlertTriangle className={`w-4 h-4 mt-0.5 ${requiresConfirmation ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400"}`} />
+                <div className="text-xs space-y-1 flex-1">
+                  <p className={`font-medium ${requiresConfirmation ? "text-red-700 dark:text-red-300" : "text-amber-700 dark:text-amber-300"}`} data-testid="text-missing-summary">
+                    {requiresConfirmation
+                      ? `Send blocked: ${Math.round(preview.threshold * 100)}% or more of recipients are missing required values.`
+                      : `Some recipients are missing required values.`}
+                  </p>
+                  <ul className="space-y-0.5 list-disc list-inside text-muted-foreground" data-testid="list-missing-fields">
+                    {preview.missingByField.map(f => (
+                      <li key={f.fieldKey} data-testid={`missing-field-${f.fieldKey}`}>
+                        <span className="font-medium text-foreground">{f.count} of {preview.totalRecipients}</span> recipients are missing <span className="font-medium text-foreground">{f.label}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {requiresConfirmation && (
+                    <label className="flex items-center gap-2 pt-1 cursor-pointer select-none" data-testid="label-send-anyway">
+                      <input
+                        type="checkbox"
+                        checked={sendAnyway}
+                        onChange={e => setSendAnyway(e.target.checked)}
+                        className="h-3.5 w-3.5"
+                        data-testid="checkbox-send-anyway"
+                      />
+                      <span className="text-foreground">Send anyway — I understand these recipients will get messages with blank values.</span>
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           <Button
             className="w-full"
             disabled={!canSend || sendMutation.isPending}
@@ -252,6 +308,8 @@ export default function Campaigns() {
           >
             {sendMutation.isPending ? (
               <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
+            ) : requiresConfirmation && !sendAnyway ? (
+              <><AlertTriangle className="w-4 h-4 mr-2" /> Confirm above to send</>
             ) : (
               <><Send className="w-4 h-4 mr-2" /> Send Campaign</>
             )}

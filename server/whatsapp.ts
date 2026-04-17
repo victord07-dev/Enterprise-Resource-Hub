@@ -197,11 +197,20 @@ export function mapInteraktTemplate(t: InteraktTemplate) {
 }
 
 // ── Shared sync helper (used by manual route + scheduled job) ────────────────
+export interface TemplateStatusChange {
+  templateId: string;
+  name: string;
+  languageCode: string;
+  previousStatus: string;
+  newStatus: string;
+}
+
 export interface SyncTemplatesResult {
   total: number;
   created: number;
   updated: number;
   skipped: number;
+  statusChanges: TemplateStatusChange[];
 }
 
 export async function syncInteraktTemplates(storage: {
@@ -216,12 +225,23 @@ export async function syncInteraktTemplates(storage: {
   let created = 0;
   let updated = 0;
   let skipped = 0;
+  const statusChanges: TemplateStatusChange[] = [];
   for (const t of remote) {
     if (!t?.name) { skipped++; continue; }
     const mapped = mapInteraktTemplate(t);
     if (!mapped.body) { skipped++; continue; }
     const existing = await storage.getWhatsappTemplateByInteraktName(mapped.interaktTemplateName, mapped.languageCode);
     if (existing) {
+      const previousStatus = String(existing.isActive || "");
+      if (previousStatus && previousStatus !== mapped.isActive) {
+        statusChanges.push({
+          templateId: existing.id,
+          name: existing.name || mapped.name,
+          languageCode: mapped.languageCode,
+          previousStatus,
+          newStatus: mapped.isActive,
+        });
+      }
       // Preserve manual variable edits, but backfill any blank/missing slots
       // with generated defaults from the (possibly longer) remote body.
       const existingVars = Array.isArray(existing.variables) ? existing.variables : [];
@@ -251,7 +271,7 @@ export async function syncInteraktTemplates(storage: {
       created++;
     }
   }
-  return { total: remote.length, created, updated, skipped };
+  return { total: remote.length, created, updated, skipped, statusChanges };
 }
 
 // ── Rolling-window rate limiter (20 msg / 60s per conversation) ──────────────

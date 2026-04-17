@@ -135,9 +135,58 @@ app.use((req, res, next) => {
     }
     try {
       const result = await syncInteraktTemplates(storage);
-      console.log(`[WA TEMPLATE SYNC] Daily sync complete: ${result.total} fetched, ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
+      console.log(`[WA TEMPLATE SYNC] Daily sync complete: ${result.total} fetched, ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.statusChanges.length} status changes`);
+      if (result.statusChanges.length > 0) {
+        await notifyAdminsOfTemplateStatusChanges(result.statusChanges);
+      }
     } catch (err) {
       console.error("[WA TEMPLATE SYNC] Daily sync failed:", err);
+    }
+  }
+
+  function formatStatusLabel(s: string): string {
+    if (s === "approved") return "APPROVED";
+    if (s === "rejected") return "REJECTED";
+    if (s === "pending_approval") return "PENDING";
+    return (s || "UNKNOWN").toUpperCase();
+  }
+
+  async function notifyAdminsOfTemplateStatusChanges(
+    changes: Array<{ templateId: string; name: string; languageCode: string; previousStatus: string; newStatus: string }>,
+  ) {
+    try {
+      const allUsers = await storage.getUsers();
+      const admins = allUsers.filter((u: any) => u.role === "admin" && u.isActive);
+      if (admins.length === 0) {
+        console.warn("[WA TEMPLATE SYNC] No active admin users — skipping status-change notifications");
+        return;
+      }
+
+      const lines = changes.map(
+        c => `${c.name} (${c.languageCode}): ${formatStatusLabel(c.previousStatus)} → ${formatStatusLabel(c.newStatus)}`,
+      );
+      const summary = lines.join("; ");
+      const title = changes.length === 1
+        ? `WhatsApp template status changed: ${changes[0].name}`
+        : `${changes.length} WhatsApp templates changed status`;
+      const message = `Daily Interakt sync detected: ${summary}`;
+
+      for (const u of admins) {
+        try {
+          await storage.createNotification({
+            userId: u.id,
+            type: "whatsapp_template",
+            title,
+            message,
+            relatedId: changes[0].templateId,
+          });
+        } catch (notifErr) {
+          console.warn(`[WA TEMPLATE SYNC] Failed to notify admin ${u.username}:`, notifErr);
+        }
+      }
+      console.log(`[WA TEMPLATE SYNC] Notified ${admins.length} admin(s) of ${changes.length} status change(s)`);
+    } catch (err) {
+      console.error("[WA TEMPLATE SYNC] notifyAdminsOfTemplateStatusChanges error:", err);
     }
   }
 

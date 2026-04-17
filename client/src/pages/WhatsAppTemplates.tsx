@@ -14,7 +14,7 @@ import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, Aler
 import type { WhatsappTemplate, WhatsappTemplateStatusHistory } from "@shared/schema";
 import { COMMON_MERGE_FIELDS, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 import { WebhookHealthCard } from "@/components/WebhookHealthCard";
-import { useAuth } from "@/hooks/use-auth";
+import { useCurrentUser } from "@/lib/auth";
 
 interface TemplateStatusChangeEntry {
   templateId: string;
@@ -290,8 +290,8 @@ export default function WhatsAppTemplates() {
   const approvedCount = templates.filter(t => t.isActive === "approved").length;
   const pendingCount = templates.filter(t => t.isActive !== "approved").length;
   const rejectedCount = 0; // deprecated field
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const { data: currentUser } = useCurrentUser();
+  const isAdmin = currentUser?.role === "admin";
 
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">

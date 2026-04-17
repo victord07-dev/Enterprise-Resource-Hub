@@ -25,7 +25,7 @@ import {
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
-import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit } from "./whatsapp";
+import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, fetchInteraktTemplates, mapInteraktTemplate } from "./whatsapp";
 import multer from "multer";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
@@ -7116,6 +7116,51 @@ export async function registerRoutes(
       res.json(tmpl);
     } catch (err) {
       res.status(500).json({ message: "Failed to update template" });
+    }
+  });
+
+  app.post("/api/whatsapp/templates/sync", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only admin may sync WhatsApp templates" });
+      }
+      if (!process.env.INTERAKT_API_KEY) {
+        return res.status(500).json({ message: "INTERAKT_API_KEY is not configured" });
+      }
+      const remote = await fetchInteraktTemplates();
+      let created = 0;
+      let updated = 0;
+      let skipped = 0;
+      for (const t of remote) {
+        if (!t?.name) { skipped++; continue; }
+        const mapped = mapInteraktTemplate(t);
+        if (!mapped.body) { skipped++; continue; }
+        const existing = await storage.getWhatsappTemplateByInteraktName(mapped.interaktTemplateName, mapped.languageCode);
+        if (existing) {
+          await storage.updateWhatsappTemplate(existing.id, {
+            name: existing.name || mapped.name,
+            category: mapped.category,
+            body: mapped.body,
+            isActive: mapped.isActive,
+          });
+          updated++;
+        } else {
+          await storage.createWhatsappTemplate({
+            name: mapped.name,
+            interaktTemplateName: mapped.interaktTemplateName,
+            category: mapped.category,
+            languageCode: mapped.languageCode,
+            body: mapped.body,
+            variables: [],
+            isActive: mapped.isActive,
+          });
+          created++;
+        }
+      }
+      await logAction(req.user.id, "SYNC", "WhatsappTemplate", `Synced templates from Interakt: ${created} created, ${updated} updated, ${skipped} skipped`);
+      res.json({ ok: true, total: remote.length, created, updated, skipped });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to sync templates" });
     }
   });
 

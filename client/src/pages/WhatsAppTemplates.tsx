@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock } from "lucide-react";
+import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw } from "lucide-react";
 import type { WhatsappTemplate } from "@shared/schema";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -95,6 +95,22 @@ export default function WhatsAppTemplates() {
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
+  const syncMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/whatsapp/templates/sync");
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message); }
+      return res.json() as Promise<{ total: number; created: number; updated: number; skipped: number }>;
+    },
+    onSuccess: (r) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/templates"] });
+      toast({
+        title: "Templates synced from Interakt",
+        description: `${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}.`,
+      });
+    },
+    onError: (e: Error) => toast({ title: "Sync failed", description: e.message, variant: "destructive" }),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("DELETE", `/api/whatsapp/templates/${id}`);
@@ -143,9 +159,20 @@ export default function WhatsAppTemplates() {
           </h1>
           <p className="text-muted-foreground text-sm mt-1">Manage approved message templates for outbound messaging</p>
         </div>
-        <Button onClick={openNew} data-testid="button-new-template">
-          <Plus className="w-4 h-4 mr-2" /> Add Template
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => syncMutation.mutate()}
+            disabled={syncMutation.isPending}
+            data-testid="button-sync-templates"
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+            {syncMutation.isPending ? "Syncing..." : "Sync from Interakt"}
+          </Button>
+          <Button onClick={openNew} data-testid="button-new-template">
+            <Plus className="w-4 h-4 mr-2" /> Add Template
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}

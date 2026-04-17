@@ -346,6 +346,7 @@ export interface IStorage {
   updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<boolean>;
   getWhatsappTemplates(): Promise<WhatsappTemplate[]>;
   getWhatsappTemplate(id: string): Promise<WhatsappTemplate | undefined>;
+  getWhatsappTemplateByInteraktName(interaktTemplateName: string, languageCode: string): Promise<WhatsappTemplate | undefined>;
   createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate>;
   updateWhatsappTemplate(id: string, data: Partial<Omit<WhatsappTemplate, "id" | "createdAt">>): Promise<WhatsappTemplate | undefined>;
   deleteWhatsappTemplate(id: string): Promise<boolean>;
@@ -1637,6 +1638,12 @@ export class DatabaseStorage implements IStorage {
   }
   async getWhatsappTemplate(id: string): Promise<WhatsappTemplate | undefined> {
     const [t] = await db.select().from(whatsappTemplates).where(eq(whatsappTemplates.id, id));
+    return t;
+  }
+  async getWhatsappTemplateByInteraktName(interaktTemplateName: string, languageCode: string): Promise<WhatsappTemplate | undefined> {
+    const [t] = await db.select().from(whatsappTemplates).where(
+      and(eq(whatsappTemplates.interaktTemplateName, interaktTemplateName), eq(whatsappTemplates.languageCode, languageCode))
+    );
     return t;
   }
   async createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate> {

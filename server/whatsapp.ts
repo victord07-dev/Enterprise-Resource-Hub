@@ -114,6 +114,71 @@ export async function sendDocumentMessage(
   return msgId;
 }
 
+// ── Fetch templates from Interakt — throws on API failure ────────────────────
+export interface InteraktTemplate {
+  id?: string;
+  name: string;
+  language: string;
+  category?: string;
+  status?: string;
+  components?: Array<{
+    type: string;
+    text?: string;
+    format?: string;
+    buttons?: Array<{ type: string; text: string; url?: string; phone_number?: string }>;
+  }>;
+}
+
+function extractBody(components?: InteraktTemplate["components"]): string {
+  if (!components) return "";
+  const body = components.find(c => c.type?.toUpperCase() === "BODY");
+  return body?.text || "";
+}
+
+function mapStatus(status?: string): string {
+  const s = (status || "").toUpperCase();
+  if (s === "APPROVED") return "approved";
+  if (s === "REJECTED") return "rejected";
+  return "pending_approval";
+}
+
+export async function fetchInteraktTemplates(): Promise<InteraktTemplate[]> {
+  const all: InteraktTemplate[] = [];
+  const limit = 100;
+  let offset = 0;
+  // Paginate defensively in case the workspace has many templates.
+  for (let page = 0; page < 50; page++) {
+    const url = `${INTERAKT_BASE}/v1/public/message/templates/?limit=${limit}&offset=${offset}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: authHeader() },
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "unknown error");
+      throw new Error(`Interakt templates API error ${res.status}: ${errText}`);
+    }
+    const data = await res.json() as any;
+    const list: InteraktTemplate[] =
+      data?.data?.templates ?? data?.templates ?? data?.results ?? data?.data ?? [];
+    if (!Array.isArray(list) || list.length === 0) break;
+    all.push(...list);
+    if (list.length < limit) break;
+    offset += list.length;
+  }
+  return all;
+}
+
+export function mapInteraktTemplate(t: InteraktTemplate) {
+  return {
+    name: t.name,
+    interaktTemplateName: t.name,
+    category: (t.category || "custom").toLowerCase(),
+    languageCode: t.language || "en",
+    body: extractBody(t.components),
+    isActive: mapStatus(t.status),
+  };
+}
+
 // ── Rolling-window rate limiter (20 msg / 60s per conversation) ──────────────
 // Stores timestamps of recent sends per conversation for a true sliding window.
 const rateLimitMap = new Map<string, number[]>();

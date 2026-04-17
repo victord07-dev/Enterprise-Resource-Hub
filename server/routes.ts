@@ -7209,7 +7209,17 @@ export async function registerRoutes(
       if (req.user.role !== "admin") {
         return res.status(403).json({ message: "Only admin may sync WhatsApp templates" });
       }
-      const result = await syncInteraktTemplates(storage, "manual");
+      let triggeredByName: string | null = req.user?.username || null;
+      try {
+        const dbUser = req.user?.id ? await storage.getUser(req.user.id) : null;
+        if (dbUser?.fullName) triggeredByName = dbUser.fullName;
+      } catch {
+        // fall back to username
+      }
+      const result = await syncInteraktTemplates(storage, "manual", {
+        userId: req.user?.id ?? null,
+        name: triggeredByName,
+      });
       await logAction(req.user.id, "SYNC", "WhatsappTemplate", `Synced templates from Interakt: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
       res.json({ ok: true, ...result });
     } catch (err: any) {

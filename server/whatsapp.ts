@@ -236,6 +236,8 @@ export interface TemplateSyncHistoryEntry {
   skipped: number;
   statusChangesCount: number;
   statusChanges: TemplateStatusChange[];
+  triggeredByUserId: string | null;
+  triggeredByName: string | null;
 }
 
 export interface TemplateSyncStatus {
@@ -306,6 +308,8 @@ function toHistoryEntry(row: any): TemplateSyncHistoryEntry {
           newStatus: String(c?.newStatus ?? ""),
         }))
       : [],
+    triggeredByUserId: row.triggeredByUserId ?? null,
+    triggeredByName: row.triggeredByName ?? null,
   };
 }
 
@@ -349,7 +353,10 @@ export interface TemplateSyncStorage {
 export async function syncInteraktTemplates(
   storage: SyncStorage,
   trigger: "manual" | "scheduled" = "manual",
+  triggeredBy?: { userId?: string | null; name?: string | null } | null,
 ): Promise<SyncTemplatesResult> {
+  const triggeredByUserId = triggeredBy?.userId ?? null;
+  const triggeredByName = triggeredBy?.name ?? null;
   try {
     if (!process.env.INTERAKT_API_KEY) {
       throw new Error("INTERAKT_API_KEY is not configured");
@@ -366,6 +373,8 @@ export async function syncInteraktTemplates(
         skipped: result.skipped,
         statusChangesCount: result.statusChanges.length,
         statusChanges: result.statusChanges,
+        triggeredByUserId,
+        triggeredByName,
       });
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist success log:", logErr);
@@ -384,6 +393,8 @@ export async function syncInteraktTemplates(
         skipped: 0,
         statusChangesCount: 0,
         statusChanges: [],
+        triggeredByUserId,
+        triggeredByName,
       });
     } catch (logErr) {
       console.error("[WA TEMPLATE SYNC] Failed to persist failure log:", logErr);

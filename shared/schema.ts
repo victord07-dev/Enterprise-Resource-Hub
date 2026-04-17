@@ -874,6 +874,8 @@ export const whatsappTemplateSyncLogs = pgTable("whatsapp_template_sync_logs", {
   skipped: integer("skipped").notNull().default(0),
   statusChangesCount: integer("status_changes_count").notNull().default(0),
   statusChanges: jsonb("status_changes").$type<Array<{ templateId: string; name: string; languageCode: string; previousStatus: string; newStatus: string }>>().notNull().default(sql`'[]'::jsonb`),
+  triggeredByUserId: varchar("triggered_by_user_id"),
+  triggeredByName: text("triggered_by_name"),
 }, (t) => [index("idx_wa_template_sync_logs_attempt_at").on(t.attemptAt)]);
 
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });

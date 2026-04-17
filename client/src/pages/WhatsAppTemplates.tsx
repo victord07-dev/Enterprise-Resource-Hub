@@ -34,6 +34,8 @@ interface TemplateSyncHistoryEntry {
   skipped: number;
   statusChangesCount: number;
   statusChanges: TemplateStatusChangeEntry[];
+  triggeredByUserId: string | null;
+  triggeredByName: string | null;
 }
 
 interface TemplateSyncStatus {
@@ -410,6 +412,14 @@ export default function WhatsAppTemplates() {
                           <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
                             {h.trigger}
                           </Badge>
+                          <span
+                            className="text-muted-foreground"
+                            data-testid={`text-sync-history-trigger-${h.id}`}
+                          >
+                            by {h.trigger === "scheduled"
+                              ? "daily scheduler"
+                              : (h.triggeredByName || "unknown user")}
+                          </span>
                           {h.success ? (
                             <span className="text-muted-foreground">
                               {h.total} fetched · {h.created} created · {h.updated} updated

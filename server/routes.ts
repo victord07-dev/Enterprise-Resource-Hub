@@ -23,6 +23,7 @@ import {
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
 } from "@shared/schema";
+import { isCommonMergeField, resolveMergeField } from "@shared/mergeFields";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus } from "./whatsapp";
@@ -7182,10 +7183,17 @@ export async function registerRoutes(
       if (!["admin", "sales_manager"].includes(req.user.role)) {
         return res.status(403).json({ message: "Only admin or sales_manager may send campaigns" });
       }
-      const { templateId, templateName, variables = [], audience, phones = [] } = req.body;
+      const { templateId, templateName, variables = [], variableNames = [], audience, phones = [] } = req.body;
       if (!templateName) return res.status(400).json({ message: "templateName required" });
 
-      type CampaignTarget = { phone: string; contactName?: string | null; customerId?: string | null; leadId?: string | null };
+      type CampaignTarget = {
+        phone: string;
+        contactName?: string | null;
+        customerId?: string | null;
+        leadId?: string | null;
+        customer?: any;
+        lead?: any;
+      };
       type CampaignResult = { phone: string; customerId: string | null; contactName: string | null; status: "sent" | "failed" | "skipped"; messageId: string | null; error: string | null };
 
       let targets: CampaignTarget[] = phones.map((p: string) => ({ phone: normalisePhone(p) }));
@@ -7194,12 +7202,12 @@ export async function registerRoutes(
         const allCustomers = await storage.getCustomers();
         targets = allCustomers
           .filter(c => c.phone)
-          .map(c => ({ phone: normalisePhone(c.phone!), contactName: c.name, customerId: c.id, leadId: null }));
+          .map(c => ({ phone: normalisePhone(c.phone!), contactName: c.name, customerId: c.id, leadId: null, customer: c }));
       } else if (audience === "leads") {
         const allLeads = await storage.getLeads();
         targets = allLeads
           .filter(l => l.phone)
-          .map(l => ({ phone: normalisePhone(l.phone!), contactName: l.name, customerId: null, leadId: l.id }));
+          .map(l => ({ phone: normalisePhone(l.phone!), contactName: l.name, customerId: null, leadId: l.id, lead: l }));
       }
 
       // Deduplicate by phone
@@ -7215,7 +7223,15 @@ export async function registerRoutes(
           let error: string | null = null;
           let status: "sent" | "failed" = "failed";
           try {
-            messageId = await sendTemplateMessage(target.phone, templateName, variables);
+            const perRecipientVars = (variables as string[]).map((val, idx) => {
+              const fieldKey = (variableNames as string[])[idx];
+              if (!fieldKey || !isCommonMergeField(fieldKey)) return val;
+              const manualOverride = (val || "").trim();
+              if (manualOverride) return manualOverride;
+              const resolved = resolveMergeField(fieldKey, { customer: target.customer, lead: target.lead });
+              return resolved ?? val ?? "";
+            });
+            messageId = await sendTemplateMessage(target.phone, templateName, perRecipientVars);
             status = messageId ? "sent" : "failed";
             if (!messageId) error = "No message ID returned from Interakt";
           } catch (e: any) {

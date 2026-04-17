@@ -11,6 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CheckCircle, XCircle, Send, Users, UserPlus, Phone, Tag, Loader2, Megaphone } from "lucide-react";
 import type { WhatsappTemplate } from "@shared/schema";
+import { MERGE_FIELD_BY_KEY, isCommonMergeField } from "@shared/mergeFields";
+
+const AUDIENCE_AUTOFILLABLE_KEYS: Record<string, Set<string>> = {
+  customers: new Set(["customer_name", "contact_person", "phone", "email", "address", "gst_number"]),
+  leads: new Set(["customer_name", "contact_person", "company_name", "phone", "email", "address", "gst_number"]),
+};
 
 type CampaignResult = { phone: string; customerId: string | null; contactName: string | null; status: "sent" | "failed" | "skipped"; messageId: string | null; error: string | null };
 
@@ -45,6 +51,7 @@ export default function Campaigns() {
       const res = await apiRequest("POST", "/api/whatsapp/campaigns/send", {
         templateName: selectedTemplate?.interaktTemplateName,
         variables: templateVars,
+        variableNames: selectedTemplate?.variables || [],
         audience: audience !== "custom" ? audience : undefined,
         phones,
       });
@@ -111,21 +118,46 @@ export default function Campaigns() {
               {selectedTemplate && selectedTemplate.variables && selectedTemplate.variables.length > 0 && (
                 <div className="space-y-2 border-t pt-3">
                   <p className="text-xs font-semibold text-muted-foreground">Template Variables</p>
-                  {selectedTemplate.variables.map((varName, i) => (
-                    <div key={i} className="space-y-1">
-                      <Label className="text-xs">{varName || `{{${i + 1}}}`}</Label>
-                      <Input
-                        className="h-8 text-xs"
-                        value={templateVars[i] || ""}
-                        onChange={e => {
-                          const updated = [...templateVars];
-                          updated[i] = e.target.value;
-                          setTemplateVars(updated);
-                        }}
-                        data-testid={`input-var-${i}`}
-                      />
-                    </div>
-                  ))}
+                  {selectedTemplate.variables.map((varName, i) => {
+                    const field = varName ? MERGE_FIELD_BY_KEY[varName] : undefined;
+                    const audienceAutofillable = AUDIENCE_AUTOFILLABLE_KEYS[audience];
+                    const canAutofill = !!field && !!audienceAutofillable && audienceAutofillable.has(field.key);
+                    return (
+                      <div key={i} className="space-y-1">
+                        <Label className="text-xs flex items-center gap-2">
+                          <span>{field ? field.label : (varName || `{{${i + 1}}}`)}</span>
+                          {canAutofill && (
+                            <Badge
+                              variant="outline"
+                              className="text-[9px] py-0 h-4 no-default-hover-elevate no-default-active-elevate"
+                              data-testid={`badge-autofill-${i}`}
+                            >
+                              Auto-filled per recipient
+                            </Badge>
+                          )}
+                          {field && !canAutofill && audience !== "custom" && (
+                            <span className="text-[10px] text-muted-foreground">(known field)</span>
+                          )}
+                        </Label>
+                        <Input
+                          className="h-8 text-xs"
+                          value={templateVars[i] || ""}
+                          onChange={e => {
+                            const updated = [...templateVars];
+                            updated[i] = e.target.value;
+                            setTemplateVars(updated);
+                          }}
+                          placeholder={canAutofill ? `Auto-filled from ${audience} record (override here)` : (field?.example || "")}
+                          data-testid={`input-var-${i}`}
+                        />
+                      </div>
+                    );
+                  })}
+                  {selectedTemplate.variables.some(v => isCommonMergeField(v)) && audience !== "custom" && (
+                    <p className="text-[11px] text-muted-foreground" data-testid="text-autofill-help">
+                      Variables matching common fields will be filled from each recipient's record. Type a value above to override for everyone.
+                    </p>
+                  )}
                 </div>
               )}
             </CardContent>

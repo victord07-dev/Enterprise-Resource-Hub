@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle } from "lucide-react";
 import type { WhatsappTemplate } from "@shared/schema";
+import { COMMON_MERGE_FIELDS, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
 interface TemplateSyncStatus {
   lastAttemptAt: string | null;
@@ -507,15 +508,39 @@ export default function WhatsAppTemplates() {
                       const varName = form.variables[i] || "";
                       const exampleVal = form.examples[i] || "";
                       const generatedExample = exampleFor(varName, i);
+                      const matchedField = MERGE_FIELD_BY_KEY[varName];
                       return (
                         <div
                           key={num}
-                          className="grid grid-cols-[auto_1fr_1fr] gap-2 items-center"
+                          className="grid grid-cols-[auto_180px_1fr_1fr] gap-2 items-center"
                           data-testid={`row-variable-${num}`}
                         >
                           <span className="text-xs font-mono bg-muted px-2 py-1.5 rounded shrink-0" data-testid={`label-placeholder-${num}`}>
                             {`{{${num}}}`}
                           </span>
+                          <Select
+                            value={matchedField ? varName : ""}
+                            onValueChange={key => setForm(f => {
+                              const field = MERGE_FIELD_BY_KEY[key];
+                              if (!field) return f;
+                              const nextVars = [...f.variables];
+                              const nextEx = [...f.examples];
+                              while (nextVars.length < num) nextVars.push("");
+                              while (nextEx.length < num) nextEx.push("");
+                              nextVars[i] = field.key;
+                              nextEx[i] = field.example;
+                              return { ...f, variables: nextVars, examples: nextEx };
+                            })}
+                          >
+                            <SelectTrigger className="text-xs h-9" data-testid={`select-merge-field-${num}`}>
+                              <SelectValue placeholder="Common field…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {COMMON_MERGE_FIELDS.map(f => (
+                                <SelectItem key={f.key} value={f.key}>{f.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                           <Input
                             value={varName}
                             onChange={e => setForm(f => {

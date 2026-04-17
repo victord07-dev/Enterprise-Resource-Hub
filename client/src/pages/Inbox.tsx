@@ -12,9 +12,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { useLocation } from "wouter";
 import {
   MessageCircle, Send, Search, Plus, Tag, User, Link2, StickyNote, CheckCheck, Check,
-  X, Clock, AlertCircle, Phone, UserPlus, ChevronRight, Inbox as InboxIcon, Filter
+  X, Clock, AlertCircle, Phone, UserPlus, ChevronRight, Inbox as InboxIcon, Filter,
+  FileText, ShoppingCart, Receipt
 } from "lucide-react";
 import type { WhatsappConversation, WhatsappMessage, WhatsappTemplate } from "@shared/schema";
 
@@ -92,6 +94,25 @@ export default function Inbox() {
   });
 
   const selectedConv = conversations.find(c => c.id === selectedConvId);
+
+  // Fetch linked customer data for right panel timeline
+  const { data: customerQuotations = [] } = useQuery<any[]>({
+    queryKey: ["/api/quotations"],
+    enabled: !!selectedConv?.customerId,
+    select: (d: any) => Array.isArray(d)
+      ? d.filter((q: any) => q.customerId === selectedConv?.customerId).slice(0, 5)
+      : [],
+  });
+
+  const { data: customerOrders = [] } = useQuery<any[]>({
+    queryKey: ["/api/sales-orders"],
+    enabled: !!selectedConv?.customerId,
+    select: (d: any) => Array.isArray(d)
+      ? d.filter((o: any) => o.customerId === selectedConv?.customerId).slice(0, 5)
+      : [],
+  });
+
+  const [, setLocation] = useLocation();
 
   // Mark conversation as read when selected
   const handleSelectConversation = useCallback(async (convId: string) => {
@@ -508,6 +529,40 @@ export default function Inbox() {
             >
               <UserPlus className="w-3.5 h-3.5 mr-2" /> Create Lead
             </Button>
+          )}
+
+          {/* Customer Timeline: Quotations */}
+          {selectedConv.customerId && customerQuotations.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-1.5 flex items-center gap-1">
+                <FileText className="w-3.5 h-3.5" /> Recent Quotations
+              </p>
+              <div className="space-y-1">
+                {customerQuotations.map((q: any) => (
+                  <div key={q.id} className="flex items-center justify-between text-xs px-2 py-1.5 bg-muted/40 rounded-md cursor-pointer hover:bg-muted" onClick={() => setLocation("/sales?tab=quotations")} data-testid={`timeline-quote-${q.id}`}>
+                    <span className="font-medium truncate">{q.quoteNumber}</span>
+                    <span className="text-muted-foreground ml-1 shrink-0">₹{Number(q.totalAmount || 0).toLocaleString("en-IN")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Customer Timeline: Orders */}
+          {selectedConv.customerId && customerOrders.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-1.5 flex items-center gap-1">
+                <ShoppingCart className="w-3.5 h-3.5" /> Recent Orders
+              </p>
+              <div className="space-y-1">
+                {customerOrders.map((o: any) => (
+                  <div key={o.id} className="flex items-center justify-between text-xs px-2 py-1.5 bg-muted/40 rounded-md cursor-pointer hover:bg-muted" onClick={() => setLocation("/sales?tab=orders")} data-testid={`timeline-order-${o.id}`}>
+                    <span className="font-medium truncate">{o.orderNumber}</span>
+                    <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">{o.status}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
 
           {/* Tag */}

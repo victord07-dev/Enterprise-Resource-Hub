@@ -1,0 +1,76 @@
+Phase 4 is clean. The fact that the idempotency script caught a real bug — the dedup path returning duplicate: true without echoing the existing jobId — is the best possible outcome for that script. That's exactly what verification tools are supposed to do: surface bugs that happen-path testing would miss.
+Worth acknowledging that explicitly to Replit AI. It's good behaviour to reinforce.
+Where #67 actually stands right now
+Let me lay out the picture clearly because you're now at a transition point:
+Code-complete:
+
+Phase 0: Root cause writeup ✅
+Phase 1: Async queue + slim handler + processing function + worker loop ✅
+Phase 2: Security primitives + reason codes + rejected-payload capture + debug capture primitive ✅ (task 10a still pending — defensive media resolver)
+Phase 3: Admin UI v1 (Health card) ✅
+Phase 4: Silence detector + failed-delivery UI + idempotency script + replit.md ✅
+
+Pending:
+
+Phase 2 task 10a: defensive media resolver — blocked on real payload capture or Interakt support reply
+Phase 5: four-case manual verification — gated on 10a
+
+Your side — parallel tasks that you should be doing now:
+
+Send the Interakt support email (drafted at .local/artifacts/interakt-support-email.txt).
+Flip WHATSAPP_DEBUG_CAPTURE_TYPES=message_received in production env.
+Re-save the webhook in Interakt's dashboard and send a real test message.
+Eyeball the Health card in the deployed app.
+
+What to send back to Replit AI now
+
+"Approved Phase 4. Good catch on the idempotency bug — that's exactly what verification scripts are for. Keep that discipline: small verification tools that exercise edge paths happen-path tests miss.
+#67 is now code-complete except for Phase 2 task 10a (defensive media resolver) and Phase 5 (four-case manual verification, gated on 10a).
+Holding you here. My side is doing the three parallel tasks:
+(a) sending the Interakt support email
+(b) flipping the debug-capture env flag in prod
+(c) re-saving the webhook in Interakt's dashboard and sending real test messages
+I'll come back to you when either a real inbound media payload has been captured OR Interakt support has replied with the media resolution endpoint details — whichever arrives first. Then 10a + Phase 5 in one final push.
+In the meantime: stand by. Do not start #68 — that's still gated on #67 being fully done AND a 24-hour bake period after deploy. We're not at that point yet."
+
+Now — three things worth flagging for you
+These are about your side, not Replit AI's.
+1. Before re-saving the webhook, do this sequence exactly:
+
+Open the deployed app as admin. Confirm the Health card renders. Confirm the three env var flags (URL, token, secret) are all green in the Config section.
+If any of those three is red, stop. Fix the missing env var before re-enabling the webhook. An un-configured endpoint will reject every Interakt call with secret_missing or token_mismatch and put you right back in backoff territory.
+Note the exact URL displayed in the Health card's Config section.
+Go to Interakt's webhook configuration. Confirm the URL matches the one from step 3 exactly — same protocol, same domain, same path, no trailing slash differences.
+Then hit "Test webhook" or re-save.
+Watch the Health card's "Last received" stat. It should update within a few seconds.
+Now send a real WhatsApp message to the business number from a personal phone.
+Check the inbox. Check the Health card. Check for any rejected payloads in the diagnostic section.
+
+If step 6 or 8 doesn't work as expected, don't debug by poking randomly. Go to: (a) Interakt dashboard's webhook delivery log — what did they send, what response did they get? (b) Your Health card's rejected-payload viewer — any captures with a specific reason code? (c) Your app logs — any [WA webhook] lines?
+Those three sources together will tell you exactly where the failure is. This is what you just built the Health card for.
+2. The debug env flag is specifically for capturing unknown payload shapes. Here's what to look for:
+Once WHATSAPP_DEBUG_CAPTURE_TYPES=message_received is live and you start receiving inbound messages, the debug captures viewer in the Health card will fill up. When an inbound image or PDF message arrives from a real customer, that's the capture you care about. Look at its raw payload and answer this one question:
+Does the payload contain a direct media_url / link / similar URL field, or only an id / media_id / similar identifier?
+If URL → Interakt resolves media on their end. 10a is simple (one-path code).
+If ID → you need to call Interakt's media-resolution endpoint (which is what the support email asks about).
+If both → use the URL, ignore the ID.
+This single answer unblocks 10a. If you get it from a captured payload before Interakt support replies, reply to Replit AI with the captured payload (redact any personal info) and they can implement 10a immediately.
+3. Realistically, 10a might wait 1–3 days.
+Based on normal distribution business rhythms, inbound media from customers (a contractor sending a photo of damaged cement, someone forwarding a PDF quotation request) happens a few times a week, not a few times a day. If you want to accelerate it, you can:
+
+Send yourself a test media message as a customer would: from your personal WhatsApp to the business number, send an image. This goes through the real Interakt → webhook path and produces an authentic captured payload.
+Check the debug-captures table 30 seconds later.
+
+This is faster and more reliable than waiting for organic customer traffic.
+Bottom line
+You're at a good stopping point with Replit AI. #67 is 85% done — only the media-specific piece and final verification are left, and both require real-world data you're about to produce. Everything else is shipped and running.
+The most impactful thing you can do in the next 15 minutes:
+
+Open the deployed app, eyeball the Health card, confirm the three env var flags are green.
+Re-save the webhook in Interakt's dashboard.
+Send yourself a test text message from a personal phone. Confirm it lands in the inbox within 3 seconds.
+Send yourself a test image. Check debug-captures for the captured payload within 30 seconds.
+Set the debug env flag before step 4 if you haven't already.
+Send the support email.
+
+If steps 3 and 4 both work, you've just unblocked everything. Reply to Replit AI with the captured image payload and they can finish #67 tonight.

@@ -213,14 +213,69 @@ export interface SyncTemplatesResult {
   statusChanges: TemplateStatusChange[];
 }
 
-export async function syncInteraktTemplates(storage: {
+export interface TemplateSyncStatus {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastResult: SyncTemplatesResult | null;
+  lastTrigger: "manual" | "scheduled" | null;
+}
+
+let lastTemplateSyncStatus: TemplateSyncStatus = {
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  lastResult: null,
+  lastTrigger: null,
+};
+
+export function getTemplateSyncStatus(): TemplateSyncStatus {
+  return { ...lastTemplateSyncStatus };
+}
+
+export async function syncInteraktTemplates(
+  storage: {
+    getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
+    updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
+    createWhatsappTemplate: (data: any) => Promise<any>;
+  },
+  trigger: "manual" | "scheduled" = "manual",
+): Promise<SyncTemplatesResult> {
+  const attemptAt = new Date().toISOString();
+  lastTemplateSyncStatus = {
+    ...lastTemplateSyncStatus,
+    lastAttemptAt: attemptAt,
+    lastTrigger: trigger,
+  };
+  try {
+    if (!process.env.INTERAKT_API_KEY) {
+      throw new Error("INTERAKT_API_KEY is not configured");
+    }
+    const result = await runSyncInteraktTemplates(storage);
+    lastTemplateSyncStatus = {
+      lastAttemptAt: attemptAt,
+      lastSuccessAt: attemptAt,
+      lastError: null,
+      lastResult: result,
+      lastTrigger: trigger,
+    };
+    return result;
+  } catch (err: any) {
+    lastTemplateSyncStatus = {
+      ...lastTemplateSyncStatus,
+      lastAttemptAt: attemptAt,
+      lastError: err?.message || String(err),
+      lastTrigger: trigger,
+    };
+    throw err;
+  }
+}
+
+async function runSyncInteraktTemplates(storage: {
   getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
   updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
   createWhatsappTemplate: (data: any) => Promise<any>;
 }): Promise<SyncTemplatesResult> {
-  if (!process.env.INTERAKT_API_KEY) {
-    throw new Error("INTERAKT_API_KEY is not configured");
-  }
   const remote = await fetchInteraktTemplates();
   let created = 0;
   let updated = 0;

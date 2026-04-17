@@ -10,8 +10,40 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw } from "lucide-react";
+import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, AlertCircle } from "lucide-react";
 import type { WhatsappTemplate } from "@shared/schema";
+
+interface TemplateSyncStatus {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastResult: { total: number; created: number; updated: number; skipped: number } | null;
+  lastTrigger: "manual" | "scheduled" | null;
+}
+
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "never";
+  const diffMs = Date.now() - then;
+  const sec = Math.round(diffMs / 1000);
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} min ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hr ago`;
+  const day = Math.round(hr / 24);
+  if (day < 30) return `${day} day${day === 1 ? "" : "s"} ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function formatExactTime(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString();
+}
 
 const STATUS_COLORS: Record<string, string> = {
   approved: "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400",
@@ -114,6 +146,11 @@ export default function WhatsAppTemplates() {
     queryKey: ["/api/whatsapp/templates"],
   });
 
+  const { data: syncStatus } = useQuery<TemplateSyncStatus>({
+    queryKey: ["/api/whatsapp/templates/sync-status"],
+    refetchInterval: 60_000,
+  });
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       const payload = {
@@ -160,12 +197,16 @@ export default function WhatsAppTemplates() {
     },
     onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/templates/sync-status"] });
       toast({
         title: "Templates synced from Interakt",
         description: `${r.created} created, ${r.updated} updated${r.skipped ? `, ${r.skipped} skipped` : ""}.`,
       });
     },
-    onError: (e: Error) => toast({ title: "Sync failed", description: e.message, variant: "destructive" }),
+    onError: (e: Error) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/templates/sync-status"] });
+      toast({ title: "Sync failed", description: e.message, variant: "destructive" });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -232,6 +273,56 @@ export default function WhatsAppTemplates() {
           </Button>
         </div>
       </div>
+
+      {/* Sync status */}
+      {syncStatus && (syncStatus.lastAttemptAt || syncStatus.lastSuccessAt) && (() => {
+        const failed = !!syncStatus.lastError &&
+          (!syncStatus.lastSuccessAt ||
+            (syncStatus.lastAttemptAt && new Date(syncStatus.lastAttemptAt).getTime() > new Date(syncStatus.lastSuccessAt).getTime()));
+        const successAtLabel = syncStatus.lastSuccessAt ? formatRelativeTime(syncStatus.lastSuccessAt) : "never";
+        const successAtExact = syncStatus.lastSuccessAt ? formatExactTime(syncStatus.lastSuccessAt) : "";
+        const triggerLabel = syncStatus.lastTrigger === "scheduled" ? "scheduled" : "manual";
+        return (
+          <div
+            className={`rounded-md border p-3 text-sm flex items-start gap-3 ${
+              failed
+                ? "border-red-300 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+                : "border-muted bg-muted/40 text-muted-foreground"
+            }`}
+            data-testid="status-template-sync"
+          >
+            {failed ? (
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            ) : (
+              <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
+            )}
+            <div className="flex-1 min-w-0 space-y-0.5">
+              <div>
+                <span className="font-medium" data-testid="text-last-sync-time" title={successAtExact}>
+                  Last successful sync: {successAtLabel}
+                </span>
+                {syncStatus.lastSuccessAt && (
+                  <span className="ml-2 text-xs opacity-75">({successAtExact})</span>
+                )}
+                {syncStatus.lastResult && (
+                  <span className="ml-2 text-xs">
+                    · {syncStatus.lastResult.total} fetched, {syncStatus.lastResult.created} created, {syncStatus.lastResult.updated} updated
+                    {syncStatus.lastResult.skipped ? `, ${syncStatus.lastResult.skipped} skipped` : ""}
+                  </span>
+                )}
+              </div>
+              {failed && (
+                <div className="text-xs" data-testid="text-last-sync-error">
+                  Last attempt ({triggerLabel}, {formatRelativeTime(syncStatus.lastAttemptAt)}) failed: {syncStatus.lastError}
+                </div>
+              )}
+              {!failed && syncStatus.lastTrigger && (
+                <div className="text-xs opacity-75">Triggered by {triggerLabel} sync.</div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">

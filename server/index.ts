@@ -134,7 +134,7 @@ app.use((req, res, next) => {
       return;
     }
     try {
-      const result = await syncInteraktTemplates(storage);
+      const result = await syncInteraktTemplates(storage, "scheduled");
       console.log(`[WA TEMPLATE SYNC] Daily sync complete: ${result.total} fetched, ${result.created} created, ${result.updated} updated, ${result.skipped} skipped, ${result.statusChanges.length} status changes`);
       if (result.statusChanges.length > 0) {
         await notifyAdminsOfTemplateStatusChanges(result.statusChanges);

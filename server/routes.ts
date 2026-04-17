@@ -25,7 +25,7 @@ import {
 } from "@shared/schema";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
-import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates } from "./whatsapp";
+import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus } from "./whatsapp";
 import { broadcastWhatsappEvent } from "./wsHub";
 import multer from "multer";
 
@@ -7142,12 +7142,20 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/whatsapp/templates/sync-status", authenticateToken, async (_req: any, res) => {
+    try {
+      res.json(getTemplateSyncStatus());
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch sync status" });
+    }
+  });
+
   app.post("/api/whatsapp/templates/sync", authenticateToken, async (req: any, res) => {
     try {
       if (req.user.role !== "admin") {
         return res.status(403).json({ message: "Only admin may sync WhatsApp templates" });
       }
-      const result = await syncInteraktTemplates(storage);
+      const result = await syncInteraktTemplates(storage, "manual");
       await logAction(req.user.id, "SYNC", "WhatsappTemplate", `Synced templates from Interakt: ${result.created} created, ${result.updated} updated, ${result.skipped} skipped`);
       res.json({ ok: true, ...result });
     } catch (err: any) {

@@ -1168,12 +1168,36 @@ export default function Sales() {
   const [waQuoteRef, setWaQuoteRef] = useState("");
   const [waSelectedTemplate, setWaSelectedTemplate] = useState<string>("");
   const [waConvWindow, setWaConvWindow] = useState<Date | null>(null);
+  const [waDialogTitle, setWaDialogTitle] = useState("Send via WhatsApp");
 
   const { data: waTemplates = [] } = useQuery<{ id: string; name: string; templateId: string; body: string }[]>({
     queryKey: ["/api/whatsapp/templates"],
     enabled: waDialogOpen,
     select: (d: any[]) => d.filter(t => t.status === "approved"),
   });
+
+  const openWaDialogForOrder = async (order: SalesOrder) => {
+    const customer = customers?.find(c => c.id === order.customerId);
+    setWaTargetPhone(customer?.phone || "");
+    setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nYour sales order *${order.orderNumber}* is being processed.\n\nStatus: ${order.status}\nAmount: ₹${Number(order.totalAmount || 0).toLocaleString("en-IN")}\n\nThank you for your business!`);
+    setWaQuoteRef(order.orderNumber || order.id);
+    setWaSelectedTemplate("");
+    setWaConvWindow(null);
+    setWaDialogTitle("Send Order Update via WhatsApp");
+    setWaDialogOpen(true);
+    if (customer?.phone) {
+      try {
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        if (convs.ok) {
+          const list = await convs.json();
+          const phone = customer.phone.replace(/\D/g, "");
+          const normPhone = phone.length === 10 && /^[6-9]/.test(phone) ? "91" + phone : phone;
+          const match = list.find((c: any) => c.phone === normPhone);
+          if (match?.windowExpiresAt) setWaConvWindow(new Date(match.windowExpiresAt));
+        }
+      } catch {}
+    }
+  };
 
   const openWaDialog = async (q: Quotation) => {
     const customer = customers?.find(c => c.id === q.customerId);
@@ -1182,6 +1206,7 @@ export default function Sales() {
     setWaQuoteRef(q.quoteNumber);
     setWaSelectedTemplate("");
     setWaConvWindow(null);
+    setWaDialogTitle("Send Quotation via WhatsApp");
     setWaDialogOpen(true);
     // Check if there's an existing open conversation/window for this phone
     if (customer?.phone) {
@@ -1491,6 +1516,10 @@ export default function Sales() {
                                       <span className="text-amber-600 dark:text-amber-400 font-medium" data-testid={`text-order-balance-${order.id}`}>Balance: ₹{(Number(order.totalAmount) - Number(order.paidAmount || 0)).toLocaleString()}</span>
                                     </div>
                                     <div className="flex items-center gap-2 ml-auto" onClick={(e) => e.stopPropagation()}>
+                                      {/* WhatsApp order update button */}
+                                      <Button size="sm" variant="ghost" className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20" data-testid={`button-wa-order-${order.id}`} title="Send order update via WhatsApp" onClick={() => openWaDialogForOrder(order)}>
+                                        <MessageCircle className="w-3.5 h-3.5 mr-1" /> WhatsApp
+                                      </Button>
                                       {CHALLAN_CREATE_ELIGIBLE.includes(order.status) && !isReadOnly && (
                                         <Button size="sm" variant="outline" className="border-blue-400 text-blue-600 dark:text-blue-400 dark:border-blue-600" data-testid={`button-create-dispatch-challan-${order.id}`} onClick={() => openDispatchDialog(order.id)}>
                                           <Truck className="w-3 h-3 mr-1" /> Create Dispatch Challan
@@ -2384,9 +2413,9 @@ export default function Sales() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <MessageCircle className="w-5 h-5 text-green-500" />
-              Send via WhatsApp
+              {waDialogTitle}
             </DialogTitle>
-            <DialogDescription>Send quotation details to the customer via WhatsApp</DialogDescription>
+            <DialogDescription>Send details to the customer via WhatsApp</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">

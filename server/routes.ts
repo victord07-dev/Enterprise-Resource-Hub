@@ -6884,15 +6884,22 @@ export async function registerRoutes(
 
       let interaktMessageId: string | null = null;
       let msgBody = msgText || "";
+      let sendError: string | null = null;
 
-      if (messageType === "template" && templateName) {
-        interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || [], templateLanguage || "en");
-      } else if (messageType === "document" && mediaUrl) {
-        interaktMessageId = await sendDocumentMessage(conv.phone, mediaUrl, filename || "document.pdf");
-        msgBody = filename || "Document";
-      } else {
-        if (!msgText) return res.status(400).json({ message: "body required for text messages" });
-        interaktMessageId = await sendTextMessage(conv.phone, msgText);
+      try {
+        if (messageType === "template" && templateName) {
+          interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || [], templateLanguage || "en");
+        } else if (messageType === "document" && mediaUrl) {
+          interaktMessageId = await sendDocumentMessage(conv.phone, mediaUrl, filename || "document.pdf");
+          msgBody = filename || "Document";
+        } else {
+          if (!msgText) return res.status(400).json({ message: "body required for text messages" });
+          interaktMessageId = await sendTextMessage(conv.phone, msgText);
+        }
+      } catch (interaktErr: unknown) {
+        sendError = interaktErr instanceof Error ? interaktErr.message : String(interaktErr);
+        console.error("[WA] Interakt send failure:", sendError);
+        // Persist the message as failed so the conversation has a record
       }
 
       const msg = await storage.createWhatsappMessage({
@@ -6907,6 +6914,11 @@ export async function registerRoutes(
       });
 
       await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
+
+      if (sendError) {
+        // Return 502 so the client knows the upstream send actually failed
+        return res.status(502).json({ message: `Interakt send failed: ${sendError}`, msg });
+      }
       res.status(201).json(msg);
     } catch (err) {
       res.status(500).json({ message: "Failed to send message" });

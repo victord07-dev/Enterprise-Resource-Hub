@@ -32,8 +32,26 @@ function authHeader(): string {
   return `Basic ${Buffer.from(key).toString("base64")}`;
 }
 
-// ── Send text message ─────────────────────────────────────────────────────────
-export async function sendTextMessage(phone: string, body: string): Promise<string | null> {
+// ── Internal POST to Interakt — throws on non-2xx ────────────────────────────
+async function interaktPost(payload: object): Promise<string> {
+  const res = await fetch(`${INTERAKT_BASE}/v1/public/message/`, {
+    method: "POST",
+    headers: {
+      Authorization: authHeader(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "unknown error");
+    throw new Error(`Interakt API error ${res.status}: ${errText}`);
+  }
+  const data = await res.json() as Record<string, unknown>;
+  return (data?.id || data?.messageId || "") as string;
+}
+
+// ── Send text message — throws on API failure ─────────────────────────────────
+export async function sendTextMessage(phone: string, body: string): Promise<string> {
   const normPhone = normalisePhone(phone);
   const payload = {
     countryCode: "+91",
@@ -42,38 +60,20 @@ export async function sendTextMessage(phone: string, body: string): Promise<stri
     type: "Text",
     data: { message: body },
   };
-  try {
-    const res = await fetch(`${INTERAKT_BASE}/v1/public/message/`, {
-      method: "POST",
-      headers: {
-        Authorization: authHeader(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("[WA] sendTextMessage failed:", err);
-      return null;
-    }
-    const data = await res.json() as any;
-    return data?.id || data?.messageId || null;
-  } catch (e) {
-    console.error("[WA] sendTextMessage error:", e);
-    return null;
-  }
+  const msgId = await interaktPost(payload);
+  return msgId;
 }
 
-// ── Send template message ─────────────────────────────────────────────────────
+// ── Send template message — throws on API failure ─────────────────────────────
 export async function sendTemplateMessage(
   phone: string,
   templateName: string,
-  variables: string[],
-  language = "en",
-): Promise<string | null> {
+  bodyValues: string[],
+  languageCode = "en",
+): Promise<string> {
   const normPhone = normalisePhone(phone);
-  const bodyComponents = variables.length > 0
-    ? [{ type: "body", parameters: variables.map(v => ({ type: "text", text: v })) }]
+  const bodyComponents = bodyValues.length > 0
+    ? [{ type: "body", parameters: bodyValues.map(v => ({ type: "text", text: v })) }]
     : [];
   const payload = {
     countryCode: "+91",
@@ -82,40 +82,22 @@ export async function sendTemplateMessage(
     type: "Template",
     template: {
       name: templateName,
-      languageCode: language,
-      bodyValues: variables,
+      languageCode,
+      bodyValues,
       components: bodyComponents,
     },
   };
-  try {
-    const res = await fetch(`${INTERAKT_BASE}/v1/public/message/`, {
-      method: "POST",
-      headers: {
-        Authorization: authHeader(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("[WA] sendTemplateMessage failed:", err);
-      return null;
-    }
-    const data = await res.json() as any;
-    return data?.id || data?.messageId || null;
-  } catch (e) {
-    console.error("[WA] sendTemplateMessage error:", e);
-    return null;
-  }
+  const msgId = await interaktPost(payload);
+  return msgId;
 }
 
-// ── Send document message ─────────────────────────────────────────────────────
+// ── Send document message — throws on API failure ─────────────────────────────
 export async function sendDocumentMessage(
   phone: string,
   documentUrl: string,
   filename: string,
   caption?: string,
-): Promise<string | null> {
+): Promise<string> {
   const normPhone = normalisePhone(phone);
   const payload = {
     countryCode: "+91",
@@ -128,26 +110,8 @@ export async function sendDocumentMessage(
       caption: caption || "",
     },
   };
-  try {
-    const res = await fetch(`${INTERAKT_BASE}/v1/public/message/`, {
-      method: "POST",
-      headers: {
-        Authorization: authHeader(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("[WA] sendDocumentMessage failed:", err);
-      return null;
-    }
-    const data = await res.json() as any;
-    return data?.id || data?.messageId || null;
-  } catch (e) {
-    console.error("[WA] sendDocumentMessage error:", e);
-    return null;
-  }
+  const msgId = await interaktPost(payload);
+  return msgId;
 }
 
 // ── In-memory rate limiter (20 msg / 60s per conversation) ───────────────────

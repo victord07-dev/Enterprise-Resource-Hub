@@ -34,7 +34,7 @@ export default function Campaigns() {
     queryKey: ["/api/whatsapp/templates"],
   });
 
-  const approvedTemplates = templates.filter(t => t.status === "approved");
+  const approvedTemplates = templates.filter(t => t.isActive === "approved");
   const selectedTemplate = approvedTemplates.find(t => t.id === selectedTemplateId);
 
   const sendMutation = useMutation({
@@ -43,7 +43,7 @@ export default function Campaigns() {
         ? customPhones.split(/[\n,]/).map(p => p.trim()).filter(Boolean)
         : [];
       const res = await apiRequest("POST", "/api/whatsapp/campaigns/send", {
-        templateName: selectedTemplate?.templateId,
+        templateName: selectedTemplate?.interaktTemplateName,
         variables: templateVars,
         audience: audience !== "custom" ? audience : undefined,
         phones,

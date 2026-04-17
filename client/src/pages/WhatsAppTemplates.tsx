@@ -25,7 +25,7 @@ const STATUS_ICONS: Record<string, React.ElementType> = {
   rejected: XCircle,
 };
 
-const CATEGORY_OPTIONS = ["UTILITY", "MARKETING", "AUTHENTICATION"];
+const CATEGORY_OPTIONS = ["quotation", "invoice", "payment_reminder", "alert", "custom"];
 const LANGUAGE_OPTIONS = [
   { value: "en", label: "English" },
   { value: "en_US", label: "English (US)" },
@@ -34,22 +34,22 @@ const LANGUAGE_OPTIONS = [
 
 interface TemplateForm {
   name: string;
-  templateId: string;
+  interaktTemplateName: string;
   category: string;
-  language: string;
+  languageCode: string;
   body: string;
   variables: string;
-  status: string;
+  isActive: string;
 }
 
 const emptyForm = (): TemplateForm => ({
   name: "",
-  templateId: "",
-  category: "UTILITY",
-  language: "en",
+  interaktTemplateName: "",
+  category: "quotation",
+  languageCode: "en",
   body: "",
   variables: "",
-  status: "approved",
+  isActive: "approved",
 });
 
 export default function WhatsAppTemplates() {
@@ -68,12 +68,12 @@ export default function WhatsAppTemplates() {
     mutationFn: async () => {
       const payload = {
         name: form.name,
-        templateId: form.templateId,
+        interaktTemplateName: form.interaktTemplateName,
         category: form.category,
-        language: form.language,
+        languageCode: form.languageCode,
         body: form.body,
         variables: form.variables ? form.variables.split(",").map(v => v.trim()).filter(Boolean) : [],
-        status: form.status,
+        isActive: form.isActive,
       };
       if (editingTemplate) {
         const res = await apiRequest("PATCH", `/api/whatsapp/templates/${editingTemplate.id}`, payload);
@@ -119,19 +119,19 @@ export default function WhatsAppTemplates() {
     setEditingTemplate(t);
     setForm({
       name: t.name,
-      templateId: t.templateId,
+      interaktTemplateName: t.interaktTemplateName,
       category: t.category,
-      language: t.language,
+      languageCode: t.languageCode,
       body: t.body,
       variables: (t.variables || []).join(", "),
-      status: t.status,
+      isActive: t.isActive,
     });
     setDialogOpen(true);
   };
 
-  const approvedCount = templates.filter(t => t.status === "approved").length;
-  const pendingCount = templates.filter(t => t.status === "pending_approval").length;
-  const rejectedCount = templates.filter(t => t.status === "rejected").length;
+  const approvedCount = templates.filter(t => t.isActive === "approved").length;
+  const pendingCount = templates.filter(t => t.isActive !== "approved").length;
+  const rejectedCount = 0; // deprecated field
 
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
@@ -192,20 +192,20 @@ export default function WhatsAppTemplates() {
           ) : (
             <div className="divide-y">
               {templates.map(t => {
-                const StatusIcon = STATUS_ICONS[t.status] || Clock;
+                const isActive = t.isActive === "approved";
                 return (
                   <div key={t.id} className="flex items-start gap-4 p-4" data-testid={`template-row-${t.id}`}>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <span className="font-medium text-sm">{t.name}</span>
                         <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">{t.category}</Badge>
-                        <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">{t.language}</Badge>
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium ${STATUS_COLORS[t.status] || "bg-muted text-muted-foreground"}`}>
-                          <StatusIcon className="w-3 h-3" />
-                          {t.status.replace("_", " ")}
+                        <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">{t.languageCode}</Badge>
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium ${isActive ? STATUS_COLORS["approved"] : STATUS_COLORS["pending_approval"]}`}>
+                          {isActive ? <CheckCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                          {isActive ? "Active" : "Inactive"}
                         </span>
                       </div>
-                      <p className="text-xs text-muted-foreground font-mono mb-1">ID: {t.templateId}</p>
+                      <p className="text-xs text-muted-foreground font-mono mb-1">Interakt Name: {t.interaktTemplateName}</p>
                       <p className="text-sm text-muted-foreground">{t.body}</p>
                       {t.variables && t.variables.length > 0 && (
                         <div className="flex items-center gap-1 mt-1 flex-wrap">
@@ -256,10 +256,10 @@ export default function WhatsAppTemplates() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Template ID (Interakt) *</Label>
+                <Label>Interakt Template Name *</Label>
                 <Input
-                  value={form.templateId}
-                  onChange={e => setForm(f => ({ ...f, templateId: e.target.value }))}
+                  value={form.interaktTemplateName}
+                  onChange={e => setForm(f => ({ ...f, interaktTemplateName: e.target.value }))}
                   placeholder="e.g. order_confirmation"
                   data-testid="input-template-id"
                 />
@@ -278,7 +278,7 @@ export default function WhatsAppTemplates() {
               </div>
               <div className="space-y-1.5">
                 <Label>Language</Label>
-                <Select value={form.language} onValueChange={v => setForm(f => ({ ...f, language: v }))}>
+                <Select value={form.languageCode} onValueChange={v => setForm(f => ({ ...f, languageCode: v }))}>
                   <SelectTrigger data-testid="select-language"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {LANGUAGE_OPTIONS.map(l => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
@@ -311,7 +311,7 @@ export default function WhatsAppTemplates() {
 
             <div className="space-y-1.5">
               <Label>Status</Label>
-              <Select value={form.status} onValueChange={v => setForm(f => ({ ...f, status: v }))}>
+              <Select value={form.isActive} onValueChange={v => setForm(f => ({ ...f, isActive: v }))}>
                 <SelectTrigger data-testid="select-status"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="approved">Approved</SelectItem>
@@ -324,7 +324,7 @@ export default function WhatsAppTemplates() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button
-              disabled={!form.name || !form.templateId || !form.body || saveMutation.isPending}
+              disabled={!form.name || !form.interaktTemplateName || !form.body || saveMutation.isPending}
               onClick={() => saveMutation.mutate()}
               data-testid="button-save-template"
             >

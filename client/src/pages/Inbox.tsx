@@ -237,8 +237,8 @@ export default function Inbox() {
   const sendTemplate = useCallback(() => {
     if (!selectedTemplate) return;
     sendMutation.mutate({
-      messageType: "template",
-      templateName: selectedTemplate.templateId,
+      type: "template",
+      templateName: selectedTemplate.interaktTemplateName,
       templateVariables: templateVars,
     });
     setTemplateDialogOpen(false);
@@ -247,13 +247,13 @@ export default function Inbox() {
   }, [selectedTemplate, templateVars, sendMutation]);
 
   const filtered = conversations.filter(c => {
-    const name = c.contactName || c.customerName || c.leadName || c.phone;
-    const matchSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search);
+    const name = c.contactName || c.customerName || c.leadName || c.phoneNumber;
+    const matchSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || c.phoneNumber?.includes(search);
     const matchStatus = statusFilter === "all" || c.status === statusFilter;
     const matchAssignment =
       assignmentFilter === "all" ||
-      (assignmentFilter === "mine" && c.assignedTo === currentUser?.id) ||
-      (assignmentFilter === "unassigned" && !c.assignedTo);
+      (assignmentFilter === "mine" && c.assignedEmployeeId === currentUser?.id) ||
+      (assignmentFilter === "unassigned" && !c.assignedEmployeeId);
     return matchSearch && matchStatus && matchAssignment;
   });
 
@@ -261,7 +261,7 @@ export default function Inbox() {
     ? new Date(selectedConv.windowExpiresAt) > new Date()
     : false;
 
-  const displayName = (c: EnrichedConversation) => c.contactName || c.customerName || c.leadName || c.phone;
+  const displayName = (c: EnrichedConversation) => c.contactName || c.customerName || c.leadName || c.phoneNumber;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -344,15 +344,15 @@ export default function Inbox() {
                   </div>
                   <div className="flex items-center gap-1 mt-0.5">
                     <Phone className="w-2.5 h-2.5 text-muted-foreground" />
-                    <span className="text-[11px] text-muted-foreground">{conv.phone}</span>
+                    <span className="text-[11px] text-muted-foreground">{conv.phoneNumber}</span>
                   </div>
                   <div className="flex items-center gap-1 mt-1 flex-wrap">
                     {conv.status === "closed" && (
                       <Badge variant="secondary" className="text-[10px] px-1 py-0 no-default-hover-elevate no-default-active-elevate">Closed</Badge>
                     )}
-                    {conv.tag && (
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${TAG_COLORS[conv.tag] || "bg-muted text-muted-foreground"}`}>
-                        {conv.tag}
+                    {conv.tags && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${TAG_COLORS[conv.tags] || "bg-muted text-muted-foreground"}`}>
+                        {conv.tags}
                       </span>
                     )}
                   </div>
@@ -381,7 +381,7 @@ export default function Inbox() {
               </Avatar>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium truncate">{displayName(selectedConv)}</p>
-                <p className="text-xs text-muted-foreground">{selectedConv.phone}</p>
+                <p className="text-xs text-muted-foreground">{selectedConv.phoneNumber}</p>
               </div>
               {selectedConv.status === "open" && (
                 <Button
@@ -421,7 +421,7 @@ export default function Inbox() {
                         ? "bg-green-600 text-white rounded-br-sm"
                         : "bg-muted rounded-bl-sm"
                     }`}>
-                      {msg.messageType === "template" && (
+                      {msg.type === "template" && (
                         <div className="text-[10px] opacity-70 mb-1 flex items-center gap-1">
                           <Tag className="w-2.5 h-2.5" /> Template
                         </div>
@@ -429,7 +429,7 @@ export default function Inbox() {
                       <p className="break-words leading-relaxed">{msg.body || "[media]"}</p>
                       <div className={`flex items-center gap-1 mt-1 justify-end ${isOutbound ? "opacity-80" : "opacity-60"}`}>
                         <span className="text-[10px]">{formatTime(msg.createdAt)}</span>
-                        {isOutbound && <MessageTick status={msg.status} />}
+                        {isOutbound && <MessageTick status={msg.status || "sent"} />}
                       </div>
                     </div>
                   </div>
@@ -565,7 +565,7 @@ export default function Inbox() {
               <div>
                 <p className="text-xs text-muted-foreground">Phone</p>
                 <p className="font-medium flex items-center gap-1">
-                  <Phone className="w-3 h-3" /> +{selectedConv.phone}
+                  <Phone className="w-3 h-3" /> +{selectedConv.phoneNumber}
                 </p>
               </div>
               {selectedConv.customerName && (
@@ -668,8 +668,8 @@ export default function Inbox() {
           <div>
             <p className="text-xs font-semibold text-muted-foreground mb-1.5">Tag</p>
             <Select
-              value={selectedConv.tag || "none"}
-              onValueChange={v => patchConvMutation.mutate({ tag: v === "none" ? null : v })}
+              value={selectedConv.tags || "none"}
+              onValueChange={v => patchConvMutation.mutate({ tags: v === "none" ? null : v })}
             >
               <SelectTrigger className="h-8 text-xs" data-testid="select-tag">
                 <SelectValue placeholder="No tag" />
@@ -691,8 +691,8 @@ export default function Inbox() {
               <User className="w-3.5 h-3.5" /> Assigned To
             </p>
             <Select
-              value={selectedConv.assignedTo?.toString() || "unassigned"}
-              onValueChange={v => patchConvMutation.mutate({ assignedTo: v === "unassigned" ? null : Number(v) })}
+              value={selectedConv.assignedEmployeeId || "unassigned"}
+              onValueChange={v => patchConvMutation.mutate({ assignedEmployeeId: v === "unassigned" ? null : v })}
             >
               <SelectTrigger className="h-8 text-xs" data-testid="select-assigned-to">
                 <SelectValue placeholder="Unassigned" />
@@ -776,7 +776,7 @@ export default function Inbox() {
               />
             </div>
             <div className="text-xs text-muted-foreground bg-muted/50 rounded p-2">
-              Phone: <strong>{selectedConv?.phone}</strong> will be linked to this lead automatically.
+              Phone: <strong>{selectedConv?.phoneNumber}</strong> will be linked to this lead automatically.
             </div>
           </div>
           <DialogFooter>
@@ -803,7 +803,7 @@ export default function Inbox() {
               <p className="text-sm text-muted-foreground">No approved templates found. Add templates in the Templates Manager.</p>
             ) : (
               <div className="space-y-2">
-                {templates.filter(t => t.status === "approved").map(t => (
+                {templates.filter(t => t.isActive === "approved").map(t => (
                   <div
                     key={t.id}
                     className={`p-3 rounded-lg border cursor-pointer transition-colors ${selectedTemplate?.id === t.id ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20" : "hover:bg-muted/50"}`}

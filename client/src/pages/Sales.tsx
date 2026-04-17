@@ -1173,10 +1173,10 @@ export default function Sales() {
   const [waTemplateVars, setWaTemplateVars] = useState<string[]>([]);
   const [waAutoContext, setWaAutoContext] = useState<Record<string, string>>({});
 
-  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; templateId: string; body: string }[]>({
+  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; interaktTemplateName: string; body: string }[]>({
     queryKey: ["/api/whatsapp/templates"],
     enabled: waDialogOpen,
-    select: (d: any[]) => d.filter(t => t.status === "approved"),
+    select: (d: any[]) => d.filter(t => t.isActive === "approved"),
   });
 
   const openWaDialogForOrder = async (order: SalesOrder) => {
@@ -2452,7 +2452,7 @@ export default function Sales() {
                 <Select value={waSelectedTemplate} onValueChange={v => {
                   setWaSelectedTemplate(v);
                   // Auto-populate variable fields from context when template selected
-                  const tpl = waTemplates.find(t => t.templateId === v);
+                  const tpl = waTemplates.find(t => t.interaktTemplateName === v);
                   if (tpl?.body) {
                     const matches = tpl.body.match(/\{\{(\d+)\}\}/g) || [];
                     const autoVars = matches.map((_: string, i: number) => waAutoContext[(i + 1).toString()] || "");
@@ -2467,7 +2467,7 @@ export default function Sales() {
                   <SelectContent>
                     <SelectItem value="__none__">No template (free text)</SelectItem>
                     {waTemplates.map(t => (
-                      <SelectItem key={t.id} value={t.templateId}>{t.name}</SelectItem>
+                      <SelectItem key={t.id} value={t.interaktTemplateName}>{t.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -2476,7 +2476,7 @@ export default function Sales() {
 
             {/* Template preview with variable inputs */}
             {waSelectedTemplate && waSelectedTemplate !== "__none__" && (() => {
-              const tpl = waTemplates.find(t => t.templateId === waSelectedTemplate);
+              const tpl = waTemplates.find(t => t.interaktTemplateName === waSelectedTemplate);
               if (!tpl) return null;
               const matches = tpl.body?.match(/\{\{(\d+)\}\}/g) || [];
               const previewBody = matches.reduce((body: string, ph: string, i: number) => body.replace(ph, waTemplateVars[i] || ph), tpl.body || "");

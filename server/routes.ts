@@ -6719,7 +6719,7 @@ export async function registerRoutes(
       if (!existingConv || existingConv.status === "closed") {
         // Create a new conversation (fresh start even if previous was closed)
         conv = await storage.createWhatsappConversation({
-          phone: normPhone,
+          phoneNumber: normPhone,
           contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
           customerId: matchedCustomer?.id || null,
           leadId: matchedLead?.id || null,
@@ -6742,7 +6742,7 @@ export async function registerRoutes(
         conversationId: conv!.id,
         direction: "inbound",
         body: messageText,
-        messageType,
+        type: messageType,
         interaktMessageId: interaktMessageId || null,
         status: "received",
         sentBy: null,
@@ -6807,7 +6807,7 @@ export async function registerRoutes(
       const matchedLead = leadId ? allLeads.find(l => l.id === leadId) : allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
 
       conv = await storage.createWhatsappConversation({
-        phone: normPhone,
+        phoneNumber: normPhone,
         contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
         customerId: matchedCustomer?.id || null,
         leadId: matchedLead?.id || null,
@@ -6824,7 +6824,7 @@ export async function registerRoutes(
     try {
       const conv = await storage.getWhatsappConversation(req.params.id);
       if (!conv) return res.status(404).json({ message: "Conversation not found" });
-      const { status, tag, assignedTo, contactName, customerId, leadId } = req.body;
+      const { status, tag, tags, assignedTo, assignedEmployeeId, contactName, customerId, leadId } = req.body;
       const updates: any = {};
       if (status !== undefined) {
         if (conv.status === "closed" && status === "open") {
@@ -6833,8 +6833,12 @@ export async function registerRoutes(
         updates.status = status;
         if (status === "closed") updates.windowExpiresAt = null;
       }
-      if (tag !== undefined) updates.tag = tag;
-      if (assignedTo !== undefined) updates.assignedTo = assignedTo;
+      // Support both old (tag) and new (tags) field names; DB stores as single text
+      if (tags !== undefined) updates.tags = Array.isArray(tags) ? (tags[0] || null) : (tags || null);
+      else if (tag !== undefined) updates.tags = tag || null;
+      // Support both old (assignedTo) and new (assignedEmployeeId) field names
+      if (assignedEmployeeId !== undefined) updates.assignedEmployeeId = assignedEmployeeId;
+      else if (assignedTo !== undefined) updates.assignedEmployeeId = assignedTo;
       if (contactName !== undefined) updates.contactName = contactName;
       if (customerId !== undefined) updates.customerId = customerId;
       if (leadId !== undefined) updates.leadId = leadId;
@@ -6869,13 +6873,12 @@ export async function registerRoutes(
       }
 
       const { type, text, body, messageType: rawMessageType, templateName, templateVariables, templateLanguage, mediaUrl, filename } = req.body;
-      // Support both old (body/messageType) and new (type/text) payload shapes
-      const messageType = type || rawMessageType || "text";
+      const msgType = type || rawMessageType || "text";
       const msgText = text || body;
 
       // Enforce 24h messaging window for non-template messages
       const windowOpen = conv.windowExpiresAt && new Date(conv.windowExpiresAt) > new Date();
-      if (messageType !== "template" && !windowOpen) {
+      if (msgType !== "template" && !windowOpen) {
         return res.status(409).json({ message: "24-hour messaging window has expired. Send a template message to re-engage." });
       }
 
@@ -6884,14 +6887,14 @@ export async function registerRoutes(
       let sendError: string | null = null;
 
       try {
-        if (messageType === "template" && templateName) {
-          interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || [], templateLanguage || "en");
-        } else if (messageType === "document" && mediaUrl) {
-          interaktMessageId = await sendDocumentMessage(conv.phone, mediaUrl, filename || "document.pdf");
+        if (msgType === "template" && templateName) {
+          interaktMessageId = await sendTemplateMessage(conv.phoneNumber, templateName, templateVariables || [], templateLanguage || "en");
+        } else if (msgType === "document" && mediaUrl) {
+          interaktMessageId = await sendDocumentMessage(conv.phoneNumber, mediaUrl, filename || "document.pdf");
           msgBody = filename || "Document";
         } else {
           if (!msgText) return res.status(400).json({ message: "body required for text messages" });
-          interaktMessageId = await sendTextMessage(conv.phone, msgText);
+          interaktMessageId = await sendTextMessage(conv.phoneNumber, msgText);
         }
       } catch (interaktErr: unknown) {
         sendError = interaktErr instanceof Error ? interaktErr.message : String(interaktErr);
@@ -6903,7 +6906,7 @@ export async function registerRoutes(
         conversationId: conv.id,
         direction: "outbound",
         body: msgBody,
-        messageType,
+        type: msgType,
         interaktMessageId,
         status: interaktMessageId ? "sent" : "failed",
         mediaUrl: mediaUrl || null,
@@ -6930,7 +6933,7 @@ export async function registerRoutes(
         conversationId: req.params.id,
         direction: "outbound",
         body,
-        messageType: "note",
+        type: "note",
         interaktMessageId: null,
         status: "note",
         sentBy: req.user.id,
@@ -6950,8 +6953,8 @@ export async function registerRoutes(
 
       const { name, source = "whatsapp" } = req.body;
       const lead = await storage.createLead({
-        name: name || conv.contactName || conv.phone,
-        phone: conv.phone,
+        name: name || conv.contactName || conv.phoneNumber,
+        phone: conv.phoneNumber,
         source,
         status: "new",
         email: null, company: null, address: null, gstNumber: null,
@@ -7107,7 +7110,7 @@ export async function registerRoutes(
             let conv = await storage.getWhatsappConversationByPhone(target.phone);
             if (!conv) {
               conv = await storage.createWhatsappConversation({
-                phone: target.phone,
+                phoneNumber: target.phone,
                 contactName: target.contactName || null,
                 customerId: target.customerId || null,
                 leadId: target.leadId || null,
@@ -7119,7 +7122,7 @@ export async function registerRoutes(
               conversationId: conv.id,
               direction: "outbound",
               body: `[Campaign] ${templateName}`,
-              messageType: "template",
+              type: "template",
               interaktMessageId: messageId,
               status,
               sentBy: req.user.id,

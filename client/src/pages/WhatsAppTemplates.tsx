@@ -14,12 +14,26 @@ import { Plus, Pencil, Trash2, Tag, CheckCircle, XCircle, Clock, RefreshCw, Aler
 import type { WhatsappTemplate, WhatsappTemplateStatusHistory } from "@shared/schema";
 import { COMMON_MERGE_FIELDS, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
+interface TemplateSyncHistoryEntry {
+  id: string;
+  attemptAt: string;
+  trigger: "manual" | "scheduled";
+  success: boolean;
+  errorMessage: string | null;
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  statusChangesCount: number;
+}
+
 interface TemplateSyncStatus {
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
   lastResult: { total: number; created: number; updated: number; skipped: number } | null;
   lastTrigger: "manual" | "scheduled" | null;
+  history: TemplateSyncHistoryEntry[];
 }
 
 function formatRelativeTime(iso: string | null): string {
@@ -338,6 +352,62 @@ export default function WhatsAppTemplates() {
           </div>
         );
       })()}
+
+      {/* Sync history */}
+      {syncStatus?.history && syncStatus.history.length > 0 && (
+        <Card data-testid="card-sync-history">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Clock className="w-4 h-4" /> Recent sync attempts
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="divide-y text-xs">
+              {syncStatus.history.map(h => (
+                <div
+                  key={h.id}
+                  className="flex items-start gap-3 px-4 py-2"
+                  data-testid={`row-sync-history-${h.id}`}
+                >
+                  {h.success ? (
+                    <CheckCircle className="w-4 h-4 mt-0.5 shrink-0 text-green-600 dark:text-green-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-600 dark:text-red-400" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium" title={formatExactTime(h.attemptAt)}>
+                        {formatRelativeTime(h.attemptAt)}
+                      </span>
+                      <span className="text-muted-foreground">({formatExactTime(h.attemptAt)})</span>
+                      <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
+                        {h.trigger}
+                      </Badge>
+                      {h.success ? (
+                        <span className="text-muted-foreground">
+                          {h.total} fetched · {h.created} created · {h.updated} updated
+                          {h.skipped ? ` · ${h.skipped} skipped` : ""}
+                          {h.statusChangesCount ? ` · ${h.statusChangesCount} status change${h.statusChangesCount === 1 ? "" : "s"}` : ""}
+                        </span>
+                      ) : (
+                        <span className="text-red-600 dark:text-red-400">Failed</span>
+                      )}
+                    </div>
+                    {!h.success && h.errorMessage && (
+                      <div
+                        className="text-red-600 dark:text-red-400 mt-0.5 break-words"
+                        data-testid={`text-sync-history-error-${h.id}`}
+                      >
+                        {h.errorMessage}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">

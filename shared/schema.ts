@@ -861,17 +861,33 @@ export const whatsappTemplateStatusHistory = pgTable("whatsapp_template_status_h
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("idx_wa_tmpl_status_hist_template").on(t.templateId, t.createdAt)]);
 
+export const whatsappTemplateSyncLogs = pgTable("whatsapp_template_sync_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  attemptAt: timestamp("attempt_at").notNull().defaultNow(),
+  trigger: text("trigger").notNull(),
+  success: boolean("success").notNull(),
+  errorMessage: text("error_message"),
+  total: integer("total").notNull().default(0),
+  created: integer("created").notNull().default(0),
+  updated: integer("updated").notNull().default(0),
+  skipped: integer("skipped").notNull().default(0),
+  statusChangesCount: integer("status_changes_count").notNull().default(0),
+}, (t) => [index("idx_wa_template_sync_logs_attempt_at").on(t.attemptAt)]);
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateStatusHistorySchema = createInsertSchema(whatsappTemplateStatusHistory).omit({ id: true, createdAt: true });
+export const insertWhatsappTemplateSyncLogSchema = createInsertSchema(whatsappTemplateSyncLogs).omit({ id: true, attemptAt: true });
 
 export type WhatsappConversation = typeof whatsappConversations.$inferSelect;
 export type WhatsappMessage = typeof whatsappMessages.$inferSelect;
 export type WhatsappTemplate = typeof whatsappTemplates.$inferSelect;
 export type WhatsappTemplateStatusHistory = typeof whatsappTemplateStatusHistory.$inferSelect;
+export type WhatsappTemplateSyncLog = typeof whatsappTemplateSyncLogs.$inferSelect;
 export type InsertWhatsappConversation = z.infer<typeof insertWhatsappConversationSchema>;
 export type InsertWhatsappMessage = z.infer<typeof insertWhatsappMessageSchema>;
 export type InsertWhatsappTemplate = z.infer<typeof insertWhatsappTemplateSchema>;
 export type InsertWhatsappTemplateStatusHistory = z.infer<typeof insertWhatsappTemplateStatusHistorySchema>;
+export type InsertWhatsappTemplateSyncLog = z.infer<typeof insertWhatsappTemplateSyncLogSchema>;
 

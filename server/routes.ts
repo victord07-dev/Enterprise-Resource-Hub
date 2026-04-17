@@ -7169,7 +7169,8 @@ export async function registerRoutes(
 
   app.get("/api/whatsapp/templates/sync-status", authenticateToken, async (_req: any, res) => {
     try {
-      res.json(getTemplateSyncStatus());
+      const status = await getTemplateSyncStatus(storage);
+      res.json(status);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch sync status" });
     }

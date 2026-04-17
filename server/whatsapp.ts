@@ -224,24 +224,82 @@ export interface SyncTemplatesResult {
   statusChanges: TemplateStatusChange[];
 }
 
+export interface TemplateSyncHistoryEntry {
+  id: string;
+  attemptAt: string;
+  trigger: "manual" | "scheduled";
+  success: boolean;
+  errorMessage: string | null;
+  total: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  statusChangesCount: number;
+}
+
 export interface TemplateSyncStatus {
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
   lastResult: SyncTemplatesResult | null;
   lastTrigger: "manual" | "scheduled" | null;
+  history: TemplateSyncHistoryEntry[];
 }
 
-let lastTemplateSyncStatus: TemplateSyncStatus = {
-  lastAttemptAt: null,
-  lastSuccessAt: null,
-  lastError: null,
-  lastResult: null,
-  lastTrigger: null,
-};
+interface SyncStorage {
+  getWhatsappTemplateByInteraktName: (name: string, lang: string) => Promise<any>;
+  updateWhatsappTemplate: (id: string, data: any) => Promise<any>;
+  createWhatsappTemplate: (data: any) => Promise<any>;
+  createWhatsappTemplateSyncLog: (data: any) => Promise<any>;
+  getRecentWhatsappTemplateSyncLogs: (limit: number) => Promise<any[]>;
+  createWhatsappTemplateStatusHistory?: (data: {
+    templateId: string;
+    previousStatus: string | null;
+    newStatus: string;
+    source: string;
+  }) => Promise<any>;
+}
 
-export function getTemplateSyncStatus(): TemplateSyncStatus {
-  return { ...lastTemplateSyncStatus };
+const HISTORY_LIMIT = 10;
+
+function toHistoryEntry(row: any): TemplateSyncHistoryEntry {
+  return {
+    id: String(row.id),
+    attemptAt: row.attemptAt instanceof Date ? row.attemptAt.toISOString() : String(row.attemptAt),
+    trigger: row.trigger === "scheduled" ? "scheduled" : "manual",
+    success: !!row.success,
+    errorMessage: row.errorMessage ?? null,
+    total: Number(row.total ?? 0),
+    created: Number(row.created ?? 0),
+    updated: Number(row.updated ?? 0),
+    skipped: Number(row.skipped ?? 0),
+    statusChangesCount: Number(row.statusChangesCount ?? 0),
+  };
+}
+
+export async function getTemplateSyncStatus(
+  storage: Pick<SyncStorage, "getRecentWhatsappTemplateSyncLogs">,
+): Promise<TemplateSyncStatus> {
+  const rows = await storage.getRecentWhatsappTemplateSyncLogs(HISTORY_LIMIT);
+  const history = rows.map(toHistoryEntry);
+  const latest = history[0];
+  const lastSuccess = history.find(h => h.success) || null;
+  return {
+    lastAttemptAt: latest?.attemptAt ?? null,
+    lastSuccessAt: lastSuccess?.attemptAt ?? null,
+    lastError: latest && !latest.success ? latest.errorMessage : null,
+    lastResult: lastSuccess
+      ? {
+          total: lastSuccess.total,
+          created: lastSuccess.created,
+          updated: lastSuccess.updated,
+          skipped: lastSuccess.skipped,
+          statusChanges: [],
+        }
+      : null,
+    lastTrigger: latest?.trigger ?? null,
+    history,
+  };
 }
 
 export interface TemplateSyncStorage {
@@ -257,35 +315,44 @@ export interface TemplateSyncStorage {
 }
 
 export async function syncInteraktTemplates(
-  storage: TemplateSyncStorage,
+  storage: SyncStorage,
   trigger: "manual" | "scheduled" = "manual",
 ): Promise<SyncTemplatesResult> {
-  const attemptAt = new Date().toISOString();
-  lastTemplateSyncStatus = {
-    ...lastTemplateSyncStatus,
-    lastAttemptAt: attemptAt,
-    lastTrigger: trigger,
-  };
   try {
     if (!process.env.INTERAKT_API_KEY) {
       throw new Error("INTERAKT_API_KEY is not configured");
     }
     const result = await runSyncInteraktTemplates(storage, trigger);
-    lastTemplateSyncStatus = {
-      lastAttemptAt: attemptAt,
-      lastSuccessAt: attemptAt,
-      lastError: null,
-      lastResult: result,
-      lastTrigger: trigger,
-    };
+    try {
+      await storage.createWhatsappTemplateSyncLog({
+        trigger,
+        success: true,
+        errorMessage: null,
+        total: result.total,
+        created: result.created,
+        updated: result.updated,
+        skipped: result.skipped,
+        statusChangesCount: result.statusChanges.length,
+      });
+    } catch (logErr) {
+      console.error("[WA TEMPLATE SYNC] Failed to persist success log:", logErr);
+    }
     return result;
   } catch (err: any) {
-    lastTemplateSyncStatus = {
-      ...lastTemplateSyncStatus,
-      lastAttemptAt: attemptAt,
-      lastError: err?.message || String(err),
-      lastTrigger: trigger,
-    };
+    try {
+      await storage.createWhatsappTemplateSyncLog({
+        trigger,
+        success: false,
+        errorMessage: (err?.message || String(err)).slice(0, 1000),
+        total: 0,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        statusChangesCount: 0,
+      });
+    } catch (logErr) {
+      console.error("[WA TEMPLATE SYNC] Failed to persist failure log:", logErr);
+    }
     throw err;
   }
 }

@@ -935,6 +935,28 @@ export const whatsappWebhookRejectedPayloads = pgTable("whatsapp_webhook_rejecte
 
 export type WhatsappWebhookRejectedPayload = typeof whatsappWebhookRejectedPayloads.$inferSelect;
 
+// ── Debug Payload Captures (Task #67 Phase 2 task 10a — generalised) ─────────
+// A reusable primitive for capturing the first N real payloads of an event
+// type whose shape we don't yet have authoritative docs for. Driven by the
+// env var WHATSAPP_DEBUG_CAPTURE_TYPES (comma-separated event types). Capped
+// at 5 rows per (source, eventType) pair, auto-pruned after 30 days.
+// First use: capture inbound `message_received` payloads to learn whether
+// Interakt sends media as URL, ID, or both. Same table will serve future
+// templates / button responses / interactive messages / location etc.
+export const debugPayloadCaptures = pgTable("debug_payload_captures", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  source: text("source").notNull(), // e.g. "whatsapp_webhook", "interakt_send_response"
+  eventType: text("event_type").notNull(), // e.g. "message_received", "message_api_sent"
+  rawPayload: jsonb("raw_payload").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_debug_capture_source_event").on(t.source, t.eventType),
+  index("idx_debug_capture_created").on(t.createdAt),
+]);
+
+export type DebugPayloadCapture = typeof debugPayloadCaptures.$inferSelect;
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });

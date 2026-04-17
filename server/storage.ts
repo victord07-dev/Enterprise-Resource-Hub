@@ -7,6 +7,7 @@ import {
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
+  debugPayloadCaptures, type DebugPayloadCapture,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
@@ -1939,6 +1940,54 @@ export class DatabaseStorage implements IStorage {
       .from(whatsappWebhookRejectedPayloads)
       .orderBy(desc(whatsappWebhookRejectedPayloads.createdAt))
       .limit(limit);
+  }
+
+  // ── Debug Payload Captures (Task #67 Phase 2 task 10a — generalised) ────────
+  // Capped at 5 rows per (source, eventType) pair. Fire-and-forget;
+  // failures must NEVER block the calling path.
+  async captureDebugPayload(args: {
+    source: string;
+    eventType: string;
+    rawPayload: any;
+    notes?: string | null;
+  }): Promise<void> {
+    const PER_TYPE_CAP = 5;
+    await db.insert(debugPayloadCaptures).values({
+      source: args.source,
+      eventType: args.eventType,
+      rawPayload: args.rawPayload,
+      notes: args.notes ?? null,
+    });
+    // Trim this (source, eventType) bucket to PER_TYPE_CAP most recent rows.
+    await db.execute(sql`
+      DELETE FROM debug_payload_captures
+      WHERE source = ${args.source}
+        AND event_type = ${args.eventType}
+        AND id NOT IN (
+          SELECT id FROM debug_payload_captures
+          WHERE source = ${args.source} AND event_type = ${args.eventType}
+          ORDER BY created_at DESC
+          LIMIT ${PER_TYPE_CAP}
+        )
+    `);
+  }
+
+  async getDebugPayloadCaptures(filter?: { source?: string; eventType?: string; limit?: number }): Promise<DebugPayloadCapture[]> {
+    const conds = [];
+    if (filter?.source) conds.push(eq(debugPayloadCaptures.source, filter.source));
+    if (filter?.eventType) conds.push(eq(debugPayloadCaptures.eventType, filter.eventType));
+    const limit = Math.min(filter?.limit ?? 50, 100);
+    const q = db.select().from(debugPayloadCaptures);
+    const filtered = conds.length ? q.where(and(...conds)) : q;
+    return filtered.orderBy(desc(debugPayloadCaptures.createdAt)).limit(limit);
+  }
+
+  async pruneOldDebugPayloadCaptures(retentionDays = 30): Promise<number> {
+    const result: any = await db.execute(sql`
+      DELETE FROM debug_payload_captures
+      WHERE created_at < NOW() - (${retentionDays}::int * INTERVAL '1 day')
+    `);
+    return Number(result?.rowCount ?? 0);
   }
 
   // Dashboard

@@ -6765,6 +6765,24 @@ export async function registerRoutes(
       const job = await storage.enqueueWhatsappWebhookJob("process_inbound", req.body, payloadHash);
       const eventType = (req.body as any)?.type || "unknown";
       console.log(`[WA WEBHOOK] accept type=${eventType} jobId=${job.id}`);
+
+      // 6a) Optional debug capture (Task #67 Phase 2 task 10a — generalised).
+      // Captures the first 5 real payloads of any event_type listed in
+      // WHATSAPP_DEBUG_CAPTURE_TYPES (comma-separated). Fire-and-forget;
+      // never blocks the accept response.
+      const captureCsv = process.env.WHATSAPP_DEBUG_CAPTURE_TYPES;
+      if (captureCsv) {
+        const wanted = captureCsv.split(",").map(s => s.trim()).filter(Boolean);
+        if (wanted.includes(eventType)) {
+          storage.captureDebugPayload({
+            source: "whatsapp_webhook",
+            eventType,
+            rawPayload: req.body,
+            notes: `jobId=${job.id} hash=${payloadHash.slice(0, 12)}`,
+          }).catch(err => console.error("[WA DEBUG CAPTURE] failed:", err?.message || err));
+        }
+      }
+
       res.json({ ok: true, jobId: job.id });
     } catch (err: any) {
       console.error(`[WA WEBHOOK] reject reason=enqueue_error:`, err?.message || err);
@@ -6848,6 +6866,27 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[WA WEBHOOK REJECTED] list error:", err);
       res.status(500).json({ message: err?.message || "Failed to fetch rejected payloads" });
+    }
+  });
+
+  // Debug payload captures (Task #67 Phase 2 task 10a — generalised). Admin-only.
+  // Returns the rolling N captures for an optional source/eventType filter.
+  app.get("/api/whatsapp/debug-captures", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const source = (req.query.source as string) || undefined;
+      const eventType = (req.query.eventType as string) || undefined;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+      const rows = await storage.getDebugPayloadCaptures({ source, eventType, limit });
+      const captureCsv = process.env.WHATSAPP_DEBUG_CAPTURE_TYPES || "";
+      res.json({
+        rows,
+        captureEnabled: !!captureCsv,
+        captureTypes: captureCsv.split(",").map(s => s.trim()).filter(Boolean),
+      });
+    } catch (err: any) {
+      console.error("[WA DEBUG CAPTURE] list error:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch debug captures" });
     }
   });
 

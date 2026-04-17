@@ -1,0 +1,34 @@
+This is exactly the right behaviour from Replit AI. They hit an unknown, refused to guess, surfaced it with evidence (actual doc searches, not vibes), and proposed three concrete paths forward. The rate-limit data they found as a byproduct — 600/min default, upgradeable to 1000/min — is also genuinely useful for #68 later.
+Go with Option C. Here's why, and how to execute it.
+Why C is the right choice
+A alone is slower than it needs to be. You're dependent on a customer actually sending an image/PDF within some reasonable window. For your business (cement + solar + metals distribution), inbound customer media might be daily, or might be every few days — you can't predict. Waiting for organic inbound media could stretch the block out.
+B alone is even slower. Interakt support responses at BSP level can be anywhere from same-day to a week. And the quality of BSP support documentation answers varies — you might get a confident but wrong answer from a tier-1 support agent.
+C gives you two parallel paths to the answer, whichever arrives first unblocks 10a. The only "cost" is (a) a small capture table + 5-row cap (maybe 30-50 lines of code), and (b) you sending a support email. Both are cheap relative to the value of unblocking 10a cleanly.
+One additional reason to pick C
+The capture mechanism from Option A has value beyond just resolving this question. It's a reusable pattern — the "capture the first N real payloads of an unfamiliar shape for debugging" is useful for any future Interakt feature you build on. Templates, button responses, interactive messages, voice notes, contacts, location messages — all of these have undocumented or lightly-documented payload shapes at Interakt. Having a small capture primitive you can turn on for any event type pays back over the life of the integration.
+Worth asking Replit AI to generalise it slightly, not just hardcode it to "first 5 inbound non-text messages." More on that below.
+Yes, have them draft the support email
+Definitely have them draft it. Three reasons:
+
+They already have the technical context (they just spent an hour searching docs and know exactly which three questions are unanswered).
+BSP support responds better to precise technical questions than to vague ones. A developer-written email gets better replies than a business-person-written email.
+You save time. You'll copy-paste, add your account ID, hit send.
+
+What to send back
+
+"Option C. Ship both paths in parallel — whichever answer lands first unblocks 10a.
+Two asks:
+(1) Draft the support email for [email protected]. Cover: inbound media webhook payload shape (does message_received include media_url, media_id, or both?), media-resolution endpoint (URL, auth header format, response shape, URL expiry), rate-limit confirmation (you found 600/min default, 1000/min on Advanced — confirm this applies to both message-send and REST-API-read endpoints). Keep it tight — three numbered questions, one paragraph of context, nothing else. I'll copy-paste and send from our account.
+(2) Generalise the capture mechanism slightly. Don't hardcode it to 'first 5 inbound non-text messages.' Build it as: a debug_payload_captures table with (event_type, captured_at, raw_payload, notes), an env flag WHATSAPP_DEBUG_CAPTURE_TYPES (comma-separated list of event types to capture), and a cap of 5 rows per type. For this exercise, set WHATSAPP_DEBUG_CAPTURE_TYPES='message_received'. The reason: we'll hit the same 'undocumented payload shape' problem again with templates, buttons, interactive messages, voice notes, etc. A reusable primitive pays for itself the next time.
+View the captures in the existing admin diagnostics area — same page as the rejected-payload table. Admin-only. Auto-expires captures after 30 days (simple nightly prune) so debug data doesn't accumulate forever.
+Once that ships, we wait. Whichever arrives first — a real inbound image from a customer, or a support reply — unblocks 10a. Update me the moment either happens.
+Meanwhile, Phase 2 tasks 7-10 approved as landed. Good verification numbers on the smoke test and the redaction tests. Proceed to Phase 3 planning now; don't block Phase 3 on 10a. Phase 3 is just UI (Webhook Health card v1), and it can ship and be useful even while 10a is pending.
+Also: the rate-limit number you found (600/min default, 1000/min on Advanced) — note this in the PR description for #68 when it comes. That's one of the five required artefacts we pre-committed to."
+
+A subtle point worth noting
+Look at what happened here. The original #67 ticket had rate-limit verification as a #68 requirement. During Phase 2 execution, while investigating a completely different question (media payload shape), Replit AI also found the authoritative rate-limit number as a byproduct. This is the kind of spillover benefit you get from having Replit AI actually read the docs instead of guessing — they surface multiple things at once.
+That's worth reinforcing implicitly by acknowledging it in the reply (which the draft above does). It encourages the "while I'm in there, I'll note this other thing" behaviour.
+On Phase 3 starting now
+I added this to the reply draft above — don't have Phase 3 blocked by 10a. Phase 3 is just the admin UI card. It's useful on day one (it shows the silence banner, dead-letter count, rejected-payload viewer) regardless of whether media re-hosting is working. No reason to hold it.
+The only thing Phase 3 doesn't include is the image/PDF in the four-case verification — but that's already deferred to Phase 5, which we already gated on media re-hosting completion. So Phase 3 can ship fully. Phase 4 (silence detector, failed-delivery UI, idempotency script, docs) can also ship fully. Only Phase 5's final verification waits on 10a.
+This is how you keep momentum without sacrificing correctness. Send the reply, let Replit AI draft the support email, copy-paste it to Interakt, and proceed.

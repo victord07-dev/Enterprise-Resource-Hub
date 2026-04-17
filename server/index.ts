@@ -273,6 +273,21 @@ app.use((req, res, next) => {
   // Also run once shortly after startup so a long-stopped instance prunes quickly.
   setTimeout(runWhatsappSyncLogCleanup, 30_000).unref();
 
+  // ── Daily prune of old debug payload captures (Task #67 Phase 2 task 10a) ──
+  // Captures auto-expire after 30 days so debug data doesn't accumulate.
+  async function runDebugCaptureCleanup() {
+    try {
+      const removed = await storage.pruneOldDebugPayloadCaptures(30);
+      if (removed > 0) {
+        console.log(`[WA DEBUG CAPTURE] Pruned ${removed} capture row(s) older than 30 days`);
+      }
+    } catch (err) {
+      console.error("[WA DEBUG CAPTURE] Cleanup failed:", err);
+    }
+  }
+  cron.schedule("15 4 * * *", runDebugCaptureCleanup, { timezone: "Asia/Kolkata" });
+  setTimeout(runDebugCaptureCleanup, 45_000).unref();
+
   // ── WhatsApp Webhook Config Smoke Log (Task #67 Phase 2) ───────────────────
   // Surface every webhook-related config decision at boot so an operator can
   // diagnose misconfiguration from the logs alone. In prod, missing secret

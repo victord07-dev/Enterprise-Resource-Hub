@@ -7230,6 +7230,89 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp Campaigns ─────────────────────────────────────────────────────
+  app.post("/api/whatsapp/campaigns/preview", authenticateToken, async (req: any, res) => {
+    try {
+      if (!["admin", "sales_manager"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or sales_manager may preview campaigns" });
+      }
+      const { templateId, variables = [], variableNames = [], audience, phones = [], limit = 3 } = req.body;
+      const previewLimit = Math.min(Math.max(Number(limit) || 3, 1), 10);
+
+      type PreviewTarget = { phone: string; contactName?: string | null; customer?: any; lead?: any };
+      let targets: PreviewTarget[] = (phones as string[]).map(p => ({ phone: normalisePhone(p) }));
+
+      if (audience === "customers") {
+        const allCustomers = await storage.getCustomers();
+        targets = allCustomers
+          .filter(c => c.phone)
+          .map(c => ({ phone: normalisePhone(c.phone!), contactName: c.name, customer: c }));
+      } else if (audience === "leads") {
+        const allLeads = await storage.getLeads();
+        targets = allLeads
+          .filter(l => l.phone)
+          .map(l => ({ phone: normalisePhone(l.phone!), contactName: l.name, lead: l }));
+      }
+
+      const seen = new Set<string>();
+      targets = targets.filter(t => { if (!t.phone || t.phone.length < 10 || seen.has(t.phone)) return false; seen.add(t.phone); return true; });
+      const totalRecipients = targets.length;
+
+      let templateBody: string | null = null;
+      if (templateId) {
+        const tpl = await storage.getWhatsappTemplate(templateId);
+        if (tpl) templateBody = tpl.body || null;
+      }
+
+      const sample = targets.slice(0, previewLimit).map(target => {
+        const resolvedVars: Array<{ index: number; fieldKey: string | null; label: string | null; value: string; source: "manual" | "auto" | "missing" }> = [];
+        const missingFields: Array<{ index: number; fieldKey: string; label: string }> = [];
+        (variables as string[]).forEach((val, idx) => {
+          const fieldKey = (variableNames as string[])[idx] || null;
+          const manualOverride = (val || "").trim();
+          if (manualOverride) {
+            resolvedVars.push({ index: idx, fieldKey, label: fieldKey, value: manualOverride, source: "manual" });
+            return;
+          }
+          if (fieldKey && isCommonMergeField(fieldKey)) {
+            const resolved = resolveMergeField(fieldKey, { customer: target.customer, lead: target.lead });
+            if (resolved) {
+              resolvedVars.push({ index: idx, fieldKey, label: fieldKey, value: resolved, source: "auto" });
+            } else {
+              resolvedVars.push({ index: idx, fieldKey, label: fieldKey, value: "", source: "missing" });
+              missingFields.push({ index: idx, fieldKey, label: fieldKey });
+            }
+          } else {
+            resolvedVars.push({ index: idx, fieldKey, label: fieldKey, value: val || "", source: manualOverride ? "manual" : "missing" });
+            if (!manualOverride) missingFields.push({ index: idx, fieldKey: fieldKey || `{{${idx + 1}}}`, label: fieldKey || `Variable ${idx + 1}` });
+          }
+        });
+
+        let renderedBody = templateBody;
+        if (renderedBody) {
+          renderedBody = renderedBody.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n) => {
+            const idx = Number(n) - 1;
+            const v = resolvedVars[idx];
+            if (!v) return `{{${n}}}`;
+            return v.value || `[missing: ${v.label || `var ${n}`}]`;
+          });
+        }
+
+        return {
+          phone: target.phone,
+          contactName: target.contactName || null,
+          renderedBody,
+          variables: resolvedVars,
+          missingFields,
+        };
+      });
+
+      res.json({ totalRecipients, sample });
+    } catch (err) {
+      console.error("[WA Campaign Preview] error:", err);
+      res.status(500).json({ message: "Failed to build campaign preview" });
+    }
+  });
+
   app.post("/api/whatsapp/campaigns/send", authenticateToken, async (req: any, res) => {
     try {
       if (!["admin", "sales_manager"].includes(req.user.role)) {

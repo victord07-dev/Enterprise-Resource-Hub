@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { CheckCircle, XCircle, Send, Users, UserPlus, Phone, Tag, Loader2, Megaphone } from "lucide-react";
 import type { WhatsappTemplate } from "@shared/schema";
 
-type CampaignResult = { phone: string; status: string; messageId: string | null };
+type CampaignResult = { phone: string; customerId: string | null; contactName: string | null; status: "sent" | "failed" | "skipped"; messageId: string | null; error: string | null };
 
 const AUDIENCE_OPTIONS = [
   { value: "customers", label: "All Customers", icon: Users },
@@ -205,14 +205,18 @@ export default function Campaigns() {
                 </div>
                 <div className="max-h-[400px] overflow-y-auto space-y-1">
                   {results.map((r, i) => (
-                    <div key={i} className={`flex items-center justify-between text-xs px-3 py-2 rounded-md ${r.status === "sent" ? "bg-green-50 dark:bg-green-950/20" : "bg-red-50 dark:bg-red-950/20"}`} data-testid={`result-${i}`}>
-                      <span className="font-mono">{r.phone}</span>
-                      <div className="flex items-center gap-1">
-                        {r.status === "sent"
-                          ? <CheckCircle className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
-                          : <XCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />}
-                        <span className={r.status === "sent" ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}>{r.status}</span>
+                    <div key={i} className={`text-xs px-3 py-2 rounded-md ${r.status === "sent" ? "bg-green-50 dark:bg-green-950/20" : "bg-red-50 dark:bg-red-950/20"}`} data-testid={`result-${i}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono">{r.phone}</span>
+                        <div className="flex items-center gap-1">
+                          {r.status === "sent"
+                            ? <CheckCircle className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
+                            : <XCircle className="w-3.5 h-3.5 text-red-600 dark:text-red-400" />}
+                          <span className={r.status === "sent" ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}>{r.status}</span>
+                        </div>
                       </div>
+                      {r.contactName && <div className="text-muted-foreground truncate">{r.contactName}</div>}
+                      {r.error && <div className="text-red-600 dark:text-red-400 truncate mt-0.5">Error: {r.error}</div>}
                     </div>
                   ))}
                 </div>

@@ -6794,8 +6794,8 @@ export async function registerRoutes(
 
   app.post("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
     try {
-      if (!["admin", "sales_manager"].includes(req.user.role)) {
-        return res.status(403).json({ message: "Only admin or sales_manager may start conversations" });
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ message: "Only admin may create new WhatsApp conversations" });
       }
       const { phone, contactName, customerId, leadId } = req.body;
       if (!phone) return res.status(400).json({ message: "phone required" });
@@ -7053,49 +7053,82 @@ export async function registerRoutes(
       const { templateId, templateName, variables = [], audience, phones = [] } = req.body;
       if (!templateName) return res.status(400).json({ message: "templateName required" });
 
-      let targetPhones: string[] = phones.map((p: string) => normalisePhone(p));
+      type CampaignTarget = { phone: string; contactName?: string | null; customerId?: string | null; leadId?: string | null };
+      type CampaignResult = { phone: string; customerId: string | null; contactName: string | null; status: "sent" | "failed" | "skipped"; messageId: string | null; error: string | null };
+
+      let targets: CampaignTarget[] = phones.map((p: string) => ({ phone: normalisePhone(p) }));
 
       if (audience === "customers") {
         const allCustomers = await storage.getCustomers();
-        targetPhones = allCustomers.filter(c => c.phone).map(c => normalisePhone(c.phone!));
+        targets = allCustomers
+          .filter(c => c.phone)
+          .map(c => ({ phone: normalisePhone(c.phone!), contactName: c.name, customerId: c.id, leadId: null }));
       } else if (audience === "leads") {
         const allLeads = await storage.getLeads();
-        targetPhones = allLeads.filter(l => l.phone).map(l => normalisePhone(l.phone!));
+        targets = allLeads
+          .filter(l => l.phone)
+          .map(l => ({ phone: normalisePhone(l.phone!), contactName: l.name, customerId: null, leadId: l.id }));
       }
 
-      targetPhones = [...new Set(targetPhones)].filter(p => p.length >= 10);
+      // Deduplicate by phone
+      const seen = new Set<string>();
+      targets = targets.filter(t => { if (!t.phone || t.phone.length < 10 || seen.has(t.phone)) return false; seen.add(t.phone); return true; });
 
-      const results: { phone: string; status: string; messageId: string | null }[] = [];
+      const results: CampaignResult[] = [];
       const BATCH = 10;
-      for (let i = 0; i < targetPhones.length; i += BATCH) {
-        const batch = targetPhones.slice(i, i + BATCH);
-        await Promise.all(batch.map(async phone => {
-          const messageId = await sendTemplateMessage(phone, templateName, variables);
-          results.push({ phone, status: messageId ? "sent" : "failed", messageId });
+      for (let i = 0; i < targets.length; i += BATCH) {
+        const batch = targets.slice(i, i + BATCH);
+        await Promise.all(batch.map(async target => {
+          let messageId: string | null = null;
+          let error: string | null = null;
+          let status: "sent" | "failed" = "failed";
+          try {
+            messageId = await sendTemplateMessage(target.phone, templateName, variables);
+            status = messageId ? "sent" : "failed";
+            if (!messageId) error = "No message ID returned from Interakt";
+          } catch (e: any) {
+            error = e?.message || "Send error";
+            console.warn(`[WA Campaign] Failed to send to ${target.phone}:`, error);
+          }
+
+          results.push({ phone: target.phone, customerId: target.customerId || null, contactName: target.contactName || null, status, messageId, error });
 
           // Create/find conversation and log message
-          let conv = await storage.getWhatsappConversationByPhone(phone);
-          if (!conv) {
-            conv = await storage.createWhatsappConversation({ phone, contactName: null, customerId: null, leadId: null, status: "open", windowExpiresAt: null });
+          try {
+            let conv = await storage.getWhatsappConversationByPhone(target.phone);
+            if (!conv) {
+              conv = await storage.createWhatsappConversation({
+                phone: target.phone,
+                contactName: target.contactName || null,
+                customerId: target.customerId || null,
+                leadId: target.leadId || null,
+                status: "open",
+                windowExpiresAt: null,
+              });
+            }
+            await storage.createWhatsappMessage({
+              conversationId: conv.id,
+              direction: "outbound",
+              body: `[Campaign] ${templateName}`,
+              messageType: "template",
+              interaktMessageId: messageId,
+              status,
+              sentBy: req.user.id,
+            });
+            await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
+          } catch (logErr) {
+            console.warn(`[WA Campaign] Failed to log message for ${target.phone}:`, logErr);
           }
-          await storage.createWhatsappMessage({
-            conversationId: conv.id,
-            direction: "outbound",
-            body: `[Campaign] ${templateName}`,
-            messageType: "template",
-            interaktMessageId: messageId,
-            status: messageId ? "sent" : "failed",
-            sentBy: req.user.id,
-          });
-          await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
         }));
-        if (i + BATCH < targetPhones.length) {
+        if (i + BATCH < targets.length) {
           await new Promise(r => setTimeout(r, 100));
         }
       }
 
-      await logAction(req.user.id, "SEND", "WhatsappCampaign", `Sent campaign '${templateName}' to ${targetPhones.length} contacts`);
-      res.json({ sent: results.filter(r => r.status === "sent").length, failed: results.filter(r => r.status === "failed").length, results });
+      const sentCount = results.filter(r => r.status === "sent").length;
+      const failedCount = results.filter(r => r.status === "failed").length;
+      await logAction(req.user.id, "SEND", "WhatsappCampaign", `Sent campaign '${templateName}' to ${targets.length} contacts: ${sentCount} sent, ${failedCount} failed`);
+      res.json({ sent: sentCount, failed: failedCount, total: targets.length, results });
     } catch (err) {
       res.status(500).json({ message: "Failed to send campaign" });
     }

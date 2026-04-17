@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Inbox, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Inbox, RefreshCw, Send, Trash2, XCircle } from "lucide-react";
 
 interface WebhookStats {
   pending: number;
@@ -63,6 +63,22 @@ interface DebugCaptureResponse {
   captureTypes: string[];
 }
 
+interface FailedOutboundMessage {
+  id: string;
+  conversationId: string;
+  body: string | null;
+  type: string;
+  status: string | null;
+  createdAt: string;
+  phone: string;
+  contactName: string | null;
+}
+
+interface FailedOutboundResponse {
+  rows: FailedOutboundMessage[];
+  lookbackHours: number;
+}
+
 const SILENCE_HOURS = 6;
 const BUSINESS_START_HOUR_IST = 9;
 const BUSINESS_END_HOUR_IST = 19;
@@ -99,6 +115,7 @@ export function WebhookHealthCard() {
   const [showRejected, setShowRejected] = useState(false);
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const [showCaptures, setShowCaptures] = useState(false);
+  const [showFailedOutbound, setShowFailedOutbound] = useState(false);
   const [expandedRejectedId, setExpandedRejectedId] = useState<string | null>(null);
   const [expandedDLId, setExpandedDLId] = useState<string | null>(null);
   const [expandedCaptureId, setExpandedCaptureId] = useState<string | null>(null);
@@ -125,6 +142,12 @@ export function WebhookHealthCard() {
     enabled: showCaptures,
     refetchInterval: showCaptures ? 30_000 : false,
   });
+  // Failed outbound count is always fetched (drives the always-visible badge);
+  // the row list is also returned (cheap query — capped at 20 rows).
+  const failedOutboundQ = useQuery<FailedOutboundResponse>({
+    queryKey: ["/api/whatsapp/messages/recent-failed"],
+    refetchInterval: 30_000,
+  });
 
   const retryMutation = useMutation({
     mutationFn: async (id: string) => apiRequest("POST", `/api/whatsapp/webhook/dead-letter/${id}/retry`),
@@ -149,6 +172,8 @@ export function WebhookHealthCard() {
   const silence = computeSilenceState(stats?.lastJobAt ?? null);
   const deadLetterCount = stats?.deadLetter ?? 0;
   const dlRows = deadLetterQ.data ?? [];
+  const failedOutbound = failedOutboundQ.data;
+  const failedOutboundCount = failedOutbound?.rows.length ?? 0;
 
   return (
     <Card data-testid="card-webhook-health">
@@ -205,6 +230,24 @@ export function WebhookHealthCard() {
             testId="stat-dead-letter"
           />
         </div>
+
+        {/* Failed outbound prominence (Phase 4) — always-visible top-line warning.
+            If there are any failed sends in 24h, the section header renders red so
+            it cannot be missed even if the section is collapsed. */}
+        {failedOutboundCount > 0 && (
+          <div
+            className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200"
+            data-testid="banner-failed-outbound"
+          >
+            <Send className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-medium">
+                {failedOutboundCount} failed outbound send{failedOutboundCount === 1 ? "" : "s"} in last {failedOutbound?.lookbackHours ?? 24}h
+              </div>
+              <div className="text-xs opacity-80 mt-0.5">Expand "Failed sends" below for details.</div>
+            </div>
+          </div>
+        )}
 
         {/* Webhook config */}
         <div className="rounded-md border p-3 text-xs space-y-1.5" data-testid="section-webhook-config">
@@ -303,6 +346,49 @@ export function WebhookHealthCard() {
                     </div>
                   );
                 })
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Failed outbound messages (Phase 4) */}
+        <div className="rounded-md border" data-testid="section-failed-outbound">
+          <button
+            type="button"
+            onClick={() => setShowFailedOutbound(v => !v)}
+            className="w-full flex items-center justify-between p-3 text-sm font-medium hover:bg-muted/50"
+            data-testid="button-toggle-failed-outbound"
+          >
+            <span className="flex items-center gap-2">
+              {showFailedOutbound ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              Failed sends ({failedOutboundCount}) — last {failedOutbound?.lookbackHours ?? 24}h
+            </span>
+            <Badge variant={failedOutboundCount > 0 ? "destructive" : "secondary"} className="text-xs">
+              {failedOutboundCount > 0 ? "needs review" : "clear"}
+            </Badge>
+          </button>
+          {showFailedOutbound && (
+            <div className="border-t divide-y">
+              {failedOutboundQ.isLoading ? (
+                <div className="p-3 text-xs text-muted-foreground">Loading…</div>
+              ) : failedOutboundCount === 0 ? (
+                <div className="p-3 text-xs text-muted-foreground">No failed outbound messages in window.</div>
+              ) : (
+                failedOutbound!.rows.map(row => (
+                  <div key={row.id} className="p-3 text-xs space-y-1" data-testid={`row-failed-outbound-${row.id}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="text-xs font-mono">{row.type}</Badge>
+                      <span className="font-mono">{row.phone}</span>
+                      {row.contactName && <span className="text-muted-foreground">· {row.contactName}</span>}
+                      <span className="text-muted-foreground ml-auto">{formatRelative(row.createdAt)}</span>
+                    </div>
+                    {row.body && (
+                      <div className="text-muted-foreground line-clamp-2 break-all" data-testid={`text-failed-body-${row.id}`}>
+                        {row.body}
+                      </div>
+                    )}
+                  </div>
+                ))
               )}
             </div>
           )}

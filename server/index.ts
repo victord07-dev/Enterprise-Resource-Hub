@@ -288,6 +288,52 @@ app.use((req, res, next) => {
   cron.schedule("15 4 * * *", runDebugCaptureCleanup, { timezone: "Asia/Kolkata" });
   setTimeout(runDebugCaptureCleanup, 45_000).unref();
 
+  // ── Webhook Silence Detector (Task #67 Phase 4) ────────────────────────────
+  // Hourly during business hours (09:00–19:00 IST), check the last received
+  // webhook timestamp. If silent for >SILENCE_THRESHOLD_HOURS, create an
+  // in-app notification for every active admin. Re-alert is suppressed for
+  // SILENCE_REALERT_HOURS so admins are not spammed every hour while broken.
+  // In-memory cooldown is fine — worst case a server restart triggers one
+  // extra alert, which is acceptable for an outage signal.
+  const SILENCE_THRESHOLD_HOURS = 6;
+  const SILENCE_REALERT_HOURS = 6;
+  let lastSilenceAlertAtMs = 0;
+
+  async function checkWebhookSilenceAndAlert() {
+    try {
+      const stats = await storage.getWhatsappWebhookJobStats();
+      const lastMs = stats.lastJobAt ? new Date(stats.lastJobAt).getTime() : 0;
+      const ageHours = lastMs ? (Date.now() - lastMs) / 3_600_000 : Infinity;
+      if (ageHours <= SILENCE_THRESHOLD_HOURS) return;
+
+      const sinceLastAlertMs = Date.now() - lastSilenceAlertAtMs;
+      if (sinceLastAlertMs < SILENCE_REALERT_HOURS * 3_600_000) return;
+
+      const allUsers = await storage.getUsers();
+      const admins = allUsers.filter((u: any) => u.role === "admin" && u.isActive);
+      if (admins.length === 0) return;
+
+      const ageLabel = Number.isFinite(ageHours) ? `${ageHours.toFixed(1)}h` : "ever";
+      const title = "WhatsApp webhook silent";
+      const message = `No WhatsApp webhook received in ${ageLabel} during business hours. Check Interakt webhook configuration and the Webhook Health card on the WhatsApp Templates page.`;
+      for (const u of admins) {
+        await storage.createNotification({
+          userId: u.id,
+          type: "whatsapp_webhook_silence",
+          title,
+          message,
+          relatedId: null,
+        });
+      }
+      lastSilenceAlertAtMs = Date.now();
+      console.warn(`[WA SILENCE] Alert dispatched to ${admins.length} admin(s) — last webhook ${ageLabel} ago`);
+    } catch (err) {
+      console.error("[WA SILENCE] Detector failed:", err);
+    }
+  }
+  // Hourly during business hours (top of hour, 09–19 IST). 9 firings per day.
+  cron.schedule("0 9-19 * * *", checkWebhookSilenceAndAlert, { timezone: "Asia/Kolkata" });
+
   // ── WhatsApp Webhook Config Smoke Log (Task #67 Phase 2) ───────────────────
   // Surface every webhook-related config decision at boot so an operator can
   // diagnose misconfiguration from the logs alone. In prod, missing secret

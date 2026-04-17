@@ -6752,13 +6752,15 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid JSON payload", reason: "parse_error" });
       }
 
-      // 5) Idempotency by payload hash
+      // 5) Idempotency by payload hash. Echo the existing jobId so a re-delivered
+      // webhook receives the same identifier as the original — useful for the
+      // idempotency smoke and any caller correlating ids across retries.
       const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
-      const dup = await storage.hasWhatsappWebhookJobByPayloadHash(payloadHash);
-      if (dup) {
+      const existingJobId = await storage.getWhatsappWebhookJobIdByPayloadHash(payloadHash);
+      if (existingJobId) {
         const eventType = (req.body as any)?.type || "unknown";
-        console.log(`[WA WEBHOOK] accept type=${eventType} duplicate=true hash=${payloadHash.slice(0, 12)}`);
-        return res.json({ ok: true, duplicate: true });
+        console.log(`[WA WEBHOOK] accept type=${eventType} duplicate=true jobId=${existingJobId} hash=${payloadHash.slice(0, 12)}`);
+        return res.json({ ok: true, duplicate: true, jobId: existingJobId });
       }
 
       // 6) Enqueue
@@ -6887,6 +6889,21 @@ export async function registerRoutes(
     } catch (err: any) {
       console.error("[WA DEBUG CAPTURE] list error:", err);
       res.status(500).json({ message: err?.message || "Failed to fetch debug captures" });
+    }
+  });
+
+  // Recent failed outbound messages (Task #67 Phase 4). Admin-only.
+  // Powers the "Failed sends (24h)" section of the Webhook Health card.
+  app.get("/api/whatsapp/messages/recent-failed", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const lookbackHours = Math.min(parseInt(req.query.hours as string) || 24, 168);
+      const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+      const rows = await storage.getRecentFailedOutboundMessages({ lookbackHours, limit });
+      res.json({ rows, lookbackHours });
+    } catch (err: any) {
+      console.error("[WA FAILED-OUT] list error:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch failed outbound messages" });
     }
   });
 

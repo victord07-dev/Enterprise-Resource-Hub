@@ -364,7 +364,10 @@ export interface IStorage {
 
   // WhatsApp Webhook Job Queue (Task #67 Phase 1)
   enqueueWhatsappWebhookJob(jobType: string, payload: any, payloadHash: string | null, nextRunAt?: Date): Promise<WhatsappWebhookJob>;
-  hasWhatsappWebhookJobByPayloadHash(payloadHash: string): Promise<boolean>;
+  // Returns the id of an existing job with the given payload hash, or null if
+  // none. Used by the webhook handler for idempotent dedup so the duplicate
+  // ack can echo the original jobId back to the caller.
+  getWhatsappWebhookJobIdByPayloadHash(payloadHash: string): Promise<string | null>;
   pickupWhatsappWebhookJob(stuckThresholdMs: number): Promise<WhatsappWebhookJob | null>;
   markWhatsappWebhookJobDone(id: string): Promise<void>;
   markWhatsappWebhookJobFailed(id: string, error: string, nextRunAt: Date | null, maxAttempts: number): Promise<{ deadLettered: boolean }>;
@@ -385,6 +388,23 @@ export interface IStorage {
     rawBody: string | null;
   }): Promise<void>;
   getWhatsappWebhookRejectedPayloads(limit?: number): Promise<WhatsappWebhookRejectedPayload[]>;
+
+  // WhatsApp Failed-Outbound Surface (Task #67 Phase 4)
+  // Returns the most recent failed outbound messages within the lookback window
+  // (default 24h). Joined with the conversation for phone + contact context.
+  getRecentFailedOutboundMessages(args?: {
+    lookbackHours?: number;
+    limit?: number;
+  }): Promise<Array<{
+    id: string;
+    conversationId: string;
+    body: string | null;
+    type: string;
+    status: string | null;
+    createdAt: string;
+    phone: string;
+    contactName: string | null;
+  }>>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1761,12 +1781,12 @@ export class DatabaseStorage implements IStorage {
     return job;
   }
 
-  async hasWhatsappWebhookJobByPayloadHash(payloadHash: string): Promise<boolean> {
+  async getWhatsappWebhookJobIdByPayloadHash(payloadHash: string): Promise<string | null> {
     const [row] = await db.select({ id: whatsappWebhookJobs.id })
       .from(whatsappWebhookJobs)
       .where(eq(whatsappWebhookJobs.payloadHash, payloadHash))
       .limit(1);
-    return !!row;
+    return row?.id ?? null;
   }
 
   async pickupWhatsappWebhookJob(stuckThresholdMs: number): Promise<WhatsappWebhookJob | null> {
@@ -1940,6 +1960,52 @@ export class DatabaseStorage implements IStorage {
       .from(whatsappWebhookRejectedPayloads)
       .orderBy(desc(whatsappWebhookRejectedPayloads.createdAt))
       .limit(limit);
+  }
+
+  // ── Recent Failed Outbound (Task #67 Phase 4) ──────────────────────────────
+  // SELECT … FROM whatsapp_messages JOIN conversations. Restricted to outbound
+  // direction with status='failed' inside the lookback window. Used by the
+  // Webhook Health card so admins notice send failures immediately.
+  async getRecentFailedOutboundMessages(args: { lookbackHours?: number; limit?: number } = {}): Promise<Array<{
+    id: string;
+    conversationId: string;
+    body: string | null;
+    type: string;
+    status: string | null;
+    createdAt: string;
+    phone: string;
+    contactName: string | null;
+  }>> {
+    const lookbackHours = args.lookbackHours ?? 24;
+    const limit = Math.min(args.limit ?? 20, 50);
+    const result = await db.execute(sql`
+      SELECT
+        m.id,
+        m.conversation_id AS "conversationId",
+        m.body,
+        m.message_type AS "type",
+        m.status,
+        m.created_at AS "createdAt",
+        c.phone,
+        c.contact_name AS "contactName"
+      FROM whatsapp_messages m
+      JOIN whatsapp_conversations c ON c.id = m.conversation_id
+      WHERE m.direction = 'outbound'
+        AND m.status = 'failed'
+        AND m.created_at > NOW() - (${lookbackHours} || ' hours')::interval
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+    `);
+    return (result.rows as any[]).map(r => ({
+      id: r.id,
+      conversationId: r.conversationId,
+      body: r.body,
+      type: r.type,
+      status: r.status,
+      createdAt: new Date(r.createdAt).toISOString(),
+      phone: r.phone,
+      contactName: r.contactName,
+    }));
   }
 
   // ── Debug Payload Captures (Task #67 Phase 2 task 10a — generalised) ────────

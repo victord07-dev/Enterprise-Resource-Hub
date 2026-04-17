@@ -1,0 +1,44 @@
+Clean Phase 3 delivery. The verification on both points was exactly what was needed, the UI restraint held, and the scope stayed minimal. Six sections in the card, all wired to existing endpoints, auto-refresh with lazy-loading where appropriate. Good work.
+Answer to the screenshot question: eyeball it yourself
+You don't need Replit AI to take an authenticated screenshot. Open the deployed app, log in as admin, go to WhatsApp Templates page, look at the card. Takes 60 seconds. An authenticated screenshot from Replit AI is an extra step with no added value — they can't tell you whether the visual design is acceptable for your team, only whether it rendered.
+What you're actually checking when you open it:
+
+The card is at the top of the page and visible immediately. Admins shouldn't have to scroll or click a tab to see it.
+Silence banner state matches reality. If your webhook has received anything in the last 6h, no banner. If not, red banner with the hour count.
+The four stat tiles show sensible numbers. Last received should be a recent timestamp (if webhook is working), pending/processing near 0, failed and dead-letter at 0.
+Config section shows all three env var flags as green. If WHATSAPP_WEBHOOK_BASE_URL, WHATSAPP_WEBHOOK_TOKEN, or INTERAKT_WEBHOOK_SECRET show red, that's a real configuration problem surfaced for the first time — worth investigating now before Phase 4.
+Collapsible sections expand/collapse cleanly. No need to test the contents if dead-letter and rejected are both empty.
+Debug captures section shows "disabled" until you flip the env flag. Once you flip it (see below), it should flip to "enabled: message_received" after a restart.
+
+If anything fails these checks, flag it back to Replit AI before approving Phase 4.
+Parallel tasks on your side that are still outstanding
+These are still pending from the last round. Phase 4 can build while you do them, but don't let them slide:
+
+Send the support email. Read .local/artifacts/interakt-support-email.txt, sharpen if needed, send from your account. This starts the support-reply clock, which you want running as early as possible.
+Flip WHATSAPP_DEBUG_CAPTURE_TYPES=message_received in production Replit env. After setting, the service needs a restart for the env var to take effect. On next restart you should see the capture primitive active. Once a customer sends an inbound media message, it'll land in the debug table.
+Re-save the webhook URL in Interakt's dashboard. This is the trigger from way back — the original symptom that started all this. Interakt's backoff is still in effect. Until you re-save the webhook URL (or hit "Test webhook" in their dashboard), live inbound messages still won't flow. Now is the time: you have the hardened async queue, the Health card to observe what happens, and the silence detector to alert if it breaks again. Don't wait for Phase 4 — the infrastructure is ready to receive traffic safely.
+
+On re-saving the webhook — worth doing carefully
+When you re-save the webhook in Interakt:
+
+Verify the URL in Interakt matches your production URL. Not the Replit workspace URL, not a staging URL. The config section in your Health card shows the resolved WHATSAPP_WEBHOOK_BASE_URL — this is what Interakt should be pointing at.
+After re-saving, send yourself a test WhatsApp message to the connected business number. Within ~3 seconds it should appear in the inbox. Check the Health card's "Last received" — it should update.
+If nothing happens in 30 seconds, don't panic. Check: (a) Interakt dashboard "Webhook Deliveries" log — did Interakt try to send and what response? (b) Your app logs — any rejected-reason codes? (c) Rejected-payloads table in Health card — any captures?
+
+This is the moment where the hardening pays off. You'll know in 30 seconds whether it's working, and if not, you have four places to look (dashboard, app logs, rejected table, debug table) — not just "grep the logs."
+What to send back
+
+"Approved Phase 3. I'll eyeball the card myself in the deployed app — no need for you to screenshot.
+Proceed to Phase 4: silence detector cron, failed-delivery UI prominence, idempotency verification script, replit.md WhatsApp section. Stop after Phase 4, wait for approval before Phase 5.
+On my side in parallel:
+(a) Reviewing and sending the Interakt support email.
+(b) Setting WHATSAPP_DEBUG_CAPTURE_TYPES=message_received in prod env.
+(c) Re-saving the webhook URL in Interakt dashboard and sending a real test message. This is the trigger for live traffic. I'll report back what shows up in the Health card.
+If the test message fails to arrive within 30 seconds, I'll check rejected-payloads + debug-captures + your app logs and come back with specifics. Don't block Phase 4 build on this — the infrastructure should stand on its own."
+
+One thing to note about the auto-injected stale task lists
+Replit AI continues to correctly ignore these and mention them briefly each time they appear. That's fine — it shows they're staying focused, and it's good that they're calling it out each time rather than hiding it. No action needed from you.
+Where you are now
+You're three of five phases into #67. Phase 4 is the easiest of the remaining phases — silence detector (already partially built into the Health card), failed-delivery UI polish, an idempotency script (which is a 50-line runner), and documentation. Nothing architecturally new. Expect it to land quickly.
+The real test is Phase 5 — the four-case verification — which is gated on 10a (media re-hosting), which is gated on either a captured real payload or an Interakt support reply. You can do everything else first, including go live with text-only WhatsApp, without 10a being done.
+Send the reply, open the app to eyeball the card, flip the env flag, and re-save that webhook. Today is the day the integration actually wakes up.

@@ -1,0 +1,32 @@
+Two things are now clearly visible from these screenshots, and one is more important than the other.
+What the screenshots reveal
+1. The Webhook Health card is still not present.
+No stat tiles (Last received / Pending / Failed / Dead-letter), no Config flags, no Debug Captures section. The page shows only the old pre-#67 UI: Approved / Pending Review / Rejected template counts and the "No templates yet" placeholder.
+This confirms: Phases 1–4 are not live on erp.itfi.co.in. The code is committed to main but hasn't been published. You're still running the old build.
+2. The "Sync from Interakt" button returns 404.
+When you clicked it, the app tried to call Interakt's templates API and got 404 Not Found. The error body is plain HTML saying "The requested resource was not found on this server" — that's coming from Interakt's side, not yours.
+This is a separate issue from #67. It's about the template-sync feature, not the webhook. But it's worth noting because it tells us something about Interakt's API endpoints in general.
+Don't get distracted by the 404 right now
+The Interakt 404 is a real issue but it's not on the critical path for #67. Here's why:
+
+Template sync is an outbound REST call from your app to Interakt's templates API.
+The webhook is inbound REST call from Interakt's servers to yours.
+They're independent. Broken template sync doesn't break webhook receipt or message handling.
+
+What the 404 does tell us is that the specific Interakt API endpoint your code is calling for template sync has either been moved, deprecated, or the URL your code is using is wrong. That's fixable later — file it as a separate issue once #67 is done.
+The one thing that matters right now
+You need to publish the code to production. Nothing else can happen until this is done.
+Go to Replit's Deployments panel (the rocket or upload icon in the sidebar of your Replit workspace), find the active deployment for erp.itfi.co.in, and hit the Publish/Redeploy button to deploy the current main branch.
+If you can't find it, the exact clicks depend on your Replit UI version. Ask Replit AI directly:
+
+I'm on the WhatsApp Templates page at erp.itfi.co.in/settings/whatsapp-templates and I can confirm the Webhook Health card is NOT visible — just the old Approved/Pending/Rejected tiles. Phases 1–4 are definitely not published yet. Walk me through exactly where to click in Replit's UI to publish the current main branch to the erp.itfi.co.in deployment. I've done db:push already and set the two env vars in deployment secrets. Just need to hit publish now.
+Also, separate issue for later: clicking "Sync from Interakt" returns 404 with an HTML Not Found error from Interakt. The template-sync API endpoint our code calls has apparently moved or is wrong. File this as a post-#67 follow-up — not blocking right now.
+
+Why you're seeing this now and not earlier
+This is a normal failure mode when you have manual-publish deploys. Every time you approve a phase, the code commits to main, but production stays on the last-published build. You have 5+ commits worth of #67 work sitting in main that have never gone live.
+This is also why Replit AI's Phase 0 writeup flagged manual publish as a contributing cause of the original 404 incident — the same pattern repeats: code is done, but "done" and "live" are different states, and it's easy to forget the publish step.
+Quick status summary
+ItemState#67 Phases 1–4 code✅ Committed to main#67 Phases 1–4 on production❌ Not published yetDB migration✅ Done (per your earlier confirmation)WHATSAPP_DEBUG_CAPTURE_TYPES env var✅ Set in deployment secretsWHATSAPP_WEBHOOK_BASE_URL env var✅ Set in deployment secretsPublish to production⏸ Waiting for you to click itInterakt webhook URL✅ Correctly configuredTemplate sync API❌ Broken (Interakt 404 — separate issue)
+You're one button-click away from everything working. Find the Publish button, click it, wait 2–5 minutes, refresh the page, then the Health card should appear.
+Once it does, follow the earlier checklist: verify three green flags + Debug Captures enabled, then send test text, then send test image, then paste the captured payload back to Replit AI.
+Ask Replit AI for the exact publish steps if you're unsure, then hit the button.

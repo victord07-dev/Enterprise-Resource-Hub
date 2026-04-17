@@ -60,10 +60,10 @@ const ALL_ITEMS: NavItem[] = [
 const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
-  field_staff: ["/my-portal", "/field-staff"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/whatsapp-templates", "/reports"],
+  field_staff: ["/my-portal", "/field-staff", "/inbox"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
-  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/whatsapp-templates", "/reports"],
 };
 
 const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };

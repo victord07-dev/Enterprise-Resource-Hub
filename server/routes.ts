@@ -6667,9 +6667,15 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid webhook token" });
       }
 
+      // HMAC verification is mandatory when secret is configured
       const signature = req.headers["x-interakt-signature"] as string;
       const rawBody = req.rawBody as Buffer;
-      if (signature && rawBody) {
+      const secret = process.env.INTERAKT_WEBHOOK_SECRET;
+      if (secret) {
+        // Secret is configured — always verify
+        if (!signature || !rawBody) {
+          return res.status(401).json({ message: "Missing HMAC signature" });
+        }
         const valid = verifyInteraktSignature(rawBody, signature);
         if (!valid) {
           console.warn("[WA] Webhook HMAC mismatch — rejecting");
@@ -6718,12 +6724,13 @@ export async function registerRoutes(
           windowExpiresAt,
         });
       } else {
-        // Only inbound messages reset the conversation window
+        // Inbound messages always reset the 24h window and reopen closed conversations
         await storage.updateWhatsappConversation(conv.id, {
           windowExpiresAt,
           lastMessageAt: new Date(),
-          status: conv.status === "closed" ? conv.status : "open",
+          status: "open",
           contactName: conv.contactName || contactName || undefined,
+          unreadCount: (conv.unreadCount || 0) + 1,
         });
       }
 
@@ -6736,6 +6743,8 @@ export async function registerRoutes(
         status: "received",
         sentBy: null,
       });
+      
+      console.log(`[WA] Inbound message from ${normPhone} stored in conv ${conv.id}`);
 
       res.json({ ok: true });
     } catch (err) {
@@ -6828,6 +6837,8 @@ export async function registerRoutes(
   app.get("/api/whatsapp/conversations/:id/messages", authenticateToken, async (req: any, res) => {
     try {
       const messages = await storage.getWhatsappMessages(req.params.id);
+      // Reset unread count when messages are fetched (conversation viewed)
+      await storage.updateWhatsappConversation(req.params.id, { unreadCount: 0 });
       res.json(messages);
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch messages" });
@@ -6844,19 +6855,28 @@ export async function registerRoutes(
         return res.status(429).json({ message: "Rate limit exceeded (20 messages per minute)" });
       }
 
-      const { body, messageType = "text", templateName, templateVariables, mediaUrl, filename } = req.body;
+      const { type, text, body, messageType: rawMessageType, templateName, templateVariables, templateLanguage, mediaUrl, filename } = req.body;
+      // Support both old (body/messageType) and new (type/text) payload shapes
+      const messageType = type || rawMessageType || "text";
+      const msgText = text || body;
+
+      // Enforce 24h messaging window for non-template messages
+      const windowOpen = conv.windowExpiresAt && new Date(conv.windowExpiresAt) > new Date();
+      if (messageType !== "template" && !windowOpen) {
+        return res.status(409).json({ message: "24-hour messaging window has expired. Send a template message to re-engage." });
+      }
 
       let interaktMessageId: string | null = null;
-      let msgBody = body || "";
+      let msgBody = msgText || "";
 
       if (messageType === "template" && templateName) {
-        interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || []);
+        interaktMessageId = await sendTemplateMessage(conv.phone, templateName, templateVariables || [], templateLanguage || "en");
       } else if (messageType === "document" && mediaUrl) {
         interaktMessageId = await sendDocumentMessage(conv.phone, mediaUrl, filename || "document.pdf");
         msgBody = filename || "Document";
       } else {
-        if (!body) return res.status(400).json({ message: "body required for text messages" });
-        interaktMessageId = await sendTextMessage(conv.phone, body);
+        if (!msgText) return res.status(400).json({ message: "body required for text messages" });
+        interaktMessageId = await sendTextMessage(conv.phone, msgText);
       }
 
       const msg = await storage.createWhatsappMessage({
@@ -6934,6 +6954,9 @@ export async function registerRoutes(
 
   app.post("/api/whatsapp/templates", authenticateToken, async (req: any, res) => {
     try {
+      if (!["admin", "accountant"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      }
       const parsed = insertWhatsappTemplateSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.message });
       const tmpl = await storage.createWhatsappTemplate(parsed.data);
@@ -6946,6 +6969,9 @@ export async function registerRoutes(
 
   app.patch("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
     try {
+      if (!["admin", "accountant"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      }
       const tmpl = await storage.updateWhatsappTemplate(req.params.id, req.body);
       if (!tmpl) return res.status(404).json({ message: "Template not found" });
       res.json(tmpl);
@@ -6956,6 +6982,9 @@ export async function registerRoutes(
 
   app.delete("/api/whatsapp/templates/:id", authenticateToken, async (req: any, res) => {
     try {
+      if (!["admin", "accountant"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or accountant may manage WhatsApp templates" });
+      }
       const ok = await storage.deleteWhatsappTemplate(req.params.id);
       if (!ok) return res.status(404).json({ message: "Template not found" });
       res.json({ ok: true });
@@ -6967,6 +6996,9 @@ export async function registerRoutes(
   // ── WhatsApp Campaigns ─────────────────────────────────────────────────────
   app.post("/api/whatsapp/campaigns/send", authenticateToken, async (req: any, res) => {
     try {
+      if (!["admin", "sales_manager"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or sales_manager may send campaigns" });
+      }
       const { templateId, templateName, variables = [], audience, phones = [] } = req.body;
       if (!templateName) return res.status(400).json({ message: "templateName required" });
 

@@ -246,8 +246,13 @@ export default function Inbox() {
                 </Avatar>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1">
-                    <span className="text-sm font-medium truncate">{displayName(conv)}</span>
-                    <span className="text-[10px] text-muted-foreground shrink-0">{timeAgo(conv.lastMessageAt)}</span>
+                    <span className={`text-sm truncate ${(conv.unreadCount || 0) > 0 ? "font-bold" : "font-medium"}`}>{displayName(conv)}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {(conv.unreadCount || 0) > 0 && (
+                        <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-green-500 text-white text-[9px] font-bold" data-testid={`badge-unread-${conv.id}`}>{conv.unreadCount}</span>
+                      )}
+                      <span className="text-[10px] text-muted-foreground">{timeAgo(conv.lastMessageAt)}</span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1 mt-0.5">
                     <Phone className="w-2.5 h-2.5 text-muted-foreground" />

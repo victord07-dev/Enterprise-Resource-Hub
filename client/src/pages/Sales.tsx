@@ -1166,14 +1166,39 @@ export default function Sales() {
   const [waTargetPhone, setWaTargetPhone] = useState("");
   const [waMessage, setWaMessage] = useState("");
   const [waQuoteRef, setWaQuoteRef] = useState("");
+  const [waSelectedTemplate, setWaSelectedTemplate] = useState<string>("");
+  const [waConvWindow, setWaConvWindow] = useState<Date | null>(null);
 
-  const openWaDialog = (q: Quotation) => {
+  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; templateId: string; body: string }[]>({
+    queryKey: ["/api/whatsapp/templates"],
+    enabled: waDialogOpen,
+    select: (d: any[]) => d.filter(t => t.status === "approved"),
+  });
+
+  const openWaDialog = async (q: Quotation) => {
     const customer = customers?.find(c => c.id === q.customerId);
     setWaTargetPhone(customer?.phone || "");
     setWaMessage(`Hi${customer ? " " + customer.name : ""},\n\nPlease find your quotation *${q.quoteNumber}* attached.\n\nAmount: ₹${Number(q.totalAmount || 0).toLocaleString("en-IN")}\nValid until: ${q.validUntil ? new Date(q.validUntil).toLocaleDateString("en-IN") : "—"}\n\nThank you for your business!`);
     setWaQuoteRef(q.quoteNumber);
+    setWaSelectedTemplate("");
+    setWaConvWindow(null);
     setWaDialogOpen(true);
+    // Check if there's an existing open conversation/window for this phone
+    if (customer?.phone) {
+      try {
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        if (convs.ok) {
+          const list = await convs.json();
+          const phone = customer.phone.replace(/\D/g, "");
+          const normPhone = phone.length === 10 && /^[6-9]/.test(phone) ? "91" + phone : phone;
+          const match = list.find((c: any) => c.phone === normPhone);
+          if (match?.windowExpiresAt) setWaConvWindow(new Date(match.windowExpiresAt));
+        }
+      } catch {}
+    }
   };
+
+  const windowIsOpen = waConvWindow && waConvWindow > new Date();
 
   const sendWaMutation = useMutation({
     mutationFn: async () => {
@@ -1182,7 +1207,17 @@ export default function Sales() {
       const convRes = await apiRequest("POST", "/api/whatsapp/conversations", { phone });
       if (!convRes.ok) { const e = await convRes.json(); throw new Error(e.message || "Failed to open conversation"); }
       const conv = await convRes.json();
-      const sendRes = await apiRequest("POST", `/api/whatsapp/conversations/${conv.id}/send`, { type: "text", text: waMessage });
+
+      let payload: Record<string, any>;
+      if (waSelectedTemplate && waSelectedTemplate !== "__none__") {
+        payload = { type: "template", templateName: waSelectedTemplate, templateVariables: [] };
+      } else if (windowIsOpen) {
+        payload = { type: "text", text: waMessage };
+      } else {
+        throw new Error("24-hour messaging window has expired. Please select an approved template to send.");
+      }
+
+      const sendRes = await apiRequest("POST", `/api/whatsapp/conversations/${conv.id}/send`, payload);
       if (!sendRes.ok) { const e = await sendRes.json(); throw new Error(e.message || "Failed to send message"); }
       return conv;
     },
@@ -2364,25 +2399,59 @@ export default function Sales() {
               />
               <p className="text-xs text-muted-foreground">10-digit Indian numbers will be auto-formatted</p>
             </div>
-            <div className="space-y-1.5">
-              <Label>Message</Label>
-              <Textarea
-                value={waMessage}
-                onChange={e => setWaMessage(e.target.value)}
-                className="min-h-[120px] text-sm resize-none"
-                data-testid="textarea-wa-message"
-              />
-            </div>
+
+            {waTemplates.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>Send via Template (recommended)</Label>
+                <Select value={waSelectedTemplate} onValueChange={setWaSelectedTemplate}>
+                  <SelectTrigger data-testid="select-wa-template">
+                    <SelectValue placeholder="Select an approved template..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No template (free text)</SelectItem>
+                    {waTemplates.map(t => (
+                      <SelectItem key={t.id} value={t.templateId}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {(!waSelectedTemplate || waSelectedTemplate === "__none__") && (
+              <>
+                {!windowIsOpen && (
+                  <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-3 py-2 rounded-md text-xs">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>No active 24-hour messaging window. Only template messages can be sent to this contact. Select a template above.</span>
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <Label>Custom Message</Label>
+                  <Textarea
+                    value={waMessage}
+                    onChange={e => setWaMessage(e.target.value)}
+                    className="min-h-[100px] text-sm resize-none"
+                    disabled={!windowIsOpen}
+                    placeholder={windowIsOpen ? "Type your message..." : "Select a template to send (no active window)"}
+                    data-testid="textarea-wa-message"
+                  />
+                </div>
+              </>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setWaDialogOpen(false)}>Cancel</Button>
             <Button
-              disabled={!waTargetPhone || !waMessage || sendWaMutation.isPending}
+              disabled={
+                !waTargetPhone ||
+                sendWaMutation.isPending ||
+                ((!waSelectedTemplate || waSelectedTemplate === "__none__") && (!windowIsOpen || !waMessage))
+              }
               onClick={() => sendWaMutation.mutate()}
               className="bg-green-600 hover:bg-green-700 text-white"
               data-testid="button-wa-send"
             >
-              {sendWaMutation.isPending ? "Sending..." : "Send Message"}
+              {sendWaMutation.isPending ? "Sending..." : "Send"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -819,6 +819,7 @@ export const whatsappConversations = pgTable("whatsapp_conversations", {
   status: text("status").notNull().default("open"),
   tag: text("tag"),
   assignedTo: varchar("assigned_to"),
+  unreadCount: integer("unread_count").notNull().default(0),
   windowExpiresAt: timestamp("window_expires_at"),
   lastMessageAt: timestamp("last_message_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),

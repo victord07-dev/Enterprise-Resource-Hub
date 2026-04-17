@@ -1,0 +1,28 @@
+"Approved to start. Build #67 first, then #68 — no overlap, don't start #68 until #67 is deployed and verified. A few execution constraints before you begin:
+Sequencing within #67
+
+Start with the root-cause investigation task. Do not write any other code until you've documented (a) what caused the original 404s, (b) the exact URL Interakt is currently pointing at, (c) whether any env var or feature flag gates the WhatsApp routes between environments, and (d) the permanent fix. Commit this as a markdown note in the repo. I want to read it and confirm before you proceed.
+Then build the queue tables, worker loop, and slim webhook handler. Get a message flowing end-to-end (webhook → job → DB → inbox) before building any UI or metrics.
+Then add fail-closed secret check, reason codes, rejected-payload capture, dead-letter table.
+Then the admin UI — and keep v1 minimal: last received timestamp, dead-letter count, silence banner, rejected-payload viewer. The full SLO card (p95, queue lag, success rates) can ship in v1.1 once the core is stable.
+Then silence detector, failed-delivery prominence, replit.md section.
+
+Three small additions to #67 that weren't explicit in the ticket
+
+Stuck-job timeout: any job in processing state for >5 minutes auto-resets to pending. Add this as a condition in the worker's SELECT query.
+Dead-letter retry cap: after 3 consecutive manual retries fail, disable the Retry button with tooltip "Permanent failure — discard or escalate."
+Idempotency test built in: write a small one-off script we can run post-deploy that calls the processing function with the same payload 10 times and confirms exactly one message row exists after. Not a unit test, just a verification tool.
+
+PR description must include
+
+The actual verified Interakt rate limit with link to the docs page you sourced it from (needed for #68, but please confirm during #67).
+The measured webhook p95 response time from a test run of at least 20 synthetic webhooks.
+A grep result confirming the shared processing function has exactly one definition and (for #67) one caller, which will become three callers after #68.
+Confirmation that SELECT ... FOR UPDATE SKIP LOCKED is in the job-pickup query (paste the SQL).
+
+Verification I will do myself after you deploy
+I'll re-save the webhook in Interakt's dashboard, then run the four concrete cases from the ticket: (a) inbound text, (b) outbound text, (c) inbound image, (d) inbound PDF. All four must appear correctly in the inbox. I'll also check the Health card state and the dead-letter count stays at zero during normal operation.
+Hold off on #68 completely until #67 is deployed, verified, and has run for at least 24 hours in production with healthy metrics. If the dead-letter count is non-zero after 24h, we debug that first — don't start #68 on top of an unstable foundation.
+Scope for later, do not start now
+#69 (outbound media — attaching images/PDFs to messages) is a separate ticket I'll approve after #67 and #68 are both stable. Don't bundle it in.
+Any questions or disagreements, raise them before starting — not halfway through."

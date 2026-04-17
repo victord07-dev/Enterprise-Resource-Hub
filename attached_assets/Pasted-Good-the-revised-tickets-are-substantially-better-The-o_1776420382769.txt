@@ -1,0 +1,59 @@
+Good — the revised tickets are substantially better. The operational hardening we discussed (silence detector, rejected-payload capture, dry-run, failed-conversation isolation, phone normalisation audit, per-file media cap, reconciliation failure alerting, rate-limit target, failed-delivery event handling) is all in there. This is tight scoping now.
+But the structural issues I raised in my previous reply are still largely not addressed. Replit AI tightened the symptoms-and-diagnostics layer, which is what they're good at, but the foundation-level fixes didn't make it in. Let me go point by point.
+Still missing from #67
+1. Async webhook processing — not in the tickets.
+This was my #1 structural concern and it didn't land. The tickets still implicitly assume the webhook handler does all the work synchronously on the request path: validate signature → parse → upsert message → link to customer → maybe download media → return 200. At your scale this will keep breaking intermittently. WhatsApp/Interakt webhooks expect a response in a few seconds; if your DB is momentarily slow, or media download stalls, Interakt logs a failed delivery and enters backoff — exactly the state you're in right now.
+What to add: "The webhook handler must return 200 within ~500ms after signature verification and basic payload validation. Actual processing (DB upsert, customer linking, media download, notifications) must run in a background job. Use a simple Postgres-backed job queue (a whatsapp_webhook_jobs table with pending/processing/done/failed states) — no new infra like Redis/BullMQ needed unless you want it. Failed jobs must be retryable with exponential backoff and dead-lettered after N retries into a visible admin table."
+This is the single most important architectural change. Without it, you'll be back in this exact situation within 2–3 months.
+2. Fail-closed on missing signature secret — half addressed.
+The reason code secret_missing is logged, which is good. But the tickets don't say what the endpoint does when the secret is missing in production — accept or reject. Based on Replit AI's current framing (treating it as a "reject reason code") I'd bet it rejects, but I want this stated explicitly.
+What to add: "In production (NODE_ENV=production), a missing or misconfigured webhook signing secret must cause the endpoint to reject all incoming webhooks with HTTP 503 until the secret is configured. In development, a warning log is acceptable. Never silently accept unsigned webhooks in production — that's a security hole (anyone can POST fake messages to your inbox)."
+3. Root cause investigation of the original 404s — not in the tickets.
+I flagged this in my previous reply: why were there 404s before the redeploy? Replit AI is treating this as "Interakt backoff after 404s" and moving on, but the 404s themselves need an explanation. If the answer is "the routes existed in the dev env but weren't in the production build," that's a CI/deployment gap that will bite you again. If the answer is "the webhook URL in Interakt was pointing at a stale Replit subdomain," that's a configuration hygiene issue.
+What to add: Before shipping #67, a 30-minute written note (in the PR description or a short doc) explaining: (a) what was different between the pre-redeploy state and post-redeploy state, (b) exactly which URL Interakt's webhook is pointing at right now, (c) whether any env var or feature flag gates the WhatsApp routes between dev and prod. If the answer reveals a deployment gap, fix that as part of #67.
+4. Webhook URL should be derived from env, not hardcoded.
+Related to #3 above. At your scale, you'll eventually have staging, UAT, and prod environments. The webhook URL must be configurable per environment so you never have prod Interakt pointing at a dev URL (or vice versa, which is how secrets leak).
+What to add: "Webhook URL is exposed via an env var (e.g. WHATSAPP_WEBHOOK_BASE_URL) and the runbook includes a section: 'When switching environments, update the webhook URL in Interakt's dashboard to match.'"
+Still missing from #68
+5. Media re-hosting is still synchronous relative to message visibility — not addressed.
+The ticket says media is downloaded during backfill, which is fine for backfill. But for live webhook messages, the same architectural issue applies: a slow Interakt CDN response shouldn't block a message from appearing in the inbox. The message should insert immediately with a "media loading…" placeholder, and a background worker downloads and attaches the media.
+This ties to point #1 — once you have async webhook processing, async media handling falls out naturally. Without #1, you can't really do this cleanly.
+What to add: "Media download happens in a background job, never on the webhook or user-facing request path. A message with a media attachment appears in the inbox immediately with an attachment row in 'pending_download' state. A worker picks up pending attachments, downloads them, and updates the row. If download fails after N retries, the attachment row shows 'Media unavailable — Interakt CDN fetch failed' with a retry button."
+6. Dead-letter queue for permanently failed messages — not in the tickets.
+Related to #1. What happens when a webhook arrives, is accepted (200), queued for processing, and then processing fails permanently (e.g. malformed payload, unknown event type, DB constraint violation)? Currently: silently lost. This is how "messages randomly missing" bugs happen months later.
+What to add: "Jobs that fail processing after N retries are moved to a whatsapp_webhook_jobs_dead_letter table with full payload preserved, visible in the admin UI alongside the rejected-payload table. Admins can manually retry or discard."
+7. The documentation update in replit.md is still a bolt-on, not parity.
+Ticket #67 says "add a runbook note." Ticket #68 says "update replit.md with endpoints, env vars, rate limit, etc." Both treat documentation as a smoke-test afterthought. Every other module in your replit.md gets a proper architectural description — what tables, what roles, what workflows. WhatsApp deserves the same treatment, as I flagged earlier.
+What to add: "Add a dedicated WhatsApp section to replit.md matching the depth and structure of the Sales, Inventory, and Accounts sections: tables, roles with access to WhatsApp features, core workflows (inbound message flow, outbound message flow, backfill workflow, reconciliation workflow), external integration points (Interakt endpoints used, webhook URL format, signing mechanism), and operator runbook."
+8. No SLO / observability targets for the integration.
+At ₹2.9 Cr/month where WhatsApp is about to become your primary collection channel, "is WhatsApp working?" needs to be a measurable question, not a guess.
+What to add (nice-to-have, not blocker): "Webhook Health card should show simple SLO indicators: (a) webhook response time p95 (should be <500ms), (b) job queue lag — how old is the oldest pending job, (c) media download success rate in last 24h, (d) outbound message delivery success rate in last 24h. These are the four numbers that tell you the integration is healthy."
+Summary of what to add
+Three blocking additions:
+
+Async webhook processing with a Postgres job queue — into #67. This is the foundational fix. Without it, you'll keep hitting variants of the current problem.
+Explicit fail-closed behaviour on missing signature secret in production — into #67. Security + clarity.
+Root cause analysis of the original 404s, documented in the PR — into #67. Don't move past this without understanding it.
+
+Three should-add items:
+
+Async media download relative to message visibility — into #68 (partially blocked on #1).
+Dead-letter queue for permanently failed webhook jobs — into #67 or #68.
+Full replit.md architectural section for WhatsApp, matching other modules.
+
+One nice-to-have:
+
+SLO / observability targets on the Health card.
+
+The short version to paste to Replit AI
+
+"Tickets look much better. Before starting, three blocking additions to #67:
+(a) Webhook handler must be async. Return 200 within ~500ms after signature check. Actual processing goes into a Postgres-backed job queue (whatsapp_webhook_jobs) with retry + dead-letter. This is the root-cause fix for the current failure mode; without it we'll be back here in three months.
+(b) Fail closed on missing signature secret in production. In prod, missing/misconfigured secret = reject all webhooks with 503 until fixed. Never silently accept unsigned webhooks in production.
+(c) Write up what actually caused the original 404s before the redeploy, and what URL Interakt is pointing at now. Don't assume it was just 'backoff' — find the configuration or deployment gap and fix it as part of this ticket.
+Two strong should-haves:
+(d) Media download for live webhook messages should happen in a background job, not on the webhook path. Message appears immediately with 'pending_download' placeholder.
+(e) Add a whatsapp_webhook_jobs_dead_letter table for permanently failed jobs, visible in the admin UI.
+Finally, update replit.md with a full WhatsApp architectural section matching the depth of the Sales/Inventory/Accounts sections — tables, roles, workflows, runbook. Not a bolt-on footer note."
+
+That's the delta. Everything else in the tickets is good.

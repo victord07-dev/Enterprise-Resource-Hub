@@ -1,0 +1,40 @@
+Both tasks are well-scoped. Replit AI has done a genuinely good job here — the ticket quality is solid, the architectural decisions align with what we discussed, and the dependency ordering (webhook first, then backfill) is correct. Approve them.
+That said, here are a few refinements worth asking for before they start coding. These are real gaps, not nitpicks.
+On #67 (Webhook Resurrection & Diagnostics)
+Good as-is:
+
+The reason-code logging approach is exactly right. "Generic 401" is the single biggest operational pain in webhook systems.
+Persisting last-received timestamp across restarts is smart.
+The Webhook Health card as a UI, not a log-grep exercise, is correct for a non-technical admin.
+
+Worth adding:
+
+Alert on silence, not just on rejections. If the webhook stops receiving anything (Interakt outage, your server down, DNS issue), the current design won't flag it — rejections show up in the card, but silence doesn't. Ask for: "If no webhook received for >6 hours during business hours, show a red banner on the admin dashboard." Silence is the actual failure mode you just experienced.
+Raw payload capture for the last N rejected calls. When a 401 happens, capture the full headers + body (redact obvious secrets) of the last ~20 rejected requests into a small rolling table. When something breaks at 11pm and you can't reach Replit AI, this is what lets your own dev figure out whether Interakt changed their payload format or a secret rotated. Current ticket only logs the reason code, not the evidence.
+Confirm which event subscriptions matter. The ticket says "confirm subscriptions cover inbound message, message sent, status, template status." Ask Replit to also explicitly confirm they're handling failed message delivery events — these are critical for your collections workflow (if a payment-reminder WhatsApp fails, you need to know so you can call the customer).
+The manual verification step (task 5) should be more concrete. "Send a real test message" isn't a test plan. Better: "Send (a) an inbound text, (b) an outbound text via your app, (c) an inbound image, (d) an inbound PDF. All four should appear in the inbox with correct direction, status, and media rendering. Screenshot each." This forces Replit to build the media path properly now, not discover gaps during backfill.
+
+On #68 (Backfill & Reconciliation)
+Good as-is:
+
+Idempotency by Interakt message ID is the right primitive.
+Resumable checkpoint table with cursor persistence is correct.
+Media re-hosting to your own storage — absolutely right, don't compromise on this.
+One conversation per phone, all-available-history — matches what we decided.
+The reconciliation job with 7-day lookback window hits the right balance (long enough to catch real gaps, short enough to be cheap).
+Alerting only after 2 consecutive days of gaps is a nice touch — avoids false-alarm fatigue.
+
+Worth adding or tightening:
+
+Define what happens when Interakt's API is slow or partially down mid-backfill. The ticket says "resume on crash" but doesn't specify: if a single conversation repeatedly fails to fetch (say, 10 retries all 500), does the backfill skip it and continue, or stop? Recommendation: skip + log + continue, with a "failed conversations" list shown in the admin UI so nothing is silently lost.
+Dry-run mode. Before running the real backfill on production data, ask for a --dry-run flag that walks Interakt's API, counts everything, downloads nothing, writes nothing — just reports "would import X conversations, Y messages, Z media files, estimated W MB." Given you don't know exactly what Interakt retains, this is how you avoid surprises. Ten minutes of engineering, saves you from "oh, 4 GB of media just landed."
+Rate-limit budget needs an actual number. "Per-second request budget" is vague. Get Replit to check Interakt's documented rate limits (usually 60–100 req/min for public API) and configure the client to stay at ~70% of that ceiling. Too aggressive = 429s and failures; too timid = backfill takes days.
+Media size cap should be documented. "Cap per-file size" — what's the number? WhatsApp allows up to 100 MB video, 16 MB images, 100 MB docs. Pick a sensible cap (say 25 MB) and log skipped files clearly so you can decide case-by-case later.
+Phone normalisation edge case. Indian numbers get entered all kinds of ways: +919876543210, 919876543210, 09876543210, 9876543210, with/without spaces. The ticket says "use the existing normalisation helper" — confirm it handles all five forms and produces a canonical E.164 format. If the helper is weak, you'll get duplicate conversations for the same contractor under different number variants. Worth a five-minute audit before backfill runs.
+Reconciliation job observability. The ticket writes log rows, which is good. But add: "If the reconciliation job itself fails (Interakt API down, our DB down), the failure is visible in the admin UI and an in-app alert fires immediately." A silent reconciliation failure is worse than no reconciliation — gives false confidence that things are synced when they aren't.
+Backfill should NOT auto-start post-deploy. Make it manual-trigger only via the admin button (the ticket already says this — just reinforcing). You want to run it deliberately, ideally on a weekend or low-traffic window, not have it kick off mid-business-day and saturate your server.
+
+One meta-observation
+The ticket quality here is actually above average for AI-generated work — Replit's scoping, architectural constraints section, and out-of-scope list are all the right discipline. The main risk is not the code quality but operational readiness: do you (or your team) know how to respond when a backfill fails at 60% through, or when reconciliation starts filling 500+ gaps per day (signalling webhook is quietly broken)? Worth making sure the operator runbook in replit.md actually walks through those scenarios, not just the happy path.
+Short version to tell Replit
+Approve both tickets. For #67, add: silence alerting, raw-payload capture for rejected calls, explicit handling of failed-delivery events, and concrete 4-case test plan. For #68, add: dry-run mode, specific rate-limit number, specific media size cap, phone-normalisation audit, reconciliation-failure alerting, and a failed-conversations list in the admin UI. Keep everything else as specced.

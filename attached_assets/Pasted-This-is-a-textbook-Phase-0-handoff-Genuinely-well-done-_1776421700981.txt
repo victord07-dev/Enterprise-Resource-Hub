@@ -1,0 +1,65 @@
+This is a textbook Phase 0 handoff. Genuinely well done by Replit AI — and crucially, the root cause is specific, verifiable, and names the actual gap rather than just the symptom.
+Let me walk you through what to actually do now.
+The diagnosis checks out
+The story is coherent and matches the evidence pattern exactly:
+
+05:48 UTC — Task #32 merged (routes in code, running in dev)
+05:48 → 09:25 UTC — ~3h37m window where prod ran old bundle without the routes
+During this window — Interakt POSTs kept hitting an endpoint that didn't exist → 404s
+~09:25 UTC — Publish pressed, routes finally deployed to prod
+After 09:25 — Routes live, but Interakt already in backoff state, so deliveries didn't auto-resume
+
+This is exactly the "deployment gap, not code bug" pattern I flagged as a possibility earlier. The reason it matters: the fix isn't just to add queue hardening (that's still needed for resilience), it's to close the deployment-process gap so this class of failure can't repeat silently. Replit AI correctly identified both layers of fix.
+The three-part permanent fix they proposed is also correct:
+
+Runbook rule tying webhook-affecting changes to an immediate publish — process fix for the root cause.
+Discoverable URL in Health card — makes future config drift self-diagnosing.
+Silence detector — reduces detection time from "whenever someone notices" to ≤6h.
+
+Before you approve, verify two things yourself
+These aren't because you don't trust Replit AI — they're because this is the one moment where verification is cheap and retroactive debugging is expensive.
+1. Read the actual markdown file. docs/whatsapp-webhook-404-rca.md, commit a9513ff3. Open it. Check that it covers the four required points explicitly:
+
+(a) what was different pre-/post-redeploy → should be "prod bundle missing the route"
+(b) exact URL Interakt is pointing at → should be a specific URL, not "the production URL"
+(c) env var / feature flag gating → should be "none — routes unconditionally registered"
+(d) permanent fix → should be the three-part fix above
+
+If any of these are vague or hand-wavy in the actual file, push back now. The commit message sounds good, but the artefact is what future-you reads when something breaks again.
+2. Ask one clarifying question that matters. In the summary, Replit AI says "there's no continuous deployment, so a git push to main does nothing to prod until an operator publishes." That's the current state, but it raises a question worth asking:
+
+"Is the lack of continuous deployment a deliberate choice, or just how Replit's default setup works? If deliberate, the runbook rule is fine. If it's just the default and we could enable auto-publish on merge to main, that would remove an entire class of deploy-gap bugs at one stroke — not just for WhatsApp but for every future integration."
+
+This isn't a scope expansion for #67. It's a separate decision for you to make about your deploy pipeline, surfaced now because this incident revealed it. File it as a follow-up to think about, not a blocker.
+One small thing worth calling out
+The decision "the diagnosis surfaced nothing that changes the scope of Phase 1" is correct — the queue hardening is still right for different reasons (synchronous processing at scale is fragile regardless of the deploy gap). But just make sure Replit AI internalizes that both layers of fix are needed:
+
+The deploy process rule prevents this specific failure from recurring.
+The async queue prevents a different class of failure (slow processing → timeout → backoff) that hasn't hit you yet but will.
+
+If they mentally collapse these into "queue hardening fixes everything," that's wrong. The explicit three-part permanent fix in the writeup tells me they didn't collapse them, so this is probably fine — just worth confirming in your approval message.
+What to send back
+
+"Reviewed the writeup — diagnosis is specific and coherent, permanent fix is right. Approved to proceed to Phase 1.
+Before you start: confirm you understand both layers of fix are independent. The queue hardening prevents slow-processing timeouts (a different failure mode than what just happened). The deploy-process rule prevents the specific deploy-gap failure that actually caused this incident. Neither replaces the other.
+One separate question, not blocking Phase 1: is the manual-publish step a deliberate choice, or just Replit's default? If we could enable auto-publish on merge to main, that removes this entire class of bug for every future integration, not just WhatsApp. Please answer in your next update — I'll decide separately whether to change the deploy model, it's not part of #67.
+Proceed with Phase 1: job queue tables, processing function extraction, slim handler + worker loop, async media sub-job, end-to-end smoke. Stop after the smoke test works. Don't proceed to Phase 2 until I confirm Phase 1."
+
+That's it. Send that and let them get on with Phase 1.
+What to expect next
+Phase 1 is the meatiest phase technically. Expect Replit AI to come back with:
+
+The queue tables created via a Drizzle migration.
+The extracted processing function with its single definition and one caller.
+The slim webhook handler (should be maybe 30–50 lines total now).
+The worker loop (~50-100 lines).
+The media sub-job worker.
+A synthetic webhook test confirming the full flow works end-to-end.
+
+When reviewing Phase 1, the three things I'd look at hardest:
+
+Is the webhook handler actually slim? If it's still doing DB queries, phone normalisation, customer linking, etc. inline, they regressed.
+Is the processing function actually a single function called by one caller? Grep it. If there are two near-copies ("processWebhookMessage" and "processMessageForDb" or similar), that's the drift we warned about.
+Does the worker loop actually have SELECT ... FOR UPDATE SKIP LOCKED? Read the SQL yourself, don't take their word for it.
+
+But that's for Phase 1 review. For now: approve Phase 0, send the Phase 1 go-ahead, and wait.

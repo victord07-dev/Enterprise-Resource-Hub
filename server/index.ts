@@ -7,6 +7,7 @@ import cron from "node-cron";
 import { storage } from "./storage";
 import { sendTemplateMessage, syncInteraktTemplates, pruneOldTemplateSyncLogs, TEMPLATE_SYNC_LOG_RETENTION_DAYS } from "./whatsapp";
 import { setupWhatsappWebSocket } from "./wsHub";
+import { processWhatsappWebhookJob, nextRunAtForAttempt, MAX_ATTEMPTS } from "./whatsappProcessor";
 
 const app = express();
 const httpServer = createServer(app);
@@ -271,6 +272,55 @@ app.use((req, res, next) => {
   cron.schedule("0 4 * * *", runWhatsappSyncLogCleanup, { timezone: "Asia/Kolkata" });
   // Also run once shortly after startup so a long-stopped instance prunes quickly.
   setTimeout(runWhatsappSyncLogCleanup, 30_000).unref();
+
+  // ── WhatsApp Webhook Worker Loop (Task #67 Phase 1) ─────────────────────────
+  // Polls the whatsapp_webhook_jobs queue every WORKER_POLL_MS. Pickup uses
+  // SELECT ... FOR UPDATE SKIP LOCKED so multiple workers can run safely.
+  // Stuck jobs (status=processing AND locked_at older than STUCK_THRESHOLD_MS)
+  // are reclaimed automatically — defends against worker crashes.
+  const WORKER_POLL_MS = 1500;
+  const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+  let workerRunning = true;
+  async function runWhatsappWebhookWorker() {
+    console.log(`[WA WORKER] Started — poll=${WORKER_POLL_MS}ms stuck-threshold=${STUCK_THRESHOLD_MS}ms maxAttempts=${MAX_ATTEMPTS}`);
+    while (workerRunning) {
+      try {
+        const job = await storage.pickupWhatsappWebhookJob(STUCK_THRESHOLD_MS);
+        if (!job) {
+          await new Promise(r => setTimeout(r, WORKER_POLL_MS));
+          continue;
+        }
+        const startedAt = Date.now();
+        try {
+          const result = await processWhatsappWebhookJob(job.jobType, job.payload);
+          await storage.markWhatsappWebhookJobDone(job.id);
+          const ms = Date.now() - startedAt;
+          console.log(`[WA WORKER] job=${job.id} type=${job.jobType} kind=${result.kind} ok in ${ms}ms`);
+        } catch (procErr: any) {
+          const ms = Date.now() - startedAt;
+          const errMsg = procErr?.message || String(procErr) || "unknown processor error";
+          const attemptsBefore = job.attempts || 0;
+          const nextRun = nextRunAtForAttempt(attemptsBefore);
+          const outcome = await storage.markWhatsappWebhookJobFailed(job.id, errMsg, nextRun, MAX_ATTEMPTS);
+          console.error(`[WA WORKER] job=${job.id} type=${job.jobType} FAILED in ${ms}ms (attempt ${attemptsBefore + 1}/${MAX_ATTEMPTS}) deadLetter=${outcome.deadLettered}: ${errMsg}`);
+        }
+      } catch (loopErr: any) {
+        // Pickup or DB error — back off briefly so we don't hot-loop.
+        console.error("[WA WORKER] Pickup error — sleeping 5s:", loopErr?.message || loopErr);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+    console.log("[WA WORKER] Stopped");
+  }
+  // Fire and forget — worker runs forever.
+  runWhatsappWebhookWorker().catch(err => {
+    console.error("[WA WORKER] Fatal worker error — process will exit:", err);
+    process.exit(1);
+  });
+  // Allow graceful shutdown so SIGTERM ends the loop cleanly during workflow restarts.
+  const stopWorker = () => { workerRunning = false; };
+  process.once("SIGTERM", stopWorker);
+  process.once("SIGINT", stopWorker);
 
   // return JSON 404 for unmatched /api/* routes in both dev and production
   app.use("/api/{*path}", (_req: Request, res: Response) => {

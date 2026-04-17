@@ -5,12 +5,14 @@ import {
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
+  whatsappWebhookJobs, whatsappWebhookJobsDeadLetter,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
   type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
   type WhatsappTemplateSyncLog, type InsertWhatsappTemplateSyncLog,
+  type WhatsappWebhookJob, type WhatsappWebhookJobDeadLetter,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -357,6 +359,18 @@ export interface IStorage {
   createWhatsappTemplateSyncLog(data: InsertWhatsappTemplateSyncLog): Promise<WhatsappTemplateSyncLog>;
   getRecentWhatsappTemplateSyncLogs(limit: number): Promise<WhatsappTemplateSyncLog[]>;
   deleteWhatsappTemplateSyncLogsOlderThan(cutoff: Date): Promise<number>;
+
+  // WhatsApp Webhook Job Queue (Task #67 Phase 1)
+  enqueueWhatsappWebhookJob(jobType: string, payload: any, payloadHash: string | null, nextRunAt?: Date): Promise<WhatsappWebhookJob>;
+  hasWhatsappWebhookJobByPayloadHash(payloadHash: string): Promise<boolean>;
+  pickupWhatsappWebhookJob(stuckThresholdMs: number): Promise<WhatsappWebhookJob | null>;
+  markWhatsappWebhookJobDone(id: string): Promise<void>;
+  markWhatsappWebhookJobFailed(id: string, error: string, nextRunAt: Date | null, maxAttempts: number): Promise<{ deadLettered: boolean }>;
+  getWhatsappWebhookJobsDeadLetter(): Promise<WhatsappWebhookJobDeadLetter[]>;
+  retryWhatsappWebhookDeadLetterJob(id: string): Promise<WhatsappWebhookJob | null>;
+  deleteWhatsappWebhookDeadLetterJob(id: string): Promise<boolean>;
+  incrementWhatsappWebhookDeadLetterManualRetries(id: string): Promise<number>;
+  getWhatsappWebhookJobStats(): Promise<{ pending: number; processing: number; failed: number; deadLetter: number; lastJobAt: string | null }>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -1718,6 +1732,156 @@ export class DatabaseStorage implements IStorage {
       .where(lt(whatsappTemplateSyncLogs.attemptAt, cutoff))
       .returning({ id: whatsappTemplateSyncLogs.id });
     return deleted.length;
+  }
+
+  // ── WhatsApp Webhook Job Queue (Task #67 Phase 1) ────────────────────────
+  async enqueueWhatsappWebhookJob(jobType: string, payload: any, payloadHash: string | null, nextRunAt?: Date): Promise<WhatsappWebhookJob> {
+    const [job] = await db.insert(whatsappWebhookJobs).values({
+      jobType,
+      payload,
+      payloadHash,
+      status: "pending",
+      attempts: 0,
+      nextRunAt: nextRunAt || new Date(),
+    }).returning();
+    return job;
+  }
+
+  async hasWhatsappWebhookJobByPayloadHash(payloadHash: string): Promise<boolean> {
+    const [row] = await db.select({ id: whatsappWebhookJobs.id })
+      .from(whatsappWebhookJobs)
+      .where(eq(whatsappWebhookJobs.payloadHash, payloadHash))
+      .limit(1);
+    return !!row;
+  }
+
+  async pickupWhatsappWebhookJob(stuckThresholdMs: number): Promise<WhatsappWebhookJob | null> {
+    // Atomic pickup: SELECT ... FOR UPDATE SKIP LOCKED + UPDATE in one CTE.
+    // Picks up either a pending job whose nextRunAt is due, or a stuck job
+    // whose locked_at is older than the stuck threshold (worker likely died).
+    const stuckMs = Math.max(stuckThresholdMs, 30_000);
+    const result = await db.execute(sql`
+      WITH next_job AS (
+        SELECT id FROM whatsapp_webhook_jobs
+        WHERE (status = 'pending' AND next_run_at <= NOW())
+           OR (status = 'processing' AND locked_at < NOW() - (${sql.raw(String(stuckMs))}::bigint || ' milliseconds')::interval)
+        ORDER BY next_run_at
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE whatsapp_webhook_jobs SET
+        status = 'processing',
+        locked_at = NOW(),
+        updated_at = NOW()
+      WHERE id = (SELECT id FROM next_job)
+      RETURNING *
+    `);
+    const rows = (result as any).rows as any[];
+    if (!rows || rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      jobType: r.job_type,
+      payload: r.payload,
+      payloadHash: r.payload_hash,
+      status: r.status,
+      attempts: r.attempts,
+      nextRunAt: r.next_run_at,
+      lockedAt: r.locked_at,
+      lastError: r.last_error,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    } as WhatsappWebhookJob;
+  }
+
+  async markWhatsappWebhookJobDone(id: string): Promise<void> {
+    await db.update(whatsappWebhookJobs)
+      .set({ status: "done", updatedAt: new Date(), lockedAt: null, lastError: null })
+      .where(eq(whatsappWebhookJobs.id, id));
+  }
+
+  async markWhatsappWebhookJobFailed(id: string, error: string, nextRunAt: Date | null, maxAttempts: number): Promise<{ deadLettered: boolean }> {
+    // Increment attempts and decide whether to retry or dead-letter.
+    const [current] = await db.select().from(whatsappWebhookJobs).where(eq(whatsappWebhookJobs.id, id));
+    if (!current) return { deadLettered: false };
+    const newAttempts = (current.attempts || 0) + 1;
+    if (newAttempts >= maxAttempts || nextRunAt === null) {
+      // Move to dead letter
+      await db.insert(whatsappWebhookJobsDeadLetter).values({
+        originalJobId: current.id,
+        jobType: current.jobType,
+        payload: current.payload,
+        lastError: error.slice(0, 4000),
+        attempts: newAttempts,
+      });
+      await db.delete(whatsappWebhookJobs).where(eq(whatsappWebhookJobs.id, id));
+      return { deadLettered: true };
+    }
+    await db.update(whatsappWebhookJobs).set({
+      status: "pending",
+      attempts: newAttempts,
+      nextRunAt,
+      lockedAt: null,
+      lastError: error.slice(0, 4000),
+      updatedAt: new Date(),
+    }).where(eq(whatsappWebhookJobs.id, id));
+    return { deadLettered: false };
+  }
+
+  async getWhatsappWebhookJobsDeadLetter(): Promise<WhatsappWebhookJobDeadLetter[]> {
+    return db.select().from(whatsappWebhookJobsDeadLetter).orderBy(desc(whatsappWebhookJobsDeadLetter.deadLetteredAt));
+  }
+
+  async retryWhatsappWebhookDeadLetterJob(id: string): Promise<WhatsappWebhookJob | null> {
+    const [dl] = await db.select().from(whatsappWebhookJobsDeadLetter).where(eq(whatsappWebhookJobsDeadLetter.id, id));
+    if (!dl) return null;
+    const [job] = await db.insert(whatsappWebhookJobs).values({
+      jobType: dl.jobType,
+      payload: dl.payload,
+      payloadHash: null, // skip idempotency on manual retry
+      status: "pending",
+      attempts: 0,
+      nextRunAt: new Date(),
+    }).returning();
+    await db.delete(whatsappWebhookJobsDeadLetter).where(eq(whatsappWebhookJobsDeadLetter.id, id));
+    return job;
+  }
+
+  async deleteWhatsappWebhookDeadLetterJob(id: string): Promise<boolean> {
+    const deleted = await db.delete(whatsappWebhookJobsDeadLetter)
+      .where(eq(whatsappWebhookJobsDeadLetter.id, id))
+      .returning({ id: whatsappWebhookJobsDeadLetter.id });
+    return deleted.length > 0;
+  }
+
+  async incrementWhatsappWebhookDeadLetterManualRetries(id: string): Promise<number> {
+    const result = await db.execute(sql`
+      UPDATE whatsapp_webhook_jobs_dead_letter
+      SET manual_retry_attempts = manual_retry_attempts + 1
+      WHERE id = ${id}
+      RETURNING manual_retry_attempts
+    `);
+    const rows = (result as any).rows as any[];
+    return rows?.[0]?.manual_retry_attempts ?? 0;
+  }
+
+  async getWhatsappWebhookJobStats(): Promise<{ pending: number; processing: number; failed: number; deadLetter: number; lastJobAt: string | null }> {
+    const [agg] = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+        COUNT(*) FILTER (WHERE status = 'processing') AS processing,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+        MAX(updated_at) AS last_job_at
+      FROM whatsapp_webhook_jobs
+    `).then((r: any) => r.rows);
+    const [dl] = await db.execute(sql`SELECT COUNT(*) AS c FROM whatsapp_webhook_jobs_dead_letter`).then((r: any) => r.rows);
+    return {
+      pending: Number(agg?.pending || 0),
+      processing: Number(agg?.processing || 0),
+      failed: Number(agg?.failed || 0),
+      deadLetter: Number(dl?.c || 0),
+      lastJobAt: agg?.last_job_at ? new Date(agg.last_job_at).toISOString() : null,
+    };
   }
 
   // Dashboard

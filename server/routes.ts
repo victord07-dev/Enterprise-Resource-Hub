@@ -34,6 +34,7 @@ import { registerObjectStorageRoutes } from "./replit_integrations/object_storag
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus } from "./whatsapp";
 import { broadcastWhatsappEvent } from "./wsHub";
+import crypto from "crypto";
 import multer from "multer";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
@@ -6667,6 +6668,11 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp Webhook (no auth — verified by HMAC + token) ──────────────────
+  // ── WhatsApp Webhook (Task #67 Phase 1: slim handler) ──────────────────────
+  // Handler ONLY validates and enqueues. All DB processing is done by the
+  // worker loop in server/index.ts via processWhatsappWebhookJob (single
+  // source of truth). Goal: return 200 to Interakt in <500ms so a slow DB
+  // never causes Interakt to back off and silently stop deliveries.
   app.post("/api/whatsapp/webhook", async (req: any, res) => {
     try {
       const token = req.query.token as string;
@@ -6675,150 +6681,35 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid webhook token" });
       }
 
-      // HMAC verification — strictly mandatory; reject if secret not configured
+      // HMAC: fail-closed. Missing secret → 503, missing/invalid signature → 401.
       const signature = req.headers["x-interakt-signature"] as string;
       const rawBody = req.rawBody as Buffer;
       const secret = process.env.INTERAKT_WEBHOOK_SECRET;
       if (!secret) {
-        console.warn("[WA] INTERAKT_WEBHOOK_SECRET not configured — rejecting webhook");
+        console.warn("[WA WEBHOOK] INTERAKT_WEBHOOK_SECRET not configured — rejecting");
         return res.status(503).json({ message: "Webhook secret not configured" });
       }
       if (!signature || !rawBody) {
         return res.status(401).json({ message: "Missing HMAC signature" });
       }
-      const valid = verifyInteraktSignature(rawBody, signature);
-      if (!valid) {
-        console.warn("[WA] Webhook HMAC mismatch — rejecting");
+      if (!verifyInteraktSignature(rawBody, signature)) {
+        console.warn("[WA WEBHOOK] HMAC mismatch — rejecting");
         return res.status(401).json({ message: "Invalid signature" });
       }
 
-      const body = req.body;
-
-      // ── Status updates (sent / delivered / read / failed) ─────────────────
-      // Interakt sends status updates in several shapes depending on event type.
-      // We collect (messageId, status) pairs from any of the known shapes and
-      // apply each one (status hierarchy is enforced in storage so out-of-order
-      // events cannot downgrade ticks).
-      const statusUpdates: Array<{ id: string; status: string }> = [];
-      const normaliseStatus = (s: string): string | null => {
-        const v = String(s || "").toLowerCase();
-        if (v === "sent" || v === "submitted" || v === "accepted") return "sent";
-        if (v === "delivered") return "delivered";
-        if (v === "read" || v === "seen") return "read";
-        if (v === "failed" || v === "undelivered" || v === "rejected") return "failed";
-        return null;
-      };
-
-      // Shape A (legacy): { data: { message: { id, status } } }
-      if (body?.data?.message?.id && body?.data?.message?.status && !body?.data?.message?.message) {
-        const s = normaliseStatus(body.data.message.status);
-        if (s) statusUpdates.push({ id: String(body.data.message.id), status: s });
-      }
-      // Shape B (Interakt v1): top-level type === "message_status" with data.{message_id|id, status}
-      const evType = String(body?.type || body?.event || "").toLowerCase();
-      if (evType.includes("status")) {
-        const id = body?.data?.message_id || body?.data?.id || body?.data?.message?.id;
-        const s = normaliseStatus(body?.data?.status || body?.data?.message?.status);
-        if (id && s) statusUpdates.push({ id: String(id), status: s });
-      }
-      // Shape C (WhatsApp Cloud-style): data.statuses[] = [{ id, status }, ...]
-      const statusesArr = body?.data?.statuses || body?.statuses;
-      if (Array.isArray(statusesArr)) {
-        for (const st of statusesArr) {
-          const id = st?.id || st?.message_id;
-          const s = normaliseStatus(st?.status);
-          if (id && s) statusUpdates.push({ id: String(id), status: s });
-        }
+      // Idempotency: hash the raw body. If we've already enqueued this exact
+      // payload, return 200 without enqueuing again.
+      const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+      const dup = await storage.hasWhatsappWebhookJobByPayloadHash(payloadHash);
+      if (dup) {
+        return res.json({ ok: true, duplicate: true });
       }
 
-      if (statusUpdates.length > 0) {
-        let applied = 0;
-        for (const u of statusUpdates) {
-          const updated = await storage.updateWhatsappMessageStatusByInteraktId(u.id, u.status);
-          if (updated) {
-            applied++;
-            broadcastWhatsappEvent({
-              type: "status",
-              conversationId: updated.conversationId,
-              messageId: updated.id,
-              interaktMessageId: u.id,
-              status: u.status,
-            });
-          }
-        }
-        console.log(`[WA] Status updates received=${statusUpdates.length} applied=${applied}`);
-        return res.json({ ok: true, applied });
-      }
-
-      // Handle inbound message
-      const waPhone = body?.data?.customer?.phone_number || body?.data?.message?.from;
-      const messageText = body?.data?.message?.message?.text?.body
-        || body?.data?.message?.message?.template?.name
-        || body?.data?.message?.message?.type
-        || "";
-      const messageType = body?.data?.message?.message?.type || "text";
-      const interaktMessageId = body?.data?.message?.id;
-
-      if (!waPhone) return res.json({ ok: true });
-
-      const normPhone = normalisePhone(String(waPhone));
-      const contactName = body?.data?.customer?.name || body?.data?.message?.customerName || null;
-
-      // Find or create conversation — closed conversations are NEVER reopened; create a fresh one
-      // Match by customerId OR normalised phone to prevent duplicate open conversations
-      const allCustomers = await storage.getCustomers();
-      const allLeads = await storage.getLeads();
-      const matchedCustomer = allCustomers.find(c => c.phone && normalisePhone(c.phone) === normPhone);
-      const matchedLead = allLeads.find(l => l.phone && normalisePhone(l.phone) === normPhone);
-      const existingConv = await storage.getWhatsappConversationByPhoneOrCustomer(normPhone, matchedCustomer?.id);
-      const windowExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      let conv: typeof existingConv;
-
-      if (!existingConv || existingConv.status === "closed") {
-        // Create a new conversation (fresh start even if previous was closed)
-        conv = await storage.createWhatsappConversation({
-          phoneNumber: normPhone,
-          contactName: contactName || matchedCustomer?.name || matchedLead?.name || null,
-          customerId: matchedCustomer?.id || null,
-          leadId: matchedLead?.id || null,
-          status: "open",
-          windowExpiresAt,
-          unreadCount: 1,
-        });
-      } else {
-        // Open conversation: reset 24h window, increment unread
-        const updated = await storage.updateWhatsappConversation(existingConv.id, {
-          windowExpiresAt,
-          lastMessageAt: new Date(),
-          contactName: existingConv.contactName || contactName || undefined,
-          unreadCount: (existingConv.unreadCount || 0) + 1,
-        });
-        conv = updated || existingConv;
-      }
-
-      const inboundMsg = await storage.createWhatsappMessage({
-        conversationId: conv!.id,
-        direction: "inbound",
-        body: messageText,
-        type: messageType,
-        interaktMessageId: interaktMessageId || null,
-        status: "received",
-        sentBy: null,
-      });
-
-      broadcastWhatsappEvent({
-        type: "message",
-        conversationId: conv!.id,
-        message: inboundMsg,
-        conversation: conv!,
-      });
-
-      console.log(`[WA] Inbound message from ${normPhone} stored in conv ${conv!.id}`);
-
-      res.json({ ok: true });
+      const job = await storage.enqueueWhatsappWebhookJob("process_inbound", req.body, payloadHash);
+      res.json({ ok: true, jobId: job.id });
     } catch (err) {
-      console.error("[WA] Webhook error:", err);
-      res.status(500).json({ message: "Webhook error" });
+      console.error("[WA WEBHOOK] Enqueue error:", err);
+      res.status(500).json({ message: "Webhook enqueue error" });
     }
   });
 
@@ -6829,6 +6720,62 @@ export async function registerRoutes(
       return res.send(req.query["hub.challenge"] || "OK");
     }
     res.status(401).send("Forbidden");
+  });
+
+  // ── WhatsApp Webhook diagnostics (Task #67 Phase 1) ────────────────────────
+  // Admin-only. Returns queue stats and dead-letter rows for the Health card.
+  app.get("/api/whatsapp/webhook/stats", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const stats = await storage.getWhatsappWebhookJobStats();
+      res.json(stats);
+    } catch (err: any) {
+      console.error("[WA WEBHOOK STATS] error:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch stats" });
+    }
+  });
+
+  app.get("/api/whatsapp/webhook/dead-letter", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const rows = await storage.getWhatsappWebhookJobsDeadLetter();
+      res.json(rows);
+    } catch (err: any) {
+      console.error("[WA WEBHOOK DLQ] list error:", err);
+      res.status(500).json({ message: err?.message || "Failed to fetch dead-letter queue" });
+    }
+  });
+
+  app.post("/api/whatsapp/webhook/dead-letter/:id/retry", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      // 3-strike manual retry cap.
+      const all = await storage.getWhatsappWebhookJobsDeadLetter();
+      const row = all.find(r => r.id === req.params.id);
+      if (!row) return res.status(404).json({ message: "Dead-letter job not found" });
+      if ((row.manualRetryAttempts || 0) >= 3) {
+        return res.status(409).json({ message: "Manual retry cap (3) reached for this dead-letter job; discard or fix root cause." });
+      }
+      const newCount = await storage.incrementWhatsappWebhookDeadLetterManualRetries(req.params.id);
+      const job = await storage.retryWhatsappWebhookDeadLetterJob(req.params.id);
+      if (!job) return res.status(404).json({ message: "Dead-letter job not found" });
+      res.json({ ok: true, jobId: job.id, manualRetryAttempts: newCount });
+    } catch (err: any) {
+      console.error("[WA WEBHOOK DLQ] retry error:", err);
+      res.status(500).json({ message: err?.message || "Retry failed" });
+    }
+  });
+
+  app.delete("/api/whatsapp/webhook/dead-letter/:id", authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== "admin") return res.status(403).json({ message: "Admin only" });
+    try {
+      const ok = await storage.deleteWhatsappWebhookDeadLetterJob(req.params.id);
+      if (!ok) return res.status(404).json({ message: "Dead-letter job not found" });
+      res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[WA WEBHOOK DLQ] delete error:", err);
+      res.status(500).json({ message: err?.message || "Delete failed" });
+    }
   });
 
   // ── WhatsApp Conversations ─────────────────────────────────────────────────

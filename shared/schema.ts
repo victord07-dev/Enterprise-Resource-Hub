@@ -878,6 +878,42 @@ export const whatsappTemplateSyncLogs = pgTable("whatsapp_template_sync_logs", {
   triggeredByName: text("triggered_by_name"),
 }, (t) => [index("idx_wa_template_sync_logs_attempt_at").on(t.attemptAt)]);
 
+// ── WhatsApp Webhook Job Queue (Task #67 Phase 1) ────────────────────────────
+// Inbound webhook deliveries are enqueued here and processed by a worker so
+// the webhook handler can return 200 in <500ms. On retry exhaustion (5 attempts)
+// jobs are moved to whatsapp_webhook_jobs_dead_letter for manual inspection.
+export const whatsappWebhookJobs = pgTable("whatsapp_webhook_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobType: text("job_type").notNull(), // "process_inbound" | "download_media"
+  payload: jsonb("payload").notNull(),
+  payloadHash: text("payload_hash"), // sha256 hex; used for inbound idempotency
+  status: text("status").notNull().default("pending"), // pending | processing | done | failed
+  attempts: integer("attempts").notNull().default(0),
+  nextRunAt: timestamp("next_run_at").notNull().defaultNow(),
+  lockedAt: timestamp("locked_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_wa_jobs_pickup").on(t.status, t.nextRunAt),
+  index("idx_wa_jobs_payload_hash").on(t.payloadHash),
+]);
+
+export const whatsappWebhookJobsDeadLetter = pgTable("whatsapp_webhook_jobs_dead_letter", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  originalJobId: varchar("original_job_id"),
+  jobType: text("job_type").notNull(),
+  payload: jsonb("payload").notNull(),
+  lastError: text("last_error"),
+  attempts: integer("attempts").notNull(),
+  manualRetryAttempts: integer("manual_retry_attempts").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  deadLetteredAt: timestamp("dead_lettered_at").notNull().defaultNow(),
+});
+
+export type WhatsappWebhookJob = typeof whatsappWebhookJobs.$inferSelect;
+export type WhatsappWebhookJobDeadLetter = typeof whatsappWebhookJobsDeadLetter.$inferSelect;
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });

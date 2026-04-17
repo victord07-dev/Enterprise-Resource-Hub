@@ -16,9 +16,13 @@ export function verifyInteraktSignature(rawBody: Buffer, signature: string): boo
   const secret = process.env.INTERAKT_WEBHOOK_SECRET;
   if (!secret) return false;
   try {
+    // Interakt sends signature as `sha256=<hex>`. Strip the algorithm prefix if present.
+    // Also accept a bare hex string for forward-compat.
+    const provided = (signature || "").trim().replace(/^sha256=/i, "");
+    if (!provided) return false;
     const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
     const expectedBuf = Buffer.from(expected, "utf8");
-    const sigBuf = Buffer.from(signature || "", "utf8");
+    const sigBuf = Buffer.from(provided, "utf8");
     if (expectedBuf.length !== sigBuf.length) return false;
     return crypto.timingSafeEqual(expectedBuf, sigBuf);
   } catch {

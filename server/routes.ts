@@ -6732,7 +6732,8 @@ export async function registerRoutes(
       }
 
       // 3) HMAC signature check
-      const signature = req.headers["x-interakt-signature"] as string;
+      // Interakt sends `interakt-signature` (no x- prefix). Accept both for forward-compat.
+      const signature = (req.headers["interakt-signature"] || req.headers["x-interakt-signature"]) as string;
       const rawBody = req.rawBody as Buffer;
       if (!signature || !rawBody) {
         console.warn(`[WA WEBHOOK] reject reason=hmac_missing`);

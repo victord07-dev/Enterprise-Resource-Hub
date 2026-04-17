@@ -73,6 +73,10 @@ export default function Inbox() {
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsappTemplate | null>(null);
   const [templateVars, setTemplateVars] = useState<string[]>([]);
   const [quickReplySuggestions, setQuickReplySuggestions] = useState<WhatsappTemplate[]>([]);
+  const [attachDialogOpen, setAttachDialogOpen] = useState(false);
+  const [attachUrl, setAttachUrl] = useState("");
+  const [attachFilename, setAttachFilename] = useState("");
+  const attachFileRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: conversations = [], isLoading: convsLoading } = useQuery<EnrichedConversation[]>({
@@ -161,6 +165,22 @@ export default function Inbox() {
       setMessageText("");
     },
     onError: (e: Error) => toast({ title: "Failed to send", description: e.message, variant: "destructive" }),
+  });
+
+  const sendAttachMutation = useMutation({
+    mutationFn: async ({ url, filename }: { url: string; filename: string }) => {
+      const res = await apiRequest("POST", `/api/whatsapp/conversations/${selectedConvId}/send`, {
+        type: "document", mediaUrl: url, filename,
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/conversations", selectedConvId, "messages"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/conversations"] });
+      setAttachDialogOpen(false); setAttachUrl(""); setAttachFilename("");
+    },
+    onError: (e: Error) => toast({ title: "Failed to send attachment", description: e.message, variant: "destructive" }),
   });
 
   const noteMutation = useMutation({
@@ -518,6 +538,9 @@ export default function Inbox() {
                       <Button size="sm" variant="outline" onClick={() => setShowNote(true)} title="Add Note" data-testid="button-note">
                         <StickyNote className="w-3.5 h-3.5" />
                       </Button>
+                      <Button size="sm" variant="outline" onClick={() => setAttachDialogOpen(true)} title="Send Attachment" data-testid="button-attach">
+                        <Paperclip className="w-3.5 h-3.5" />
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -575,6 +598,19 @@ export default function Inbox() {
             >
               <UserPlus className="w-3.5 h-3.5 mr-2" /> Create Lead
             </Button>
+          )}
+
+          {/* Quick actions for linked customers */}
+          {selectedConv.customerId && (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-xs font-semibold text-muted-foreground">Quick Actions</p>
+              <Button variant="outline" size="sm" className="w-full justify-start text-xs h-8" onClick={() => setLocation("/sales?tab=quotations")} data-testid="button-create-quotation">
+                <FileText className="w-3.5 h-3.5 mr-2 text-emerald-500" /> Create Quotation
+              </Button>
+              <Button variant="outline" size="sm" className="w-full justify-start text-xs h-8" onClick={() => setLocation("/sales?tab=orders")} data-testid="button-create-order">
+                <ShoppingCart className="w-3.5 h-3.5 mr-2 text-blue-500" /> Create Order
+              </Button>
+            </div>
           )}
 
           {/* Customer Timeline: Quotations */}
@@ -814,6 +850,48 @@ export default function Inbox() {
               data-testid="button-send-template-confirm"
             >
               Send Template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Attachment Send Dialog */}
+      <Dialog open={attachDialogOpen} onOpenChange={setAttachDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Paperclip className="w-4 h-4" /> Send Attachment
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label>Document URL</Label>
+              <Input
+                placeholder="https://..."
+                value={attachUrl}
+                onChange={e => setAttachUrl(e.target.value)}
+                data-testid="input-attach-url"
+              />
+              <p className="text-xs text-muted-foreground">Public URL to a PDF or image file</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>File Name (optional)</Label>
+              <Input
+                placeholder="document.pdf"
+                value={attachFilename}
+                onChange={e => setAttachFilename(e.target.value)}
+                data-testid="input-attach-filename"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAttachDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={!attachUrl.trim() || sendAttachMutation.isPending}
+              onClick={() => sendAttachMutation.mutate({ url: attachUrl.trim(), filename: attachFilename || "document.pdf" })}
+              data-testid="button-send-attach"
+            >
+              {sendAttachMutation.isPending ? "Sending..." : "Send"}
             </Button>
           </DialogFooter>
         </DialogContent>

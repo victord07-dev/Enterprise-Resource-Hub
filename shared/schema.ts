@@ -858,6 +858,7 @@ export const whatsappTemplateStatusHistory = pgTable("whatsapp_template_status_h
   previousStatus: text("previous_status"),
   newStatus: text("new_status").notNull(),
   source: text("source").notNull().default("scheduled"),
+  changedBy: varchar("changed_by"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("idx_wa_tmpl_status_hist_template").on(t.templateId, t.createdAt)]);
 

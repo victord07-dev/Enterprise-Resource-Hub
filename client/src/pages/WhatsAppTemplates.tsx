@@ -158,7 +158,7 @@ export default function WhatsAppTemplates() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [historyTemplate, setHistoryTemplate] = useState<WhatsappTemplate | null>(null);
 
-  const { data: history = [], isLoading: historyLoading } = useQuery<WhatsappTemplateStatusHistory[]>({
+  const { data: history = [], isLoading: historyLoading } = useQuery<(WhatsappTemplateStatusHistory & { changedByName: string | null })[]>({
     queryKey: ["/api/whatsapp/templates", historyTemplate?.id, "history"],
     enabled: !!historyTemplate,
   });
@@ -749,7 +749,7 @@ export default function WhatsAppTemplates() {
                     : h.source === "manual"
                       ? "manual sync"
                       : h.source === "manual_edit"
-                        ? "manual edit"
+                        ? (h.changedByName ? `manual edit by ${h.changedByName}` : "manual edit")
                         : h.source;
                   return (
                     <li key={h.id} className="ml-4" data-testid={`history-entry-${h.id}`}>

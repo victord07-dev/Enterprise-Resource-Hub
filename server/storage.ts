@@ -351,7 +351,7 @@ export interface IStorage {
   createWhatsappTemplate(data: InsertWhatsappTemplate): Promise<WhatsappTemplate>;
   updateWhatsappTemplate(id: string, data: Partial<Omit<WhatsappTemplate, "id" | "createdAt">>): Promise<WhatsappTemplate | undefined>;
   deleteWhatsappTemplate(id: string): Promise<boolean>;
-  getWhatsappTemplateStatusHistory(templateId: string): Promise<WhatsappTemplateStatusHistory[]>;
+  getWhatsappTemplateStatusHistory(templateId: string): Promise<(WhatsappTemplateStatusHistory & { changedByName: string | null })[]>;
   createWhatsappTemplateStatusHistory(data: InsertWhatsappTemplateStatusHistory): Promise<WhatsappTemplateStatusHistory>;
   createWhatsappTemplateSyncLog(data: InsertWhatsappTemplateSyncLog): Promise<WhatsappTemplateSyncLog>;
   getRecentWhatsappTemplateSyncLogs(limit: number): Promise<WhatsappTemplateSyncLog[]>;
@@ -1664,12 +1664,23 @@ export class DatabaseStorage implements IStorage {
     const result = await db.delete(whatsappTemplates).where(eq(whatsappTemplates.id, id));
     return (result.rowCount ?? 0) > 0;
   }
-  async getWhatsappTemplateStatusHistory(templateId: string): Promise<WhatsappTemplateStatusHistory[]> {
-    return db
-      .select()
+  async getWhatsappTemplateStatusHistory(templateId: string): Promise<(WhatsappTemplateStatusHistory & { changedByName: string | null })[]> {
+    const rows = await db
+      .select({
+        id: whatsappTemplateStatusHistory.id,
+        templateId: whatsappTemplateStatusHistory.templateId,
+        previousStatus: whatsappTemplateStatusHistory.previousStatus,
+        newStatus: whatsappTemplateStatusHistory.newStatus,
+        source: whatsappTemplateStatusHistory.source,
+        changedBy: whatsappTemplateStatusHistory.changedBy,
+        createdAt: whatsappTemplateStatusHistory.createdAt,
+        changedByName: users.fullName,
+      })
       .from(whatsappTemplateStatusHistory)
+      .leftJoin(users, eq(users.id, whatsappTemplateStatusHistory.changedBy))
       .where(eq(whatsappTemplateStatusHistory.templateId, templateId))
       .orderBy(desc(whatsappTemplateStatusHistory.createdAt));
+    return rows;
   }
   async createWhatsappTemplateStatusHistory(data: InsertWhatsappTemplateStatusHistory): Promise<WhatsappTemplateStatusHistory> {
     const [h] = await db.insert(whatsappTemplateStatusHistory).values(data).returning();

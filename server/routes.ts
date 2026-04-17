@@ -7172,6 +7172,7 @@ export async function registerRoutes(
             previousStatus: before.isActive,
             newStatus: tmpl.isActive,
             source: "manual_edit",
+            changedBy: req.user.id,
           });
         } catch (e) {
           console.error("[WA] Failed to record manual status change:", e);

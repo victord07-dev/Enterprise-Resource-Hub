@@ -579,9 +579,38 @@ export default function WhatsAppTemplates() {
                 );
               }
               const contiguous = isContiguousFromOne(nums);
+              const blankExampleNums = nums.filter(num => !(form.examples[num - 1] || "").trim());
+              const canSuggest = blankExampleNums.length > 0;
               return (
                 <div className="space-y-2">
-                  <Label>Variables &amp; Examples</Label>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <Label>Variables &amp; Examples</Label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!canSuggest}
+                      onClick={() => setForm(f => {
+                        const max = nums[nums.length - 1];
+                        const nextEx = [...f.examples];
+                        while (nextEx.length < max) nextEx.push("");
+                        for (const num of nums) {
+                          const idx = num - 1;
+                          if (!(nextEx[idx] || "").trim()) {
+                            nextEx[idx] = exampleFor(f.variables[idx] || "", idx);
+                          }
+                        }
+                        return { ...f, examples: nextEx };
+                      })}
+                      data-testid="button-suggest-examples"
+                      title={canSuggest
+                        ? `Fill ${blankExampleNums.length} blank example${blankExampleNums.length === 1 ? "" : "s"} with suggested values`
+                        : "All examples are already filled"}
+                    >
+                      Use suggested values
+                      {canSuggest ? ` (${blankExampleNums.length})` : ""}
+                    </Button>
+                  </div>
                   {!contiguous && (
                     <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="text-noncontiguous-warning">
                       Placeholders should be numbered &#123;&#123;1&#125;&#125;, &#123;&#123;2&#125;&#125;, &#123;&#123;3&#125;&#125; &hellip; without gaps. Found: {nums.map(n => `{{${n}}}`).join(", ")}.

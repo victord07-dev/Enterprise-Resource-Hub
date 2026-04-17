@@ -57,6 +57,7 @@ export default function Inbox() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [assignmentFilter, setAssignmentFilter] = useState<"all" | "mine" | "unassigned">("all");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [messageText, setMessageText] = useState("");
   const [noteText, setNoteText] = useState("");
@@ -76,14 +77,15 @@ export default function Inbox() {
     refetchInterval: 10000,
   });
 
-  const { data: messages = [] } = useQuery<WhatsappMessage[]>({
+  const { data: messagesData } = useQuery<{ messages: WhatsappMessage[]; hasMore: boolean }>({
     queryKey: ["/api/whatsapp/conversations", selectedConvId, "messages"],
-    queryFn: () => fetch(`/api/whatsapp/conversations/${selectedConvId}/messages`, {
+    queryFn: () => fetch(`/api/whatsapp/conversations/${selectedConvId}/messages?limit=50`, {
       headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then(r => r.json()),
     enabled: !!selectedConvId,
     refetchInterval: () => document.visibilityState === "visible" ? 10000 : false,
   });
+  const messages = messagesData?.messages || [];
 
   const { data: templates = [] } = useQuery<WhatsappTemplate[]>({
     queryKey: ["/api/whatsapp/templates"],
@@ -192,7 +194,11 @@ export default function Inbox() {
     const name = c.contactName || c.customerName || c.leadName || c.phone;
     const matchSearch = !search || name.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search);
     const matchStatus = statusFilter === "all" || c.status === statusFilter;
-    return matchSearch && matchStatus;
+    const matchAssignment =
+      assignmentFilter === "all" ||
+      (assignmentFilter === "mine" && c.assignedTo === currentUser?.id) ||
+      (assignmentFilter === "unassigned" && !c.assignedTo);
+    return matchSearch && matchStatus && matchAssignment;
   });
 
   const windowOpen = selectedConv?.windowExpiresAt
@@ -225,17 +231,29 @@ export default function Inbox() {
               data-testid="input-conv-search"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="h-8 text-xs" data-testid="select-status-filter">
-              <Filter className="w-3 h-3 mr-1" />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="open">Open</SelectItem>
-              <SelectItem value="closed">Closed</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex gap-1">
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="h-7 text-xs flex-1" data-testid="select-status-filter">
+                <Filter className="w-3 h-3 mr-1" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="open">Open</SelectItem>
+                <SelectItem value="closed">Closed</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={assignmentFilter} onValueChange={v => setAssignmentFilter(v as any)}>
+              <SelectTrigger className="h-7 text-xs flex-1" data-testid="select-assignment-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="mine">Mine</SelectItem>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           {convsLoading ? (

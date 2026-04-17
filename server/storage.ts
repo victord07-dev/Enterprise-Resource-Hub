@@ -339,7 +339,7 @@ export interface IStorage {
   getWhatsappConversationByPhone(phone: string): Promise<WhatsappConversation | undefined>;
   createWhatsappConversation(data: InsertWhatsappConversation): Promise<WhatsappConversation>;
   updateWhatsappConversation(id: string, data: Partial<Omit<WhatsappConversation, "id" | "createdAt">>): Promise<WhatsappConversation | undefined>;
-  getWhatsappMessages(conversationId: string): Promise<WhatsappMessage[]>;
+  getWhatsappMessages(conversationId: string, opts?: { limit?: number; before?: string }): Promise<WhatsappMessage[]>;
   createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage>;
   updateWhatsappMessageStatus(id: string, status: string): Promise<void>;
   updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<void>;
@@ -1582,8 +1582,14 @@ export class DatabaseStorage implements IStorage {
     const [c] = await db.update(whatsappConversations).set(data).where(eq(whatsappConversations.id, id)).returning();
     return c;
   }
-  async getWhatsappMessages(conversationId: string): Promise<WhatsappMessage[]> {
-    return db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, conversationId)).orderBy(whatsappMessages.createdAt);
+  async getWhatsappMessages(conversationId: string, opts?: { limit?: number; before?: string }): Promise<WhatsappMessage[]> {
+    const limit = opts?.limit || 50;
+    let q = db.select().from(whatsappMessages).where(eq(whatsappMessages.conversationId, conversationId));
+    if (opts?.before) {
+      const cursor = new Date(opts.before);
+      q = q.where(and(eq(whatsappMessages.conversationId, conversationId), sql`${whatsappMessages.createdAt} < ${cursor}`) as any) as any;
+    }
+    return (q as any).orderBy(whatsappMessages.createdAt).limit(limit);
   }
   async createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage> {
     const [m] = await db.insert(whatsappMessages).values(data).returning();

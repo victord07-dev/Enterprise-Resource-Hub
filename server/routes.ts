@@ -6667,20 +6667,21 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid webhook token" });
       }
 
-      // HMAC verification is mandatory when secret is configured
+      // HMAC verification — strictly mandatory; reject if secret not configured
       const signature = req.headers["x-interakt-signature"] as string;
       const rawBody = req.rawBody as Buffer;
       const secret = process.env.INTERAKT_WEBHOOK_SECRET;
-      if (secret) {
-        // Secret is configured — always verify
-        if (!signature || !rawBody) {
-          return res.status(401).json({ message: "Missing HMAC signature" });
-        }
-        const valid = verifyInteraktSignature(rawBody, signature);
-        if (!valid) {
-          console.warn("[WA] Webhook HMAC mismatch — rejecting");
-          return res.status(401).json({ message: "Invalid signature" });
-        }
+      if (!secret) {
+        console.warn("[WA] INTERAKT_WEBHOOK_SECRET not configured — rejecting webhook");
+        return res.status(503).json({ message: "Webhook secret not configured" });
+      }
+      if (!signature || !rawBody) {
+        return res.status(401).json({ message: "Missing HMAC signature" });
+      }
+      const valid = verifyInteraktSignature(rawBody, signature);
+      if (!valid) {
+        console.warn("[WA] Webhook HMAC mismatch — rejecting");
+        return res.status(401).json({ message: "Invalid signature" });
       }
 
       const body = req.body;
@@ -6785,6 +6786,9 @@ export async function registerRoutes(
 
   app.post("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
     try {
+      if (!["admin", "sales_manager"].includes(req.user.role)) {
+        return res.status(403).json({ message: "Only admin or sales_manager may start conversations" });
+      }
       const { phone, contactName, customerId, leadId } = req.body;
       if (!phone) return res.status(400).json({ message: "phone required" });
       const normPhone = normalisePhone(String(phone));
@@ -6840,10 +6844,10 @@ export async function registerRoutes(
   // ── WhatsApp Messages ──────────────────────────────────────────────────────
   app.get("/api/whatsapp/conversations/:id/messages", authenticateToken, async (req: any, res) => {
     try {
-      const messages = await storage.getWhatsappMessages(req.params.id);
-      // Reset unread count when messages are fetched (conversation viewed)
-      await storage.updateWhatsappConversation(req.params.id, { unreadCount: 0 });
-      res.json(messages);
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+      const before = req.query.before as string | undefined; // ISO timestamp cursor
+      const messages = await storage.getWhatsappMessages(req.params.id, { limit, before });
+      res.json({ messages, hasMore: messages.length === limit });
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch messages" });
     }
@@ -6944,6 +6948,28 @@ export async function registerRoutes(
       res.status(201).json({ lead, conversation: await storage.getWhatsappConversation(conv.id) });
     } catch (err) {
       res.status(500).json({ message: "Failed to create lead" });
+    }
+  });
+
+  // ── WhatsApp Generate PDF stub ─────────────────────────────────────────────
+  app.post("/api/whatsapp/generate-pdf", authenticateToken, async (req: any, res) => {
+    // PDF generation for WhatsApp sharing is done client-side via jsPDF.
+    // This endpoint accepts document metadata and returns a signed URL placeholder
+    // for future server-side PDF storage integration.
+    try {
+      const { entityType, entityId } = req.body;
+      if (!entityType || !entityId) {
+        return res.status(400).json({ message: "entityType and entityId required" });
+      }
+      // Client-side PDF generation; server endpoint is a hook for future use
+      res.json({
+        ok: true,
+        message: "PDF generation is handled client-side. Use the jsPDF client to generate and send via the /send endpoint.",
+        entityType,
+        entityId,
+      });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to process PDF request" });
     }
   });
 

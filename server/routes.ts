@@ -6767,7 +6767,15 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp Conversations ─────────────────────────────────────────────────
-  app.get("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
+  const WHATSAPP_ROLES = ["admin", "sales_manager", "field_staff"];
+  function requireWhatsappRole(req: any, res: any, next: any) {
+    if (!WHATSAPP_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ message: "WhatsApp inbox is restricted to admin, sales_manager, and field_staff" });
+    }
+    next();
+  }
+
+  app.get("/api/whatsapp/conversations", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const conversations = await storage.getWhatsappConversations();
       // Enrich with customer/lead name
@@ -6815,7 +6823,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/whatsapp/conversations/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/whatsapp/conversations/:id", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const conv = await storage.getWhatsappConversation(req.params.id);
       if (!conv) return res.status(404).json({ message: "Conversation not found" });
@@ -6842,7 +6850,7 @@ export async function registerRoutes(
   });
 
   // ── WhatsApp Messages ──────────────────────────────────────────────────────
-  app.get("/api/whatsapp/conversations/:id/messages", authenticateToken, async (req: any, res) => {
+  app.get("/api/whatsapp/conversations/:id/messages", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
       const before = req.query.before as string | undefined; // ISO timestamp cursor
@@ -6853,7 +6861,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/whatsapp/conversations/:id/send", authenticateToken, async (req: any, res) => {
+  app.post("/api/whatsapp/conversations/:id/send", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const conv = await storage.getWhatsappConversation(req.params.id);
       if (!conv) return res.status(404).json({ message: "Conversation not found" });
@@ -6905,7 +6913,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/whatsapp/conversations/:id/note", authenticateToken, async (req: any, res) => {
+  app.post("/api/whatsapp/conversations/:id/note", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const { body } = req.body;
       if (!body) return res.status(400).json({ message: "body required" });
@@ -6925,7 +6933,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/whatsapp/conversations/:id/create-lead", authenticateToken, async (req: any, res) => {
+  app.post("/api/whatsapp/conversations/:id/create-lead", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
       const conv = await storage.getWhatsappConversation(req.params.id);
       if (!conv) return res.status(404).json({ message: "Conversation not found" });
@@ -6951,25 +6959,38 @@ export async function registerRoutes(
     }
   });
 
-  // ── WhatsApp Generate PDF stub ─────────────────────────────────────────────
-  app.post("/api/whatsapp/generate-pdf", authenticateToken, async (req: any, res) => {
-    // PDF generation for WhatsApp sharing is done client-side via jsPDF.
-    // This endpoint accepts document metadata and returns a signed URL placeholder
-    // for future server-side PDF storage integration.
+  // ── WhatsApp Generate PDF (upload base64 PDF to object storage, return URL) ──
+  app.post("/api/whatsapp/generate-pdf", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
-      const { entityType, entityId } = req.body;
+      const { entityType, entityId, pdfBase64, filename } = req.body;
       if (!entityType || !entityId) {
         return res.status(400).json({ message: "entityType and entityId required" });
       }
-      // Client-side PDF generation; server endpoint is a hook for future use
-      res.json({
-        ok: true,
-        message: "PDF generation is handled client-side. Use the jsPDF client to generate and send via the /send endpoint.",
-        entityType,
-        entityId,
+      if (!pdfBase64) {
+        // No PDF provided — return metadata only (caller will use client-side jsPDF)
+        return res.json({ ok: true, entityType, entityId, url: null });
+      }
+
+      // Decode the base64 PDF and store in object storage
+      const buf = Buffer.from(pdfBase64, "base64");
+      const safeFilename = (filename || `${entityType}-${entityId}-${Date.now()}.pdf`).replace(/[^a-zA-Z0-9._-]/g, "_");
+      const objectStorage = new ObjectStorageService();
+      const uploadURL = await objectStorage.getObjectEntityUploadURL();
+      const objectPath = objectStorage.normalizeObjectEntityPath(uploadURL);
+
+      // Upload the PDF buffer
+      await fetch(uploadURL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/pdf", "Content-Length": String(buf.length) },
+        body: buf,
       });
+
+      // Build a download URL using the attachment download route pattern
+      const publicUrl = `/api/attachments/download?path=${encodeURIComponent(objectPath)}&filename=${encodeURIComponent(safeFilename)}`;
+      res.json({ ok: true, entityType, entityId, url: publicUrl, objectPath });
     } catch (err) {
-      res.status(500).json({ message: "Failed to process PDF request" });
+      console.error("[WA] generate-pdf error:", err);
+      res.status(500).json({ message: "Failed to store PDF" });
     }
   });
 

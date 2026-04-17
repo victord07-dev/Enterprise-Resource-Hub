@@ -17,6 +17,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Lead, Employee, LeadActivity, LeadFollowup } from "@shared/schema";
+import { resolveMergeField, isCommonMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-gray-100 text-gray-800 dark:bg-gray-950/40 dark:text-gray-400",
@@ -146,6 +147,89 @@ export default function Leads() {
   const [showFollowupForm, setShowFollowupForm] = useState(false);
 
   const [allFollowups, setAllFollowups] = useState<Record<string, LeadFollowup[]>>({});
+
+  const [waDialogOpen, setWaDialogOpen] = useState(false);
+  const [waLead, setWaLead] = useState<Lead | null>(null);
+  const [waTargetPhone, setWaTargetPhone] = useState("");
+  const [waMessage, setWaMessage] = useState("");
+  const [waSelectedTemplate, setWaSelectedTemplate] = useState<string>("");
+  const [waTemplateVars, setWaTemplateVars] = useState<string[]>([]);
+  const [waConvWindow, setWaConvWindow] = useState<Date | null>(null);
+
+  const { data: waTemplates = [] } = useQuery<{ id: string; name: string; interaktTemplateName: string; body: string; variables: string[] }[]>({
+    queryKey: ["/api/whatsapp/templates"],
+    enabled: waDialogOpen,
+    select: (d: any[]) => d.filter(t => t.isActive === "approved"),
+  });
+
+  const leadMergeContext = (lead: Lead) => ({
+    lead: {
+      name: lead.name,
+      email: lead.email,
+      phone: lead.phone,
+      address: lead.address,
+      gstNumber: lead.gstNumber,
+      company: lead.company,
+    },
+  });
+
+  const openWaDialogForLead = async (lead: Lead) => {
+    setWaLead(lead);
+    setWaTargetPhone(lead.phone || "");
+    setWaMessage(`Hi ${lead.name},\n\nThank you for your interest. We'd love to discuss your requirement further.`);
+    setWaSelectedTemplate("");
+    setWaTemplateVars([]);
+    setWaConvWindow(null);
+    setWaDialogOpen(true);
+    if (lead.phone) {
+      try {
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        if (convs.ok) {
+          const list = await convs.json();
+          const phone = lead.phone.replace(/\D/g, "");
+          const normPhone = phone.length === 10 && /^[6-9]/.test(phone) ? "91" + phone : phone;
+          const match = list.find((c: any) => c.phoneNumber === normPhone);
+          if (match?.windowExpiresAt) setWaConvWindow(new Date(match.windowExpiresAt));
+        }
+      } catch {}
+    }
+  };
+
+  const waWindowIsOpen = waConvWindow && waConvWindow > new Date();
+
+  const sendWaMutation = useMutation({
+    mutationFn: async () => {
+      let phone = waTargetPhone.replace(/\D/g, "");
+      if (phone.length === 10 && /^[6-9]/.test(phone)) phone = "91" + phone;
+      const convRes = await apiRequest("POST", "/api/whatsapp/conversations/get-or-create", { phone });
+      if (!convRes.ok) { const e = await convRes.json(); throw new Error(e.message || "Failed to open conversation"); }
+      const conv = await convRes.json();
+
+      let payload: Record<string, any>;
+      if (waSelectedTemplate && waSelectedTemplate !== "__none__") {
+        const tpl = waTemplates.find(t => t.interaktTemplateName === waSelectedTemplate);
+        payload = {
+          type: "template",
+          templateName: waSelectedTemplate,
+          templateVariables: waTemplateVars,
+          templateVariableNames: tpl?.variables || [],
+        };
+      } else if (waWindowIsOpen) {
+        payload = { type: "text", text: waMessage };
+      } else {
+        throw new Error("24-hour messaging window has expired. Please select an approved template to send.");
+      }
+
+      const sendRes = await apiRequest("POST", `/api/whatsapp/conversations/${conv.id}/send`, payload);
+      if (!sendRes.ok) { const e = await sendRes.json(); throw new Error(e.message || "Failed to send message"); }
+      return conv;
+    },
+    onSuccess: () => {
+      toast({ title: "WhatsApp message sent", description: waLead?.name });
+      setWaDialogOpen(false);
+    },
+    onError: (e: Error) => toast({ title: "WhatsApp send failed", description: e.message, variant: "destructive" }),
+  });
 
   const filteredLeads = leads?.filter(l => {
     if (!search) return true;
@@ -613,6 +697,17 @@ export default function Leads() {
                           </td>
                           <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openWaDialogForLead(lead)}
+                                disabled={!lead.phone}
+                                data-testid={`button-wa-lead-${lead.id}`}
+                                title={lead.phone ? "Send WhatsApp template" : "No phone number on lead"}
+                                className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20"
+                              >
+                                <MessageCircle className="w-4 h-4" />
+                              </Button>
                               {(lead.status === "qualified" || lead.status === "contacted") && (
                                 <Button
                                   variant="ghost"
@@ -1153,6 +1248,150 @@ export default function Leads() {
               data-testid="button-confirm-delete"
             >
               {deleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={waDialogOpen} onOpenChange={setWaDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageCircle className="w-5 h-5 text-green-500" />
+              Send WhatsApp to {waLead?.name || "Lead"}
+            </DialogTitle>
+            <DialogDescription>Send a message or approved template to this lead</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Phone Number</Label>
+              <Input
+                value={waTargetPhone}
+                onChange={e => setWaTargetPhone(e.target.value)}
+                placeholder="+91 98765 43210"
+                data-testid="input-wa-phone"
+              />
+              <p className="text-xs text-muted-foreground">10-digit Indian numbers will be auto-formatted</p>
+            </div>
+
+            {waTemplates.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>Send via Template (recommended)</Label>
+                <Select value={waSelectedTemplate} onValueChange={v => {
+                  setWaSelectedTemplate(v);
+                  const tpl = waTemplates.find(t => t.interaktTemplateName === v);
+                  if (tpl?.body && waLead) {
+                    const matches = tpl.body.match(/\{\{(\d+)\}\}/g) || [];
+                    const tplVars = tpl.variables || [];
+                    const ctx = leadMergeContext(waLead);
+                    const autoVars = matches.map((_: string, i: number) => {
+                      const key = tplVars[i];
+                      if (key && isCommonMergeField(key)) {
+                        const resolved = resolveMergeField(key, ctx);
+                        if (resolved) return resolved;
+                      }
+                      return "";
+                    });
+                    setWaTemplateVars(autoVars);
+                  } else {
+                    setWaTemplateVars([]);
+                  }
+                }}>
+                  <SelectTrigger data-testid="select-wa-template">
+                    <SelectValue placeholder="Select an approved template..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No template (free text)</SelectItem>
+                    {waTemplates.map(t => (
+                      <SelectItem key={t.id} value={t.interaktTemplateName}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {waSelectedTemplate && waSelectedTemplate !== "__none__" && (() => {
+              const tpl = waTemplates.find(t => t.interaktTemplateName === waSelectedTemplate);
+              if (!tpl) return null;
+              const matches = tpl.body?.match(/\{\{(\d+)\}\}/g) || [];
+              const previewBody = matches.reduce((body: string, ph: string, i: number) => body.replace(ph, waTemplateVars[i] || ph), tpl.body || "");
+              const tplVars = tpl.variables || [];
+              return (
+                <div className="space-y-2">
+                  {matches.length > 0 && (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Template Variables</Label>
+                      {matches.map((_: string, i: number) => {
+                        const key = tplVars[i];
+                        const fieldMeta = key ? MERGE_FIELD_BY_KEY[key] : undefined;
+                        const fieldLabel = fieldMeta?.label || key || null;
+                        return (
+                          <div key={i} className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground w-32 shrink-0">
+                              <span className="font-mono">{`{{${i + 1}}}`}</span>
+                              {fieldLabel && (
+                                <span className="ml-1 text-foreground/80" data-testid={`label-wa-var-${i + 1}`}>· {fieldLabel}</span>
+                              )}
+                            </span>
+                            <Input
+                              className="h-7 text-xs"
+                              value={waTemplateVars[i] || ""}
+                              onChange={e => {
+                                const v = [...waTemplateVars];
+                                v[i] = e.target.value;
+                                setWaTemplateVars(v);
+                              }}
+                              placeholder={fieldMeta?.example || `Variable ${i + 1}`}
+                              data-testid={`input-wa-var-${i + 1}`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="bg-muted/50 rounded-md p-3 text-xs whitespace-pre-wrap border" data-testid="text-wa-preview">
+                    <p className="text-[10px] text-muted-foreground mb-1 font-medium">Preview</p>
+                    {previewBody}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {(!waSelectedTemplate || waSelectedTemplate === "__none__") && (
+              <>
+                {!waWindowIsOpen && (
+                  <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 px-3 py-2 rounded-md text-xs">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>No active 24-hour messaging window. Only template messages can be sent to this contact. Select a template above.</span>
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <Label>Custom Message</Label>
+                  <Textarea
+                    value={waMessage}
+                    onChange={e => setWaMessage(e.target.value)}
+                    className="min-h-[100px] text-sm resize-none"
+                    disabled={!waWindowIsOpen}
+                    placeholder={waWindowIsOpen ? "Type your message..." : "Select a template to send (no active window)"}
+                    data-testid="textarea-wa-message"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWaDialogOpen(false)}>Cancel</Button>
+            <Button
+              disabled={
+                !waTargetPhone ||
+                sendWaMutation.isPending ||
+                ((!waSelectedTemplate || waSelectedTemplate === "__none__") && (!waWindowIsOpen || !waMessage))
+              }
+              onClick={() => sendWaMutation.mutate()}
+              className="bg-green-600 hover:bg-green-700 text-white"
+              data-testid="button-wa-send"
+            >
+              {sendWaMutation.isPending ? "Sending..." : "Send"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -69,6 +69,17 @@ app.use((req, res, next) => {
 
   setupWhatsappWebSocket(httpServer);
 
+  // ── One-time backfill: ensure every existing WhatsApp template has at
+  // least one status-history entry so the history dialog is never blank.
+  try {
+    const inserted = await storage.backfillWhatsappTemplateStatusHistory();
+    if (inserted > 0) {
+      console.log(`[WA TEMPLATE BACKFILL] Inserted ${inserted} initial status history row(s) for existing templates`);
+    }
+  } catch (err) {
+    console.error("[WA TEMPLATE BACKFILL] Failed to backfill template status history:", err);
+  }
+
   // ── WhatsApp CRON Alerts ───────────────────────────────────────────────────
   async function sendOwnerDailyAlert() {
     try {

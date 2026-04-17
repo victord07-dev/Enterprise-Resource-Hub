@@ -353,6 +353,7 @@ export interface IStorage {
   deleteWhatsappTemplate(id: string): Promise<boolean>;
   getWhatsappTemplateStatusHistory(templateId: string): Promise<(WhatsappTemplateStatusHistory & { changedByName: string | null })[]>;
   createWhatsappTemplateStatusHistory(data: InsertWhatsappTemplateStatusHistory): Promise<WhatsappTemplateStatusHistory>;
+  backfillWhatsappTemplateStatusHistory(): Promise<number>;
   createWhatsappTemplateSyncLog(data: InsertWhatsappTemplateSyncLog): Promise<WhatsappTemplateSyncLog>;
   getRecentWhatsappTemplateSyncLogs(limit: number): Promise<WhatsappTemplateSyncLog[]>;
 
@@ -1686,6 +1687,19 @@ export class DatabaseStorage implements IStorage {
     const [h] = await db.insert(whatsappTemplateStatusHistory).values(data).returning();
     return h;
   }
+  async backfillWhatsappTemplateStatusHistory(): Promise<number> {
+    const inserted = await db.execute<{ id: string }>(sql`
+      INSERT INTO whatsapp_template_status_history (template_id, previous_status, new_status, source, created_at)
+      SELECT t.id, NULL, t.status, 'backfill', t.created_at
+      FROM whatsapp_templates t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM whatsapp_template_status_history h WHERE h.template_id = t.id
+      )
+      RETURNING id
+    `);
+    return inserted.rows.length;
+  }
+
   async createWhatsappTemplateSyncLog(data: InsertWhatsappTemplateSyncLog): Promise<WhatsappTemplateSyncLog> {
     const [log] = await db.insert(whatsappTemplateSyncLogs).values(data).returning();
     return log;

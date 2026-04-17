@@ -6,6 +6,7 @@ import { createServer } from "http";
 import cron from "node-cron";
 import { storage } from "./storage";
 import { sendTemplateMessage } from "./whatsapp";
+import { setupWhatsappWebSocket } from "./wsHub";
 
 const app = express();
 const httpServer = createServer(app);
@@ -65,6 +66,8 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+
+  setupWhatsappWebSocket(httpServer);
 
   // ── WhatsApp CRON Alerts ───────────────────────────────────────────────────
   async function sendOwnerDailyAlert() {

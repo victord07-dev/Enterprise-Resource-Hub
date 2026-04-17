@@ -343,7 +343,7 @@ export interface IStorage {
   getWhatsappMessages(conversationId: string, opts?: { limit?: number; before?: string }): Promise<WhatsappMessage[]>;
   createWhatsappMessage(data: InsertWhatsappMessage): Promise<WhatsappMessage>;
   updateWhatsappMessageStatus(id: string, status: string): Promise<void>;
-  updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<boolean>;
+  updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<{ id: string; conversationId: string } | null>;
   getWhatsappTemplates(): Promise<WhatsappTemplate[]>;
   getWhatsappTemplate(id: string): Promise<WhatsappTemplate | undefined>;
   getWhatsappTemplateByInteraktName(interaktTemplateName: string, languageCode: string): Promise<WhatsappTemplate | undefined>;
@@ -1617,21 +1617,21 @@ export class DatabaseStorage implements IStorage {
   async updateWhatsappMessageStatus(id: string, status: string): Promise<void> {
     await db.update(whatsappMessages).set({ status }).where(eq(whatsappMessages.id, id));
   }
-  async updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<boolean> {
+  async updateWhatsappMessageStatusByInteraktId(interaktMessageId: string, status: string): Promise<{ id: string; conversationId: string } | null> {
     // Enforce status hierarchy so out-of-order webhook events don't downgrade ticks
     // (sent → delivered → read; failed is terminal)
     const rank: Record<string, number> = { sent: 1, delivered: 2, read: 3, failed: 4 };
     const incomingRank = rank[status] ?? 0;
-    if (!incomingRank) return false;
+    if (!incomingRank) return null;
     const [existing] = await db
-      .select({ id: whatsappMessages.id, status: whatsappMessages.status })
+      .select({ id: whatsappMessages.id, status: whatsappMessages.status, conversationId: whatsappMessages.conversationId })
       .from(whatsappMessages)
       .where(eq(whatsappMessages.interaktMessageId, interaktMessageId));
-    if (!existing) return false;
+    if (!existing) return null;
     const currentRank = rank[existing.status || ""] ?? 0;
-    if (incomingRank <= currentRank) return false;
+    if (incomingRank <= currentRank) return null;
     await db.update(whatsappMessages).set({ status }).where(eq(whatsappMessages.id, existing.id));
-    return true;
+    return { id: existing.id, conversationId: existing.conversationId };
   }
   async getWhatsappTemplates(): Promise<WhatsappTemplate[]> {
     return db.select().from(whatsappTemplates).orderBy(whatsappTemplates.name);

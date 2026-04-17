@@ -81,7 +81,6 @@ export default function Inbox() {
 
   const { data: conversations = [], isLoading: convsLoading } = useQuery<EnrichedConversation[]>({
     queryKey: ["/api/whatsapp/conversations"],
-    refetchInterval: () => document.visibilityState === "visible" ? 10000 : false,
   });
 
   const { data: messagesData } = useQuery<{ messages: WhatsappMessage[]; hasMore: boolean }>({
@@ -90,9 +89,62 @@ export default function Inbox() {
       headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then(r => r.json()),
     enabled: !!selectedConvId,
-    refetchInterval: () => document.visibilityState === "visible" ? 3000 : false,
   });
   const messages = messagesData?.messages || [];
+
+  // ── Real-time updates via WebSocket (replaces polling) ─────────────────────
+  const selectedConvIdRef = useRef<string | null>(selectedConvId);
+  useEffect(() => { selectedConvIdRef.current = selectedConvId; }, [selectedConvId]);
+
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+
+    const connect = () => {
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${window.location.host}/ws/whatsapp?token=${encodeURIComponent(token)}`;
+      ws = new WebSocket(url);
+
+      ws.onmessage = (ev) => {
+        try {
+          const evt = JSON.parse(ev.data);
+          if (evt.type === "message") {
+            queryClient.invalidateQueries({ queryKey: ["/api/whatsapp/conversations"] });
+            if (evt.conversationId === selectedConvIdRef.current) {
+              queryClient.invalidateQueries({
+                queryKey: ["/api/whatsapp/conversations", evt.conversationId, "messages"],
+              });
+            }
+          } else if (evt.type === "status") {
+            if (evt.conversationId === selectedConvIdRef.current) {
+              queryClient.invalidateQueries({
+                queryKey: ["/api/whatsapp/conversations", evt.conversationId, "messages"],
+              });
+            }
+          }
+        } catch { /* ignore malformed payloads */ }
+      };
+
+      ws.onclose = () => {
+        if (closed) return;
+        // Exponential-ish reconnect with cap
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+      ws.onerror = () => { try { ws?.close(); } catch { /* noop */ } };
+    };
+
+    connect();
+
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch { /* noop */ }
+    };
+  }, []);
 
   const { data: templates = [] } = useQuery<WhatsappTemplate[]>({
     queryKey: ["/api/whatsapp/templates"],

@@ -26,6 +26,7 @@ import {
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, fetchInteraktTemplates, mapInteraktTemplate } from "./whatsapp";
+import { broadcastWhatsappEvent } from "./wsHub";
 import multer from "multer";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
@@ -6726,8 +6727,17 @@ export async function registerRoutes(
       if (statusUpdates.length > 0) {
         let applied = 0;
         for (const u of statusUpdates) {
-          const ok = await storage.updateWhatsappMessageStatusByInteraktId(u.id, u.status);
-          if (ok) applied++;
+          const updated = await storage.updateWhatsappMessageStatusByInteraktId(u.id, u.status);
+          if (updated) {
+            applied++;
+            broadcastWhatsappEvent({
+              type: "status",
+              conversationId: updated.conversationId,
+              messageId: updated.id,
+              interaktMessageId: u.id,
+              status: u.status,
+            });
+          }
         }
         console.log(`[WA] Status updates received=${statusUpdates.length} applied=${applied}`);
         return res.json({ ok: true, applied });
@@ -6779,7 +6789,7 @@ export async function registerRoutes(
         conv = updated || existingConv;
       }
 
-      await storage.createWhatsappMessage({
+      const inboundMsg = await storage.createWhatsappMessage({
         conversationId: conv!.id,
         direction: "inbound",
         body: messageText,
@@ -6788,7 +6798,14 @@ export async function registerRoutes(
         status: "received",
         sentBy: null,
       });
-      
+
+      broadcastWhatsappEvent({
+        type: "message",
+        conversationId: conv!.id,
+        message: inboundMsg,
+        conversation: conv!,
+      });
+
       console.log(`[WA] Inbound message from ${normPhone} stored in conv ${conv!.id}`);
 
       res.json({ ok: true });
@@ -6990,6 +7007,12 @@ export async function registerRoutes(
       });
 
       await storage.updateWhatsappConversation(conv.id, { lastMessageAt: new Date() });
+
+      broadcastWhatsappEvent({
+        type: "message",
+        conversationId: conv.id,
+        message: msg,
+      });
 
       if (sendError) {
         // Return 502 so the client knows the upstream send actually failed

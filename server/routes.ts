@@ -6792,11 +6792,8 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/whatsapp/conversations", authenticateToken, async (req: any, res) => {
+  app.post("/api/whatsapp/conversations", authenticateToken, requireWhatsappRole, async (req: any, res) => {
     try {
-      if (req.user.role !== "admin") {
-        return res.status(403).json({ message: "Only admin may create new WhatsApp conversations" });
-      }
       const { phone, contactName, customerId, leadId } = req.body;
       if (!phone) return res.status(400).json({ message: "phone required" });
       const normPhone = normalisePhone(String(phone));

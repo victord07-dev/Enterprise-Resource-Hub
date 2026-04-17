@@ -16,7 +16,7 @@ import { useLocation } from "wouter";
 import {
   MessageCircle, Send, Search, Plus, Tag, User, Link2, StickyNote, CheckCheck, Check,
   X, Clock, AlertCircle, Phone, UserPlus, ChevronRight, Inbox as InboxIcon, Filter,
-  FileText, ShoppingCart, Receipt
+  FileText, ShoppingCart, Receipt, Paperclip
 } from "lucide-react";
 import type { WhatsappConversation, WhatsappMessage, WhatsappTemplate } from "@shared/schema";
 
@@ -72,6 +72,7 @@ export default function Inbox() {
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsappTemplate | null>(null);
   const [templateVars, setTemplateVars] = useState<string[]>([]);
+  const [quickReplySuggestions, setQuickReplySuggestions] = useState<WhatsappTemplate[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { data: conversations = [], isLoading: convsLoading } = useQuery<EnrichedConversation[]>({
@@ -115,6 +116,15 @@ export default function Inbox() {
   // Employees for assignment dropdown (all authenticated employees)
   const { data: waUsers = [] } = useQuery<any[]>({
     queryKey: ["/api/employees"],
+  });
+
+  // Customer invoices and payments for timeline
+  const { data: customerInvoices = [] } = useQuery<any[]>({
+    queryKey: ["/api/sales-invoices"],
+    enabled: !!selectedConv?.customerId,
+    select: (d: any) => Array.isArray(d)
+      ? d.filter((inv: any) => inv.customerId === selectedConv?.customerId).slice(0, 5)
+      : [],
   });
 
   const [, setLocation] = useLocation();
@@ -447,13 +457,44 @@ export default function Inbox() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 relative">
+                    {/* Quick-reply template picker (triggered by typing /) */}
+                    {quickReplySuggestions.length > 0 && (
+                      <div className="absolute bottom-full left-0 right-12 mb-1 bg-popover border rounded-md shadow-md z-50 max-h-48 overflow-y-auto" data-testid="quick-reply-picker">
+                        {quickReplySuggestions.map(t => (
+                          <button
+                            key={t.id}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-muted flex flex-col gap-0.5"
+                            onClick={() => {
+                              setMessageText(t.body || "");
+                              setQuickReplySuggestions([]);
+                            }}
+                            data-testid={`quick-reply-${t.id}`}
+                          >
+                            <span className="font-medium">{t.name}</span>
+                            <span className="text-muted-foreground truncate">{t.body}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <Textarea
-                      placeholder="Type a message..."
+                      placeholder="Type a message... (use / for quick replies)"
                       className="text-sm min-h-[60px] resize-none flex-1"
                       value={messageText}
-                      onChange={e => setMessageText(e.target.value)}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setMessageText(v);
+                        // Trigger quick-reply picker when line starts with /
+                        const lastLine = v.split("\n").pop() || "";
+                        if (lastLine.startsWith("/")) {
+                          const q = lastLine.slice(1).toLowerCase();
+                          setQuickReplySuggestions(templates.filter(t => !q || t.name.toLowerCase().includes(q) || (t.body || "").toLowerCase().includes(q)));
+                        } else {
+                          setQuickReplySuggestions([]);
+                        }
+                      }}
                       onKeyDown={e => {
+                        if (e.key === "Escape") { setQuickReplySuggestions([]); return; }
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           if (messageText.trim()) sendMutation.mutate({ body: messageText });
@@ -564,6 +605,23 @@ export default function Inbox() {
                   <div key={o.id} className="flex items-center justify-between text-xs px-2 py-1.5 bg-muted/40 rounded-md cursor-pointer hover:bg-muted" onClick={() => setLocation("/sales?tab=orders")} data-testid={`timeline-order-${o.id}`}>
                     <span className="font-medium truncate">{o.orderNumber}</span>
                     <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">{o.status}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Customer Timeline: Invoices */}
+          {selectedConv.customerId && customerInvoices.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-1.5 flex items-center gap-1">
+                <Receipt className="w-3.5 h-3.5" /> Recent Invoices
+              </p>
+              <div className="space-y-1">
+                {customerInvoices.map((inv: any) => (
+                  <div key={inv.id} className="flex items-center justify-between text-xs px-2 py-1.5 bg-muted/40 rounded-md cursor-pointer hover:bg-muted" onClick={() => setLocation("/accounts")} data-testid={`timeline-invoice-${inv.id}`}>
+                    <span className="font-medium truncate">{inv.invoiceNumber}</span>
+                    <Badge variant={inv.status === "paid" ? "default" : "outline"} className="text-[9px] h-4 px-1 shrink-0">{inv.status}</Badge>
                   </div>
                 ))}
               </div>

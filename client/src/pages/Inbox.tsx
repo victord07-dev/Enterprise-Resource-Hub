@@ -90,7 +90,7 @@ export default function Inbox() {
       headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then(r => r.json()),
     enabled: !!selectedConvId,
-    refetchInterval: () => document.visibilityState === "visible" ? 10000 : false,
+    refetchInterval: () => document.visibilityState === "visible" ? 3000 : false,
   });
   const messages = messagesData?.messages || [];
 

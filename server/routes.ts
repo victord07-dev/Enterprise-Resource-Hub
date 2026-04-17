@@ -6685,11 +6685,52 @@ export async function registerRoutes(
       }
 
       const body = req.body;
-      // Handle status updates (delivered, read, failed)
-      if (body?.data?.message?.id && body?.data?.message?.status) {
-        const { id, status } = body.data.message;
-        await storage.updateWhatsappMessageStatusByInteraktId(id, status);
-        return res.json({ ok: true });
+
+      // ── Status updates (sent / delivered / read / failed) ─────────────────
+      // Interakt sends status updates in several shapes depending on event type.
+      // We collect (messageId, status) pairs from any of the known shapes and
+      // apply each one (status hierarchy is enforced in storage so out-of-order
+      // events cannot downgrade ticks).
+      const statusUpdates: Array<{ id: string; status: string }> = [];
+      const normaliseStatus = (s: string): string | null => {
+        const v = String(s || "").toLowerCase();
+        if (v === "sent" || v === "submitted" || v === "accepted") return "sent";
+        if (v === "delivered") return "delivered";
+        if (v === "read" || v === "seen") return "read";
+        if (v === "failed" || v === "undelivered" || v === "rejected") return "failed";
+        return null;
+      };
+
+      // Shape A (legacy): { data: { message: { id, status } } }
+      if (body?.data?.message?.id && body?.data?.message?.status && !body?.data?.message?.message) {
+        const s = normaliseStatus(body.data.message.status);
+        if (s) statusUpdates.push({ id: String(body.data.message.id), status: s });
+      }
+      // Shape B (Interakt v1): top-level type === "message_status" with data.{message_id|id, status}
+      const evType = String(body?.type || body?.event || "").toLowerCase();
+      if (evType.includes("status")) {
+        const id = body?.data?.message_id || body?.data?.id || body?.data?.message?.id;
+        const s = normaliseStatus(body?.data?.status || body?.data?.message?.status);
+        if (id && s) statusUpdates.push({ id: String(id), status: s });
+      }
+      // Shape C (WhatsApp Cloud-style): data.statuses[] = [{ id, status }, ...]
+      const statusesArr = body?.data?.statuses || body?.statuses;
+      if (Array.isArray(statusesArr)) {
+        for (const st of statusesArr) {
+          const id = st?.id || st?.message_id;
+          const s = normaliseStatus(st?.status);
+          if (id && s) statusUpdates.push({ id: String(id), status: s });
+        }
+      }
+
+      if (statusUpdates.length > 0) {
+        let applied = 0;
+        for (const u of statusUpdates) {
+          const ok = await storage.updateWhatsappMessageStatusByInteraktId(u.id, u.status);
+          if (ok) applied++;
+        }
+        console.log(`[WA] Status updates received=${statusUpdates.length} applied=${applied}`);
+        return res.json({ ok: true, applied });
       }
 
       // Handle inbound message

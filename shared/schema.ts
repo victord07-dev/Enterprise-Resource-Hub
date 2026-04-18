@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb, date } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -736,11 +736,13 @@ export type Attachment = typeof attachments.$inferSelect;
 export const expenseCategories = pgTable("expense_categories", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull().unique(),
+  description: text("description"),
   color: text("color").notNull().default("#64748b"),
   icon: text("icon").notNull().default("Receipt"),
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => ({
   activeIdx: index("expense_categories_active_idx").on(t.isActive, t.sortOrder),
 }));
@@ -750,36 +752,43 @@ export const EXPENSE_LINKED_ENTITY_TYPES = ["sales_order", "delivery_challan", "
 
 export const expenses = pgTable("expenses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  expenseNumber: text("expense_number").notNull().unique(),
-  categoryId: varchar("category_id").notNull(),
+  expenseDate: date("expense_date").notNull(),
+  categoryId: varchar("category_id").notNull().references(() => expenseCategories.id, { onDelete: "restrict" }),
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
-  paymentMethod: text("payment_method").notNull().default("cash"),
-  expenseDate: timestamp("expense_date").notNull().defaultNow(),
+  paymentMethod: text("payment_method").notNull(),
   description: text("description").notNull(),
   vendorName: text("vendor_name"),
-  paymentReference: text("payment_reference"),
+  paidByUserId: varchar("paid_by_user_id").notNull().references(() => users.id),
   linkedEntityType: text("linked_entity_type"),
   linkedEntityId: varchar("linked_entity_id"),
-  createdBy: varchar("created_by").notNull(),
+  notes: text("notes"),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (t) => ({
-  dateIdx: index("expenses_date_idx").on(t.expenseDate),
+  dateIdx: index("expenses_date_idx").on(t.expenseDate.desc()),
   categoryIdx: index("expenses_category_idx").on(t.categoryId),
-  createdByIdx: index("expenses_created_by_idx").on(t.createdBy),
-  linkedIdx: index("expenses_linked_idx").on(t.linkedEntityType, t.linkedEntityId),
+  paidByIdx: index("expenses_paid_by_idx").on(t.paidByUserId),
+  paidByDateIdx: index("expenses_paid_by_date_idx").on(t.paidByUserId, t.expenseDate.desc()),
+  createdByIdx: index("expenses_created_by_idx").on(t.createdByUserId),
+  linkedEntityIdx: index("expenses_linked_entity_idx").on(t.linkedEntityType, t.linkedEntityId),
+  createdAtIdx: index("expenses_created_at_idx").on(t.createdAt.desc()),
 }));
 
-export const insertExpenseCategorySchema = createInsertSchema(expenseCategories).omit({ id: true, createdAt: true });
+export const insertExpenseCategorySchema = createInsertSchema(expenseCategories).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertExpenseSchema = createInsertSchema(expenses, {
   amount: z.union([z.string(), z.number()]).transform((v) => String(v)).refine((v) => Number(v) > 0, "Amount must be greater than zero"),
-  expenseDate: z.union([z.string(), z.date()]).transform((v) => v instanceof Date ? v : new Date(v)),
+  expenseDate: z.union([z.string(), z.date()]).transform((v) => {
+    const d = v instanceof Date ? v : new Date(v);
+    return d.toISOString().split("T")[0];
+  }),
   paymentMethod: z.enum(EXPENSE_PAYMENT_METHODS),
   linkedEntityType: z.enum(EXPENSE_LINKED_ENTITY_TYPES).nullable().optional(),
   description: z.string().min(1, "Description is required").max(500),
   vendorName: z.string().max(200).nullable().optional(),
-  paymentReference: z.string().max(100).nullable().optional(),
-}).omit({ id: true, expenseNumber: true, createdBy: true, createdAt: true, updatedAt: true });
+  notes: z.string().max(2000).nullable().optional(),
+  paidByUserId: z.string().min(1).optional(),
+}).omit({ id: true, createdByUserId: true, createdAt: true, updatedAt: true });
 
 export type ExpenseCategory = typeof expenseCategories.$inferSelect;
 export type Expense = typeof expenses.$inferSelect;

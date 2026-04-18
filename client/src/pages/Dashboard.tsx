@@ -60,7 +60,12 @@ export default function Dashboard() {
   });
 
   const { data: todaysExpenses, isLoading: expensesLoading } = useQuery<{ totalAmount: number; count: number; byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number; count: number }> }>({
-    queryKey: ["/api/expenses/today-summary"],
+    queryKey: ["/api/expenses/summary", { scope: "today" }],
+    queryFn: async () => {
+      const res = await fetch("/api/expenses/summary?scope=today", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load");
+      return res.json();
+    },
     enabled: showExpenseCard,
   });
 
@@ -323,8 +328,8 @@ export default function Dashboard() {
               <Button size="sm" variant="outline" onClick={() => setLocation("/accounts?tab=expenses")} data-testid="button-view-expenses">
                 View all <ArrowRight className="w-3 h-3 ml-1" />
               </Button>
-              <Button size="sm" onClick={() => setExpenseDialogOpen(true)} data-testid="button-add-expense">
-                <Plus className="w-4 h-4 mr-1" /> Add Expense
+              <Button size="sm" onClick={() => setExpenseDialogOpen(true)} data-testid="button-record-expense">
+                <Plus className="w-4 h-4 mr-1" /> Record Expense
               </Button>
             </div>
           </CardHeader>
@@ -355,7 +360,7 @@ export default function Dashboard() {
               <div className="flex flex-col items-center justify-center py-6 text-center" data-testid="expenses-empty">
                 <Receipt className="w-10 h-10 text-muted-foreground/50 mb-2" />
                 <p className="text-sm font-medium text-muted-foreground">No expenses recorded today</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Click "Add Expense" to record one.</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Click "Record Expense" to add one.</p>
               </div>
             )}
           </CardContent>

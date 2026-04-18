@@ -6,9 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { Expense, ExpenseCategory, Customer, SalesOrder, DeliveryChallan, Project, PurchaseOrder, GoodsReceiptNote } from "@shared/schema";
+import { getUser } from "@/lib/auth";
+import AttachmentsPanel from "@/components/AttachmentsPanel";
+import type { Expense, ExpenseCategory, Customer, SalesOrder, DeliveryChallan, Project, PurchaseOrder, GoodsReceiptNote, User } from "@shared/schema";
 
 const PAYMENT_METHODS = [
   { value: "cash", label: "Cash" },
@@ -37,7 +40,9 @@ interface ExpenseDialogProps {
 
 export default function ExpenseDialog({ open, onOpenChange, expense, defaultLinked }: ExpenseDialogProps) {
   const { toast } = useToast();
+  const currentUser = getUser();
   const isEdit = !!expense;
+  const isPrivileged = currentUser?.role === "admin" || currentUser?.role === "accountant";
   const today = new Date().toISOString().split("T")[0];
 
   const [form, setForm] = useState({
@@ -47,10 +52,12 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
     expenseDate: today,
     description: "",
     vendorName: "",
-    paymentReference: "",
+    paidByUserId: "",
+    notes: "",
     linkedEntityType: "none",
     linkedEntityId: "",
   });
+  const [showOptional, setShowOptional] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -59,13 +66,17 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
         categoryId: expense.categoryId,
         amount: String(expense.amount),
         paymentMethod: expense.paymentMethod,
-        expenseDate: new Date(expense.expenseDate).toISOString().split("T")[0],
+        expenseDate: typeof expense.expenseDate === "string"
+          ? expense.expenseDate.split("T")[0]
+          : new Date(expense.expenseDate as any).toISOString().split("T")[0],
         description: expense.description,
         vendorName: expense.vendorName ?? "",
-        paymentReference: expense.paymentReference ?? "",
+        paidByUserId: expense.paidByUserId,
+        notes: expense.notes ?? "",
         linkedEntityType: expense.linkedEntityType ?? "none",
         linkedEntityId: expense.linkedEntityId ?? "",
       });
+      setShowOptional(!!(expense.vendorName || expense.notes || expense.linkedEntityType));
     } else {
       setForm({
         categoryId: "",
@@ -74,20 +85,23 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
         expenseDate: today,
         description: "",
         vendorName: "",
-        paymentReference: "",
+        paidByUserId: currentUser?.id ?? "",
+        notes: "",
         linkedEntityType: defaultLinked?.entityType ?? "none",
         linkedEntityId: defaultLinked?.entityId ?? "",
       });
+      setShowOptional(!!defaultLinked);
     }
-  }, [open, expense, defaultLinked]);
+  }, [open, expense, defaultLinked, currentUser?.id]);
 
-  const { data: categories } = useQuery<ExpenseCategory[]>({ queryKey: ["/api/expense-categories"] });
-  const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"], enabled: form.linkedEntityType === "customer" });
-  const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"], enabled: form.linkedEntityType === "sales_order" });
-  const { data: challans } = useQuery<DeliveryChallan[]>({ queryKey: ["/api/delivery-challans"], enabled: form.linkedEntityType === "delivery_challan" });
-  const { data: projects } = useQuery<Project[]>({ queryKey: ["/api/projects"], enabled: form.linkedEntityType === "project" });
-  const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"], enabled: form.linkedEntityType === "purchase_order" });
-  const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"], enabled: form.linkedEntityType === "goods_receipt_note" });
+  const { data: categories } = useQuery<ExpenseCategory[]>({ queryKey: ["/api/expense-categories"], enabled: open });
+  const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: open && isPrivileged });
+  const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"], enabled: open && form.linkedEntityType === "customer" });
+  const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"], enabled: open && form.linkedEntityType === "sales_order" });
+  const { data: challans } = useQuery<DeliveryChallan[]>({ queryKey: ["/api/delivery-challans"], enabled: open && form.linkedEntityType === "delivery_challan" });
+  const { data: projects } = useQuery<Project[]>({ queryKey: ["/api/projects"], enabled: open && form.linkedEntityType === "project" });
+  const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"], enabled: open && form.linkedEntityType === "purchase_order" });
+  const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"], enabled: open && form.linkedEntityType === "goods_receipt_note" });
 
   const linkedOptions = useMemo(() => {
     switch (form.linkedEntityType) {
@@ -114,7 +128,8 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/expenses/today-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses/summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses/analytics"] });
       toast({ title: isEdit ? "Expense updated" : "Expense recorded" });
       onOpenChange(false);
     },
@@ -128,14 +143,16 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
     if (!form.categoryId) { toast({ title: "Select a category", variant: "destructive" }); return; }
     if (!form.amount || Number(form.amount) <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
     if (!form.description.trim()) { toast({ title: "Description is required", variant: "destructive" }); return; }
+    if (!form.paidByUserId) { toast({ title: "Select who paid this expense", variant: "destructive" }); return; }
     const payload: any = {
       categoryId: form.categoryId,
       amount: form.amount,
       paymentMethod: form.paymentMethod,
-      expenseDate: new Date(form.expenseDate).toISOString(),
+      expenseDate: form.expenseDate,
       description: form.description.trim(),
       vendorName: form.vendorName.trim() || null,
-      paymentReference: form.paymentReference.trim() || null,
+      paidByUserId: form.paidByUserId,
+      notes: form.notes.trim() || null,
       linkedEntityType: form.linkedEntityType === "none" ? null : form.linkedEntityType,
       linkedEntityId: form.linkedEntityType === "none" || !form.linkedEntityId ? null : form.linkedEntityId,
     };
@@ -144,7 +161,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl" data-testid="dialog-expense">
+      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto" data-testid="dialog-expense">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit Expense" : "Record Expense"}</DialogTitle>
         </DialogHeader>
@@ -155,7 +172,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
               <Select value={form.categoryId} onValueChange={(v) => setForm({ ...form, categoryId: v })}>
                 <SelectTrigger id="exp-category" data-testid="select-expense-category"><SelectValue placeholder="Select category" /></SelectTrigger>
                 <SelectContent>
-                  {(categories ?? []).map(c => (
+                  {(categories ?? []).filter(c => c.isActive || c.id === form.categoryId).map(c => (
                     <SelectItem key={c.id} value={c.id} data-testid={`option-category-${c.id}`}>
                       <span className="inline-flex items-center gap-2">
                         <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: c.color }} />
@@ -185,41 +202,78 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
             </div>
           </div>
           <div>
+            <Label htmlFor="exp-paid-by">Paid By *</Label>
+            {isPrivileged ? (
+              <Select value={form.paidByUserId} onValueChange={(v) => setForm({ ...form, paidByUserId: v })}>
+                <SelectTrigger id="exp-paid-by" data-testid="select-expense-paid-by"><SelectValue placeholder="Select user" /></SelectTrigger>
+                <SelectContent>
+                  {(users ?? []).map(u => (
+                    <SelectItem key={u.id} value={u.id} data-testid={`option-paid-by-${u.id}`}>
+                      {u.fullName} {u.id === currentUser?.id ? "(you)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input id="exp-paid-by" value={currentUser?.fullName ?? ""} readOnly disabled data-testid="input-expense-paid-by-self" />
+            )}
+          </div>
+          <div>
             <Label htmlFor="exp-desc">Description *</Label>
             <Textarea id="exp-desc" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="What was this expense for?" rows={2} data-testid="input-expense-description" required />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label htmlFor="exp-vendor">Vendor / Paid To</Label>
-              <Input id="exp-vendor" value={form.vendorName} onChange={e => setForm({ ...form, vendorName: e.target.value })} placeholder="Optional" data-testid="input-expense-vendor" />
-            </div>
-            <div>
-              <Label htmlFor="exp-ref">Payment Reference</Label>
-              <Input id="exp-ref" value={form.paymentReference} onChange={e => setForm({ ...form, paymentReference: e.target.value })} placeholder="Txn ID, cheque #, etc." data-testid="input-expense-reference" />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label htmlFor="exp-link-type">Link To</Label>
-              <Select value={form.linkedEntityType} onValueChange={(v) => setForm({ ...form, linkedEntityType: v, linkedEntityId: "" })}>
-                <SelectTrigger id="exp-link-type" data-testid="select-expense-linked-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {LINKED_ENTITY_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            {form.linkedEntityType !== "none" && (
-              <div>
-                <Label htmlFor="exp-link-id">Select</Label>
-                <Select value={form.linkedEntityId} onValueChange={(v) => setForm({ ...form, linkedEntityId: v })}>
-                  <SelectTrigger id="exp-link-id" data-testid="select-expense-linked-id"><SelectValue placeholder="Choose..." /></SelectTrigger>
-                  <SelectContent className="max-h-64">
-                    {linkedOptions.map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+
+          <button
+            type="button"
+            onClick={() => setShowOptional(s => !s)}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover-elevate active-elevate-2 px-2 py-1 -mx-2 rounded-md"
+            data-testid="button-toggle-optional"
+          >
+            {showOptional ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            {showOptional ? "Hide optional details" : "Add more details (vendor, notes, link)"}
+          </button>
+
+          {showOptional && (
+            <div className="space-y-4 pt-1">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label htmlFor="exp-vendor">Vendor / Paid To</Label>
+                  <Input id="exp-vendor" value={form.vendorName} onChange={e => setForm({ ...form, vendorName: e.target.value })} placeholder="Optional" data-testid="input-expense-vendor" />
+                </div>
+                <div>
+                  <Label htmlFor="exp-link-type">Link To</Label>
+                  <Select value={form.linkedEntityType} onValueChange={(v) => setForm({ ...form, linkedEntityType: v, linkedEntityId: "" })}>
+                    <SelectTrigger id="exp-link-type" data-testid="select-expense-linked-type"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {LINKED_ENTITY_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-            )}
-          </div>
+              {form.linkedEntityType !== "none" && (
+                <div>
+                  <Label htmlFor="exp-link-id">Linked Record</Label>
+                  <Select value={form.linkedEntityId} onValueChange={(v) => setForm({ ...form, linkedEntityId: v })}>
+                    <SelectTrigger id="exp-link-id" data-testid="select-expense-linked-id"><SelectValue placeholder="Choose..." /></SelectTrigger>
+                    <SelectContent className="max-h-64">
+                      {linkedOptions.map(o => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              <div>
+                <Label htmlFor="exp-notes">Notes</Label>
+                <Textarea id="exp-notes" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Any internal notes..." rows={2} data-testid="input-expense-notes" />
+              </div>
+              {isEdit && expense && (
+                <div className="border-t pt-3">
+                  <Label className="text-sm font-medium mb-2 block">Attachments</Label>
+                  <AttachmentsPanel entityType="expense" entityId={expense.id} module="accounts" />
+                </div>
+              )}
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-expense">Cancel</Button>
             <Button type="submit" disabled={mutation.isPending} data-testid="button-save-expense">

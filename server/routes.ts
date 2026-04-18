@@ -1,6 +1,6 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
-import { storage, IStorage } from "./storage";
+import { storage, IStorage, type ExpenseFilters } from "./storage";
 import { db } from "./db";
 import { sql, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
@@ -22,7 +22,7 @@ import {
   insertAttachmentSchema, attachments as attachmentsTable,
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
-  insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES,
+  insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -7610,20 +7610,40 @@ export async function registerRoutes(
   });
 
   // ── Expenses (Task #69) ────────────────────────────────────────────────
-  // Lazy seed default categories on first API call
+  // Lazy seed default categories on first API call (single-flight)
   let expenseCategoriesSeeded = false;
+  let expenseSeedPromise: Promise<void> | null = null;
   async function ensureExpenseCategoriesSeeded() {
     if (expenseCategoriesSeeded) return;
-    try {
+    if (expenseSeedPromise) return expenseSeedPromise;
+    expenseSeedPromise = (async () => {
       const existing = await storage.getExpenseCategories(true);
-      if (existing.length === 0) {
-        await storage.seedDefaultExpenseCategories();
-      }
+      if (existing.length === 0) await storage.seedDefaultExpenseCategories();
       expenseCategoriesSeeded = true;
-    } catch (e) { /* table may not exist yet; ignore */ }
+    })();
+    try { await expenseSeedPromise; } finally { expenseSeedPromise = null; }
   }
 
-  app.get("/api/expense-categories", authenticateToken, async (req: any, res) => {
+  // Field staff have no access to the operational expense module (per spec)
+  const denyFieldStaff = (req: any, res: any, next: any) => {
+    if (req.user?.role === "field_staff") return res.status(403).json({ message: "Forbidden" });
+    next();
+  };
+
+  // Helper: build a structured diff of changed fields for audit
+  function diffExpense(before: Expense, after: Partial<Expense>): Record<string, { from: any; to: any }> {
+    const diff: Record<string, { from: any; to: any }> = {};
+    const keys: (keyof Expense)[] = ["expenseDate", "categoryId", "amount", "paymentMethod", "description", "vendorName", "paidByUserId", "linkedEntityType", "linkedEntityId", "notes"];
+    for (const k of keys) {
+      if (after[k] === undefined) continue;
+      const a = (before as any)[k];
+      const b = (after as any)[k];
+      if (String(a ?? "") !== String(b ?? "")) diff[k as string] = { from: a, to: b };
+    }
+    return diff;
+  }
+
+  app.get("/api/expense-categories", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
       await ensureExpenseCategoriesSeeded();
       const includeInactive = req.query.includeInactive === "true";
@@ -7639,7 +7659,7 @@ export async function registerRoutes(
       const parsed = insertExpenseCategorySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
       const created = await storage.createExpenseCategory(parsed.data);
-      await logAction(req.user.id, "create", "expenses", `Created expense category ${created.name}`);
+      await logAction(req.user.id, "create", "expense_categories", JSON.stringify({ id: created.id, name: created.name }));
       res.status(201).json(created);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create category" });
@@ -7648,53 +7668,96 @@ export async function registerRoutes(
 
   app.patch("/api/expense-categories/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
-      const updated = await storage.updateExpenseCategory(req.params.id, req.body);
-      if (!updated) return res.status(404).json({ message: "Category not found" });
-      await logAction(req.user.id, "update", "expenses", `Updated expense category ${updated.name}`);
+      const before = await storage.getExpenseCategory(req.params.id);
+      if (!before) return res.status(404).json({ message: "Category not found" });
+      const parsed = insertExpenseCategorySchema.partial().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
+      const updated = await storage.updateExpenseCategory(req.params.id, parsed.data);
+      const diff: Record<string, { from: any; to: any }> = {};
+      for (const k of Object.keys(parsed.data) as Array<keyof typeof parsed.data>) {
+        if (String((before as any)[k] ?? "") !== String((parsed.data as any)[k] ?? "")) {
+          diff[k as string] = { from: (before as any)[k], to: (parsed.data as any)[k] };
+        }
+      }
+      await logAction(req.user.id, "update", "expense_categories", JSON.stringify({ id: req.params.id, diff }));
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to update category" });
     }
   });
 
-  app.get("/api/expenses", authenticateToken, async (req: any, res) => {
+  app.patch("/api/expense-categories/:id/deactivate", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const before = await storage.getExpenseCategory(req.params.id);
+      if (!before) return res.status(404).json({ message: "Category not found" });
+      const usage = await storage.countExpensesByCategory(req.params.id);
+      const updated = await storage.deactivateExpenseCategory(req.params.id);
+      await logAction(req.user.id, "deactivate", "expense_categories", JSON.stringify({ id: req.params.id, name: before.name, usageCount: usage }));
+      res.json({ ...updated, usageCount: usage });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to deactivate category" });
+    }
+  });
+
+  function parseExpenseFilters(req: any): ExpenseFilters {
+    const q = req.query;
+    const f: ExpenseFilters = {};
+    if (q.scope === "today") {
+      const today = new Date().toISOString().split("T")[0];
+      f.from = today; f.to = today;
+    } else {
+      if (q.from) f.from = String(q.from);
+      if (q.to) f.to = String(q.to);
+    }
+    if (q.categoryId) f.categoryIds = Array.isArray(q.categoryId) ? q.categoryId.map(String) : String(q.categoryId).split(",").filter(Boolean);
+    if (q.paidBy) f.paidByUserIds = Array.isArray(q.paidBy) ? q.paidBy.map(String) : String(q.paidBy).split(",").filter(Boolean);
+    if (q.paymentMethod) f.paymentMethods = Array.isArray(q.paymentMethod) ? q.paymentMethod.map(String) : String(q.paymentMethod).split(",").filter(Boolean);
+    if (q.search) f.search = String(q.search);
+    if (q.linkedEntityType) f.linkedEntityType = String(q.linkedEntityType);
+    if (q.linkedEntityId) f.linkedEntityId = String(q.linkedEntityId);
+    // Non-admin/non-accountant users see only their own expenses (paid_by OR created_by)
+    if (!["admin", "accountant"].includes(req.user.role)) {
+      f.scopeUserId = req.user.id;
+    }
+    return f;
+  }
+
+  app.get("/api/expenses", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
       await ensureExpenseCategoriesSeeded();
-      const { from, to, categoryId, createdBy, paymentMethod, linkedEntityType, linkedEntityId } = req.query;
-      const filters: any = {};
-      if (from) filters.from = new Date(String(from));
-      if (to) filters.to = new Date(String(to));
-      if (categoryId) filters.categoryId = String(categoryId);
-      if (createdBy) filters.createdBy = String(createdBy);
-      if (paymentMethod) filters.paymentMethod = String(paymentMethod);
-      if (linkedEntityType) filters.linkedEntityType = String(linkedEntityType);
-      if (linkedEntityId) filters.linkedEntityId = String(linkedEntityId);
-      // Non-admin/accountant users see only their own expenses
-      if (!["admin", "accountant"].includes(req.user.role)) {
-        filters.createdBy = req.user.id;
-      }
-      const rows = await storage.getExpenses(filters);
+      const rows = await storage.getExpenses(parseExpenseFilters(req));
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to fetch expenses" });
     }
   });
 
-  app.get("/api/expenses/today-summary", authenticateToken, async (req: any, res) => {
+  app.get("/api/expenses/summary", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
       await ensureExpenseCategoriesSeeded();
-      const summary = await storage.getTodaysExpensesSummary();
+      const summary = await storage.getExpensesSummary(parseExpenseFilters(req));
       res.json(summary);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to fetch summary" });
     }
   });
 
-  app.get("/api/expenses/:id", authenticateToken, async (req: any, res) => {
+  app.get("/api/expenses/analytics", authenticateToken, denyFieldStaff, async (req: any, res) => {
+    try {
+      await ensureExpenseCategoriesSeeded();
+      const a = await storage.getExpensesAnalytics(parseExpenseFilters(req));
+      res.json(a);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch analytics" });
+    }
+  });
+
+  app.get("/api/expenses/:id", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
       const exp = await storage.getExpense(req.params.id);
       if (!exp) return res.status(404).json({ message: "Expense not found" });
-      if (!["admin", "accountant"].includes(req.user.role) && exp.createdBy !== req.user.id) {
+      const privileged = ["admin", "accountant"].includes(req.user.role);
+      if (!privileged && exp.paidByUserId !== req.user.id && exp.createdByUserId !== req.user.id) {
         return res.status(403).json({ message: "Access denied" });
       }
       res.json(exp);
@@ -7703,35 +7766,48 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/expenses", authenticateToken, async (req: any, res) => {
+  app.post("/api/expenses", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
+      await ensureExpenseCategoriesSeeded();
       const parsed = insertExpenseSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
-      // Validate category exists
       const cat = await storage.getExpenseCategory(parsed.data.categoryId);
-      if (!cat) return res.status(400).json({ message: "Invalid category" });
-      const created = await storage.createExpense({ ...parsed.data, createdBy: req.user.id });
-      await logAction(req.user.id, "create", "expenses", `Recorded expense ${created.expenseNumber} (${cat.name}) ₹${created.amount}`);
+      if (!cat || !cat.isActive) return res.status(400).json({ message: "Invalid or inactive category" });
+      // Default paid-by to current user when omitted
+      const paidByUserId = parsed.data.paidByUserId || req.user.id;
+      // Non-privileged users can only set paidBy = themselves
+      const privileged = ["admin", "accountant"].includes(req.user.role);
+      if (!privileged && paidByUserId !== req.user.id) {
+        return res.status(403).json({ message: "You can only record expenses paid by yourself" });
+      }
+      const created = await storage.createExpense({ ...parsed.data, paidByUserId, createdByUserId: req.user.id });
+      await logAction(req.user.id, "create", "expenses", JSON.stringify({ id: created.id, category: cat.name, amount: created.amount, paidBy: paidByUserId, date: created.expenseDate }));
       res.status(201).json(created);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create expense" });
     }
   });
 
-  app.patch("/api/expenses/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/expenses/:id", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
       const exp = await storage.getExpense(req.params.id);
       if (!exp) return res.status(404).json({ message: "Expense not found" });
-      const isAdmin = req.user.role === "admin";
-      if (!isAdmin) {
-        if (exp.createdBy !== req.user.id) return res.status(403).json({ message: "You can only edit your own expenses" });
+      const privileged = ["admin", "accountant"].includes(req.user.role);
+      if (!privileged) {
+        const isOwn = exp.paidByUserId === req.user.id || exp.createdByUserId === req.user.id;
+        if (!isOwn) return res.status(403).json({ message: "You can only edit your own expenses" });
         const ageMs = Date.now() - new Date(exp.createdAt).getTime();
         if (ageMs > 24 * 60 * 60 * 1000) return res.status(403).json({ message: "Edit window has expired (24h)" });
       }
       const parsed = insertExpenseSchema.partial().safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
+      // Non-privileged users may not change paidBy to someone else
+      if (!privileged && parsed.data.paidByUserId && parsed.data.paidByUserId !== req.user.id) {
+        return res.status(403).json({ message: "Cannot reassign paid-by to another user" });
+      }
+      const diff = diffExpense(exp, parsed.data as Partial<Expense>);
       const updated = await storage.updateExpense(req.params.id, parsed.data);
-      await logAction(req.user.id, "update", "expenses", `Updated expense ${exp.expenseNumber}`);
+      await logAction(req.user.id, "update", "expenses", JSON.stringify({ id: req.params.id, diff }));
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to update expense" });
@@ -7743,7 +7819,7 @@ export async function registerRoutes(
       const exp = await storage.getExpense(req.params.id);
       if (!exp) return res.status(404).json({ message: "Expense not found" });
       await storage.deleteExpense(req.params.id);
-      await logAction(req.user.id, "delete", "expenses", `Deleted expense ${exp.expenseNumber}`);
+      await logAction(req.user.id, "delete", "expenses", JSON.stringify({ id: req.params.id, amount: exp.amount, date: exp.expenseDate, category: exp.categoryId }));
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to delete expense" });

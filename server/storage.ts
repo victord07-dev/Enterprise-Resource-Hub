@@ -18,6 +18,41 @@ import {
   type WhatsappWebhookJob, type WhatsappWebhookJobDeadLetter,
 } from "@shared/schema";
 
+export type ExpenseFilters = {
+  from?: string;
+  to?: string;
+  categoryIds?: string[];
+  paidByUserIds?: string[];
+  paymentMethods?: string[];
+  search?: string;
+  linkedEntityType?: string;
+  linkedEntityId?: string;
+  scopeUserId?: string; // restrict to expenses where paidBy or createdBy matches
+};
+
+export type ExpenseSummaryCategory = {
+  categoryId: string;
+  categoryName: string;
+  color: string;
+  amount: number;
+  count: number;
+};
+
+export type ExpenseSummary = {
+  totalAmount: number;
+  count: number;
+  topCategory: ExpenseSummaryCategory | null;
+  highestSingle: number;
+  byCategory: ExpenseSummaryCategory[];
+};
+
+export type ExpenseAnalytics = {
+  byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number }>;
+  byPerson: Array<{ userId: string; userName: string; amount: number }>;
+  dailyTrend: Array<{ date: string; amount: number }>;
+  categoryShare: Array<{ categoryId: string; categoryName: string; color: string; amount: number; pct: number }>;
+};
+
 export interface IStorage {
   // Users
   getUser(id: string): Promise<User | undefined>;
@@ -412,13 +447,16 @@ export interface IStorage {
   getExpenseCategory(id: string): Promise<ExpenseCategory | undefined>;
   createExpenseCategory(data: InsertExpenseCategory): Promise<ExpenseCategory>;
   updateExpenseCategory(id: string, data: Partial<InsertExpenseCategory>): Promise<ExpenseCategory | undefined>;
+  deactivateExpenseCategory(id: string): Promise<ExpenseCategory | undefined>;
+  countExpensesByCategory(categoryId: string): Promise<number>;
   seedDefaultExpenseCategories(): Promise<number>;
-  getExpenses(filters?: { from?: Date; to?: Date; categoryId?: string; createdBy?: string; paymentMethod?: string; linkedEntityType?: string; linkedEntityId?: string; }): Promise<Expense[]>;
+  getExpenses(filters?: ExpenseFilters): Promise<Expense[]>;
   getExpense(id: string): Promise<Expense | undefined>;
-  createExpense(data: InsertExpense & { createdBy: string }): Promise<Expense>;
+  createExpense(data: InsertExpense & { createdByUserId: string }): Promise<Expense>;
   updateExpense(id: string, data: Partial<InsertExpense>): Promise<Expense | undefined>;
   deleteExpense(id: string): Promise<boolean>;
-  getTodaysExpensesSummary(): Promise<{ totalAmount: number; count: number; byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number; count: number }> }>;
+  getExpensesSummary(filters?: ExpenseFilters): Promise<ExpenseSummary>;
+  getExpensesAnalytics(filters?: ExpenseFilters): Promise<ExpenseAnalytics>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -2089,8 +2127,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateExpenseCategory(id: string, data: Partial<InsertExpenseCategory>): Promise<ExpenseCategory | undefined> {
-    const [row] = await db.update(expenseCategories).set(data).where(eq(expenseCategories.id, id)).returning();
+    const [row] = await db.update(expenseCategories).set({ ...data, updatedAt: new Date() }).where(eq(expenseCategories.id, id)).returning();
     return row;
+  }
+
+  async deactivateExpenseCategory(id: string): Promise<ExpenseCategory | undefined> {
+    const [row] = await db.update(expenseCategories).set({ isActive: false, updatedAt: new Date() }).where(eq(expenseCategories.id, id)).returning();
+    return row;
+  }
+
+  async countExpensesByCategory(categoryId: string): Promise<number> {
+    const [r] = await db.select({ count: sql<number>`count(*)::int` }).from(expenses).where(eq(expenses.categoryId, categoryId));
+    return r?.count ?? 0;
   }
 
   async seedDefaultExpenseCategories(): Promise<number> {
@@ -2116,27 +2164,44 @@ export class DatabaseStorage implements IStorage {
       const d = DEFAULTS[i];
       const [existing] = await db.select().from(expenseCategories).where(eq(expenseCategories.name, d.name));
       if (!existing) {
-        await db.insert(expenseCategories).values({ ...d, sortOrder: i, isActive: true });
+        await db.insert(expenseCategories).values({ ...d, sortOrder: i + 1, isActive: true });
         inserted++;
       }
     }
     return inserted;
   }
 
-  async getExpenses(filters?: { from?: Date; to?: Date; categoryId?: string; createdBy?: string; paymentMethod?: string; linkedEntityType?: string; linkedEntityId?: string; }): Promise<Expense[]> {
+  private buildExpenseConds(filters?: ExpenseFilters): any[] {
     const conds: any[] = [];
     if (filters?.from) conds.push(gte(expenses.expenseDate, filters.from));
     if (filters?.to) conds.push(lte(expenses.expenseDate, filters.to));
-    if (filters?.categoryId) conds.push(eq(expenses.categoryId, filters.categoryId));
-    if (filters?.createdBy) conds.push(eq(expenses.createdBy, filters.createdBy));
-    if (filters?.paymentMethod) conds.push(eq(expenses.paymentMethod, filters.paymentMethod));
+    if (filters?.categoryIds && filters.categoryIds.length > 0) {
+      conds.push(sql`${expenses.categoryId} IN (${sql.join(filters.categoryIds.map(id => sql`${id}`), sql`, `)})`);
+    }
+    if (filters?.paidByUserIds && filters.paidByUserIds.length > 0) {
+      conds.push(sql`${expenses.paidByUserId} IN (${sql.join(filters.paidByUserIds.map(id => sql`${id}`), sql`, `)})`);
+    }
+    if (filters?.paymentMethods && filters.paymentMethods.length > 0) {
+      conds.push(sql`${expenses.paymentMethod} IN (${sql.join(filters.paymentMethods.map(m => sql`${m}`), sql`, `)})`);
+    }
+    if (filters?.search) {
+      const s = `%${filters.search.toLowerCase()}%`;
+      conds.push(sql`(lower(${expenses.description}) LIKE ${s} OR lower(coalesce(${expenses.vendorName}, '')) LIKE ${s} OR lower(coalesce(${expenses.notes}, '')) LIKE ${s})`);
+    }
     if (filters?.linkedEntityType) conds.push(eq(expenses.linkedEntityType, filters.linkedEntityType));
     if (filters?.linkedEntityId) conds.push(eq(expenses.linkedEntityId, filters.linkedEntityId));
+    if (filters?.scopeUserId) {
+      conds.push(or(eq(expenses.paidByUserId, filters.scopeUserId), eq(expenses.createdByUserId, filters.scopeUserId)));
+    }
+    return conds;
+  }
+
+  async getExpenses(filters?: ExpenseFilters): Promise<Expense[]> {
+    const conds = this.buildExpenseConds(filters);
     const q = conds.length > 0
       ? db.select().from(expenses).where(and(...conds))
       : db.select().from(expenses);
-    const rows = await q.orderBy(desc(expenses.expenseDate), desc(expenses.createdAt));
-    return rows;
+    return await q.orderBy(desc(expenses.expenseDate), desc(expenses.createdAt));
   }
 
   async getExpense(id: string): Promise<Expense | undefined> {
@@ -2144,17 +2209,8 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async createExpense(data: InsertExpense & { createdBy: string }): Promise<Expense> {
-    // Generate sequential expense number: EXP-YYYYMMDD-NNNN (per-day)
-    const date = data.expenseDate instanceof Date ? data.expenseDate : new Date(data.expenseDate as any);
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, "0");
-    const dd = String(date.getDate()).padStart(2, "0");
-    const datePrefix = `EXP-${yyyy}${mm}${dd}-`;
-    const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(expenses).where(sql`${expenses.expenseNumber} LIKE ${datePrefix + "%"}`);
-    const seq = String((count ?? 0) + 1).padStart(4, "0");
-    const expenseNumber = `${datePrefix}${seq}`;
-    const [row] = await db.insert(expenses).values({ ...data, expenseNumber }).returning();
+  async createExpense(data: InsertExpense & { createdByUserId: string }): Promise<Expense> {
+    const [row] = await db.insert(expenses).values(data).returning();
     return row;
   }
 
@@ -2168,17 +2224,17 @@ export class DatabaseStorage implements IStorage {
     return true;
   }
 
-  async getTodaysExpensesSummary() {
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(); end.setHours(23, 59, 59, 999);
-    const rows = await db.select().from(expenses).where(and(gte(expenses.expenseDate, start), lte(expenses.expenseDate, end)));
+  async getExpensesSummary(filters?: ExpenseFilters): Promise<ExpenseSummary> {
+    const rows = await this.getExpenses(filters);
     const cats = await this.getExpenseCategories(true);
     const catMap = new Map(cats.map(c => [c.id, c]));
-    const buckets = new Map<string, { categoryId: string; categoryName: string; color: string; amount: number; count: number }>();
+    const buckets = new Map<string, ExpenseSummaryCategory>();
     let totalAmount = 0;
+    let highestSingle = 0;
     for (const e of rows) {
       const a = Number(e.amount);
       totalAmount += a;
+      if (a > highestSingle) highestSingle = a;
       const cat = catMap.get(e.categoryId);
       const k = e.categoryId;
       const b = buckets.get(k) ?? { categoryId: k, categoryName: cat?.name ?? "Unknown", color: cat?.color ?? "#64748b", amount: 0, count: 0 };
@@ -2186,7 +2242,43 @@ export class DatabaseStorage implements IStorage {
       buckets.set(k, b);
     }
     const byCategory = Array.from(buckets.values()).sort((a, b) => b.amount - a.amount);
-    return { totalAmount, count: rows.length, byCategory };
+    return { totalAmount, count: rows.length, topCategory: byCategory[0] ?? null, highestSingle, byCategory };
+  }
+
+  async getExpensesAnalytics(filters?: ExpenseFilters): Promise<ExpenseAnalytics> {
+    const rows = await this.getExpenses(filters);
+    const cats = await this.getExpenseCategories(true);
+    const catMap = new Map(cats.map(c => [c.id, c]));
+    const allUsers = await db.select().from(users);
+    const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+    const byCatMap = new Map<string, { categoryId: string; categoryName: string; color: string; amount: number }>();
+    const byUserMap = new Map<string, { userId: string; userName: string; amount: number }>();
+    const byDayMap = new Map<string, number>();
+    let total = 0;
+
+    for (const e of rows) {
+      const a = Number(e.amount);
+      total += a;
+
+      const cat = catMap.get(e.categoryId);
+      const c = byCatMap.get(e.categoryId) ?? { categoryId: e.categoryId, categoryName: cat?.name ?? "Unknown", color: cat?.color ?? "#64748b", amount: 0 };
+      c.amount += a; byCatMap.set(e.categoryId, c);
+
+      const u = userMap.get(e.paidByUserId);
+      const userBucket = byUserMap.get(e.paidByUserId) ?? { userId: e.paidByUserId, userName: u?.fullName ?? u?.username ?? "Unknown", amount: 0 };
+      userBucket.amount += a; byUserMap.set(e.paidByUserId, userBucket);
+
+      const dKey = String(e.expenseDate);
+      byDayMap.set(dKey, (byDayMap.get(dKey) ?? 0) + a);
+    }
+
+    const byCategory = Array.from(byCatMap.values()).sort((a, b) => b.amount - a.amount);
+    const byPerson = Array.from(byUserMap.values()).sort((a, b) => b.amount - a.amount);
+    const dailyTrend = Array.from(byDayMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([date, amount]) => ({ date, amount }));
+    const categoryShare = byCategory.map(c => ({ ...c, pct: total > 0 ? Math.round((c.amount / total) * 1000) / 10 : 0 }));
+
+    return { byCategory, byPerson, dailyTrend, categoryShare };
   }
 
   // Dashboard

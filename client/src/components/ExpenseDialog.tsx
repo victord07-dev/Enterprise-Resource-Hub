@@ -190,8 +190,23 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
 
   const formDisabled = !!savedExpenseId; // After save, lock fields and surface attachments
 
+  // Safety net: when the dialog closes after a successful create, re-invalidate
+  // the expenses caches. The mutation onSuccess invalidation can race with
+  // unmounted-observer behaviour (e.g. the user opened the dialog from the
+  // Dashboard while the Accounts → Expenses list isn't yet mounted), so we
+  // also fire on every close path (Done button, X button, overlay click, Esc).
+  const handleOpenChange = (next: boolean) => {
+    if (!next && savedExpenseId) {
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses/summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/expenses/analytics"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/attachments", "expense", savedExpenseId] });
+    }
+    onOpenChange(next);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto" data-testid="dialog-expense">
         <DialogHeader>
           <DialogTitle>{editingExpense ? "Edit Expense" : savedExpenseId ? "Expense Recorded" : "Record Expense"}</DialogTitle>

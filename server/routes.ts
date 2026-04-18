@@ -22,6 +22,7 @@ import {
   insertAttachmentSchema, attachments as attachmentsTable,
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
+  insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -5802,6 +5803,9 @@ export async function registerRoutes(
       } else if (entityType === "sales_return") {
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      } else if (entityType === "expense") {
+        const e = await storage.getExpense(entityId);
+        if (!e) return res.status(404).json({ message: "Expense not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5871,6 +5875,9 @@ export async function registerRoutes(
       } else if (entityType === "sales_return") {
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      } else if (entityType === "expense") {
+        const e = await storage.getExpense(entityId);
+        if (!e) return res.status(404).json({ message: "Expense not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5915,6 +5922,9 @@ export async function registerRoutes(
       } else if (entityType === "sales_return") {
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
+      } else if (entityType === "expense") {
+        const e = await storage.getExpense(entityId);
+        if (!e) return res.status(404).json({ message: "Expense not found" });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -7596,6 +7606,147 @@ export async function registerRoutes(
       res.json({ sent: sentCount, failed: failedCount, total: targets.length, results });
     } catch (err) {
       res.status(500).json({ message: "Failed to send campaign" });
+    }
+  });
+
+  // ── Expenses (Task #69) ────────────────────────────────────────────────
+  // Lazy seed default categories on first API call
+  let expenseCategoriesSeeded = false;
+  async function ensureExpenseCategoriesSeeded() {
+    if (expenseCategoriesSeeded) return;
+    try {
+      const existing = await storage.getExpenseCategories(true);
+      if (existing.length === 0) {
+        await storage.seedDefaultExpenseCategories();
+      }
+      expenseCategoriesSeeded = true;
+    } catch (e) { /* table may not exist yet; ignore */ }
+  }
+
+  app.get("/api/expense-categories", authenticateToken, async (req: any, res) => {
+    try {
+      await ensureExpenseCategoriesSeeded();
+      const includeInactive = req.query.includeInactive === "true";
+      const cats = await storage.getExpenseCategories(includeInactive);
+      res.json(cats);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch expense categories" });
+    }
+  });
+
+  app.post("/api/expense-categories", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const parsed = insertExpenseCategorySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
+      const created = await storage.createExpenseCategory(parsed.data);
+      await logAction(req.user.id, "create", "expenses", `Created expense category ${created.name}`);
+      res.status(201).json(created);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create category" });
+    }
+  });
+
+  app.patch("/api/expense-categories/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const updated = await storage.updateExpenseCategory(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Category not found" });
+      await logAction(req.user.id, "update", "expenses", `Updated expense category ${updated.name}`);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update category" });
+    }
+  });
+
+  app.get("/api/expenses", authenticateToken, async (req: any, res) => {
+    try {
+      await ensureExpenseCategoriesSeeded();
+      const { from, to, categoryId, createdBy, paymentMethod, linkedEntityType, linkedEntityId } = req.query;
+      const filters: any = {};
+      if (from) filters.from = new Date(String(from));
+      if (to) filters.to = new Date(String(to));
+      if (categoryId) filters.categoryId = String(categoryId);
+      if (createdBy) filters.createdBy = String(createdBy);
+      if (paymentMethod) filters.paymentMethod = String(paymentMethod);
+      if (linkedEntityType) filters.linkedEntityType = String(linkedEntityType);
+      if (linkedEntityId) filters.linkedEntityId = String(linkedEntityId);
+      // Non-admin/accountant users see only their own expenses
+      if (!["admin", "accountant"].includes(req.user.role)) {
+        filters.createdBy = req.user.id;
+      }
+      const rows = await storage.getExpenses(filters);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch expenses" });
+    }
+  });
+
+  app.get("/api/expenses/today-summary", authenticateToken, async (req: any, res) => {
+    try {
+      await ensureExpenseCategoriesSeeded();
+      const summary = await storage.getTodaysExpensesSummary();
+      res.json(summary);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch summary" });
+    }
+  });
+
+  app.get("/api/expenses/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const exp = await storage.getExpense(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Expense not found" });
+      if (!["admin", "accountant"].includes(req.user.role) && exp.createdBy !== req.user.id) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      res.json(exp);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch expense" });
+    }
+  });
+
+  app.post("/api/expenses", authenticateToken, async (req: any, res) => {
+    try {
+      const parsed = insertExpenseSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
+      // Validate category exists
+      const cat = await storage.getExpenseCategory(parsed.data.categoryId);
+      if (!cat) return res.status(400).json({ message: "Invalid category" });
+      const created = await storage.createExpense({ ...parsed.data, createdBy: req.user.id });
+      await logAction(req.user.id, "create", "expenses", `Recorded expense ${created.expenseNumber} (${cat.name}) ₹${created.amount}`);
+      res.status(201).json(created);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create expense" });
+    }
+  });
+
+  app.patch("/api/expenses/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const exp = await storage.getExpense(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Expense not found" });
+      const isAdmin = req.user.role === "admin";
+      if (!isAdmin) {
+        if (exp.createdBy !== req.user.id) return res.status(403).json({ message: "You can only edit your own expenses" });
+        const ageMs = Date.now() - new Date(exp.createdAt).getTime();
+        if (ageMs > 24 * 60 * 60 * 1000) return res.status(403).json({ message: "Edit window has expired (24h)" });
+      }
+      const parsed = insertExpenseSchema.partial().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
+      const updated = await storage.updateExpense(req.params.id, parsed.data);
+      await logAction(req.user.id, "update", "expenses", `Updated expense ${exp.expenseNumber}`);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update expense" });
+    }
+  });
+
+  app.delete("/api/expenses/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const exp = await storage.getExpense(req.params.id);
+      if (!exp) return res.status(404).json({ message: "Expense not found" });
+      await storage.deleteExpense(req.params.id);
+      await logAction(req.user.id, "delete", "expenses", `Deleted expense ${exp.expenseNumber}`);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to delete expense" });
     }
   });
 

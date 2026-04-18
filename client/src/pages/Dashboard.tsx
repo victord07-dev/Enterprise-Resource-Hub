@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { getUser } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
-import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Phone, Mail, MapPin, MessageCircle } from "lucide-react";
+import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Phone, Mail, MapPin, MessageCircle, Receipt, Plus } from "lucide-react";
+import ExpenseDialog from "@/components/ExpenseDialog";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
@@ -36,6 +38,8 @@ const monthNames = ["January", "February", "March", "April", "May", "June", "Jul
 export default function Dashboard() {
   const user = getUser();
   const [, setLocation] = useLocation();
+  const [expenseDialogOpen, setExpenseDialogOpen] = useState(false);
+  const showExpenseCard = user?.role !== "field_staff";
 
   const today = new Date();
   const lastMonth = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
@@ -53,6 +57,11 @@ export default function Dashboard() {
 
   const { data: todayFollowups, isLoading: followupsLoading } = useQuery<{ type: string; id: string; parentId: string; parentName: string; title: string; dueDate: string; priority: string; createdBy: string }[]>({
     queryKey: ["/api/followups/today"],
+  });
+
+  const { data: todaysExpenses, isLoading: expensesLoading } = useQuery<{ totalAmount: number; count: number; byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number; count: number }> }>({
+    queryKey: ["/api/expenses/today-summary"],
+    enabled: showExpenseCard,
   });
 
   const { data: stats, isLoading } = useQuery<{
@@ -297,6 +306,63 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+
+      {showExpenseCard && (
+        <Card data-testid="card-todays-expenses">
+          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
+            <div className="flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-rose-500" />
+              <CardTitle className="text-base font-semibold">Today's Expenses</CardTitle>
+              {(todaysExpenses?.count ?? 0) > 0 && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400" data-testid="badge-expenses-total">
+                  ₹{(todaysExpenses?.totalAmount ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })} · {todaysExpenses?.count} item{todaysExpenses!.count > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => setLocation("/accounts?tab=expenses")} data-testid="button-view-expenses">
+                View all <ArrowRight className="w-3 h-3 ml-1" />
+              </Button>
+              <Button size="sm" onClick={() => setExpenseDialogOpen(true)} data-testid="button-add-expense">
+                <Plus className="w-4 h-4 mr-1" /> Add Expense
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {expensesLoading ? (
+              <div className="space-y-2">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-9 w-full" />
+                ))}
+              </div>
+            ) : todaysExpenses && todaysExpenses.byCategory.length > 0 ? (
+              <div className="space-y-2">
+                {todaysExpenses.byCategory.slice(0, 5).map(b => (
+                  <div key={b.categoryId} className="flex items-center justify-between gap-3 p-2 rounded-md hover:bg-muted/40 transition-colors" data-testid={`expense-category-${b.categoryId}`}>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: b.color }} />
+                      <span className="text-sm font-medium truncate">{b.categoryName}</span>
+                      <span className="text-xs text-muted-foreground">({b.count})</span>
+                    </div>
+                    <span className="text-sm font-semibold tabular-nums">₹{b.amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
+                  </div>
+                ))}
+                {todaysExpenses.byCategory.length > 5 && (
+                  <p className="text-xs text-muted-foreground text-center pt-1">+{todaysExpenses.byCategory.length - 5} more categor{todaysExpenses.byCategory.length - 5 > 1 ? "ies" : "y"}</p>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-6 text-center" data-testid="expenses-empty">
+                <Receipt className="w-10 h-10 text-muted-foreground/50 mb-2" />
+                <p className="text-sm font-medium text-muted-foreground">No expenses recorded today</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Click "Add Expense" to record one.</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      <ExpenseDialog open={expenseDialogOpen} onOpenChange={setExpenseDialogOpen} />
     </div>
   );
 }

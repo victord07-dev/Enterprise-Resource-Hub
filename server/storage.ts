@@ -8,6 +8,7 @@ import {
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
   debugPayloadCaptures, type DebugPayloadCapture,
+  expenseCategories, expenses, type ExpenseCategory, type Expense, type InsertExpense, type InsertExpenseCategory,
   type User, type InsertUser, type Customer, type Supplier, type Product,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
@@ -405,6 +406,19 @@ export interface IStorage {
     phone: string;
     contactName: string | null;
   }>>;
+
+  // Expenses (Task #69)
+  getExpenseCategories(includeInactive?: boolean): Promise<ExpenseCategory[]>;
+  getExpenseCategory(id: string): Promise<ExpenseCategory | undefined>;
+  createExpenseCategory(data: InsertExpenseCategory): Promise<ExpenseCategory>;
+  updateExpenseCategory(id: string, data: Partial<InsertExpenseCategory>): Promise<ExpenseCategory | undefined>;
+  seedDefaultExpenseCategories(): Promise<number>;
+  getExpenses(filters?: { from?: Date; to?: Date; categoryId?: string; createdBy?: string; paymentMethod?: string; linkedEntityType?: string; linkedEntityId?: string; }): Promise<Expense[]>;
+  getExpense(id: string): Promise<Expense | undefined>;
+  createExpense(data: InsertExpense & { createdBy: string }): Promise<Expense>;
+  updateExpense(id: string, data: Partial<InsertExpense>): Promise<Expense | undefined>;
+  deleteExpense(id: string): Promise<boolean>;
+  getTodaysExpensesSummary(): Promise<{ totalAmount: number; count: number; byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number; count: number }> }>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -2054,6 +2068,125 @@ export class DatabaseStorage implements IStorage {
       WHERE created_at < NOW() - (${retentionDays}::int * INTERVAL '1 day')
     `);
     return Number(result?.rowCount ?? 0);
+  }
+
+  // ── Expenses (Task #69) ─────────────────────────────────────────────────
+  async getExpenseCategories(includeInactive = false): Promise<ExpenseCategory[]> {
+    const rows = includeInactive
+      ? await db.select().from(expenseCategories)
+      : await db.select().from(expenseCategories).where(eq(expenseCategories.isActive, true));
+    return rows.sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name));
+  }
+
+  async getExpenseCategory(id: string): Promise<ExpenseCategory | undefined> {
+    const [row] = await db.select().from(expenseCategories).where(eq(expenseCategories.id, id));
+    return row;
+  }
+
+  async createExpenseCategory(data: InsertExpenseCategory): Promise<ExpenseCategory> {
+    const [row] = await db.insert(expenseCategories).values(data).returning();
+    return row;
+  }
+
+  async updateExpenseCategory(id: string, data: Partial<InsertExpenseCategory>): Promise<ExpenseCategory | undefined> {
+    const [row] = await db.update(expenseCategories).set(data).where(eq(expenseCategories.id, id)).returning();
+    return row;
+  }
+
+  async seedDefaultExpenseCategories(): Promise<number> {
+    const DEFAULTS: Array<{ name: string; color: string; icon: string }> = [
+      { name: "Hospitality & Guests", color: "#f59e0b", icon: "Coffee" },
+      { name: "Loading / Unloading", color: "#0ea5e9", icon: "Truck" },
+      { name: "Delivery & Logistics", color: "#3b82f6", icon: "Package" },
+      { name: "Warehouse Operations", color: "#8b5cf6", icon: "Warehouse" },
+      { name: "Office Supplies", color: "#64748b", icon: "Pencil" },
+      { name: "Utilities", color: "#06b6d4", icon: "Zap" },
+      { name: "Software & IT", color: "#6366f1", icon: "Monitor" },
+      { name: "Vehicle Maintenance", color: "#ef4444", icon: "Car" },
+      { name: "Repairs & Maintenance", color: "#f97316", icon: "Wrench" },
+      { name: "Marketing & Customer Relations", color: "#ec4899", icon: "Megaphone" },
+      { name: "Legal & Professional", color: "#475569", icon: "Scale" },
+      { name: "Bank & Finance Charges", color: "#10b981", icon: "Landmark" },
+      { name: "Employee Welfare", color: "#14b8a6", icon: "HeartHandshake" },
+      { name: "Events & Celebrations", color: "#d946ef", icon: "PartyPopper" },
+      { name: "Miscellaneous", color: "#94a3b8", icon: "Receipt" },
+    ];
+    let inserted = 0;
+    for (let i = 0; i < DEFAULTS.length; i++) {
+      const d = DEFAULTS[i];
+      const [existing] = await db.select().from(expenseCategories).where(eq(expenseCategories.name, d.name));
+      if (!existing) {
+        await db.insert(expenseCategories).values({ ...d, sortOrder: i, isActive: true });
+        inserted++;
+      }
+    }
+    return inserted;
+  }
+
+  async getExpenses(filters?: { from?: Date; to?: Date; categoryId?: string; createdBy?: string; paymentMethod?: string; linkedEntityType?: string; linkedEntityId?: string; }): Promise<Expense[]> {
+    const conds: any[] = [];
+    if (filters?.from) conds.push(gte(expenses.expenseDate, filters.from));
+    if (filters?.to) conds.push(lte(expenses.expenseDate, filters.to));
+    if (filters?.categoryId) conds.push(eq(expenses.categoryId, filters.categoryId));
+    if (filters?.createdBy) conds.push(eq(expenses.createdBy, filters.createdBy));
+    if (filters?.paymentMethod) conds.push(eq(expenses.paymentMethod, filters.paymentMethod));
+    if (filters?.linkedEntityType) conds.push(eq(expenses.linkedEntityType, filters.linkedEntityType));
+    if (filters?.linkedEntityId) conds.push(eq(expenses.linkedEntityId, filters.linkedEntityId));
+    const q = conds.length > 0
+      ? db.select().from(expenses).where(and(...conds))
+      : db.select().from(expenses);
+    const rows = await q.orderBy(desc(expenses.expenseDate), desc(expenses.createdAt));
+    return rows;
+  }
+
+  async getExpense(id: string): Promise<Expense | undefined> {
+    const [row] = await db.select().from(expenses).where(eq(expenses.id, id));
+    return row;
+  }
+
+  async createExpense(data: InsertExpense & { createdBy: string }): Promise<Expense> {
+    // Generate sequential expense number: EXP-YYYYMMDD-NNNN (per-day)
+    const date = data.expenseDate instanceof Date ? data.expenseDate : new Date(data.expenseDate as any);
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    const datePrefix = `EXP-${yyyy}${mm}${dd}-`;
+    const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(expenses).where(sql`${expenses.expenseNumber} LIKE ${datePrefix + "%"}`);
+    const seq = String((count ?? 0) + 1).padStart(4, "0");
+    const expenseNumber = `${datePrefix}${seq}`;
+    const [row] = await db.insert(expenses).values({ ...data, expenseNumber }).returning();
+    return row;
+  }
+
+  async updateExpense(id: string, data: Partial<InsertExpense>): Promise<Expense | undefined> {
+    const [row] = await db.update(expenses).set({ ...data, updatedAt: new Date() } as any).where(eq(expenses.id, id)).returning();
+    return row;
+  }
+
+  async deleteExpense(id: string): Promise<boolean> {
+    await db.delete(expenses).where(eq(expenses.id, id));
+    return true;
+  }
+
+  async getTodaysExpensesSummary() {
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    const rows = await db.select().from(expenses).where(and(gte(expenses.expenseDate, start), lte(expenses.expenseDate, end)));
+    const cats = await this.getExpenseCategories(true);
+    const catMap = new Map(cats.map(c => [c.id, c]));
+    const buckets = new Map<string, { categoryId: string; categoryName: string; color: string; amount: number; count: number }>();
+    let totalAmount = 0;
+    for (const e of rows) {
+      const a = Number(e.amount);
+      totalAmount += a;
+      const cat = catMap.get(e.categoryId);
+      const k = e.categoryId;
+      const b = buckets.get(k) ?? { categoryId: k, categoryName: cat?.name ?? "Unknown", color: cat?.color ?? "#64748b", amount: 0, count: 0 };
+      b.amount += a; b.count += 1;
+      buckets.set(k, b);
+    }
+    const byCategory = Array.from(buckets.values()).sort((a, b) => b.amount - a.amount);
+    return { totalAmount, count: rows.length, byCategory };
   }
 
   // Dashboard

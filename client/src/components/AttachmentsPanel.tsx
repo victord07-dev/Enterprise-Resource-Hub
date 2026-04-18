@@ -9,7 +9,7 @@ import { getUser, getToken } from "@/lib/auth";
 import type { Attachment } from "@shared/schema";
 
 interface AttachmentsPanelProps {
-  entityType: "grn" | "supplier_invoice" | "sales_return";
+  entityType: "grn" | "supplier_invoice" | "sales_return" | "expense";
   entityId: string;
   module?: "inventory" | "accounts" | "sales";
 }

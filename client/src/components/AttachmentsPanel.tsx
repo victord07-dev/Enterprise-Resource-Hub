@@ -193,6 +193,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
             <option value="other">Other</option>
           </select>
           <Button
+            type="button"
             size="sm"
             variant="outline"
             className="h-7 text-xs gap-1"
@@ -239,6 +240,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
                 <div className="flex items-center gap-1 flex-shrink-0">
                   {isPDF(att.fileType) && (
                     <Button
+                      type="button"
                       size="icon"
                       variant="ghost"
                       className="w-7 h-7"
@@ -254,6 +256,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
                     </Button>
                   )}
                   <Button
+                    type="button"
                     size="icon"
                     variant="ghost"
                     className="w-7 h-7"
@@ -269,6 +272,7 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
                   </Button>
                   {canDelete(att) && (
                     <Button
+                      type="button"
                       size="icon"
                       variant="ghost"
                       className="w-7 h-7 text-destructive hover:text-destructive"

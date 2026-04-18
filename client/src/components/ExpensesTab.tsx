@@ -100,8 +100,7 @@ export default function ExpensesTab() {
   }, [from, to, categoryIds, paidByIds, methods, search]);
 
   const { data: categories } = useQuery<ExpenseCategory[]>({ queryKey: ["/api/expense-categories", { includeInactive: true }], queryFn: async () => {
-    const res = await fetch("/api/expense-categories?includeInactive=true", { credentials: "include" });
-    if (!res.ok) throw new Error("Failed");
+    const res = await apiRequest("GET", "/api/expense-categories?includeInactive=true");
     return res.json();
   }});
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: isPrivileged });
@@ -109,8 +108,7 @@ export default function ExpensesTab() {
   const { data: expenses, isLoading: listLoading } = useQuery<Expense[]>({
     queryKey: ["/api/expenses", filterQS],
     queryFn: async () => {
-      const res = await fetch(`/api/expenses?${filterQS}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed");
+      const res = await apiRequest("GET", `/api/expenses?${filterQS}`);
       return res.json();
     },
   });
@@ -118,8 +116,7 @@ export default function ExpensesTab() {
   const { data: summary } = useQuery<SummaryResp>({
     queryKey: ["/api/expenses/summary", filterQS],
     queryFn: async () => {
-      const res = await fetch(`/api/expenses/summary?${filterQS}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed");
+      const res = await apiRequest("GET", `/api/expenses/summary?${filterQS}`);
       return res.json();
     },
   });
@@ -127,8 +124,7 @@ export default function ExpensesTab() {
   const { data: analytics } = useQuery<AnalyticsResp>({
     queryKey: ["/api/expenses/analytics", filterQS],
     queryFn: async () => {
-      const res = await fetch(`/api/expenses/analytics?${filterQS}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed");
+      const res = await apiRequest("GET", `/api/expenses/analytics?${filterQS}`);
       return res.json();
     },
     enabled: subTab === "analytics",
@@ -415,9 +411,12 @@ function AttachmentIndicator({ expenseId }: { expenseId: string }) {
   const { data } = useQuery<Array<{ id: string }>>({
     queryKey: ["/api/attachments", "expense", expenseId],
     queryFn: async () => {
-      const res = await fetch(`/api/attachments/expense/${expenseId}`, { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
+      try {
+        const res = await apiRequest("GET", `/api/attachments/expense/${expenseId}`);
+        return res.json();
+      } catch {
+        return [];
+      }
     },
     staleTime: 60_000,
   });
@@ -557,8 +556,13 @@ function CategoriesPanel({ categories }: { categories: ExpenseCategory[] }) {
   });
 
   const checkDeactivate = async (c: ExpenseCategory) => {
-    const res = await fetch(`/api/expenses?categoryId=${c.id}`, { credentials: "include" });
-    const list = res.ok ? await res.json() as Expense[] : [];
+    let list: Expense[] = [];
+    try {
+      const res = await apiRequest("GET", `/api/expenses?categoryId=${c.id}`);
+      list = await res.json() as Expense[];
+    } catch {
+      list = [];
+    }
     setDeactivating({ cat: c, usage: list.length });
   };
 

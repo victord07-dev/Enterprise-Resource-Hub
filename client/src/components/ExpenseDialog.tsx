@@ -264,11 +264,13 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
                 <Select value={form.paidByUserId} onValueChange={(v) => setForm({ ...form, paidByUserId: v })}>
                   <SelectTrigger id="exp-paid-by" data-testid="select-expense-paid-by"><SelectValue placeholder="Select user" /></SelectTrigger>
                   <SelectContent>
-                    {(users ?? []).map(u => (
-                      <SelectItem key={u.id} value={u.id} data-testid={`option-paid-by-${u.id}`}>
-                        {u.fullName} {u.id === currentUser?.id ? "(you)" : ""}
-                      </SelectItem>
-                    ))}
+                    {(users ?? [])
+                      .filter(u => u.isActive && u.role !== "kiosk" && u.role !== "field_staff")
+                      .map(u => (
+                        <SelectItem key={u.id} value={u.id} data-testid={`option-paid-by-${u.id}`}>
+                          {u.fullName} {u.id === currentUser?.id ? "(you)" : ""}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               ) : (

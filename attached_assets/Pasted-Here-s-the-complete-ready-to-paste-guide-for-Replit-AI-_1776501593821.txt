@@ -1,0 +1,267 @@
+Here's the complete, ready-to-paste guide for Replit AI. I've structured it with the same discipline we built up during #67 — explicit phases, verification requirements, architectural constraints, and scope guardrails.
+Copy everything below the line and paste it as a fresh conversation with Replit AI.
+
+Ticket #71 — Operational Expense Tracking (Phase 1: Entry + Visibility)
+Context — please read before starting
+This is a new feature, not a fix. The company currently has no system to track day-to-day petty/operational expenses — guest hospitality (tea/coffee/biscuits for visitors), loading/unloading charges, fuel, office supplies, software renewals, driver charges, labour charges during dispatch, etc. These expenses happen daily, are paid by various people (sometimes the CEO/Owner directly, sometimes employees upfront who later claim reimbursement), and currently go completely unrecorded. The CEO wants visibility into what's actually being spent, where, and by whom.
+This ticket builds the foundational expense entry + visibility layer only. Deliberately light on workflow: no approvals, no petty cash balance tracking, no reimbursement workflow yet. Those are Phase 2 (separate future ticket) after we have a week of real-world usage data. The goal of this ticket is to get data flowing first — make recording effortless so adoption succeeds.
+Lessons applied from Task #67
+
+Answer foundational questions before coding. All data model decisions are specified in this ticket up-front. Do not guess at missing details — raise a clarifying question before writing code.
+Phase strictly and deploy between phases. Execution order is mandated. Each phase must be committed and verified before the next begins.
+Verification artefacts required in PR description. Screenshots, migration output, grep proofs. Non-negotiable.
+No scope creep mid-phase. If something is not in this ticket, it is not in scope. Surface it for a follow-up ticket, do not bolt it in.
+Document in replit.md as a deliverable, not an afterthought. New module gets same depth of description as Sales, Inventory, Accounts.
+Ignore stale auto-injected task lists. Stay focused on Task #71.
+
+Decisions already made — do not re-open these
+
+Placement: Expenses is NOT a top-level sidebar item. Two entry points only:
+
+(a) A "Today's Expenses" summary card on the Dashboard with a "Record Expense" button.
+(b) A new "Expenses" tab inside the existing Accounts page for full management.
+
+
+Shared component: A single ExpenseDialog component is opened from both entry points — same form, same validation, same submit handler. Do not duplicate the form.
+Relationship to existing travel expenses: Completely separate from the travel expense system in FieldStaff. Different tables, different flows, no merging, no linking. Travel expenses stay where they are. Field staff role does NOT see the new expense module.
+Categories: 15 seed categories specified below. Stored in a database table, not hardcoded. Admins can add/rename/deactivate through a UI.
+Category deletion: Soft-delete only (set is_active = false). Never hard-delete categories that have expenses against them.
+Attachment storage: Reuse the existing attachments table + AttachmentsPanel component. Add expense to the allowed entity types list. Do not build new attachment code.
+Linking to existing entities: Expenses can optionally link to a Sales Order / Delivery Challan / Customer / Project. These are optional — most expenses won't link anywhere. Do not make them required.
+
+Done looks like
+Dashboard
+
+A "Today's Expenses" summary card appears on the Dashboard landing page, positioned below the existing "Today's Follow-ups" section.
+Card visible to roles: admin, accountant, sales_manager, hr_manager, warehouse_manager. NOT visible to field_staff.
+Card shows: today's total amount (₹), expense count, top category today (with amount), and a prominent "Record Expense" button.
+Clicking "Record Expense" opens the shared ExpenseDialog component.
+
+Accounts page
+
+A new "Expenses" tab appears in the existing Accounts page tab strip, after the existing tabs.
+Tab contains three sub-views (as internal tabs or sections): List view (default), Analytics, Categories (admin only).
+List view has: summary cards at top, filters (date range, category multi-select, paid-by multi-select, payment mode, search), a "New Expense" button, a sortable table of expenses.
+Analytics view has: 4 charts respecting the active date range filter.
+Categories view (admin only) allows managing the expense category list.
+
+Expense entry form
+
+Required fields: date (defaults to today), category (dropdown), amount (₹), description (short text), payment mode (Cash / UPI / Card / Bank Transfer), paid_by (defaults to logged-in user; admin can pick another user).
+Optional fields (collapsed by default behind a "+ Add more details" toggle): vendor/payee name, link to (Sales Order / Delivery Challan / Customer / Project) with dropdown powered by existing data, notes (long text), attachment upload.
+Form validates before submit: amount > 0, category selected, description not empty, date not in the future.
+On successful submit: closes dialog, shows toast, refreshes the list view if open, refreshes Dashboard card if that was the entry point.
+
+List view filters
+
+Date range filter with presets: Today / This Week / This Month / This Year / Custom range (date picker).
+Category multi-select.
+Paid-by multi-select.
+Payment mode multi-select.
+Free-text search on description.
+Sort by: date (newest first, default) or amount (highest first).
+All filters combine with AND logic. Filter state preserved in URL query params so it survives page refresh.
+
+Summary cards (top of list view, update based on active filters)
+
+Total amount for filtered range.
+Expense count.
+Top category (name + amount).
+Highest single expense (amount + category).
+
+Analytics tab (4 charts, all respecting the active date range filter)
+
+By Category (horizontal bar chart, sorted descending by amount).
+By Person (horizontal bar chart, who paid how much).
+Daily Trend (line chart of daily totals over the selected range).
+Category Share (pie chart showing percentage split).
+Each chart has a sensible empty state if no data.
+
+Category management (admin only)
+
+List of all categories with name, active/inactive toggle, sort order.
+Add new category.
+Rename existing category.
+Deactivate category (soft-delete).
+Cannot rename or deactivate categories currently being used in this session's view (prevents mid-edit confusion) — this is a UX polish, not a data constraint.
+
+Audit trail
+
+Every expense create / update / delete writes an entry to the existing audit log table.
+Module = expenses. Action = expense_created / expense_updated / expense_deleted.
+Audit entry includes expense ID, amount, category, and user who performed the action.
+
+Role-based access
+RoleRecord ExpenseView ListManage CategoriesDashboard Cardadmin✅✅ all✅✅accountant✅✅ all❌✅sales_manager✅ own✅ own only❌✅hr_manager✅ own✅ own only❌✅warehouse_manager✅ own✅ own only❌✅field_staff❌❌❌❌
+Non-admin/non-accountant users can only see and edit expenses where paid_by_user_id or created_by_user_id matches their own ID.
+Out of scope (explicitly — do not build these)
+
+Petty cash balance tracking (starting balance, deductions, replenishment).
+Reimbursement workflow (tracking "owed to employee" → marking as reimbursed).
+Approval workflow for expenses above a threshold.
+Bulk CSV upload / import.
+Budget vs actual tracking per category.
+Monthly / weekly email digest to the owner.
+Export to Tally or any accounting system.
+Expense notifications (in-app or WhatsApp).
+Linking expenses to GL accounts (no GL exists yet; that's a separate future project).
+Per-delivery or per-customer cost roll-ups in reports (deferred to Phase 3).
+Mobile app beyond basic responsive layout.
+Recurring expense templates.
+Modifying or migrating the existing travel expense system in FieldStaff.
+
+If during development you discover a case the spec doesn't cover, raise a clarifying question. Do not assume.
+Architectural constraints
+
+New tables: expenses and expense_categories. Use Drizzle ORM, follow the existing patterns from shared/schema.ts (same column naming conventions, same timestamp patterns, same FK conventions).
+No schema changes to existing tables except adding expense to the entity_type enum/check constraint on the attachments table.
+Monetary precision: Use the same decimal precision as existing monetary fields in the codebase. Check existing tables for the convention.
+Foreign keys: expenses.category_id → expense_categories.id (NOT NULL, ON DELETE RESTRICT). expenses.paid_by_user_id → users.id. expenses.created_by_user_id → users.id. Optional FKs for linked entities (nullable).
+Indexes: On expenses(date DESC), expenses(category_id), expenses(paid_by_user_id), expenses(created_at DESC).
+Shared dialog component: ExpenseDialog is the single source of truth for expense entry UI. Imported by both Dashboard card and Accounts tab. Do NOT duplicate form code.
+Timezone: All dates stored and interpreted in IST. Date-only fields use DATE type, timestamps use TIMESTAMP WITH TIME ZONE.
+No new third-party dependencies. Use existing libraries: Recharts for charts, Shadcn UI components, React Query for data, Drizzle for DB.
+Audit logging uses the existing auditLog helper — do not build new audit infrastructure.
+Migration for seed data: Seed the 15 default categories in a migration file, not in application code. Admins should be able to edit these freely without fighting code.
+
+Phased execution — strict order
+Phase 0 — Schema + seeded data (commit + confirmation required)
+Tasks:
+
+Create expense_categories table with columns: id (UUID), name (varchar, unique among active), description (text, nullable), is_active (boolean, default true), sort_order (integer), created_at, updated_at.
+Create expenses table with columns: id (UUID), date (DATE, not null), category_id (FK not null), amount (decimal, not null, > 0 constraint), payment_mode (enum: cash/upi/card/bank_transfer, not null), description (varchar 500, not null), vendor_name (varchar 200, nullable), paid_by_user_id (FK not null), linked_entity_type (enum: sales_order/delivery_challan/customer/project, nullable), linked_entity_id (UUID, nullable), notes (text, nullable), created_by_user_id (FK not null), created_at, updated_at.
+Add expense to allowed entity types in the attachments table (wherever that constraint lives).
+Create Drizzle migration that seeds these 15 categories in this exact order:
+
+Hospitality & Guests
+Loading / Unloading
+Delivery & Logistics
+Warehouse Operations
+Office Supplies
+Utilities
+Software & IT
+Vehicle Maintenance
+Repairs & Maintenance
+Marketing & Customer Relations
+Legal & Professional
+Bank & Finance Charges
+Employee Welfare
+Events & Celebrations
+Miscellaneous
+
+
+Run npm run db:push locally. Paste the output.
+STOP. No UI, no API, no shared component. Just schema. Await approval before Phase 1.
+
+Phase 1 — Backend + shared ExpenseDialog + Dashboard card
+Tasks:
+
+Storage methods in server/storage.ts: createExpense, listExpenses (with filters), getExpenseById, updateExpense, deleteExpense, listExpenseCategories, createExpenseCategory, updateExpenseCategory, deactivateExpenseCategory, getExpenseSummary (for summary cards), getExpensesAnalytics (for charts).
+API endpoints in server/routes.ts:
+
+POST /api/expenses
+GET /api/expenses (query params for all filters)
+GET /api/expenses/:id
+PATCH /api/expenses/:id
+DELETE /api/expenses/:id (admin only)
+GET /api/expenses/summary (for Dashboard card + list summary)
+GET /api/expenses/analytics (for charts)
+GET /api/expense-categories
+POST /api/expense-categories (admin only)
+PATCH /api/expense-categories/:id (admin only)
+PATCH /api/expense-categories/:id/deactivate (admin only)
+
+
+All endpoints enforce RBAC per the role matrix above. Non-admin/non-accountant can only see their own expenses.
+Build ExpenseDialog component (client/src/components/ExpenseDialog.tsx) with all required + optional fields.
+Add "Today's Expenses" card to Dashboard.tsx positioned below "Today's Follow-ups", visible to correct roles only.
+Dashboard card fetches from GET /api/expenses/summary?scope=today and opens ExpenseDialog on button click.
+End-to-end smoke: record an expense via the Dashboard card, confirm it saves, confirm the card updates after save.
+
+Phase 2 — Accounts > Expenses tab (list + analytics)
+Tasks:
+
+Add new "Expenses" tab to Accounts.tsx after existing tabs.
+List view with filters, summary cards, sortable table, and "New Expense" button (opens same ExpenseDialog).
+Analytics sub-view with 4 charts using Recharts (by category, by person, daily trend, category share).
+URL query param persistence for filters.
+Empty states for no-data scenarios.
+
+Phase 3 — Category management + audit + docs
+Tasks:
+
+Categories sub-view inside Expenses tab (admin only) with add/rename/deactivate/reorder.
+Wire audit log entries for all expense create/update/delete operations (module = expenses).
+Mobile responsiveness check (basic — not full mobile optimization).
+Update replit.md with a new "Expense Tracking" section matching the depth of existing sections (Sales, Inventory, Accounts). Include: tables, endpoints, roles, dashboard card placement, Accounts tab structure, seed category list, out-of-scope items, and operator runbook ("how to add a new category", "how does someone without admin access record an expense").
+
+Phase 4 — Manual verification (user performs)
+User will:
+
+Record at least 10 expenses across 5+ different categories spanning 3+ different dates.
+Record at least 2 expenses with attachments (photos of bills).
+Record at least 1 expense with a link to a real Sales Order.
+Record expenses under 3 different user accounts to test role-based filtering.
+Verify every filter combination works correctly.
+Verify all 4 charts render with correct data.
+Verify admin can rename a category; non-admin cannot.
+Verify field_staff role has no access to any part of this module.
+Verify Dashboard card shows today's total correctly.
+Verify audit trail shows all expense entries.
+
+If any case fails, raise issues — do not start any follow-up work until all pass.
+PR description requirements
+The PR must include all of the following. Missing items = PR not reviewable:
+
+Migration output from npm run db:push showing the two new tables and seeded categories.
+Screenshot of Dashboard "Today's Expenses" card in its empty state (no expenses today).
+Screenshot of Dashboard card populated with at least 3 today's expenses.
+Screenshot of the ExpenseDialog form with optional fields expanded.
+Screenshot of Accounts > Expenses tab list view with 5+ entries and filters applied.
+Screenshot of Analytics sub-view with all 4 charts populated.
+Screenshot of Categories sub-view (admin view).
+Screenshot of one audit trail entry for an expense create operation.
+Grep output showing exactly one definition of ExpenseDialog component and at least two callers (Dashboard + Accounts).
+The replit.md diff showing the new Expense Tracking section.
+Confirmation that a non-admin user cannot see other users' expenses (screenshot showing filtered view).
+
+Relevant files
+
+shared/schema.ts (new tables)
+Drizzle migrations directory (new migration for seed data)
+server/routes.ts (new endpoints)
+server/storage.ts (new storage methods)
+client/src/pages/Dashboard.tsx (add expense summary card)
+client/src/pages/Accounts.tsx (add Expenses tab)
+client/src/components/ExpenseDialog.tsx (new — shared)
+client/src/components/ExpenseList.tsx (new — inside Accounts tab)
+client/src/components/ExpenseAnalytics.tsx (new — charts)
+client/src/components/ExpenseCategoryManagement.tsx (new — admin only)
+replit.md
+
+Dependencies
+None. This is standalone — no other in-flight work blocks or is blocked by it.
+Kickoff instructions to Replit AI
+When you start, reply with exactly this:
+
+"Acknowledged Task #71. Starting Phase 0 only: create expense_categories and expenses tables, add expense to attachments allowed types, seed 15 categories via migration. No UI, no API, no shared component in Phase 0. Will paste db:push output and await approval before Phase 1."
+
+Then do Phase 0. Stop. Wait for approval. Do not assume and proceed.
+If during any phase you hit ambiguity that this spec doesn't cover, stop and ask — same rule we used for Task #67. Do not guess.
+
+How to use this document
+Step 1: Copy everything between the two horizontal lines (starting with # Ticket #71 and ending with Do not guess.).
+Step 2: Paste it to Replit AI as a fresh message. If you can, start a new conversation so there's no stale context from the WhatsApp debugging.
+Step 3: Wait for their acknowledgment. They should reply with the exact kickoff text I specified. If they start asking questions instead, that's fine — answer the questions, but do not let them start Phase 1 before they've asked all the questions they have.
+Step 4: When Phase 0 completes, review the migration output before approving Phase 1. Check:
+
+Both tables created with correct columns.
+Exactly 15 categories seeded with exact names and order.
+Foreign keys to users table work.
+expense entity type is allowed in attachments.
+
+Step 5: Approve each phase only after reviewing artefacts. Same discipline as #67.
+One honest note
+This ticket is larger than it looks. The full scope (schema + API + Dashboard card + Accounts tab + List + Analytics + Categories + Audit + Docs) will take Replit AI 5-8 working days spread across your review cycles. Don't let them rush Phase 2 before Phase 1 is deployed and tested. The discipline of letting each phase settle before the next is what prevented the WhatsApp mess from being worse.
+Also: once Phase 1 (Dashboard card) is live, start recording real expenses immediately. You want at least a week of real usage data before you scope Phase 2 (the reimbursement + petty cash + approvals layer). Real usage data will tell you exactly what Phase 2 needs — much more reliably than guessing now.
+Ready to kick off?

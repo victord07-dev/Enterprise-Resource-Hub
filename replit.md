@@ -45,8 +45,9 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
   - Filter bar with date range + presets (today / 7d / 30d / MTD / YTD), multi-select category, paid-by, payment method, search; URL-persisted
   - Sortable table (date, amount, category, paid-by, description) with edit/delete actions and attachment indicators
   - Analytics sub-view with four Recharts visuals: by Category (bar), by Person (bar), Daily Trend (line), Category Share (pie)
-  - Categories admin sub-view (admin-only) with inline create/rename, colour/icon, sort order, and soft-delete confirmation showing usage count
-  - 15 default expense categories seeded eagerly at server startup (idempotent — never duplicates)
+  - Categories admin sub-view (admin-only) with inline create/rename, colour/icon, sort order (with up/down reorder controls persisting via `PATCH /api/expense-categories/reorder`), and soft-delete confirmation showing usage count
+  - 15 default expense categories seeded eagerly at server startup (idempotent — never duplicates); `scripts/seed-expense-categories.ts` is the canonical seeding script for fresh environments
+  - All date filtering (including `scope=today`) uses IST helpers in `shared/datetime.ts` on both client and server
   - Schema: `expenses` (DATE column, FK to `expense_categories` with ON DELETE RESTRICT, FKs to users for paid-by and created-by, indexes on date, category, paid-by, created-by, payment method, and a composite index on linked entity); `expense_categories` with `isActive`, colour, icon, sort order
   - All mutations write structured JSON diffs to the audit trail under modules `expenses` / `expense_categories`
 - **Margin Engine & Pricing Reports:** Corrected pricing summary report to use per-product `minMarginPct`, calculates `globalFloor`, and displays `pressureLevel` based on actual margin thresholds.

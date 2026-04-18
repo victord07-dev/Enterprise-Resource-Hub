@@ -11,6 +11,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { getUser } from "@/lib/auth";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
+import { todayIST } from "@shared/datetime";
 import type { Expense, ExpenseCategory, Customer, SalesOrder, DeliveryChallan, Project, PurchaseOrder, GoodsReceiptNote, User } from "@shared/schema";
 
 const PAYMENT_METHODS = [
@@ -60,7 +61,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
   const { toast } = useToast();
   const currentUser = getUser();
   const isPrivileged = currentUser?.role === "admin" || currentUser?.role === "accountant";
-  const today = new Date().toISOString().split("T")[0];
+  const today = todayIST();
 
   // After create, we keep the dialog open and switch into "saved" mode so the user can attach files.
   const [savedExpenseId, setSavedExpenseId] = useState<string | null>(null);

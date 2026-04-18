@@ -448,6 +448,7 @@ export interface IStorage {
   createExpenseCategory(data: InsertExpenseCategory): Promise<ExpenseCategory>;
   updateExpenseCategory(id: string, data: Partial<InsertExpenseCategory>): Promise<ExpenseCategory | undefined>;
   deactivateExpenseCategory(id: string): Promise<ExpenseCategory | undefined>;
+  reorderExpenseCategories(orderedIds: string[]): Promise<void>;
   countExpensesByCategory(categoryId: string): Promise<number>;
   seedDefaultExpenseCategories(): Promise<number>;
   getExpenses(filters?: ExpenseFilters): Promise<Expense[]>;
@@ -2134,6 +2135,17 @@ export class DatabaseStorage implements IStorage {
   async deactivateExpenseCategory(id: string): Promise<ExpenseCategory | undefined> {
     const [row] = await db.update(expenseCategories).set({ isActive: false, updatedAt: new Date() }).where(eq(expenseCategories.id, id)).returning();
     return row;
+  }
+
+  async reorderExpenseCategories(orderedIds: string[]): Promise<void> {
+    // Persist the new sortOrder for each category in a single transaction.
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < orderedIds.length; i++) {
+        await tx.update(expenseCategories)
+          .set({ sortOrder: i + 1, updatedAt: new Date() })
+          .where(eq(expenseCategories.id, orderedIds[i]));
+      }
+    });
   }
 
   async countExpensesByCategory(categoryId: string): Promise<number> {

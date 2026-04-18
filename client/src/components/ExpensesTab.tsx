@@ -11,12 +11,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Plus, Search, Pencil, Trash2, Filter, X, ArrowUpDown, Paperclip } from "lucide-react";
+import { Plus, Search, Pencil, Trash2, Filter, X, ArrowUpDown, Paperclip, ChevronUp, ChevronDown } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line,
 } from "recharts";
 import ExpenseDialog from "@/components/ExpenseDialog";
+import { todayIST, daysAgoIST, startOfMonthIST, startOfYearIST } from "@shared/datetime";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { getUser } from "@/lib/auth";
@@ -42,12 +43,10 @@ interface AnalyticsResp {
   categoryShare: Array<{ categoryId: string; categoryName: string; color: string; share: number; amount: number }>;
 }
 
-function todayISO() { return new Date().toISOString().split("T")[0]; }
-function daysAgoISO(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split("T")[0];
-}
+// All date defaults/presets are computed in IST so they remain stable for users
+// in India even when the browser's host timezone differs.
+const todayISO = todayIST;
+const daysAgoISO = daysAgoIST;
 
 type SortKey = "date" | "amount" | "category" | "paidBy" | "description";
 
@@ -174,8 +173,8 @@ export default function ExpensesTab() {
     if (preset === "today") { setFrom(todayISO()); setTo(todayISO()); }
     else if (preset === "7d") { setFrom(daysAgoISO(6)); setTo(todayISO()); }
     else if (preset === "30d") { setFrom(daysAgoISO(29)); setTo(todayISO()); }
-    else if (preset === "mtd") { const d = new Date(); setFrom(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`); setTo(todayISO()); }
-    else if (preset === "ytd") { const d = new Date(); setFrom(`${d.getFullYear()}-01-01`); setTo(todayISO()); }
+    else if (preset === "mtd") { setFrom(startOfMonthIST()); setTo(todayISO()); }
+    else if (preset === "ytd") { setFrom(startOfYearIST()); setTo(todayISO()); }
   };
 
   const clearFilters = () => {
@@ -576,6 +575,17 @@ function CategoriesPanel({ categories }: { categories: ExpenseCategory[] }) {
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
+  const reorderMutation = useMutation({
+    mutationFn: async (orderedIds: string[]) => {
+      const res = await apiRequest("PATCH", "/api/expense-categories/reorder", { orderedIds });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || "Failed to reorder");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/expense-categories"] });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
   const reactivateMutation = useMutation({
     mutationFn: async (id: string) => {
       const res = await apiRequest("PATCH", `/api/expense-categories/${id}`, { isActive: true });
@@ -589,6 +599,13 @@ function CategoriesPanel({ categories }: { categories: ExpenseCategory[] }) {
   });
 
   const sorted = [...categories].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const move = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= sorted.length) return;
+    const ids = sorted.map(c => c.id);
+    [ids[fromIndex], ids[toIndex]] = [ids[toIndex], ids[fromIndex]];
+    reorderMutation.mutate(ids);
+  };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -608,9 +625,35 @@ function CategoriesPanel({ categories }: { categories: ExpenseCategory[] }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sorted.map(c => (
+              {sorted.map((c, idx) => (
                 <TableRow key={c.id} data-testid={`row-category-${c.id}`}>
-                  <TableCell className="text-muted-foreground">{c.sortOrder}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <span className="w-5 inline-block">{c.sortOrder}</span>
+                      <div className="flex flex-col">
+                        <button
+                          type="button"
+                          disabled={idx === 0 || reorderMutation.isPending}
+                          onClick={() => move(idx, idx - 1)}
+                          className="hover-elevate active-elevate-2 px-1 py-0 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          data-testid={`button-move-up-${c.id}`}
+                          aria-label="Move up"
+                        >
+                          <ChevronUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === sorted.length - 1 || reorderMutation.isPending}
+                          onClick={() => move(idx, idx + 1)}
+                          className="hover-elevate active-elevate-2 px-1 py-0 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          data-testid={`button-move-down-${c.id}`}
+                          aria-label="Move down"
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  </TableCell>
                   <TableCell>
                     <span className="inline-flex items-center gap-2">
                       <span className="w-3 h-3 rounded-full" style={{ backgroundColor: c.color }} />

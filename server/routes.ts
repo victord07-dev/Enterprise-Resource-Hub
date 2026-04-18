@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage, type ExpenseFilters } from "./storage";
+import { todayIST } from "@shared/datetime";
 import { db } from "./db";
 import { sql, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
@@ -7718,6 +7719,21 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/expense-categories/reorder", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { orderedIds } = req.body;
+      if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== "string")) {
+        return res.status(400).json({ message: "orderedIds must be an array of category IDs" });
+      }
+      await storage.reorderExpenseCategories(orderedIds);
+      await logAction(req.user.id, "reorder", "expense_categories", JSON.stringify({ orderedIds }));
+      const updated = await storage.getExpenseCategories(true);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to reorder categories" });
+    }
+  });
+
   app.patch("/api/expense-categories/:id/deactivate", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
       const before = await storage.getExpenseCategory(req.params.id);
@@ -7735,7 +7751,7 @@ export async function registerRoutes(
     const q = req.query;
     const f: ExpenseFilters = {};
     if (q.scope === "today") {
-      const today = new Date().toISOString().split("T")[0];
+      const today = todayIST();
       f.from = today; f.to = today;
     } else {
       if (q.from) f.from = String(q.from);

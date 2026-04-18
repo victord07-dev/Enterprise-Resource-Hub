@@ -22,6 +22,7 @@ import Projects from "@/pages/Projects";
 import Inventory from "@/pages/Inventory";
 import SupplyChain from "@/pages/SupplyChain";
 import Accounts from "@/pages/Accounts";
+import Expenses from "@/pages/Expenses";
 import Employees from "@/pages/Employees";
 import FieldStaff from "@/pages/FieldStaff";
 import Reports from "@/pages/Reports";
@@ -182,6 +183,7 @@ function Router() {
       <Route path="/inventory" component={() => <ProtectedRoute component={Inventory} path="/inventory" />} />
       <Route path="/supply-chain" component={() => <ProtectedRoute component={SupplyChain} path="/supply-chain" />} />
       <Route path="/accounts" component={() => <ProtectedRoute component={Accounts} path="/accounts" />} />
+      <Route path="/expenses" component={() => <ProtectedRoute component={Expenses} path="/expenses" />} />
       <Route path="/employees" component={() => <ProtectedRoute component={Employees} path="/employees" />} />
       <Route path="/field-staff" component={() => <ProtectedRoute component={FieldStaff} path="/field-staff" />} />
       <Route path="/reports" component={() => <ProtectedRoute component={Reports} path="/reports" />} />

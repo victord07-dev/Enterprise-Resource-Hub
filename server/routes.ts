@@ -7657,9 +7657,13 @@ export async function registerRoutes(
 
   // ── Expenses (Task #69) ────────────────────────────────────────────────
   // Default categories are seeded eagerly at server startup (see top of registerRoutes).
-  // Field staff have no access to the operational expense module (per spec)
+  // Operational expense module: explicit allow-list per spec.
+  // Field staff and kiosk are excluded entirely.
+  const EXPENSE_ALLOWED_ROLES = ["admin", "accountant", "sales_manager", "hr_manager", "warehouse_manager"] as const;
   const denyFieldStaff = (req: any, res: any, next: any) => {
-    if (req.user?.role === "field_staff") return res.status(403).json({ message: "Forbidden" });
+    if (!req.user || !EXPENSE_ALLOWED_ROLES.includes(req.user.role)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     next();
   };
 
@@ -7699,6 +7703,21 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/expense-categories/reorder", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { orderedIds } = req.body;
+      if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== "string")) {
+        return res.status(400).json({ message: "orderedIds must be an array of category IDs" });
+      }
+      await storage.reorderExpenseCategories(orderedIds);
+      await logAction(req.user.id, "reorder", "expense_categories", JSON.stringify({ orderedIds }));
+      const updated = await storage.getExpenseCategories(true);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to reorder categories" });
+    }
+  });
+
   app.patch("/api/expense-categories/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
       const before = await storage.getExpenseCategory(req.params.id);
@@ -7716,21 +7735,6 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to update category" });
-    }
-  });
-
-  app.patch("/api/expense-categories/reorder", authenticateToken, requireRole("admin"), async (req: any, res) => {
-    try {
-      const { orderedIds } = req.body;
-      if (!Array.isArray(orderedIds) || orderedIds.some((x) => typeof x !== "string")) {
-        return res.status(400).json({ message: "orderedIds must be an array of category IDs" });
-      }
-      await storage.reorderExpenseCategories(orderedIds);
-      await logAction(req.user.id, "reorder", "expense_categories", JSON.stringify({ orderedIds }));
-      const updated = await storage.getExpenseCategories(true);
-      res.json(updated);
-    } catch (err: any) {
-      res.status(500).json({ message: err?.message || "Failed to reorder categories" });
     }
   });
 

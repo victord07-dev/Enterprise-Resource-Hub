@@ -49,6 +49,7 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Field Staff", url: "/field-staff", icon: MapPin },
   { title: "Sales Invoices", url: "/sales-invoices", icon: FileText },
   { title: "Accounts", url: "/accounts", icon: CreditCard },
+  { title: "Expenses", url: "/expenses", icon: CreditCard },
   { title: "Employees", url: "/employees", icon: Users },
   { title: "WhatsApp Inbox", url: "/inbox", icon: MessageCircle },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
@@ -59,11 +60,11 @@ const ALL_ITEMS: NavItem[] = [
 
 const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
-  hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports"],
+  hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports", "/expenses"],
   field_staff: ["/my-portal", "/field-staff", "/inbox"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports"],
-  warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports"],
-  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports", "/expenses"],
+  warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports", "/expenses"],
+  accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports", "/expenses"],
 };
 
 const MY_PORTAL_ITEM: NavItem = { title: "My Portal", url: "/my-portal", icon: User };

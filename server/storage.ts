@@ -452,7 +452,7 @@ export interface IStorage {
   seedDefaultExpenseCategories(): Promise<number>;
   getExpenses(filters?: ExpenseFilters): Promise<Expense[]>;
   getExpense(id: string): Promise<Expense | undefined>;
-  createExpense(data: InsertExpense & { createdByUserId: string }): Promise<Expense>;
+  createExpense(data: InsertExpense & { createdByUserId: string; paidByUserId: string }): Promise<Expense>;
   updateExpense(id: string, data: Partial<InsertExpense>): Promise<Expense | undefined>;
   deleteExpense(id: string): Promise<boolean>;
   getExpensesSummary(filters?: ExpenseFilters): Promise<ExpenseSummary>;
@@ -2209,13 +2209,13 @@ export class DatabaseStorage implements IStorage {
     return row;
   }
 
-  async createExpense(data: InsertExpense & { createdByUserId: string }): Promise<Expense> {
+  async createExpense(data: InsertExpense & { createdByUserId: string; paidByUserId: string }): Promise<Expense> {
     const [row] = await db.insert(expenses).values(data).returning();
     return row;
   }
 
   async updateExpense(id: string, data: Partial<InsertExpense>): Promise<Expense | undefined> {
-    const [row] = await db.update(expenses).set({ ...data, updatedAt: new Date() } as any).where(eq(expenses.id, id)).returning();
+    const [row] = await db.update(expenses).set({ ...data, updatedAt: new Date() }).where(eq(expenses.id, id)).returning();
     return row;
   }
 

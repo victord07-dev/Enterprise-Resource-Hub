@@ -443,6 +443,13 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Seed default expense categories at startup (idempotent — only inserts missing names)
+  try {
+    await storage.seedDefaultExpenseCategories();
+  } catch (err) {
+    console.error("[startup] seedDefaultExpenseCategories failed:", err);
+  }
+
   // Seed kiosk user
   const existingKiosk = await storage.getUserByUsername("kiosk");
   if (!existingKiosk) {
@@ -5771,6 +5778,32 @@ export async function registerRoutes(
     },
   });
 
+  // Authz helper for expense-related attachment access. Mirrors the expense module's
+  // role/scope rules so attachments cannot be used to bypass expense ACLs.
+  // mode: "view" (list/download) or "mutate" (upload/confirm/delete).
+  async function checkExpenseAttachmentAccess(
+    req: any,
+    expenseId: string,
+    mode: "view" | "mutate",
+  ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+    if (req.user?.role === "field_staff") {
+      return { ok: false, status: 403, message: "Forbidden" };
+    }
+    const expense = await storage.getExpense(expenseId);
+    if (!expense) return { ok: false, status: 404, message: "Expense not found" };
+    const isPrivileged = req.user?.role === "admin" || req.user?.role === "accountant";
+    if (isPrivileged) return { ok: true };
+    const isOwn = expense.paidByUserId === req.user.id || expense.createdByUserId === req.user.id;
+    if (!isOwn) return { ok: false, status: 403, message: "You can only access attachments on your own expenses" };
+    if (mode === "mutate") {
+      const ageMs = Date.now() - new Date(expense.createdAt).getTime();
+      if (ageMs > 24 * 60 * 60 * 1000) {
+        return { ok: false, status: 403, message: "Expense is older than 24 hours; ask an accountant to make changes" };
+      }
+    }
+    return { ok: true };
+  }
+
   // Primary single-step upload endpoint
   app.post("/api/attachments", authenticateToken, (req: any, res: any, next: any) => {
     upload.single("file")(req, res, (err: unknown) => {
@@ -5804,8 +5837,8 @@ export async function registerRoutes(
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else if (entityType === "expense") {
-        const e = await storage.getExpense(entityId);
-        if (!e) return res.status(404).json({ message: "Expense not found" });
+        const check = await checkExpenseAttachmentAccess(req, entityId, "mutate");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5876,8 +5909,8 @@ export async function registerRoutes(
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else if (entityType === "expense") {
-        const e = await storage.getExpense(entityId);
-        if (!e) return res.status(404).json({ message: "Expense not found" });
+        const check = await checkExpenseAttachmentAccess(req, entityId, "mutate");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5923,8 +5956,8 @@ export async function registerRoutes(
         const sr = await storage.getSalesReturn(entityId);
         if (!sr) return res.status(404).json({ message: "Sales return not found" });
       } else if (entityType === "expense") {
-        const e = await storage.getExpense(entityId);
-        if (!e) return res.status(404).json({ message: "Expense not found" });
+        const check = await checkExpenseAttachmentAccess(req, entityId, "mutate");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
       } else {
         return res.status(400).json({ message: "Invalid entityType" });
       }
@@ -5958,6 +5991,10 @@ export async function registerRoutes(
       const { id } = req.params;
       const [found] = await db.select().from(attachmentsTable).where(eq(attachmentsTable.id, id));
       if (!found || found.isDeleted) return res.status(404).json({ message: "Attachment not found" });
+      if (found.entityType === "expense") {
+        const check = await checkExpenseAttachmentAccess(req, found.entityId, "view");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
+      }
       const objectStorage = new ObjectStorageService();
       const objectFile = await objectStorage.getObjectEntityFile(found.fileUrl);
       res.setHeader("Content-Type", found.fileType);
@@ -5972,6 +6009,10 @@ export async function registerRoutes(
   app.get("/api/attachments/:entityType/:entityId", authenticateToken, async (req: any, res) => {
     try {
       const { entityType, entityId } = req.params;
+      if (entityType === "expense") {
+        const check = await checkExpenseAttachmentAccess(req, entityId, "view");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
+      }
       const items = await storage.getAttachments(entityType, entityId);
       res.json(items);
     } catch (err: unknown) {
@@ -5984,6 +6025,10 @@ export async function registerRoutes(
       const { id } = req.params;
       const [found] = await db.select().from(attachmentsTable).where(eq(attachmentsTable.id, id));
       if (!found || found.isDeleted) return res.status(404).json({ message: "Attachment not found" });
+      if (found.entityType === "expense") {
+        const check = await checkExpenseAttachmentAccess(req, found.entityId, "mutate");
+        if (!check.ok) return res.status(check.status).json({ message: check.message });
+      }
       if (found.uploadedBy !== req.user.id && req.user.role !== "admin") {
         return res.status(403).json({ message: "Only the uploader or an admin can delete this attachment" });
       }
@@ -7610,20 +7655,7 @@ export async function registerRoutes(
   });
 
   // ── Expenses (Task #69) ────────────────────────────────────────────────
-  // Lazy seed default categories on first API call (single-flight)
-  let expenseCategoriesSeeded = false;
-  let expenseSeedPromise: Promise<void> | null = null;
-  async function ensureExpenseCategoriesSeeded() {
-    if (expenseCategoriesSeeded) return;
-    if (expenseSeedPromise) return expenseSeedPromise;
-    expenseSeedPromise = (async () => {
-      const existing = await storage.getExpenseCategories(true);
-      if (existing.length === 0) await storage.seedDefaultExpenseCategories();
-      expenseCategoriesSeeded = true;
-    })();
-    try { await expenseSeedPromise; } finally { expenseSeedPromise = null; }
-  }
-
+  // Default categories are seeded eagerly at server startup (see top of registerRoutes).
   // Field staff have no access to the operational expense module (per spec)
   const denyFieldStaff = (req: any, res: any, next: any) => {
     if (req.user?.role === "field_staff") return res.status(403).json({ message: "Forbidden" });
@@ -7645,7 +7677,7 @@ export async function registerRoutes(
 
   app.get("/api/expense-categories", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
-      await ensureExpenseCategoriesSeeded();
+
       const includeInactive = req.query.includeInactive === "true";
       const cats = await storage.getExpenseCategories(includeInactive);
       res.json(cats);
@@ -7724,7 +7756,7 @@ export async function registerRoutes(
 
   app.get("/api/expenses", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
-      await ensureExpenseCategoriesSeeded();
+
       const rows = await storage.getExpenses(parseExpenseFilters(req));
       res.json(rows);
     } catch (err: any) {
@@ -7734,7 +7766,7 @@ export async function registerRoutes(
 
   app.get("/api/expenses/summary", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
-      await ensureExpenseCategoriesSeeded();
+
       const summary = await storage.getExpensesSummary(parseExpenseFilters(req));
       res.json(summary);
     } catch (err: any) {
@@ -7744,7 +7776,7 @@ export async function registerRoutes(
 
   app.get("/api/expenses/analytics", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
-      await ensureExpenseCategoriesSeeded();
+
       const a = await storage.getExpensesAnalytics(parseExpenseFilters(req));
       res.json(a);
     } catch (err: any) {
@@ -7768,7 +7800,7 @@ export async function registerRoutes(
 
   app.post("/api/expenses", authenticateToken, denyFieldStaff, async (req: any, res) => {
     try {
-      await ensureExpenseCategoriesSeeded();
+
       const parsed = insertExpenseSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
       const cat = await storage.getExpenseCategory(parsed.data.categoryId);

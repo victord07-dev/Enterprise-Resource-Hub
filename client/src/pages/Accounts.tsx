@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircl
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
+import ExpensesTab from "@/components/ExpensesTab";
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -37,6 +38,19 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function Accounts() {
   const { toast } = useToast();
+
+  const [activeAccountsTab, setActiveAccountsTab] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tab") || "invoices";
+  });
+  useEffect(() => {
+    const onPop = () => {
+      const params = new URLSearchParams(window.location.search);
+      setActiveAccountsTab(params.get("tab") || "invoices");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // ── AR Queries ────────────────────────────────────────────────────────────
   const { data: salesInvoices, isLoading: invoicesLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
@@ -323,14 +337,29 @@ export default function Accounts() {
         </Card>
       </div>
 
-      <Tabs defaultValue="invoices" className="space-y-4">
+      <Tabs
+        value={activeAccountsTab}
+        onValueChange={(v) => {
+          setActiveAccountsTab(v);
+          const params = new URLSearchParams(window.location.search);
+          if (v === "invoices") params.delete("tab"); else params.set("tab", v);
+          const qs = params.toString();
+          window.history.replaceState({}, "", `/accounts${qs ? `?${qs}` : ""}`);
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>
           <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
           <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>
           <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>
           <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>
+          <TabsTrigger value="expenses" data-testid="tab-expenses">Expenses</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="expenses" className="space-y-4">
+          <ExpensesTab />
+        </TabsContent>
 
         {/* ── AR: Invoices ───────────────────────────────────────────────── */}
         <TabsContent value="invoices" className="space-y-4">

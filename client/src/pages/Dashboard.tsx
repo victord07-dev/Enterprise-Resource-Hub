@@ -318,11 +318,6 @@ export default function Dashboard() {
             <div className="flex items-center gap-2">
               <Receipt className="w-4 h-4 text-rose-500" />
               <CardTitle className="text-base font-semibold">Today's Expenses</CardTitle>
-              {(todaysExpenses?.count ?? 0) > 0 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400" data-testid="badge-expenses-total">
-                  ₹{(todaysExpenses?.totalAmount ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })} · {todaysExpenses?.count} item{todaysExpenses!.count > 1 ? "s" : ""}
-                </span>
-              )}
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => setLocation("/accounts?tab=expenses")} data-testid="button-view-expenses">
@@ -334,6 +329,24 @@ export default function Dashboard() {
             </div>
           </CardHeader>
           <CardContent>
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="rounded-md border p-3" data-testid="kpi-expenses-total">
+                <p className="text-xs text-muted-foreground">Total</p>
+                <p className="text-lg font-semibold tabular-nums">
+                  ₹{(todaysExpenses?.totalAmount ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                </p>
+              </div>
+              <div className="rounded-md border p-3" data-testid="kpi-expenses-count">
+                <p className="text-xs text-muted-foreground">Count</p>
+                <p className="text-lg font-semibold tabular-nums">{todaysExpenses?.count ?? 0}</p>
+              </div>
+              <div className="rounded-md border p-3" data-testid="kpi-expenses-top-category">
+                <p className="text-xs text-muted-foreground">Top category</p>
+                <p className="text-sm font-semibold truncate">
+                  {todaysExpenses?.byCategory?.[0]?.categoryName ?? "—"}
+                </p>
+              </div>
+            </div>
             {expensesLoading ? (
               <div className="space-y-2">
                 {Array.from({ length: 3 }).map((_, i) => (

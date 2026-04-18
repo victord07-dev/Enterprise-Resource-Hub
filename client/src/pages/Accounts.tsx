@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import ExpensesTab from "@/components/ExpensesTab";
+import { getUser } from "@/lib/auth";
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -38,10 +39,13 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function Accounts() {
   const { toast } = useToast();
+  const role = getUser()?.role || "admin";
+  const expensesOnly = role !== "admin" && role !== "accountant";
 
   const [activeAccountsTab, setActiveAccountsTab] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get("tab") || "invoices";
+    const initial = params.get("tab") || (expensesOnly ? "expenses" : "invoices");
+    return expensesOnly ? "expenses" : initial;
   });
   useEffect(() => {
     const onPop = () => {
@@ -349,11 +353,11 @@ export default function Accounts() {
         className="space-y-4"
       >
         <TabsList>
-          <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>
-          <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
-          <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>
-          <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>
-          <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>
+          {!expensesOnly && <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>}
+          {!expensesOnly && <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>}
+          {!expensesOnly && <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>}
+          {!expensesOnly && <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>}
+          {!expensesOnly && <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>}
           <TabsTrigger value="expenses" data-testid="tab-expenses">Expenses</TabsTrigger>
         </TabsList>
 

@@ -7667,15 +7667,16 @@ export async function registerRoutes(
     next();
   };
 
-  // Helper: build a structured diff of changed fields for audit
-  function diffExpense(before: Expense, after: Partial<Expense>): Record<string, { from: any; to: any }> {
-    const diff: Record<string, { from: any; to: any }> = {};
+  function diffExpense(before: Expense, after: Partial<Expense>): Record<string, { from: unknown; to: unknown }> {
+    const diff: Record<string, { from: unknown; to: unknown }> = {};
     const keys: (keyof Expense)[] = ["expenseDate", "categoryId", "amount", "paymentMethod", "description", "vendorName", "paidByUserId", "linkedEntityType", "linkedEntityId", "notes"];
     for (const k of keys) {
-      if (after[k] === undefined) continue;
-      const a = (before as any)[k];
-      const b = (after as any)[k];
-      if (String(a ?? "") !== String(b ?? "")) diff[k as string] = { from: a, to: b };
+      const next = after[k];
+      if (next === undefined) continue;
+      const prev = before[k];
+      if (String(prev ?? "") !== String(next ?? "")) {
+        diff[k as string] = { from: prev, to: next };
+      }
     }
     return diff;
   }

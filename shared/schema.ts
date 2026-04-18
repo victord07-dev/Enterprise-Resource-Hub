@@ -779,7 +779,7 @@ export const insertExpenseSchema = createInsertSchema(expenses, {
   description: z.string().min(1, "Description is required").max(500),
   vendorName: z.string().max(200).nullable().optional(),
   paymentReference: z.string().max(100).nullable().optional(),
-}).omit({ id: true, expenseNumber: true, createdAt: true, updatedAt: true });
+}).omit({ id: true, expenseNumber: true, createdBy: true, createdAt: true, updatedAt: true });
 
 export type ExpenseCategory = typeof expenseCategories.$inferSelect;
 export type Expense = typeof expenses.$inferSelect;

@@ -39,7 +39,8 @@ export default function Dashboard() {
   const user = getUser();
   const [, setLocation] = useLocation();
   const [expenseDialogOpen, setExpenseDialogOpen] = useState(false);
-  const showExpenseCard = user?.role !== "field_staff";
+  const EXPENSE_ALLOWED_ROLES = ["admin", "accountant", "sales_manager", "hr_manager", "warehouse_manager"];
+  const showExpenseCard = !!user && EXPENSE_ALLOWED_ROLES.includes(user.role);
 
   const today = new Date();
   const lastMonth = today.getMonth() === 0 ? 11 : today.getMonth() - 1;

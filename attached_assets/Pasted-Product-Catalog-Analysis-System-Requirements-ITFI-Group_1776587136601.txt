@@ -1,0 +1,376 @@
+Product Catalog Analysis & System Requirements
+ITFI Group ERP — Solar Distribution (Eastman + Multi-Brand)
+Based on all 14 Eastman April 2026 Price Lists
+
+1. Complete Eastman Catalog Breakdown
+What You're Dealing With in Numbers
+Product LinePDFIndividual SKUsUnitWarrantyGSTSolar Smart & Smart Max (PCU)Smart_SmartMax15pcs5 Years12%Solar Pro & Promax (PCU)Pro_Promax13pcs5 Years12%Solar Prime & Prime Max (PCU)Prime_PrimeMax14pcs3 Years12%Grid Tie InverterGrid_Tie15 + 3 accessoriespcs10 Years12%Hybrid InverterHybrid3pcs10 Years12%Solar PV ModulesPV_Modules9pcs25 Years0%*Solar Battery (Lead Acid)Solar_Battery3pcs60+60 months12%Solar Smart Battery (Lead Acid)Smart_Battery2pcs36+36 months12%Lithium-ion BatteryLithium4pcs5 Years12%Rack/Wall Battery (Lithium)RackType_Wall3pcs5 Years12%Solar BOS KitBOS_Kit1 (bundle)set—Mixed**Solar Lith ComboLith_Combo~55 bundlesset—Mixed**Solar Panel Pallet (North)Pallet_North4 panel SKUs × 3 qty tierspcs25 Years0%*Solar Panel Pallet (South/East)Pallet_South_East4 panel SKUs × 3 qty tierspcs25 Years0%*TOTAL~145 SKUs
+
+*Solar PV Modules (panels) attract 0% GST under solar energy device exemptions
+(Notification 01/2017 — custom duty exempt + 0% integrated tax for specified solar equipment).
+Verify with your CA as this can change.
+**Bundle GST is complex — see Section 4.
+
+
+2. The Four Hard Problems Your Current System Cannot Handle
+Problem 1: Bundle / Kit Products (BOS Kit + Lith Combo)
+Solar BOS Kit — Sold as 1 SKU (₹10,450) but physically contains 22 individual
+components (cables, connectors, earthing rods, etc.), each with its own unit of measure
+(NOS, MTR, KG).
+Solar Lith Combo — 55+ bundle SKUs. Each combo is:
+
+1× PCU (e.g. EM SS 1250-12V) at its own cost
+1× LFP Battery (e.g. LFP-160 at ₹13,820)
+1× Solar Panel (e.g. EMP210W at ₹4,100)
+= Combo Basic Price (e.g. ₹23,110)
+
+The current system sells one product → one stock unit. Bundles need:
+
+Stock deducted from each component when a bundle is sold
+Pricing optionally derived from component prices
+
+→ Current system: CANNOT handle. See solution in Section 5.
+
+Problem 2: Volume / Tier Pricing (Solar Panel Pallets)
+Solar panel pallet pricing varies by quantity ordered:
+Model2 Pallets4 Pallets8 PalletsEBP500W-DCR (North)₹11,550/panel₹11,380/panel₹11,310/panelEBP550W-DCR (North)₹12,199/panel₹12,007/panel₹11,924/panel
+The daily pricing engine stores ONE confirmed price per product per day.
+It cannot express "price depends on quantity ordered."
+→ Current system: CANNOT handle. See solution in Section 5.
+
+Problem 3: Regional Pricing (Solar Panel Pallets)
+The same panel model (EBP500W-DCR) has different distributor prices depending on
+delivery region:
+Region2 Pallets4 Pallets8 PalletsNorth (HR,HP,PB,RJ,UP,UK,BH,JH,MP,CG,MH,GJ,Goa)₹11,550₹11,380₹11,310South+East (WB,NE,Orissa,AP,TG,KA,KL,TN)₹11,650₹11,480₹11,410
+Your customer's delivery state determines which price applies.
+The current system has no concept of customer region → price variation.
+→ Current system: CANNOT handle. See solution in Section 5.
+
+Problem 4: No Technical Spec Fields
+Every product type from Eastman has structured specs that your sales team NEEDS to
+quote correctly. Currently all of this would go into description as unstructured text,
+meaning:
+
+Can't filter "show me all 48V-compatible products"
+Quotation PDFs can't show specs in a structured way
+Sales staff can't match panel wattage → PCU compatibility
+
+→ Current system: Can be fixed with a JSONB specs column. See Section 6.
+
+3. Immediate Changes Required (No New Features Needed)
+These can be done RIGHT NOW by editing Products.tsx and adding categories.
+3A. Updated Category List
+Replace in Products.tsx:
+typescriptconst productCategories = [
+  "Solar PCU / Inverter",        // Smart, Pro, Prime series (Sine Wave)
+  "Solar MPPT PCU / Inverter",   // SmartMax, Promax, PrimeMax series
+  "Grid Tie Inverter",           // Grid tie range
+  "Hybrid Inverter",             // Hybrid range
+  "Solar Panel / PV Module",     // All solar panels
+  "Solar Battery - Lead Acid",   // EM150SB, Smart Battery series
+  "Solar Battery - Lithium",     // EM-LIB series
+  "Rack / Wall Battery",         // ES25.6-100LP etc
+  "Solar BOS Kit",               // BOS Kit
+  "Solar Combo / Bundle",        // Lith Combo products
+  "Accessories",                 // CT meters, GPS dongle, cables
+];
+
+3B. Correct GST Rates by Product Type
+CategoryGST RateHSN CodeSolar PCU / Inverter (all series)12%85044090Grid Tie Inverter12%85044090Hybrid Inverter12%85044090Solar Panel / PV Module0%85414011Solar Battery - Lead Acid12%85072000Solar Battery - Lithium (LFP/Li-ion)12%85076000Rack / Wall Mounted Battery12%85076000Solar BOS Kit12% (primary)85044090Accessories (CT, cables, connectors)18%varies
+
+⚠️ Your current form defaults to 18%. All solar PCUs/inverters/batteries
+should be 12%. Solar panels are 0%. Entering wrong GST will cause every
+invoice to overcharge customers and create GST filing discrepancies.
+
+Auto-suggest GST based on category in the product form — add this to handleTypeChange:
+typescriptconst categoryGSTDefaults: Record<string, string> = {
+  "Solar PCU / Inverter":       "12",
+  "Solar MPPT PCU / Inverter":  "12",
+  "Grid Tie Inverter":          "12",
+  "Hybrid Inverter":            "12",
+  "Solar Panel / PV Module":    "0",
+  "Solar Battery - Lead Acid":  "12",
+  "Solar Battery - Lithium":    "12",
+  "Rack / Wall Battery":        "12",
+  "Solar BOS Kit":              "12",
+  "Accessories":                "18",
+};
+// When user changes category, auto-set gstRate:
+setProductForm(prev => ({
+  ...prev,
+  category: v,
+  gstRate: categoryGSTDefaults[v] ?? prev.gstRate,
+}));
+
+3C. Add Unit Options
+Add to the unit Select in Products.tsx:
+typescript// Current: ["pcs", "kg", "ltr", "mtr", "box"]
+// Add:
+["pcs", "kg", "ltr", "mtr", "box", "set", "WP", "KWh", "Ah"]
+
+set → BOS Kit, Combo bundles
+WP → Solar panels (priced per panel, rated in watt-peak)
+KWh → Future battery storage rating
+Ah → Battery capacity reference
+
+
+3D. Warranty Field
+Add warrantyPeriod VARCHAR(50) NULL to products schema.
+Formats you'll encounter across all Eastman products:
+TypeFormatPCU (Smart/Pro)"5 Years"PCU (Prime)"3 Years"Grid Tie / Hybrid"10 Years"Solar Panels"25 Years"Lead Acid Battery"60+60 Months"Smart Battery"36+36 Months"Lithium Battery"5 Years"Rack/Wall Battery"5 Years"Accessories"1 Year"
+Show in product table and on quotation PDFs.
+
+4. Medium-Term: JSONB Specs Field
+Add to products schema:
+sqlspecs JSONB NULL
+-- warrantyPeriod can also go here, or remain its own column
+Show a category-specific spec sub-form in the product dialog.
+Each category has different relevant fields:
+Solar PCU / Inverter (Smart, Pro, Prime — all Sine Wave / MPPT)
+json{
+  "vaRating": 1000,
+  "wattEquivalent": 1000,
+  "batteryVoltage": "12V",
+  "panelSupportWatt": 1300,
+  "pcuType": "Sine Wave",
+  "mpptController": false,
+  "lithiumCompatible": true
+}
+Solar MPPT PCU (SmartMax, Promax, PrimeMax)
+json{
+  "vaRating": 2000,
+  "wattEquivalent": 2000,
+  "batteryVoltage": "24V",
+  "panelSupportWatt": 2600,
+  "pcuType": "MPPT",
+  "mpptController": true,
+  "lithiumCompatible": true
+}
+Grid Tie Inverter
+json{
+  "kwRating": 5,
+  "phaseType": "3PH:3PH",
+  "monitoringIncluded": true,
+  "onGrid": true,
+  "offGrid": false
+}
+Hybrid Inverter
+json{
+  "kwRating": 3,
+  "batteryVoltage": "48V",
+  "onGrid": true,
+  "offGrid": true,
+  "lithiumCompatible": true
+}
+Solar Panel / PV Module
+json{
+  "panelType": "Mono Perc Bi-facial",
+  "wattPeak": 550,
+  "voltageClass": "24V",
+  "dcrCompliant": true,
+  "almmApproved": true,
+  "technology": "Topcon G2G"
+}
+Solar Battery — Lead Acid
+json{
+  "capacityAh": 150,
+  "batteryVoltage": "12V",
+  "chemistry": "Lead Acid",
+  "warrantyFormat": "60+60"
+}
+Solar Battery — Lithium (LFP)
+json{
+  "capacityAh": 100,
+  "voltage": 12.8,
+  "chemistry": "LFP",
+  "nominalCapacityWh": 1280
+}
+Rack / Wall Battery
+json{
+  "mountType": "Wall Mounted",
+  "voltage": 25.6,
+  "capacityAh": 100,
+  "chemistry": "Lithium",
+  "rackFitted": false
+}
+
+5. New Features Required (Development Tasks)
+Feature A: Bundle / Kit Engine (Priority: HIGH)
+Needed for: Solar BOS Kit, all 55+ Lith Combo products.
+Schema
+sql-- New table
+product_bundle_items (
+  id            UUID PRIMARY KEY,
+  parentId      UUID NOT NULL REFERENCES products(id),
+  componentId   UUID NOT NULL REFERENCES products(id),
+  quantity      NUMERIC(10,3) NOT NULL,
+  unit          VARCHAR(20)   -- can differ from parent product unit
+)
+
+-- New product type value
+-- products.type: 'product' | 'service' | 'bundle'  ← add 'bundle'
+Behaviour Rules
+When a bundle is SOLD (quotation / sales order):
+  → Deduct stock from each component product (not from bundle itself)
+  → Bundle has no stock of its own
+
+When a bundle is RECEIVED via GRN:
+  → Two options (pick one per product):
+    (a) Receive as components (GRN each component individually)
+    (b) Receive as bundle unit → system splits into components
+
+Bundle pricing:
+  → Option 1: Manual price set on bundle (like BOS Kit at ₹10,450)
+  → Option 2: Auto = SUM(component quantity × component effective price)
+  → Both should be supported; set per bundle
+
+Bundle product form additions:
+  → "Components" section: add/remove component products with qty
+  → "Pricing mode" toggle: Manual / Auto-calculated
+Interim Workaround (Before Feature is Built)
+Enter BOS Kit as a single product, describe components in description.
+For Lith Combos: enter each combo as a separate product with the combo price.
+Stock will not auto-deduct from components — track manually.
+
+Feature B: Volume / Tier Pricing (Priority: MEDIUM)
+Needed for: Solar Panel Pallet products.
+Schema
+sqlproduct_price_tiers (
+  id          UUID PRIMARY KEY,
+  productId   UUID NOT NULL REFERENCES products(id),
+  minQty      INTEGER NOT NULL,
+  maxQty      INTEGER NULL,      -- NULL means "and above"
+  pricePerUnit NUMERIC(10,2) NOT NULL,
+  region      VARCHAR(50) NULL,  -- NULL means applies to all regions
+  effectiveDate DATE NOT NULL,
+  createdAt   TIMESTAMP DEFAULT NOW()
+)
+Behaviour
+When adding a line item in sales order / quotation:
+  → If product has price tiers:
+    1. Check customer's delivery region (from customer record)
+    2. Check quantity entered
+    3. Look up matching tier: WHERE region = customer.region 
+       AND minQty <= qty AND (maxQty IS NULL OR maxQty >= qty)
+    4. Auto-populate unit price from tier
+    5. Show tier badge: "Pallet Tier Price (4 pallets, North zone)"
+
+When quantity changes on the line item:
+  → Re-check tier and update price if tier changes
+  → Show warning if price changed due to tier
+Interim Workaround (Before Feature is Built)
+Create 3 separate product SKUs per panel model per region:
+
+EBP500W-DCR-N-2P (North, 2-pallet price ₹11,550)
+EBP500W-DCR-N-4P (North, 4-pallet price ₹11,380)
+EBP500W-DCR-N-8P (North, 8-pallet price ₹11,310)
+
+Clunky but functional. Replace with tier pricing engine when built.
+
+Feature C: Customer Region Field (Priority: MEDIUM, needed for B)
+Add deliveryRegion VARCHAR(20) NULL to customers table.
+Values:
+"North"      → HR, HP, PB, RJ, UP, UK, BH, JH, MP, CG, MH, GJ, Goa
+"South_East" → WB, NE, Orissa, AP, TG, KA, KL, TN
+"Pan_India"  → default (no regional variation)
+Show as a dropdown on the customer form. Used by tier pricing engine.
+
+Feature D: Multi-brand Supplier Tagging (Priority: LOW, do now)
+When you add Luminous, Adani, Tata Solar etc., products with the same
+generic name (e.g. "500W Solar Panel") will appear from multiple brands.
+Add to product form:
+
+brand field is already present — ensure it's mandatory, not optional
+Add brand filter to product list (already filterable by brand in search)
+In supplier_products table, tag each supplier's version of a product
+
+This is already mostly supported. Just enforce brand as required.
+
+6. Complete Product Entry Guide — All Eastman Lines
+How to Enter Each Product Right Now (Current System)
+Solar PCU Lines (Smart, SmartMax, Pro, Promax, Prime, PrimeMax)
+Name:     [Model Name] e.g. "Smart 925"
+SKU:      EAST-SMART-925
+Brand:    Eastman
+Category: Solar PCU / Inverter  OR  Solar MPPT PCU / Inverter
+Unit:     pcs
+GST:      12%
+HSN:      85044090
+UnitPrice: 0 (set via GRN + daily pricing)
+Description: Sine Wave PCU | 500VA/12V | Panel Support: 650W | Li-Ion Compatible | 5 Years Warranty
+MinMargin:  5% (adjust per product)
+Grid Tie Inverter
+Category: Grid Tie Inverter
+GST:      12%
+HSN:      85044090
+Description: 3KW | 1PH:1PH | 10 Years Warranty
+Hybrid Inverter
+Category: Hybrid Inverter
+GST:      12%
+HSN:      85044090
+Description: 3KW | 48V | Li-Ion Compatible | 10 Years Warranty
+Solar PV Modules (Panels)
+Category: Solar Panel / PV Module
+Unit:     pcs
+GST:      0%
+HSN:      85414011
+Description: Mono Perc Bi-facial | 550WP | 24V | DCR Compliant | ALMM Approved | 25 Years
+Solar Battery — Lead Acid
+Category: Solar Battery - Lead Acid
+Unit:     pcs
+GST:      12%
+HSN:      85072000
+Description: 150Ah | Solar Variant | 60+60 Months Warranty
+Lithium-ion Battery (EM-LIB)
+Category: Solar Battery - Lithium
+Unit:     pcs
+GST:      12%
+HSN:      85076000
+Description: 12.8V | 100Ah | LFP | 5 Years Warranty
+Rack / Wall Battery
+Category: Rack / Wall Battery
+Unit:     pcs
+GST:      12%
+HSN:      85076000
+Description: Wall Mounted | 25.6V | 100Ah | 5 Years Warranty
+Solar BOS Kit (Interim — before bundle engine)
+Name:     Solar BOS Kit (Eco) GTI 1P
+SKU:      EAST-BOS-ECO-GTI-1P
+Category: Solar BOS Kit
+Unit:     set
+GST:      12%
+HSN:      85044090
+UnitPrice: 10450  (enter directly — this is both cost and reference price)
+Description: Complete BOS Kit for 1-Phase Grid Tie | Contains: DC/AC cables, earthing, MC4 connectors, lightning arrester, hardware
+Lith Combo (Interim — enter as individual products)
+Name:     EM SS 1250-12VLFP-160EMP210W
+SKU:      EAST-COMBO-SS1250-LFP160-EMP210W
+Category: Solar Combo / Bundle
+Unit:     set
+GST:      12%  (PCU GST as primary component)
+HSN:      85044090
+UnitPrice: 0  (set as combo price ₹23,110 at GRN / daily pricing)
+Description: Combo: Smart 1250 PCU + LFP-160 Battery + EMP210W Panel
+
+7. Total SKU Count — Eastman Only
+LineSKUs to CreateSolar Smart (6) + SmartMax (9)15Solar Pro (4) + Promax (9)13Solar Prime (6) + PrimeMax (8)14Grid Tie Inverter (15) + Accessories (3)18Hybrid Inverter3Solar PV Modules9Solar Battery Lead Acid3Solar Smart Battery2Lithium-ion Battery4Rack / Wall Battery3Solar BOS Kit1Solar Lith Combo (interim, as individual SKUs)55Solar Panel Pallet — interim workaround SKUs~24TOTAL~164 SKUs
+When you add Luminous, Adani, Tata etc., expect 50–100 more per brand.
+Total catalog will likely reach 300–400 SKUs.
+
+8. Development Priority Order
+PriorityTaskEffortWhen🔴 ImmediateCategory list update in Products.tsx30 minsNow🔴 ImmediateGST auto-default by category1 hourNow🔴 ImmediateAdd unit options (set, WP, Ah)15 minsNow🔴 ImmediateAdd warrantyPeriod column to schema30 minsNow🟡 Short-termJSONB specs column + category spec forms3–5 daysSprint 1🟡 Short-termCustomer deliveryRegion field1 daySprint 1🟠 Medium-termBundle / Kit engine (schema + stock logic)2–3 weeksSprint 2🟠 Medium-termVolume / Tier pricing engine1–2 weeksSprint 2🟢 LaterRegional pricing on tier engine3–5 daysSprint 3🟢 LaterBulk product import (CSV/Excel upload)1 weekSprint 3
+
+9. One More Thing — Bulk Import
+164 SKUs entered one-by-one through the dialog is ~3–4 hours of manual data entry
+and prone to errors. Before entering any products, consider building a simple
+CSV import endpoint first:
+POST /api/products/import
+Body: CSV file with columns:
+  name, sku, brand, category, description, gstRate, hsnCode,
+  unit, minStockLevel, minMarginPct, specs (JSON string), warrantyPeriod
+This would let you prepare the Eastman catalog in Excel (from the price lists),
+clean it up, and import all 164 rows in seconds. Would also be useful every time
+Eastman releases a new price list (quarterly typically).
+
+End of Analysis — ITFI Group ERP Product Catalog Requirements
+Based on 14 Eastman Distributor Price Lists, W.E.F. 1st April 2026

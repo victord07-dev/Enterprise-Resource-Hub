@@ -1,0 +1,40 @@
+Revised #74 is much better. 16 agreed items folded correctly, your 3 disagreements held correctly, and the Phase 8 additions I sent are integrated cleanly.
+Three remaining items before kickoff:
+1. Stop gates between Phase 5→6 and Phase 6→7:
+I disagree with "other phases proceed straight through unless something breaks." Specifically:
+
+End of Phase 5 → Phase 6: Commit, push, stop. Verify warnings work end-to-end in Sales before starting CSV import (which is the riskiest phase).
+End of Phase 6 → Phase 7: Commit, push, stop. Import 5-10 real Eastman products via Dry Run then Commit. Verify they land correctly, supplier_products links auto-created, error CSV works. Only then start bundle engine.
+
+These are high-leverage gates — catching an integration issue at Phase 6 completion is much cheaper than at Phase 7+ completion. Keep the internal Phase 7 gate and the Phase 1 smoke-test gate as already specified.
+2. Time estimate per phase.
+Removing the wrong 4-6 hour estimate was right; not replacing it is a gap. Please add a phase-by-phase honest estimate:
+
+Phase 1 through Phase 7 agent-time estimate
+Phase 8 operator-time estimate (I'll be doing the CSV preparation)
+Total agent time, realistic calendar time
+
+This is for my owner conversation, not for rushing execution. I need a real number.
+3. PR description artefacts.
+Add a "PR description requirements" section matching the discipline of Tickets #69 and #73. Specifically include:
+
+db:push migration output showing new tables/columns
+Screenshot of Brand master with seeded brands
+Screenshot of Products form with all new fields (distributorPrice visible, unitPrice auto-calc visible)
+Screenshot of customer migration mapping report with at least one manual override applied
+Screenshot of CSV import Dry Run mode showing preview/errors/duplicates
+Screenshot of CSV import Commit mode success summary
+Screenshot of a bundle product configuration
+Screenshot of bundle dispatch showing stock_movements per component
+Screenshot of ALMM/DCR chips and subsidy warning
+Screenshot of Daily Pricing page showing non-zero blended cost (regression proof)
+Grep proof: zero changes to Daily Pricing engine, GRN logic, Sales totals math
+replit.md diff
+
+Address these three, and we're ready for kickoff.
+Separate question — Daily Pricing ₹0 diagnosis:
+Have you been able to investigate the Daily Pricing ₹0 issue I raised? This was to happen before #74 kickoff, and the dev server was down per your earlier message. Please confirm:
+(a) Dev server is restored
+(b) Daily Pricing ₹0 root cause identified among the four possibilities (no GRN lots / zero supplierPrice / no fallback to costPrice / spMap overwrite bug)
+(c) If it's the spMap overwrite bug — fix before #74 kickoff. If it's any of the others — document and proceed.
+Once those answers and the 3 ticket amendments are in, approving kickoff.

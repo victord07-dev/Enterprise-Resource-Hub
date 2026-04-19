@@ -1,0 +1,20 @@
+Good catch. Here is the practical answer.
+The reality of your situation right now
+You have the brand price lists — Eastman and Luminous PDFs — which give you the distributor price, meaning what you pay the brand. You do not yet have a settled selling price for most products because that depends on your margin decisions, market rates, and customer type. So trying to fill both buying price and selling tiers in the CSV at the same time will either slow down the catalog load or result in guessed selling prices being locked in prematurely.
+What I suggest
+Do the catalog load in two passes, not one.
+Pass 1 — Load the catalog now with buying data only
+Fill the CSV with everything you know from the brand price lists:
+
+Product name, SKU, brand, category, specs, warranty, ALMM, DCR, pack size, model series
+unitPrice set to the distributor price from the PDF — this is your cost, which the Daily Pricing engine already uses as the base
+mrp filled where the brand publishes it (Luminous has MRP; Eastman does not)
+customerTierPrice filled only with the distributor column for now — leave dealer, sub-distributor, scheme blank
+
+This gets your entire catalog live and usable within days. Sales can start creating quotations and the Daily Pricing engine can start calculating margins immediately.
+Pass 2 — Fill selling tiers after your first pricing review
+Once the catalog is loaded, your management sits down with the Daily Pricing engine and decides margins per category or per product. At that point your team updates customerTierPrice with the dealer and sub-distributor selling prices — either by editing products individually or by re-importing a CSV with only those columns updated. Since the import rule is never overwrite, you would need a separate bulk-update endpoint for this, or just update the tier prices manually per product as selling decisions are made.
+The one field that needs a decision before Pass 1
+unitPrice on the product record is used in two ways in your system — as a cost reference and as a fallback selling price. Before you start importing, decide with Replit AI whether unitPrice should store the distributor buying price or a selling price. If it stores buying price, the Daily Pricing engine margin calculation works correctly from day one. If it is supposed to be selling price and you put buying price there instead, every quotation will default to cost price until selling prices are set.
+My recommendation is that unitPrice stores your distributor buying cost, and selling prices live only in customerTierPrice and get set in Pass 2. That way no order goes out at the wrong price by accident.
+In short — load what you have now, price it properly once your margin decisions are made, and the system supports that two-pass approach cleanly.

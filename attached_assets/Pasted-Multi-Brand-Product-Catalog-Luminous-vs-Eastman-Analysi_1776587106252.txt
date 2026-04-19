@@ -1,0 +1,422 @@
+Multi-Brand Product Catalog: Luminous vs Eastman Analysis
++ Full Development Plan for Replit AI
+ITFI Group ERP — Solar Distribution
+
+Part 1: Luminous Catalog Breakdown & Eastman Comparison
+What Luminous Brings That Eastman Doesn't
+After reading all 7 Luminous price lists, here are the key differences:
+
+1. Product Lines Unique to Luminous
+Product LineDescriptionGSTNotes vs EastmanHome UPS / Inverter (HKVA)OPTIMUS, I-CRUZE, ECO WATT NEO — residential UPS18%No equivalent in EastmanHome Battery (Lead Acid)ILST, RC, ILTT, UCTT, PC series — tubular batteries18%Eastman has solar batteries; these are home batteriesSolar Charge Controllers (SCC)SCC 1206/1210/1220/1250 — standalone PWM controllers5%No equivalent in EastmanSPGS Combos500+ combos: Inverter + Battery + Panel in one SKU5%Like Eastman Lith Combo but ~10x more combinationsLarge Commercial GTINXI series up to 350kW, Utility Grade5%Eastman goes to 110kW only3-Phase Hybrid TX10.5KVA to 250KVA commercial hybrid systems5%Larger than Eastman's 3 Hybrid models
+
+2. Critical New Complexity Introduced by Luminous
+A. Dealer vs Distributor Pricing (Two-Tier)
+Luminous has separate price lists for distributors and dealers. The same product has two different base prices:
+ModelDistributor PriceDealer PriceDifferenceOPTIMUS 2300+ (2KVA/24V)₹9,632₹10,210~6% markupECO VOLT NEO 1050₹4,434₹4,700~6% markupNXG 850e₹4,080₹4,325~6% markup
+Your company (ITFI Group) buys at distributor price from Luminous. When you sell to your customers, you need to know if they're dealers (get dealer price as reference for your margin) or end users.
+B. MRP Now Present
+All Luminous products have an MRP. Eastman doesn't publish MRP. This affects how your salespeople quote — they reference MRP as the ceiling.
+C. GST Rate Discrepancy — IMPORTANT
+Luminous charges 18% GST on solar PCUs/inverters, while Eastman charges 12%. This is not an error in the data:
+
+Eastman claims 12% concessional rate under solar energy device notifications
+Luminous may classify the same products under a different HSN code attracting 18%
+Check with your CA before setting GST rates — this affects every invoice you raise and every return you file
+In the system, store the GST rate as-is per product (Eastman products at 12%, Luminous solar PCUs at 18%)
+
+D. Region Exclusions on Price Lists
+Luminous HKVA and Inverter/Battery lists are "PAN India excluding West region and South region." Different prices apply to different zones — same complexity as Eastman panel pallets but for more products.
+E. SPGS Combos are Enormous
+Luminous SPGS (Solar Panel Generation Systems) has 500+ combination SKUs across pages 2-9 of the distributor list. Each combines a specific inverter model + specific battery model (with qty) + specific panel model (with qty). This dwarfs even the Eastman Lith Combo problem.
+
+3. What's The Same Across Both Brands
+
+Distributor Basic Price / Net Effective Price = your buying cost (enters as GRN buyingPrice)
+GST on solar panels = 5%
+GST on solar charge controllers = 5%
+GST on large hybrid/GTI inverters = 5%
+Products need: name, SKU, brand, category, HSN, unit, warranty, specs
+
+
+4. Unified Category List (Eastman + Luminous + Future Brands)
+typescriptconst productCategories = [
+  // Solar Inverters & PCUs
+  "Solar PCU — Sine Wave",          // Eastman Smart/Pro/Prime; Luminous NXG/Solarverter
+  "Solar PCU — MPPT",               // Eastman SmartMax/Promax/PrimeMax; Luminous NXG PRO/SV PRO
+  "Grid Tie Inverter — 1 Phase",    // Eastman GTI 1PH; Luminous NXI 1P
+  "Grid Tie Inverter — 3 Phase",    // Eastman GTI 3PH; Luminous NXI 3P
+  "Hybrid Inverter",                // Eastman Hybrid; Luminous TX series
+  "Home UPS / Inverter",            // Luminous HKVA, OPTIMUS, ECO WATT — no Eastman equivalent
+  // Batteries
+  "Solar Battery — Lead Acid",      // Eastman EM150SB; Luminous LPT/LPTT solar
+  "Solar Battery — Lithium",        // Eastman EM-LIB; future lithium
+  "Home Battery — Lead Acid",       // Luminous RC/ILTT/UCTT — home UPS batteries
+  "Rack / Wall Battery",            // Eastman ES25.6/ES51.2
+  // Solar Panels
+  "Solar Panel / PV Module",        // Eastman & Luminous panels
+  // Controllers & Accessories
+  "Solar Charge Controller",        // Luminous SCC series; no Eastman equivalent
+  "GTI Accessory",                  // CT meters, GPS dongles, WiFi loggers
+  "Inverter Accessory",             // WiFi data loggers, dongles
+  // Kits & Combos
+  "Solar BOS Kit",                  // Eastman BOS Kit
+  "Solar Combo / SPGS",             // Eastman Lith Combo; Luminous SPGS
+];
+
+5. GST Rate by Category (VERIFIED)
+CategoryGSTHSN CodeNotesSolar PCU — Sine Wave (Eastman)12%85044090Concessional solar rateSolar PCU — MPPT (Eastman)12%85044090Concessional solar rateSolar PCU (Luminous NXG/SV series)18%85044090Verify with CAGrid Tie Inverter (all)5%85044090Clearly exemptHybrid Inverter — small (Eastman)12%85044090VerifyHybrid Inverter — large TX (Luminous)5%85044090Clearly exemptSolar Panel / PV Module5%85414011Per scheduleSolar Battery — Lead Acid12%85072000Solar Battery — Lithium12%85076000Home Battery — Lead Acid18%85072000Non-solar rateHome UPS / Inverter18%85044090Non-solar rateSolar Charge Controller5%85044090Exempt as solar deviceSolar BOS Kit12%85044090Primary componentSolar Combo / SPGS5%85044090Per Luminous price listAccessories / Dongles18%varies
+
+6. New Fields Required by Luminous
+FieldTypeReasonmrpDECIMAL(10,2) NULLLuminous products have MRP; Eastman doesn'tcustomerTierPriceJSONB NULLDealer price vs distributor price referencewarrantyPeriodVARCHAR(50) NULLAll products need thisspecsJSONB NULLStructured technical specs per category
+
+Part 2: The "Employee Can Add Custom Fields" Requirement
+The requirement is that employees can add custom spec data from inside the product form itself without waiting for a developer.
+Solution: Dynamic Specs with Custom Fields
+Use the specs JSONB column as a flexible bag of key-value pairs. The product form shows:
+
+Pre-defined spec fields shown automatically when category is selected (VA rating, voltage, etc.)
+"+ Add Custom Field" button at the bottom of the specs section that lets any employee add a new key-value pair (text/number/dropdown)
+Spec suggestions — if 3+ products already have the same custom key, it graduates to a "suggested" spec for that category (shown in the pre-defined section next time)
+
+This way specs are extensible by the team without code changes.
+
+Part 3: Integration Risk Map
+Before building anything, understand which existing modules touch products:
+ModuleHow It Uses ProductsRisk of BreakingSales / QuotationsReads name, unitPrice, gstRate, hsnCode, typeHIGH — any schema change here must be backward compatibleDaily Pricing EngineReads unitPrice, minMarginPct, needsPricingReviewMEDIUM — reads only, no writes except via pricing workflowInventory / GRNReads id, name, unit, minStockLevelMEDIUM — GRN uses product to create stock lotsPurchase / Supply ChainReads id, nameLOWReportsReads category, gstRate, hsnCodeLOW
+Rule: All new columns must have DEFAULT values or be NULL. Never make a new column NOT NULL without a default — it will break existing inserts.
+
+Part 4: Development Plan for Replit AI
+IMPORTANT INSTRUCTIONS FOR REPLIT AI — READ BEFORE CODING
+This is an existing production ERP system with live data and interconnected modules.
+Do NOT modify any existing column names, types, or remove any existing fields.
+Do NOT change any existing API endpoint signatures or response shapes.
+Every new column MUST have a DEFAULT value or be NULL.
+Test each phase in isolation before moving to the next.
+When in doubt, ADD rather than MODIFY.
+
+Phase 1 — Schema Additions (Safe, Non-Breaking)
+Effort: ~2 hours | Risk: Very Low
+Goal: Add new columns to the products table. All are NULL or have defaults — cannot break anything.
+Task 1.1 — Add new columns to products in shared/schema.ts
+Add these columns to the products table definition:
+typescriptwarrantyPeriod: varchar("warranty_period", { length: 50 }),    // e.g. "5 Years", "60+60 Months"
+mrp: decimal("mrp", { precision: 10, scale: 2 }),              // Luminous MRP; NULL for Eastman
+specs: jsonb("specs"),                                          // Flexible spec bag, always NULL default
+Do NOT remove or rename any existing columns.
+Run npm run db:push after adding columns.
+Task 1.2 — Verify no existing queries break
+After db:push, start the dev server and confirm:
+
+Products list loads
+Sales order / quotation line item product selection works
+Daily pricing page loads
+Inventory GRN page loads
+
+If any of these break, rollback the schema change (remove the new columns, push again) and investigate before proceeding.
+
+Phase 2 — Category & GST Defaults Update (Safe, UI Only)
+Effort: ~3 hours | Risk: Low
+Goal: Update Products.tsx to use the new category list and auto-set GST/HSN when category changes. This is a pure UI change — no backend changes needed.
+Task 2.1 — Update productCategories array in Products.tsx
+Replace the existing productCategories array with:
+typescriptconst productCategories = [
+  "Solar PCU — Sine Wave",
+  "Solar PCU — MPPT",
+  "Grid Tie Inverter — 1 Phase",
+  "Grid Tie Inverter — 3 Phase",
+  "Hybrid Inverter",
+  "Home UPS / Inverter",
+  "Solar Battery — Lead Acid",
+  "Solar Battery — Lithium",
+  "Home Battery — Lead Acid",
+  "Rack / Wall Battery",
+  "Solar Panel / PV Module",
+  "Solar Charge Controller",
+  "GTI Accessory",
+  "Inverter Accessory",
+  "Solar BOS Kit",
+  "Solar Combo / SPGS",
+];
+Task 2.2 — Add GST + HSN auto-defaults on category change
+In the category Select onValueChange handler, add auto-population of gstRate and hsnCode:
+typescriptconst categoryDefaults: Record<string, { gstRate: string; hsnCode: string }> = {
+  "Solar PCU — Sine Wave":          { gstRate: "12", hsnCode: "85044090" },
+  "Solar PCU — MPPT":               { gstRate: "12", hsnCode: "85044090" },
+  "Grid Tie Inverter — 1 Phase":    { gstRate: "5",  hsnCode: "85044090" },
+  "Grid Tie Inverter — 3 Phase":    { gstRate: "5",  hsnCode: "85044090" },
+  "Hybrid Inverter":                { gstRate: "5",  hsnCode: "85044090" },
+  "Home UPS / Inverter":            { gstRate: "18", hsnCode: "85044090" },
+  "Solar Battery — Lead Acid":      { gstRate: "12", hsnCode: "85072000" },
+  "Solar Battery — Lithium":        { gstRate: "12", hsnCode: "85076000" },
+  "Home Battery — Lead Acid":       { gstRate: "18", hsnCode: "85072000" },
+  "Rack / Wall Battery":            { gstRate: "12", hsnCode: "85076000" },
+  "Solar Panel / PV Module":        { gstRate: "5",  hsnCode: "85414011" },
+  "Solar Charge Controller":        { gstRate: "5",  hsnCode: "85044090" },
+  "GTI Accessory":                  { gstRate: "18", hsnCode: "85044090" },
+  "Inverter Accessory":             { gstRate: "18", hsnCode: "85044090" },
+  "Solar BOS Kit":                  { gstRate: "12", hsnCode: "85044090" },
+  "Solar Combo / SPGS":             { gstRate: "5",  hsnCode: "85044090" },
+};
+
+// In onValueChange for category Select:
+const defaults = categoryDefaults[v] ?? {};
+setProductForm(prev => ({
+  ...prev,
+  category: v,
+  gstRate: defaults.gstRate ?? prev.gstRate,
+  hsnCode: defaults.hsnCode ?? prev.hsnCode,
+}));
+Task 2.3 — Add new unit options
+Update the unit Select options to include:
+typescript["pcs", "kg", "ltr", "mtr", "box", "set", "WP", "Ah", "KWh"]
+Task 2.4 — Add warrantyPeriod field to the product form
+Add a simple text input (not a Select) after the GST/HSN row:
+tsx<div className="space-y-2">
+  <Label htmlFor="prodWarranty">Warranty Period</Label>
+  <Input
+    id="prodWarranty"
+    data-testid="input-product-warranty"
+    value={productForm.warrantyPeriod ?? ""}
+    onChange={(e) => setProductForm({ ...productForm, warrantyPeriod: e.target.value })}
+    placeholder="e.g. 5 Years, 60+60 Months, 25 Years"
+  />
+</div>
+Add warrantyPeriod and mrp to productForm state initial values (both empty string / null default).
+Task 2.5 — Add mrp field to the product form
+Add an optional MRP field (only visible when not a service):
+tsx{!isService && (
+  <div className="space-y-2">
+    <Label htmlFor="prodMrp">MRP (₹) — optional</Label>
+    <Input
+      id="prodMrp"
+      type="number"
+      data-testid="input-product-mrp"
+      value={productForm.mrp ?? ""}
+      onChange={(e) => setProductForm({ ...productForm, mrp: e.target.value })}
+      placeholder="Leave blank if not applicable"
+    />
+  </div>
+)}
+Task 2.6 — Update the product table columns
+Add "Warranty" column to the products table display. Show it after the Category column.
+
+Phase 3 — Dynamic Specs System (New Feature, No Breaking Changes)
+Effort: ~1 day | Risk: Low-Medium
+Goal: Allow employees to fill in category-specific specs AND add their own custom key-value pairs, all stored in the specs JSONB column.
+Task 3.1 — Define spec templates per category (frontend only)
+Create a constant in Products.tsx:
+typescriptconst categorySpecTemplates: Record<string, Array<{
+  key: string;
+  label: string;
+  type: "text" | "number" | "select";
+  options?: string[];
+  placeholder?: string;
+}>> = {
+  "Solar PCU — Sine Wave": [
+    { key: "vaRating",        label: "VA Rating",              type: "number", placeholder: "e.g. 1000" },
+    { key: "batteryVoltage",  label: "Battery Voltage",        type: "select", options: ["12V","24V","36V","48V","96V","120V","240V"] },
+    { key: "panelSupportW",   label: "Panel Support (Watt)",   type: "number", placeholder: "e.g. 1300" },
+    { key: "lithiumCompat",   label: "Lithium Compatible",     type: "select", options: ["Yes","No"] },
+  ],
+  "Solar PCU — MPPT": [
+    { key: "vaRating",        label: "VA Rating",              type: "number", placeholder: "e.g. 2000" },
+    { key: "batteryVoltage",  label: "Battery Voltage",        type: "select", options: ["12V","24V","36V","48V","96V","120V","240V"] },
+    { key: "panelSupportW",   label: "Panel Support (Watt)",   type: "number", placeholder: "e.g. 2600" },
+    { key: "lithiumCompat",   label: "Lithium Compatible",     type: "select", options: ["Yes","No"] },
+  ],
+  "Grid Tie Inverter — 1 Phase": [
+    { key: "kwRating",  label: "KW Rating",   type: "number", placeholder: "e.g. 5" },
+    { key: "phase",     label: "Phase",        type: "text",   placeholder: "e.g. 1PH:1PH" },
+  ],
+  "Grid Tie Inverter — 3 Phase": [
+    { key: "kwRating",  label: "KW Rating",   type: "number", placeholder: "e.g. 10" },
+    { key: "phase",     label: "Phase",        type: "text",   placeholder: "e.g. 3PH:3PH" },
+  ],
+  "Hybrid Inverter": [
+    { key: "kwRating",        label: "KW Rating",          type: "number" },
+    { key: "batteryVoltage",  label: "Battery Voltage",    type: "select", options: ["24V","48V","96V","120V"] },
+    { key: "pvCapacityKW",    label: "PV Capacity (KW)",   type: "number" },
+  ],
+  "Home UPS / Inverter": [
+    { key: "kvaRating",       label: "KVA Rating",         type: "number", placeholder: "e.g. 2" },
+    { key: "batteryVoltage",  label: "DC Voltage",         type: "select", options: ["12V","24V","36V","48V","72V","96V","120V"] },
+    { key: "waveType",        label: "Wave Type",          type: "select", options: ["Sine Wave","Square Wave"] },
+  ],
+  "Solar Battery — Lead Acid": [
+    { key: "capacityAh",    label: "Capacity (Ah)",   type: "number" },
+    { key: "voltage",       label: "Voltage",          type: "select", options: ["12V","6V"] },
+    { key: "warrantyFmt",   label: "Warranty Format",  type: "text",   placeholder: "e.g. 60+60, 36+24" },
+  ],
+  "Solar Battery — Lithium": [
+    { key: "capacityAh",  label: "Capacity (Ah)",   type: "number" },
+    { key: "voltage",     label: "Voltage (V)",      type: "number", placeholder: "e.g. 12.8, 25.6" },
+    { key: "chemistry",   label: "Chemistry",        type: "select", options: ["LFP","NMC","Other"] },
+  ],
+  "Home Battery — Lead Acid": [
+    { key: "capacityAh",    label: "Capacity (Ah)",   type: "number" },
+    { key: "warrantyFmt",   label: "Warranty Format",  type: "text",   placeholder: "e.g. 24+12, 42+24" },
+    { key: "batteryType",   label: "Type",             type: "select", options: ["Tubular","Flat Plate","Tall Tubular"] },
+  ],
+  "Rack / Wall Battery": [
+    { key: "mountType",   label: "Mount Type",      type: "select", options: ["Wall Mounted","Rack Fitted"] },
+    { key: "voltage",     label: "Voltage (V)",      type: "number", placeholder: "e.g. 25.6, 51.2" },
+    { key: "capacityAh",  label: "Capacity (Ah)",   type: "number" },
+  ],
+  "Solar Panel / PV Module": [
+    { key: "wattPeak",    label: "Watt Peak (WP)",   type: "number", placeholder: "e.g. 550" },
+    { key: "voltage",     label: "Voltage Class",    type: "select", options: ["12V","24V","48V"] },
+    { key: "panelType",   label: "Panel Type",       type: "select", options: ["Mono Perc","Mono Perc Bi-facial","Topcon G2G","Polycrystalline"] },
+    { key: "dcrCompliant",label: "DCR Compliant",    type: "select", options: ["Yes","No"] },
+    { key: "almmApproved",label: "ALMM Approved",    type: "select", options: ["Yes","No"] },
+  ],
+  "Solar Charge Controller": [
+    { key: "currentA",    label: "Current (Amps)",   type: "number", placeholder: "e.g. 10, 20" },
+    { key: "voltage",     label: "Voltage",          type: "select", options: ["12V","24V","12/24V Auto"] },
+    { key: "type",        label: "Type",             type: "select", options: ["PWM","MPPT"] },
+  ],
+};
+Task 3.2 — Build the SpecsEditor component
+Create client/src/components/SpecsEditor.tsx:
+tsx// Props: category, value (Record<string,string>), onChange
+// Shows:
+//   1. Template fields for the selected category (from categorySpecTemplates)
+//   2. Any existing custom fields not in the template (from value)
+//   3. An "+ Add Custom Field" button that opens an inline key+value input row
+//   4. Each field can be removed with an X button
+
+// All values are stored as strings in the JSONB object.
+// Numbers are stored as strings and parsed when needed.
+Implement the component with:
+
+Template fields rendered first (if template exists for category)
+Below template fields, show any existing custom keys not in the template
+"+ Add Custom Field" button adds a new row with two inputs: [Field Name] [Value] [Remove X]
+On change, merge everything into one flat object and call onChange
+
+Task 3.3 — Embed SpecsEditor in the product dialog
+In Products.tsx, add the SpecsEditor between the min margin field and the dialog footer, only when !isService:
+tsx{!isService && (
+  <div className="space-y-2">
+    <Label>Technical Specifications</Label>
+    <SpecsEditor
+      category={productForm.category}
+      value={productForm.specs ?? {}}
+      onChange={(specs) => setProductForm({ ...productForm, specs })}
+    />
+  </div>
+)}
+Add specs: Record<string, string> to productForm state.
+Task 3.4 — Update product submit handler
+In handleSubmitProduct, include specs in the data object sent to the API:
+typescriptconst data = {
+  ...productForm,
+  specs: Object.keys(productForm.specs ?? {}).length > 0 ? productForm.specs : null,
+  // ... rest of existing data
+};
+Task 3.5 — Update edit handler to populate specs
+In openEditProduct, populate specs from the existing product:
+typescriptspecs: (p.specs as Record<string, string>) ?? {},
+Task 3.6 — Show specs in the product table (collapsed)
+In the product table, add a small "Specs" badge/chip when product.specs is not null. Clicking it can show a tooltip or expand row with the spec key-value pairs listed. Keep this minimal — don't break the table layout.
+
+Phase 4 — MRP Display in Sales / Quotations (Small Integration)
+Effort: ~2 hours | Risk: Low
+Goal: When a salesperson selects a product in a quotation/sales order, show the MRP as a reference (read-only) next to the selling price. This helps them ensure they're pricing below MRP.
+Task 4.1 — Fetch MRP from products API
+The existing /api/products endpoint already returns all product fields. After Phase 1 adds the mrp column, it will automatically be included in the response.
+Task 4.2 — Show MRP hint in Sales line item
+In Sales.tsx, where the line item unit price is entered, add a hint below the input:
+tsx{selectedProduct?.mrp && (
+  <p className="text-xs text-muted-foreground mt-1">
+    MRP: ₹{Number(selectedProduct.mrp).toLocaleString("en-IN")}
+    {unitPrice && Number(unitPrice) > Number(selectedProduct.mrp) && (
+      <span className="text-red-500 ml-2">⚠ Above MRP</span>
+    )}
+  </p>
+)}
+This is purely display — no schema or API changes needed.
+
+Phase 5 — Warranty Display in Invoices / Quotations (Small Integration)
+Effort: ~1 hour | Risk: Very Low
+Goal: Show warranty period on quotation PDFs so customers know what warranty applies.
+Task 5.1 — Pass warranty to PDF generation
+In Sales.tsx, when generating a quotation PDF via jsPDF, include the warranty period from the selected product's warrantyPeriod field in the line item details section.
+No schema or API changes needed — warrantyPeriod is already returned from Phase 1.
+
+Phase 6 — Customer Tier / Type Field (For Luminous Dealer Pricing)
+Effort: ~1 day | Risk: Low
+Goal: Allow marking a customer as Distributor / Dealer / End User so sales staff know which reference price tier to use.
+Task 6.1 — Add customerType to customers table in shared/schema.ts
+typescriptcustomerType: varchar("customer_type", { length: 20 }).default("end_user"),
+// Values: 'distributor' | 'dealer' | 'end_user'
+Run npm run db:push.
+Task 6.2 — Add customer type to customer form
+In whatever page manages customers (Leads or SupplyChain), add a Select field for customer type. Show it as a badge in the customer list.
+Task 6.3 — Show customer type in sales order header
+In the Sales Order form, next to the customer selector, show the customer's type as a badge:
+
+🟢 Distributor / 🔵 Dealer / ⚪ End User
+
+This is a hint for the salesperson — it doesn't automatically change prices (the daily pricing engine handles final prices). It's just reference information.
+
+Phase 7 — Bulk Import Endpoint (Priority before entering 300+ products manually)
+Effort: ~1 day | Risk: Low
+Goal: Allow importing products from a CSV/Excel file so the team doesn't enter 300+ products one by one.
+Task 7.1 — Create POST /api/products/import endpoint in server/routes.ts
+Accepts: multipart/form-data with a CSV file
+CSV columns (all optional except name and category):
+  name, sku, brand, category, description, unitPrice, gstRate, hsnCode,
+  unit, minStockLevel, minMarginPct, warrantyPeriod, mrp, type
+
+Processing:
+  - Parse CSV row by row
+  - For each row: validate required fields, check for duplicate SKU
+  - If SKU already exists: skip (do not overwrite) and log to skipped list
+  - If SKU is blank: auto-generate from name + timestamp
+  - Insert valid rows in a transaction
+  - Return: { imported: N, skipped: M, errors: [...] }
+Task 7.2 — Add import UI to Products page
+Add an "Import CSV" button next to the "+ Add Product" button. Opens a simple dialog with:
+
+File upload (CSV only)
+"Download Template" link (generates a sample CSV with all columns)
+Upload button
+After import: show results (imported N, skipped M)
+Link to download an error report if any rows failed
+
+Note: Do NOT allow CSV import to overwrite existing products. Import is append-only. This prevents accidental data loss.
+
+What NOT to Build Yet (Out of Scope for Now)
+The following are noted as future features. Do NOT implement them in this phase — they require careful design and carry higher risk of breaking existing workflows:
+
+Bundle / Kit engine — Lith Combo and SPGS products should be entered manually as individual SKUs for now. Build this in a separate future task.
+Volume / Tier pricing — Pallet pricing entered as separate SKUs for now.
+Regional pricing per customer — Customer zone noted in customer type; pricing handled manually for now.
+Automated stock deduction from bundle components — Out of scope until bundle engine is built.
+
+
+Implementation Order (Safest Path)
+Week 1:
+  Day 1-2:  Phase 1 (Schema) → Test all modules still work → STOP if anything breaks
+  Day 3-4:  Phase 2 (Categories + GST defaults + Warranty + MRP fields)
+  Day 5:    Phase 3.1-3.2 (SpecsEditor component — build and test in isolation)
+
+Week 2:
+  Day 1:    Phase 3.3-3.6 (Embed SpecsEditor in product dialog, test thoroughly)
+  Day 2:    Phase 4 (MRP hint in Sales) + Phase 5 (Warranty in PDFs)
+  Day 3:    Phase 6 (Customer type field)
+  Day 4-5:  Phase 7 (Bulk import endpoint + UI)
+
+Week 3+:
+  Begin entering Eastman and Luminous products via bulk CSV import
+
+Files to Modify (Checklist)
+FilePhaseWhat Changesshared/schema.ts1, 6Add warrantyPeriod, mrp, specs to products; customerType to customersclient/src/pages/Products.tsx2, 3Categories, GST defaults, new form fields, embed SpecsEditorclient/src/components/SpecsEditor.tsx3New file — dynamic specs editor componentclient/src/pages/Sales.tsx4, 5MRP hint display, warranty in PDFserver/routes.ts7New POST /api/products/import endpointclient/src/pages/Leads.tsx (or customers)6Customer type field
+Files to NOT Touch
+server/index.ts          — Don't touch unless adding CRON
+shared/schema.ts (other tables) — Only add; never remove or rename
+All existing API endpoints — Add new ones only; never change existing signatures
+
+End of Development Plan
+Prepared for ITFI Group ERP — Solar Distribution
+Based on Eastman (14 price lists) + Luminous (7 price lists) April 2026

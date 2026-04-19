@@ -1,0 +1,266 @@
+ITFI Group ERP — Multi-Brand Product Catalog Development Plan
+Scope: Eastman + Luminous + Future Brands (Adani Solar, Tata Solar, Waaree, Vikram etc.)
+Prepared based on 14 Eastman + 7 Luminous April 2026 price lists
+
+My Recommendation: Option (b) + 3 Non-Deferrable Items
+Keep the core ticket focused on multi-brand catalog, bundles, tier pricing, and bulk import — but pull in customer-type classification, ALMM/DCR flags, and serial number capture into this ticket now. These three cannot be bolted on retroactively once you have live stock and invoices. The other 5 of Replit AI's 8 items go to follow-up tickets.
+
+Two Things Missing From Both Docs — Do These First
+Brand master table (before any product is entered)
+Do not hardcode brands as a dropdown in the form. Create a brands table with: id, name, defaultMarginPct, gstOverrideAllowed, notes. Seeded with: Eastman, Luminous, Adani Solar, Tata Solar, Vikram Solar, Waaree. Adding any future brand is then one INSERT row — no code deploy needed. Every product links to brands.id as a foreign key, not a free-text field.
+Per-product GST override (not per-brand, per-product)
+The Eastman 12% vs Luminous 18% PCU disagreement proves that category-level GST defaults are only a starting point. The product form must show the auto-default from the category but allow the user to override it per product. When a product's GST rate differs from the category default, show a visible warning: "Non-standard rate — verify with CA before invoicing."
+
+Phase 1 — Schema Foundation
+Effort: ~2 hours | Risk: Very Low
+Goal: Add all new columns and tables. Every new column is either NULL or has a default value — zero risk of breaking existing modules.
+Task 1.1 — Create brands table in shared/schema.ts
+Fields: id (UUID), name (VARCHAR 100), defaultMarginPct (DECIMAL 5,2), gstOverrideAllowed (BOOLEAN DEFAULT true), notes (TEXT NULL). Seed with Eastman, Luminous, Adani Solar, Tata Solar, Vikram Solar, Waaree.
+Task 1.2 — Add new columns to products table
+
+warrantyPeriod VARCHAR(50) NULL — e.g. "5 Years", "60+60 Months", "25 Years"
+mrp DECIMAL(10,2) NULL — Luminous products have MRP; Eastman does not
+specs JSONB NULL — flexible key-value spec bag per product
+serialTracked BOOLEAN DEFAULT false — for batteries and panels that need serial number capture
+packSize INTEGER NULL — panels and accessories ship in fixed pack sizes
+almm BOOLEAN NULL — ALMM list approval (Solar Panels only)
+dcrCompliant BOOLEAN NULL — DCR compliance (Solar Panels only)
+brandId UUID NULL REFERENCES brands(id) — foreign key to brands table
+
+Do NOT remove or rename any existing columns.
+Task 1.3 — Add customerType to customers table
+customerType VARCHAR(20) DEFAULT 'end_user'. Valid values: distributor, dealer, end_user, project, govt. This is the prerequisite for MRP ceiling enforcement in Phase 4.
+Task 1.4 — Run db:push and smoke test
+After pushing schema, start the dev server and confirm all of these still work: Products list, Sales order / quotation line item product selection, Daily Pricing page, Inventory GRN page. If anything breaks, roll back the new columns and investigate before continuing.
+
+Phase 2 — Products Form Updates
+Effort: ~3 hours | Risk: Low
+Goal: Update Products.tsx to use the new brand selector, unified category list, GST auto-defaults, and all new form fields. This is pure UI — no backend changes needed beyond Phase 1.
+Task 2.1 — Brand selector
+Replace the brand free-text input with a Select populated from GET /api/brands. Include an inline "Add new brand" option that opens a small dialog without leaving the product form. Make brand a required field — cannot save a product without selecting a brand.
+Task 2.2 — Unified category list (16 categories, cross-brand)
+Replace the existing productCategories array with the unified list below. This covers Eastman, Luminous, and all future brands:
+Solar PCU — Sine Wave
+Solar PCU — MPPT
+Grid Tie Inverter — 1 Phase
+Grid Tie Inverter — 3 Phase
+Hybrid Inverter
+Home UPS / Inverter
+Solar Battery — Lead Acid
+Solar Battery — Lithium
+Home Battery — Lead Acid
+Rack / Wall Battery
+Solar Panel / PV Module
+Solar Charge Controller
+GTI Accessory
+Inverter Accessory
+Solar BOS Kit
+Solar Combo / SPGS
+Task 2.3 — GST and HSN auto-defaults on category change
+When the user changes category, auto-populate gstRate and hsnCode. Show a warning icon if the user then manually changes the GST rate away from the default. Auto-defaults:
+Solar PCU — Sine Wave          → 12%  / 85044090
+Solar PCU — MPPT               → 12%  / 85044090
+Grid Tie Inverter — 1 Phase    → 5%   / 85044090
+Grid Tie Inverter — 3 Phase    → 5%   / 85044090
+Hybrid Inverter                → 5%   / 85044090
+Home UPS / Inverter            → 18%  / 85044090
+Solar Battery — Lead Acid      → 12%  / 85072000
+Solar Battery — Lithium        → 12%  / 85076000
+Home Battery — Lead Acid       → 18%  / 85072000
+Rack / Wall Battery            → 12%  / 85076000
+Solar Panel / PV Module        → 5%   / 85414011
+Solar Charge Controller        → 5%   / 85044090
+GTI Accessory                  → 18%  / 85044090
+Inverter Accessory             → 18%  / 85044090
+Solar BOS Kit                  → 12%  / 85044090
+Solar Combo / SPGS             → 5%   / 85044090
+Task 2.4 — New unit options
+Update unit Select to include: pcs, kg, ltr, mtr, box, set, WP, Ah, KWh
+Task 2.5 — New form fields
+Add the following fields to the product form:
+
+Warranty Period: plain text input. Placeholder: "e.g. 5 Years, 60+60 Months, 25 Years"
+MRP (₹): number input, optional. Label: "MRP — leave blank if not applicable"
+ALMM Approved: Yes / No / N-A select. Show only when category = Solar Panel / PV Module
+DCR Compliant: Yes / No / N-A select. Show only when category = Solar Panel / PV Module
+Serial Tracked: toggle/checkbox. Show for batteries and panels
+Pack Size: integer input, optional. Label: "Units per pack / pallet (optional)"
+
+Task 2.6 — Customer type on customer form
+Add a Select for customerType on the customer form. Show it as a colored badge in the customer list and in the Sales order header next to the customer name. Suggested colors: green for Distributor, blue for Dealer, grey for End User, purple for Project, orange for Govt.
+Task 2.7 — Product table column additions
+Add Brand and Warranty columns to the product list table. Show ALMM and DCR as small chips on Solar Panel rows.
+
+Phase 3 — Dynamic Specs Editor
+Effort: ~1 day | Risk: Low-Medium
+Goal: Allow employees to fill category-specific specs and add custom key-value pairs, all stored in the specs JSONB column. No developer needed to add new spec fields.
+Task 3.1 — Category spec templates constant
+Create a standalone file (not inline in Products.tsx): client/src/constants/categorySpecTemplates.ts
+Each category has a list of typed fields (number, text, or select with options). Below are the templates for all 16 categories:
+Solar PCU — Sine Wave:
+  vaRating         (number)  "e.g. 1000"
+  batteryVoltage   (select)  12V, 24V, 36V, 48V, 96V, 120V, 240V
+  panelSupportW    (number)  "e.g. 1300"
+  lithiumCompat    (select)  Yes, No
+
+Solar PCU — MPPT:
+  vaRating         (number)  "e.g. 2000"
+  batteryVoltage   (select)  12V, 24V, 36V, 48V, 96V, 120V, 240V
+  panelSupportW    (number)  "e.g. 2600"
+  lithiumCompat    (select)  Yes, No
+
+Grid Tie Inverter — 1 Phase:
+  kwRating         (number)  "e.g. 5"
+  phase            (text)    "e.g. 1PH:1PH"
+
+Grid Tie Inverter — 3 Phase:
+  kwRating         (number)  "e.g. 10"
+  phase            (text)    "e.g. 3PH:3PH"
+
+Hybrid Inverter:
+  kwRating         (number)
+  batteryVoltage   (select)  24V, 48V, 96V, 120V
+  pvCapacityKW     (number)
+
+Home UPS / Inverter:
+  kvaRating        (number)  "e.g. 2"
+  dcVoltage        (select)  12V, 24V, 36V, 48V, 72V, 96V, 120V
+  waveType         (select)  Sine Wave, Square Wave
+
+Solar Battery — Lead Acid:
+  capacityAh       (number)
+  voltage          (select)  12V, 6V
+  warrantyFormat   (text)    "e.g. 60+60, 36+24"
+
+Solar Battery — Lithium:
+  capacityAh       (number)
+  voltage          (number)  "e.g. 12.8, 25.6"
+  chemistry        (select)  LFP, NMC, Other
+
+Home Battery — Lead Acid:
+  capacityAh       (number)
+  warrantyFormat   (text)    "e.g. 24+12, 42+24"
+  batteryType      (select)  Tubular, Flat Plate, Tall Tubular
+
+Rack / Wall Battery:
+  mountType        (select)  Wall Mounted, Rack Fitted
+  voltage          (number)  "e.g. 25.6, 51.2"
+  capacityAh       (number)
+
+Solar Panel / PV Module:
+  wattPeak         (number)  "e.g. 550"
+  voltageClass     (select)  12V, 24V, 48V
+  panelType        (select)  Mono Perc, Mono Perc Bi-facial, Topcon G2G, Polycrystalline
+  dcrCompliant     (select)  Yes, No
+  almmApproved     (select)  Yes, No
+
+Solar Charge Controller:
+  currentA         (number)  "e.g. 10, 20"
+  voltage          (select)  12V, 24V, 12/24V Auto
+  type             (select)  PWM, MPPT
+GTI Accessory, Inverter Accessory, Solar BOS Kit, Solar Combo / SPGS have no fixed template — they use custom fields only.
+Task 3.2 — Build SpecsEditor component
+Create: client/src/components/SpecsEditor.tsx
+Props: category (string), value (Record string to string), onChange (function).
+Behaviour:
+
+Show template fields for the selected category first (from the templates above)
+Below template fields, show any saved custom keys from value that are not in the template
+Show an "+ Add Custom Field" button that adds a new row with two inputs: Field Name and Value, plus a Remove (X) button
+Any key that appears in 3 or more products for the same category automatically gets promoted to a "suggested" field shown in the pre-defined section next time (store this count in localStorage initially)
+On any change, merge template fields + custom fields into one flat object and call onChange
+All values stored as strings in the JSONB object; parse to number when needed
+
+Task 3.3 — Embed SpecsEditor in product dialog
+Add the component between the min margin field and the dialog footer. Show only for non-service products. On edit, populate from existing product.specs JSONB. On save, if specs object has at least one key, send it; otherwise send null.
+Task 3.4 — Specs display in product table
+Add a small "Specs" badge when product.specs is non-null. Hovering the badge shows a tooltip listing the key-value pairs. Do not modify table layout or column widths.
+
+Phase 4 — Sales Module Integration
+Effort: ~3 hours | Risk: Low
+Goal: Surface MRP, ALMM status, and warranty in the sales and quotation flows.
+Task 4.1 — MRP ceiling hint in Sales line item
+When the user enters a unit price on a quotation or sales order line item, check against the product's MRP. If selling price > MRP and customer type is end_user, show a red warning: "Above MRP — end customer pricing." If customer type is dealer or distributor, show it as an informational note only (not an error). Do not hard-block yet — just warn.
+Task 4.2 — ALMM/DCR flag on quotation line item
+When a Solar Panel product is added to a quotation, show small chips: ALMM ✓ or ALMM ✗, DCR ✓ or DCR ✗. If the sales order is tagged as a subsidy scheme (PM Surya Ghar, MNRE Rooftop etc.) and the selected panel is not ALMM approved, show a blocking warning: "This panel is not on the ALMM list — the customer's subsidy application will be rejected. Please select an ALMM-approved panel."
+Task 4.3 — Warranty on quotation PDFs
+Include warrantyPeriod in the jsPDF line item section. Format: show below the product description as "Warranty: 5 Years Manufacturer Warranty." Only show if warrantyPeriod is not blank.
+
+Phase 5 — Bulk CSV Import
+Effort: ~1.5 days | Risk: Low
+Goal: Allow importing 300+ products from a CSV file so the team does not enter them one by one. This must be done before loading the Eastman and Luminous catalogs.
+Task 5.1 — POST /api/products/import endpoint in server/routes.ts
+Accepts: multipart/form-data with a CSV file.
+CSV columns (all optional except name and category):
+name, sku, brand, category, description, unitPrice, gstRate, hsnCode, unit, minStockLevel, minMarginPct, warrantyPeriod, mrp, type, serialTracked, packSize, almm, dcrCompliant, specs (JSON string)
+Processing rules:
+
+Parse row by row
+Validate: name and category must be present; category must match the 16-item list; brand must exist in the brands table (create it if it doesn't exist)
+If SKU already exists in the database: skip and add to skipped list — never overwrite
+If SKU is blank: auto-generate from brand + name + timestamp
+Insert all valid rows in a single transaction
+Return: { imported: N, skipped: M, errors: [ { row: N, reason: "..." } ] }
+
+Task 5.2 — Download Template button
+Generates a sample CSV with all columns listed above. Include one example row per major category type so the person preparing the file knows the expected format for each field. This template is what your team uses for every new brand — paste from their PDF into the template, clean up, import.
+Task 5.3 — Import UI in Products page
+Add an "Import CSV" button next to the existing "+ Add Product" button. Opens a dialog with: file picker (CSV only), Download Template link, a column preview/validation step before confirming import, results summary (Imported N / Skipped M), and a downloadable error report if any rows failed.
+Task 5.4 — Serial number capture at GRN
+For products with serialTracked = true, when a GRN line item is saved, prompt for serial numbers — one per unit received. Store in a new table product_serials: id, productId, grnId, serialNumber, status (in_stock / sold / returned / defective), createdAt. This cannot be added retroactively — once you receive stock without serial capture, warranty claims become unverifiable.
+
+Phase 6 — Bundle / Kit Engine
+Effort: ~2–3 days | Risk: Medium
+Goal: Handle Solar BOS Kit, all 55+ Eastman Lith Combo products, and all 500+ Luminous SPGS combos properly — with automatic stock deduction from components when a bundle is sold.
+Interim workaround (use until Phase 6 is built): Enter BOS Kit as a single product with a fixed price. Enter each Lith Combo and SPGS combo as a separate product SKU at the combo price. Stock will not auto-deduct from components — track manually. This is clunky but functional and does not block catalog loading.
+Task 6.1 — product_bundle_items table
+Fields: id (UUID), parentId (UUID REFERENCES products.id), componentId (UUID REFERENCES products.id), quantity NUMERIC(10,3), unit VARCHAR(20). Add 'bundle' as a valid value for products.type alongside existing 'product' and 'service'.
+Task 6.2 — Bundle components UI in product dialog
+When product type = bundle, show a Components section in the product form. Add/remove component rows, each with a product selector, quantity, and unit. Add a Pricing Mode toggle: Manual (fixed price set on the bundle) or Auto-calculated (sum of component effective prices). Both modes must be supported — BOS Kit uses Manual; SPGS combos can use Auto.
+Task 6.3 — Stock deduction logic
+When a bundle is added to a Sales Order or dispatched, stock deducts from each component product — not from the bundle itself. The bundle has no stock record of its own. When any component is out of stock, show a warning on the quotation: "Insufficient stock — [Component Name] is out of stock."
+Task 6.4 — Bundle price freshness (nightly job)
+For all auto-priced bundles, run a nightly recalculation of the derived price from current component effective prices. If any bundle's computed price has moved more than 2% from the previous day, flag it in the Daily Pricing Review screen. This handles the Luminous SPGS 500+ combo situation automatically — you do not need to manually update 500 combo prices every time a component price changes.
+
+Items Deferred to Follow-Up Tickets
+These are valid requirements from Replit AI's list but are not included in this ticket to keep scope controlled:
+Volume / Tier Pricing engine — Interim workaround: create 3 separate SKUs per panel model per price tier (2-pallet price, 4-pallet price, 8-pallet price). Build the real tier engine in Sprint 2 after the catalog is loaded and real query patterns are visible.
+Regional pricing per customer — Depends on the tier engine. Interim: add deliveryRegion VARCHAR(20) to the customers table now (values: North, South_East, Pan_India) and read it manually when quoting pallet orders.
+Manufacturer rebate and volume incentive tracking — A separate module entirely. Needs a target-vs-actual dashboard per supplier per financial year. Design after the first full year of purchase data.
+Defective return to supplier (RGP flow) — Separate document type from Sales Return. Needs its own status workflow and supplier credit note tracking. Sprint 3.
+MRP ceiling hard-block (admin configurable) — The soft warning lands in Phase 4. The admin-configurable hard-block (allow / warn / block per customer type) requires a settings screen. Defer until you see how often the warning actually fires in real use.
+
+Files to Modify
+FilePhaseWhat Changesshared/schema.ts1, 6Add brands table; add warrantyPeriod, mrp, specs, serialTracked, packSize, almm, dcrCompliant, brandId to products; add customerType to customers; add product_bundle_items table; add product_serials tableclient/src/constants/categorySpecTemplates.ts3New file — spec templates per categoryclient/src/components/SpecsEditor.tsx3New file — dynamic specs editor componentclient/src/pages/Products.tsx2, 3Brand selector, categories, GST defaults, new form fields, embed SpecsEditorclient/src/pages/Sales.tsx4MRP ceiling hint, ALMM warning on subsidy orders, warranty in PDFserver/routes.ts5New POST /api/products/import endpoint; new GET /api/brands endpointclient/src/pages/Leads.tsx or Customers2Customer type field
+Files to NOT Touch
+server/index.ts               — Do not touch unless adding a scheduled job
+All existing API endpoints     — Add new ones only; never change existing signatures
+All existing column names      — Add new columns only; never rename or remove
+
+Week-by-Week Execution Order
+Week 1:
+Day 1–2: Phase 1 (Schema) → smoke test all modules → stop if anything breaks
+Day 3–4: Phase 2 (Form updates — brand, categories, GST defaults, new fields)
+Day 5: Phase 3.1–3.2 (Build SpecsEditor as standalone component, test in isolation)
+Week 2:
+Day 1: Phase 3.3–3.4 (Embed SpecsEditor in product dialog, test edit + save)
+Day 2: Phase 4 (MRP hint, ALMM warning, warranty in PDF)
+Day 3–4: Phase 5.1–5.3 (CSV import endpoint + UI)
+Day 5: Phase 5.4 (Serial number capture at GRN)
+Week 3:
+Day 1–2: Prepare Eastman CSV file (164 SKUs) using the import template
+Day 3: Prepare Luminous CSV file (~200 SKUs)
+Day 4: Bulk import both catalogs, fix validation errors, verify in Products list
+Day 5: Phase 6.1–6.2 (Bundle schema + components UI)
+Week 4:
+Day 1–2: Phase 6.3–6.4 (Stock deduction logic + nightly price freshness job)
+Day 3: End-to-end test — create a quotation with a bundle, dispatch it, verify stock deducted from components
+Day 4: Prepare Adani Solar / Tata Solar CSV template for when those price lists arrive
+Day 5: Handover to sales team with a walkthrough of the new catalog, import process, and quotation ALMM checks
+
+On Uploading the Pricing PDFs
+Upload the Eastman and Luminous PDFs here in chat. I will use them to verify the CSV import template covers every real column across both brands — including Luminous's MRP column, dealer vs distributor price columns, SPGS combo format, Eastman's pallet quantity tiers, and regional pricing columns. The actual production import in the system uses CSV/Excel, not PDF. Your team will paste data from the brand price list into the downloaded template, clean up any formatting, and click Import. One upload per brand, done in seconds rather than hours of manual entry.
+
+End of Plan — ITFI Group ERP Multi-Brand Product Catalog
+Based on Eastman (14 price lists) + Luminous (7 price lists) April 2026
+Designed to be brand-agnostic for Adani Solar, Tata Solar, Vikram Solar, Waaree and any future brand

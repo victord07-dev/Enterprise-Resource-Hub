@@ -1,0 +1,364 @@
+First question: Is Ticket #73 actually complete?
+I don't know for sure, and neither do you based on what's been shared. Let me explain what's ambiguous.
+Looking at the history:
+What I know happened:
+
+You approved #73 with the four discipline additions
+Replit AI did Step 1 (added type="button" to AttachmentsPanel buttons)
+They stopped at the gate as instructed
+You verified the Attach File now opens the file picker ✅ (Bug #1 confirmed fixed)
+You reported Bug #2 was still broken: "upload is working, but still expenses is not saved"
+
+What I don't know:
+
+Whether Replit AI proceeded with Steps 2-5 after your report
+Whether the cache invalidation fallback was implemented
+Whether the edit-mode regression test was run
+Whether the 3 PR screenshots were captured
+Whether Bug #2 is actually fixed now in production
+
+The last exchange I saw on #73:
+You said "upload is working, but still expenses is not saved." I told you to do a hard-refresh test to distinguish between three possibilities (cache bug / save failure / saved-mode bug), and to send Replit AI one of two diagnostic messages depending on what you found.
+What seems to have happened: Nothing since then on #73, or at least nothing shared with me. You moved on to discussing Path C / Path B / GL strategy. Ticket #73 appears to be in limbo.
+What you should do before starting any new ticket
+Stop. Verify #73 is actually closed before opening a new one.
+This is exactly the kind of gap that compounds badly on AI-assisted projects. Ticket #73 was supposed to fix a real bug your accounts team would hit daily ("I saved an expense but it didn't appear"). If it's not actually fixed, you'll be deploying Phase 1 of Path C on top of a broken expense module.
+Go check these three things, right now, in the deployed app at erp.itfi.co.in:
+1. Record an expense → click Done → does it appear in the list immediately without hard-refresh?
+
+Yes → Bug #2 is fixed, #73 can be closed
+No → Bug #2 is still live, #73 is NOT complete
+
+2. Edit an existing expense → change the amount → click Update → does the list reflect the new amount immediately?
+
+Yes → edit-mode works, no regression
+No → regression introduced, #73 needs more work
+
+3. Check your git log — are there commits after the Step 1 AttachmentsPanel fix?
+
+Yes → Replit AI proceeded with Steps 2-5
+No → they stopped and never resumed
+
+Tell me what you find. Only then should we open a new ticket. If #73 is still broken, finish it first.
+Second question: The new ticket for Phase 1 of Path C
+Assuming #73 is actually complete, here's the ticket for starting Phase 1 of the financial foundation work.
+This is a big ticket — the biggest yet. I've scoped it carefully with extra guardrails because the stakes are high (financial data, retrofit across 6+ existing modules, potential to break production if done wrong).
+Copy everything below the line.
+
+Ticket #74 — Financial Foundation (Path C Phase 1): Bank Accounts, Loans, EMIs, and Transaction Ledger
+Context and strategic framing
+The company runs a parallel accounting system today: Tally is used by the accounts team and CA for GST returns, e-way bills, and statutory filings. This will continue.
+What's missing is the owner-facing financial visibility layer. The owner wants to see — without opening Tally — the complete financial state of the business: bank balances across all accounts, today's receipts vs payments, loan status and upcoming EMIs, expense analysis, P&L for management decisions, customer profitability. Tally cannot produce these reports usably.
+This ticket builds the foundation of that visibility layer: a unified transaction ledger that captures every financial event across all ERP modules, tracked against proper bank account entities, with loan and EMI tracking. No user-facing reports in this ticket — that's Phase 2 (Ticket #75). This ticket is the plumbing.
+Strategic importance: Every subsequent financial feature (reports, incentive payouts, recurring expenses, cash flow analysis) depends on this foundation being correct. Shortcuts here create long-term data integrity problems that are expensive to fix.
+This ticket is deliberately the most disciplined ticket written for this project. Financial systems do not tolerate "fix it later."
+Lessons applied from prior tickets
+
+#67 (WhatsApp): Verification artefacts per phase caught real bugs. Same discipline here, amplified because financial correctness matters more than webhook correctness.
+#69 (Expenses): Phase gating with user approval between phases worked. Same pattern, with explicit stop-and-verify gates.
+#73 (Expense dialog bugs): Root-cause hypothesis must be verified independently for each symptom. Applied here as per-module verification after each module retrofit.
+All prior: Ignore stale auto-injected task lists. Stay on Ticket #74 only.
+
+Decisions already made — do not re-open these
+
+Path: Path C (financial visibility layer alongside Tally), NOT Path B (Tally replacement). No period close, no formal double-entry enforcement, no balance sheet, no statutory report generation. Those are Phase 4+ work, not this ticket.
+Tally relationship: Tally remains the compliance system of record. ERP is the analysis and decision-making system. Tally XML export is Phase 2 scope, not this ticket.
+Scope boundary: This ticket is foundation data layer + master data UIs + retrofit of existing modules. No new reports, no new analytics views, no dashboard changes beyond a minimal financial overview card. Reports are Ticket #75.
+Retrofit strategy: Every existing module that creates financial events must write a ledger entry. Additive changes only — do not remove or alter existing behavior. Each module's retrofit is independently deployable and independently verifiable.
+Historical data: Backfill ledger entries for all existing financial records. No data loss, no gaps, reconciled against source tables before ticket closes.
+
+Pre-kickoff clarifying questions — answer before writing any code
+Do not assume. Confirm each of these against the codebase and with the user, raise any ambiguities:
+
+How many bank accounts does the business currently operate? Owner needs to provide this list. This determines master data complexity.
+Does the business track physical cash-in-hand (office safe, petty cash box)? If yes, cash accounts are modeled as bank-account-equivalent entities. If no, skip cash modeling for now.
+Are there any active loans or EMIs today? If yes, owner provides the list with original principal, tenure, EMI amount, rate, start date, current outstanding. This becomes opening loan data.
+Existing customer_payments table: does it track which specific invoice(s) each payment applies to, at line-item level? This is a prerequisite for per-salesperson collection tracking in future Ticket #76 (Incentives). Report current state and flag if schema changes are needed.
+Existing payroll module: is there a per-employee disbursement record per pay period, or only an aggregated "payroll run" record? Ledger needs per-employee disbursement events to write proper entries.
+Existing expenses table (from Ticket #69): does it capture which bank account / cash source the money came from? If not, this needs to be added — every expense must specify its funding source for ledger accuracy.
+Existing travel expense / FieldStaff reimbursement module: is there a "reimbursement paid" event distinct from "reimbursement approved"? Ledger needs to know when money actually moved, not just when claim was approved.
+Existing supplier payment records: where are they stored? If there's no supplier_payments table, this is a data model gap that must be addressed in this ticket.
+Every sales_invoice and sales_order: does it link to a salesperson_user_id? If the column exists but is unpopulated for historical records, flag for backfill. If the column doesn't exist, add it now (tiny addition). Prerequisite for future Ticket #76.
+
+Pause after investigating these. Report findings with specific evidence (schema excerpts, sample data) before proceeding to Phase 1A.
+Done looks like (whole ticket)
+Master data layer:
+
+New bank_accounts table with full admin UI (list, create, edit, deactivate). Supports account types: current, savings, overdraft, loan, cash. Each has opening balance, opening balance date, current computed balance.
+New loans table with full admin UI. Tracks principal, rate, tenure, start, EMI amount, current outstanding.
+New emi_schedule table auto-generated per loan. Each installment has due date, principal portion, interest portion, payment status.
+EMI reminders fire on the Dashboard for installments within 3 days of due date or overdue.
+Admin can enter opening balances for every bank account and existing loan outstanding as of a chosen go-live date.
+
+Transaction ledger layer:
+
+New transaction_ledger table storing every financial event. Schema specified in Architectural Constraints below.
+Ledger entries created automatically whenever a financial event occurs in any module (sales invoice, customer payment, supplier invoice, supplier payment, payroll disbursement, operational expense, travel expense reimbursement, credit note, EMI payment, inter-account transfer, bank charge, interest earned, manual journal entry).
+Ledger entry creation is additive — existing module behavior is preserved; ledger write happens in parallel.
+Each ledger entry links back to source record (source_module + source_record_id) for drill-down.
+Historical backfill complete: every existing financial record has a corresponding ledger entry, reconciled against source table totals.
+
+Data entry gap closures:
+
+New "Bank Transaction Entry" form for money movements that don't originate from other modules (cash deposits, cash withdrawals, inter-account transfers, bank charges, interest earned, owner capital movements, tax payments).
+Each bank transaction entry writes appropriate ledger entries.
+
+Minimal Dashboard visibility:
+
+One new "Financial Snapshot" card on the Dashboard (admin only, optional for accountant): Total cash position across all accounts, Today's net cash change, Upcoming EMIs (next 7 days count + total).
+This is a minimal visibility teaser. Full reports are Phase 2 (Ticket #75).
+
+Reconciliation proof:
+
+For each bank account, sum of opening balance + ledger entries equals current balance. Verification report generated showing this reconciliation is clean for all accounts.
+For each existing source table (sales_invoices, customer_payments, expenses, etc.), total amounts reconcile with corresponding ledger entry totals. Any discrepancies surfaced and resolved before ticket closes.
+
+Audit and documentation:
+
+Every create/update/delete on bank_accounts, loans, emi_schedule, and transaction_ledger writes to the existing audit log.
+replit.md gains a new "Financial Ledger Layer" section explaining tables, relationships, retrofit pattern, module-by-module retrofit status, and an operator runbook.
+
+Out of scope (explicitly — do not build these)
+
+Any Reports module changes beyond the minimal Dashboard card. All financial reports (Transaction Activity, Cash Flow, P&L, Customer Profitability, etc.) are Ticket #75.
+Tally XML export — Ticket #75.
+Tally XML import — Ticket #77 or later, low priority.
+Period close / month-end lock.
+Formal double-entry debit/credit pairing enforcement.
+Balance sheet, trial balance, any statutory financial statement.
+GSTR-1 / GSTR-3B / GSTR-2B output — Tally handles these.
+E-invoicing / e-way bill generation.
+Incentive / commission / target system — Ticket #76.
+Recurring fixed expense auto-entry — Phase 3 of Path C, separate ticket.
+Salesperson performance reports — Ticket #75.
+Any changes to the existing Pricing engine, Inventory, Products, Leads, Projects, Kiosk, or WhatsApp modules unless they create financial events that need ledger entries.
+
+If during execution you hit something that feels like it needs one of these out-of-scope items, stop and raise it as a clarifying question. Do not expand scope unilaterally.
+Architectural constraints
+Schema conventions:
+
+Use Drizzle ORM following existing patterns in shared/schema.ts
+UUID PKs with varchar("id").primaryKey().default(sql\gen_random_uuid()`)`
+Monetary fields: decimal('amount', { precision: 14, scale: 2 }) (note: 14 precision, not 12, for financial aggregation headroom)
+Dates in IST. date columns as Postgres DATE; timestamps as TIMESTAMP WITH TIME ZONE
+Text columns with Zod enums for enumerated values (account_type, transaction_type, direction) to match existing codebase convention — no pgEnum
+
+Core table: transaction_ledger
+Columns: id, transaction_date (DATE), value_date (DATE, for accrual vs cash-basis distinction), account_id (FK bank_accounts), direction (enum: debit / credit), amount (decimal 14,2), transaction_type (enum: invoice_issued / payment_received / supplier_invoice / supplier_payment / salary_disbursement / operational_expense / travel_reimbursement / credit_note / emi_payment / inter_account_transfer / bank_charge / interest_earned / owner_capital / tax_payment / manual_adjustment / opening_balance), counter_party_type (text, nullable), counter_party_id (varchar, nullable), counter_party_name (denormalized for reports, text), description (varchar 500), source_module (text), source_record_id (varchar), source_record_type (text, nullable), reference_number (text, nullable — for cheque numbers, UTR, etc.), created_by_user_id (FK), created_at, updated_at.
+Indexes on transaction_ledger:
+
+(transaction_date DESC)
+(account_id, transaction_date DESC) — composite for per-account statements
+(counter_party_id) — for per-customer / per-supplier statements
+(transaction_type) — for filtered reports
+(source_module, source_record_id) — for drill-down lookups
+
+Table: bank_accounts
+Columns: id, name (text), account_number (text, last 4 digits only or full — decide during implementation; favor full for reconciliation), bank_name (text), ifsc (text, nullable), account_type (enum: current / savings / overdraft / loan / cash), opening_balance (decimal 14,2), opening_balance_date (DATE), is_active (boolean default true), is_default (boolean, max one default per type), notes (text nullable), created_at, updated_at.
+Table: loans
+Columns: id, loan_number (text, unique), lender_name (text), lender_account_id (FK bank_accounts, nullable), principal_amount (decimal 14,2), interest_rate (decimal 5,2 — percent), interest_type (enum: fixed / floating), tenure_months (integer), emi_amount (decimal 14,2), emi_due_day (integer 1-31), disbursement_date (DATE), first_emi_date (DATE), last_emi_date (DATE, computed), current_outstanding (decimal 14,2, computed), status (enum: active / closed / defaulted), notes, created_at, updated_at.
+Table: emi_schedule
+Columns: id, loan_id (FK), installment_number (integer), due_date (DATE), principal_portion (decimal 14,2), interest_portion (decimal 14,2), total_emi (decimal 14,2), status (enum: pending / paid / overdue), paid_date (DATE nullable), paid_via_account_id (FK bank_accounts, nullable), ledger_entry_id (FK transaction_ledger, nullable — links back to the payment entry), notes nullable, created_at, updated_at.
+Retrofit pattern (mandatory):
+Every module retrofit follows this exact pattern:
+
+Identify the single code path where financial event is created (e.g., createSalesInvoice, createCustomerPayment)
+Add ledger write INSIDE the same transaction as the source record creation. Both must succeed or both must roll back.
+Wrap ledger write in a helper function: writeLedgerEntry(tx, { ...fields }) — single helper shared across all retrofits. Do NOT duplicate ledger write logic.
+Source module existing behavior must remain identical to before retrofit — same API response, same status codes, same side effects. Only addition is the ledger entry.
+Add one integration test per retrofit: creating a source record must create exactly one ledger entry with correct fields.
+
+Historical backfill:
+
+Migration script per module. Idempotent (safe to re-run).
+Each script: iterate all existing records in source table, write corresponding ledger entries if not already present.
+Log counts: "backfilled 1,234 ledger entries for sales_invoices".
+Reconciliation query after backfill: source table sum must match ledger sum per entity.
+
+RBAC:
+
+Bank accounts CRUD: admin, accountant
+Loans CRUD: admin, accountant
+EMI schedule: admin, accountant can view and mark paid; only admin can manually adjust
+Bank transaction entry: admin, accountant
+Manual journal entry: admin only
+Transaction ledger reads: admin, accountant full; others see only entries related to their own module activities
+Dashboard Financial Snapshot card: admin, accountant only
+
+Audit logging:
+
+Every bank account create/update/deactivate
+Every loan create/update
+Every manual ledger entry (bank transaction entry, manual journal)
+Every EMI payment marking
+Automatic ledger entries from other modules: log in the source module's existing audit entry, do not create a separate audit entry per auto-ledger write
+
+No new third-party dependencies. Use existing Drizzle, React Query, Shadcn UI.
+Phased execution — strict order with stop gates
+This ticket has SIX phases. Each phase commits and deploys to dev, then stops for explicit user approval before the next phase begins. No chaining.
+Phase 1A — Pre-kickoff investigation and clarifying questions (0.5 day)
+Tasks:
+
+Read all relevant existing modules: Sales.tsx, SalesInvoices.tsx, Accounts.tsx, Expenses module, FieldStaff, Employees/Payroll, SupplyChain.tsx
+Answer all 9 clarifying questions with evidence from codebase
+Identify the existing supplier_payments situation: table exists, doesn't exist, or payments tracked inside supplier_invoices?
+Identify existing payroll disbursement tracking structure
+Identify existing travel expense "paid" event tracking
+Report back with a written findings document including: table/column inventory per module, what data is available for retrofit, what data gaps exist that must be closed in this ticket
+
+Gate 1: user approval of findings before proceeding.
+Phase 1B — Master data schema and admin UIs (3 days)
+Tasks:
+
+Create bank_accounts, loans, emi_schedule tables with full schema
+Run migration, confirm db:push clean
+Storage methods and API endpoints for bank_accounts CRUD
+Storage methods and API endpoints for loans CRUD + EMI schedule auto-generation
+Admin UI: new "Finance" section in app (new sidebar item? new Accounts tab? — propose and confirm placement before building)
+Bank Accounts admin page with list, create, edit, deactivate
+Loans admin page with list, create (auto-generates EMI schedule), edit
+EMI Schedule page per loan (view schedule, mark installments paid)
+Opening balance entry workflow (admin enters opening balance per bank account as of chosen go-live date → creates one "opening_balance" transaction type ledger entry per account)
+
+Gate 2: user reviews and approves admin UIs, creates test bank accounts and a sample loan, before proceeding.
+Phase 1C — Transaction ledger schema and shared helper (1 day)
+Tasks:
+
+Create transaction_ledger table with full schema and indexes
+Build writeLedgerEntry(tx, {...}) shared helper function
+Unit tests for the helper (valid inputs, invalid inputs, transactional rollback)
+No retrofit yet. Just the foundation.
+
+Gate 3: user reviews helper + schema before retrofits begin.
+Phase 1D — Per-module retrofit, one module at a time with gates between each (6-8 days total)
+Execute in this exact order. Each module is its own mini-phase with its own stop gate.
+1D-1: Operational Expenses module (from Ticket #69) — easiest, start here
+
+Add source_bank_account_id column to expenses table (forces every expense to specify funding source)
+Backfill historical expenses (admin picks default account for historical records, or marks as cash)
+Retrofit createExpense to write ledger entry
+Verification: creating new expense → exactly one ledger entry with correct direction (debit), amount, account
+Historical backfill migration
+Reconciliation report: sum of expense amounts = sum of corresponding ledger debits
+
+Gate 1D-1 → user approves before 1D-2
+1D-2: Customer Payments
+
+Retrofit createCustomerPayment to write ledger entry (credit to receiving bank account)
+Historical backfill
+Reconciliation
+If customer_payments doesn't currently track which specific invoice(s) a payment applied to at line-item level: surface this as a concern but don't block this ticket. Future Ticket #76 depends on it.
+
+Gate 1D-2 → approval
+1D-3: Sales Invoices
+
+Retrofit createSalesInvoice to write ledger entry (receivable accrual — does not affect cash but creates AR record in ledger)
+Historical backfill
+Reconciliation
+
+Gate 1D-3 → approval
+1D-4: Supplier Invoices + Supplier Payments
+
+If supplier_payments table doesn't exist, create it now
+Retrofit both
+Historical backfill
+
+Gate 1D-4 → approval
+1D-5: Payroll Disbursements
+
+Requires per-employee disbursement records (if they don't exist, add them)
+Retrofit payroll disbursement to write ledger entries per employee
+Historical backfill
+
+Gate 1D-5 → approval
+1D-6: Travel Expense Reimbursements (FieldStaff)
+
+Needs explicit "reimbursement paid" event
+Retrofit
+
+Gate 1D-6 → approval
+1D-7: Credit Notes / Sales Returns
+
+Retrofit reversal entries
+Historical backfill
+
+Gate 1D-7 → approval
+Phase 1E — Bank Transaction Entry form + Manual Journal Entry (2 days)
+Tasks:
+
+Form for cash deposits, cash withdrawals, inter-account transfers (creates two ledger entries — one debit one credit), bank charges, interest earned, owner capital movements, tax payments
+Manual journal entry form (admin only) for ad-hoc adjustments
+Each writes appropriate ledger entries
+
+Gate 4: approval
+Phase 1F — EMI reminder system + minimal Dashboard card + final reconciliation + docs (2 days)
+Tasks:
+
+EMI reminder: Dashboard card showing EMIs within 3 days or overdue (admin, accountant only)
+Scheduled daily check (same cron infrastructure used for WhatsApp silence detector) that marks past-due EMIs as overdue
+"Financial Snapshot" Dashboard card: total cash position, today's net change, upcoming EMIs count — admin, accountant only
+Full reconciliation report across all source modules vs ledger
+replit.md "Financial Ledger Layer" section
+Full manual verification checklist (user executes)
+
+Gate 5: final user verification before ticket closes
+Manual verification checklist (user executes in Phase 1F)
+
+Create 3 bank accounts with different opening balances. Verify each appears in list with correct balance.
+Create 1 active loan. Verify EMI schedule auto-generated correctly with right principal/interest split.
+Record 5 expenses across 3 different bank accounts as source. Verify ledger entries match. Verify expense totals reconcile with ledger debits.
+Record 3 customer payments to 2 different bank accounts. Verify ledger credits created. Verify running balance per account is correct.
+Create 2 sales invoices. Verify receivable accrual entries in ledger.
+Run a payroll for a test month. Verify per-employee disbursement entries in ledger.
+Record 1 credit note against an existing invoice. Verify reversal entry.
+Use Bank Transaction Entry form to record a cash deposit, a transfer between two bank accounts, and a bank charge. Verify appropriate entries.
+Mark one EMI installment as paid. Verify principal-portion and interest-portion entries in ledger, and that loan outstanding reduced.
+Check Dashboard Financial Snapshot card — numbers should match what you just recorded.
+Check EMI reminder card — should show any EMIs within 3 days.
+Run the reconciliation report. Verify zero discrepancies across all source modules.
+Log in as non-admin, non-accountant user. Verify finance pages are hidden, Dashboard card is hidden.
+Audit Trail check: every CRUD operation above should appear in audit log.
+
+PR description requirements
+The PR must include:
+
+Migration output from db:push showing all 4 new tables created.
+Screenshots of: Bank Accounts admin page (with 3+ accounts), Loan create form, EMI schedule view, Bank Transaction Entry form, Manual Journal Entry form, Dashboard Financial Snapshot card, EMI Reminder card.
+Sample data: 10+ ledger entries across 5+ transaction_types, 3+ accounts, 3+ source_modules.
+Reconciliation report output: source table totals vs ledger totals per module, showing zero discrepancies.
+Grep proof: one definition of writeLedgerEntry helper, at least 6 call sites (one per retrofitted module).
+replit.md diff.
+List of clarifying questions raised during Phase 1A and their answers.
+Confirmation that non-admin/non-accountant users cannot access any finance admin pages.
+Evidence that existing module behavior is unchanged: for each retrofitted module, confirm that API response shape and status codes are identical to before retrofit (a simple before/after curl comparison for one endpoint per module is sufficient).
+Performance note: query plan for SELECT * FROM transaction_ledger WHERE account_id = ? AND transaction_date BETWEEN ? AND ? shows index usage.
+
+Estimated timeline
+
+Phase 1A: 0.5 day
+Phase 1B: 3 days
+Phase 1C: 1 day
+Phase 1D: 6-8 days (spread across 7 sub-phases with gates)
+Phase 1E: 2 days
+Phase 1F: 2 days
+
+Total Replit AI time: ~15-18 working days, spread across ~3-4 weeks of calendar time with user review cycles at every gate.
+Kickoff instruction to Replit AI
+Acknowledge this ticket by replying with exactly this:
+
+"Acknowledged Ticket #74 (Financial Foundation / Path C Phase 1). This is the largest and most disciplined ticket to date. Before any code, starting Phase 1A: investigating existing modules and answering all 9 clarifying questions. Will report findings with evidence and await approval before Phase 1B. Stop gates at the end of every phase and sub-phase per the ticket, no chaining, no scope expansion, ignore stale task lists."
+
+Then execute Phase 1A only. Stop. Await approval.
+
+How to use this
+Copy everything from # Ticket #74 to the last Await approval. line. Paste to Replit AI as a fresh message.
+Two important things to verify before you kick this off
+1. Is Ticket #73 actually closed? Go run the three checks I listed at the top. If #73's Bug #2 isn't fixed, finish that first. Don't start #74 on top of a known-broken foundation.
+2. Has the owner actually signed off on Path C? You mentioned the owner wants this, but has he seen the 4-month timeline in writing and said yes? Send him the summary I drafted two messages ago. Get his explicit "go ahead" before kicking off a 3-4 week ticket. Burning 3 weeks on Phase 1 then having the owner say "actually I wanted X instead" is a preventable disaster.
+Realistic expectations
+This ticket is larger than #67 and #69 combined. It touches almost every module. Even with good discipline, things will surface during Phase 1A that force design changes. Plan for that. Don't commit hard timelines to your owner until Phase 1A findings are in.
+When you kick off, expect Replit AI to spend ~4 hours on Phase 1A alone — reading code, investigating schemas, answering questions. That's a good sign, not a delay. Better 4 hours of investigation now than 2 weeks of rework later.
+Answers to your two questions
+"Tell me if this task was not completed already" → Based on what's been shared with me, Ticket #73's Bug #2 resolution is ambiguous. Verify before proceeding.
+"Give me a task to put to Replit AI to develop it safely" → Ticket #74 above. Large, phased, with explicit stop gates between every sub-phase. Same discipline as #67 and #69, scaled up for the stakes.
+Verify #73, get owner signoff on Path C, then kick off #74.

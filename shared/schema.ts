@@ -23,6 +23,16 @@ export const customers = pgTable("customers", {
   address: text("address"),
   gstNumber: text("gst_number"),
   contactPerson: text("contact_person"),
+  customerType: text("customer_type").notNull().default("end_user"),
+});
+
+export const brands = pgTable("brands", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull().unique(),
+  defaultMarginPct: decimal("default_margin_pct", { precision: 5, scale: 2 }).notNull().default("10.00"),
+  gstOverrideAllowed: boolean("gst_override_allowed").notNull().default(false),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
 });
 
 export const suppliers = pgTable("suppliers", {
@@ -52,7 +62,41 @@ export const products = pgTable("products", {
   gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   needsPricingReview: boolean("needs_pricing_review").notNull().default(false),
   minMarginPct: decimal("min_margin_pct", { precision: 5, scale: 2 }).notNull().default("5.00"),
+  brandId: varchar("brand_id"),
+  distributorPrice: decimal("distributor_price", { precision: 12, scale: 2 }),
+  warrantyPeriod: text("warranty_period"),
+  mrp: decimal("mrp", { precision: 12, scale: 2 }),
+  specs: jsonb("specs"),
+  packSize: text("pack_size"),
+  almm: boolean("almm").notNull().default(false),
+  dcrCompliant: boolean("dcr_compliant").notNull().default(false),
+  modelSeries: text("model_series"),
+  lifecycleStatus: text("lifecycle_status").notNull().default("active"),
+  replacedByProductId: varchar("replaced_by_product_id"),
+  applicableRegions: text("applicable_regions").array(),
+  priceListVersion: text("price_list_version"),
+  customerTierPrice: jsonb("customer_tier_price"),
 });
+
+export const productBundleItems = pgTable("product_bundle_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  bundleProductId: varchar("bundle_product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  componentProductId: varchar("component_product_id").notNull().references(() => products.id),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull(),
+  unit: text("unit").notNull().default("pcs"),
+}, (t) => ({
+  bundleIdx: index("pbi_bundle_idx").on(t.bundleProductId),
+  componentIdx: index("pbi_component_idx").on(t.componentProductId),
+}));
+
+export const customFieldUsageStats = pgTable("custom_field_usage_stats", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  category: text("category").notNull(),
+  fieldKey: text("field_key").notNull(),
+  count: integer("count").notNull().default(0),
+}, (t) => ({
+  uniqueCategoryKey: uniqueIndex("cfus_unique_cat_key").on(t.category, t.fieldKey),
+}));
 
 export const warehouses = pgTable("warehouses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -655,6 +699,47 @@ export const insertLeadFollowupSchema = createInsertSchema(leadFollowups).omit({
 export const insertQuotationActivitySchema = createInsertSchema(quotationActivities).omit({ id: true, createdAt: true });
 export const insertQuotationFollowupSchema = createInsertSchema(quotationFollowups).omit({ id: true, createdAt: true });
 export const insertSupplierProductSchema = createInsertSchema(supplierProducts).omit({ id: true });
+export const insertBrandSchema = createInsertSchema(brands).omit({ id: true });
+export const insertProductBundleItemSchema = createInsertSchema(productBundleItems).omit({ id: true });
+export const insertCustomFieldUsageStatSchema = createInsertSchema(customFieldUsageStats).omit({ id: true });
+
+export const customerTierPriceSchema = z.object({
+  distributor: z.number().nonnegative().optional(),
+  dealer: z.number().nonnegative().optional(),
+  sub_distributor: z.number().nonnegative().optional(),
+  scheme: z.number().nonnegative().optional(),
+}).catchall(z.number().nonnegative());
+
+export const productSpecsSchema = z.record(z.union([z.string(), z.number(), z.boolean(), z.null()]));
+
+export const customerTypeValues = ["distributor", "dealer", "end_user", "project", "govt"] as const;
+export const customerTypeSchema = z.enum(customerTypeValues);
+
+export const productLifecycleValues = ["active", "discontinued", "replaced", "draft"] as const;
+export const productLifecycleSchema = z.enum(productLifecycleValues);
+
+export const applicableRegionValues = ["North", "South", "East", "West", "Northeast"] as const;
+export const applicableRegionSchema = z.enum(applicableRegionValues);
+
+export const productCategoryValues = [
+  "Solar PCU - Sine Wave",
+  "Solar PCU - MPPT",
+  "Grid Tie Inverter - 1 Phase",
+  "Grid Tie Inverter - 3 Phase",
+  "Hybrid Inverter",
+  "Home UPS / Inverter",
+  "Solar Battery - Lead Acid",
+  "Solar Battery - Lithium",
+  "Home Battery - Lead Acid",
+  "Rack / Wall Battery",
+  "Solar Panel / PV Module",
+  "Solar Charge Controller",
+  "GTI Accessory",
+  "Inverter Accessory",
+  "Solar BOS Kit",
+  "Solar Combo / SPGS",
+] as const;
+export const productCategorySchema = z.enum(productCategoryValues);
 export const insertPurchaseOrderItemSchema = createInsertSchema(purchaseOrderItems).omit({ id: true });
 export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
 export const insertDeliveryChallanSchema = createInsertSchema(deliveryChallans).omit({ id: true, createdAt: true });
@@ -702,6 +787,17 @@ export type LeadFollowup = typeof leadFollowups.$inferSelect;
 export type QuotationActivity = typeof quotationActivities.$inferSelect;
 export type QuotationFollowup = typeof quotationFollowups.$inferSelect;
 export type SupplierProduct = typeof supplierProducts.$inferSelect;
+export type Brand = typeof brands.$inferSelect;
+export type InsertBrand = z.infer<typeof insertBrandSchema>;
+export type ProductBundleItem = typeof productBundleItems.$inferSelect;
+export type InsertProductBundleItem = z.infer<typeof insertProductBundleItemSchema>;
+export type CustomFieldUsageStat = typeof customFieldUsageStats.$inferSelect;
+export type InsertCustomFieldUsageStat = z.infer<typeof insertCustomFieldUsageStatSchema>;
+export type CustomerType = typeof customerTypeValues[number];
+export type ProductLifecycle = typeof productLifecycleValues[number];
+export type ApplicableRegion = typeof applicableRegionValues[number];
+export type ProductCategory = typeof productCategoryValues[number];
+export type CustomerTierPrice = z.infer<typeof customerTierPriceSchema>;
 export type PurchaseOrderItem = typeof purchaseOrderItems.$inferSelect;
 export type StockMovement = typeof stockMovements.$inferSelect;
 export type DeliveryChallan = typeof deliveryChallans.$inferSelect;

@@ -19,6 +19,17 @@ import { Badge } from "@/components/ui/badge";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
+/** Phase 3: customer-type label + badge — uses existing Badge variants (no new colors invented). */
+const customerTypeLabel = (t?: string | null) => (t === "business" ? "Business" : "End User");
+function CustomerTypeBadge({ type }: { type?: string | null }) {
+  const t = type === "business" ? "business" : "end_user";
+  return (
+    <Badge variant="secondary" className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${t}`}>
+      {customerTypeLabel(t)}
+    </Badge>
+  );
+}
+
 interface LineItem {
   itemType: string;
   productId: string;
@@ -514,7 +525,9 @@ export default function Sales() {
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "" });
+  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business" });
+  const [customerSearchQuery, setCustomerSearchQuery] = useState("");
+  const [customerTypeFilter, setCustomerTypeFilter] = useState<string>("__all__");
 
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [expandedQuoteId, setExpandedQuoteId] = useState<string | null>(null);
@@ -1070,13 +1083,22 @@ export default function Sales() {
 
   const openNewCustomer = () => {
     setEditingCustomer(null);
-    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "" });
+    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" });
     setCustomerDialogOpen(true);
   };
 
   const openEditCustomer = (c: Customer) => {
     setEditingCustomer(c);
-    setCustomerForm({ name: c.name, email: c.email || "", phone: c.phone || "", address: c.address || "", gstNumber: c.gstNumber || "", contactPerson: c.contactPerson || "" });
+    setCustomerForm({
+      name: c.name,
+      email: c.email || "",
+      phone: c.phone || "",
+      address: c.address || "",
+      gstNumber: c.gstNumber || "",
+      contactPerson: c.contactPerson || "",
+      // Hydrate from migrated value; default to end_user if column is missing/empty for any reason
+      customerType: (c.customerType === "business" ? "business" : "end_user"),
+    });
     setCustomerDialogOpen(true);
   };
 
@@ -1305,6 +1327,7 @@ export default function Sales() {
   });
 
   const getCustomerName = (id: string) => customers?.find(c => c.id === id)?.name || "—";
+  const getCustomer = (id: string) => customers?.find(c => c.id === id);
 
   return (
     <div className="p-6 space-y-6 overflow-auto h-full">
@@ -1412,7 +1435,12 @@ export default function Sales() {
                               {expandedOrderId === order.id ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
                             </td>
                             <td className="p-3 font-medium">{order.orderNumber}</td>
-                            <td className="p-3 text-muted-foreground">{getCustomerName(order.customerId)}</td>
+                            <td className="p-3 text-muted-foreground">
+                              <span className="inline-flex items-center" data-testid={`text-order-customer-${order.id}`}>
+                                {getCustomerName(order.customerId)}
+                                <CustomerTypeBadge type={getCustomer(order.customerId)?.customerType} />
+                              </span>
+                            </td>
                             <td className="p-3 text-muted-foreground">{new Date(order.orderDate).toLocaleDateString()}</td>
                             <td className="p-3"><StatusBadge status={order.status} /></td>
                             <td className="p-3 text-right font-medium">₹{Number(order.totalAmount).toLocaleString()}</td>
@@ -1729,7 +1757,12 @@ export default function Sales() {
                               {expandedQuoteId === q.id ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
                             </td>
                             <td className="p-3 font-medium">{q.quoteNumber}</td>
-                            <td className="p-3 text-muted-foreground">{getCustomerName(q.customerId)}</td>
+                            <td className="p-3 text-muted-foreground">
+                              <span className="inline-flex items-center" data-testid={`text-quote-customer-${q.id}`}>
+                                {getCustomerName(q.customerId)}
+                                <CustomerTypeBadge type={getCustomer(q.customerId)?.customerType} />
+                              </span>
+                            </td>
                             <td className="p-3"><StatusBadge status={q.status} /></td>
                             <td className="p-3 text-muted-foreground">{q.validUntil ? new Date(q.validUntil).toLocaleDateString() : "—"}</td>
                             <td className="p-3" data-testid={`text-quote-next-followup-${q.id}`}>
@@ -2036,61 +2069,102 @@ export default function Sales() {
         </TabsContent>
 
         <TabsContent value="customers" className="space-y-4">
-          {!isReadOnly && (
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {!isReadOnly && (
               <Button size="sm" data-testid="button-new-customer" onClick={openNewCustomer}>
                 <Plus className="w-4 h-4 mr-2" />
                 New Customer
               </Button>
+            )}
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, email, phone, GST..."
+                className="pl-9"
+                value={customerSearchQuery}
+                onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                data-testid="input-search-customers"
+              />
             </div>
-          )}
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Email</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">GST</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customersLoading ? (
-                      <tr><td colSpan={5} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
-                    ) : customers && customers.length > 0 ? (
-                      customers.map((c) => (
-                        <tr key={c.id} className="border-b last:border-0" data-testid={`row-customer-${c.id}`}>
-                          <td className="p-3 font-medium">{c.name}</td>
-                          <td className="p-3 text-muted-foreground">{c.email || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{c.phone || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{c.gstNumber || "—"}</td>
-                          <td className="p-3 text-right">
-                            {!isReadOnly && (
-                              <div className="flex items-center justify-end gap-1">
-                                <Button size="icon" variant="ghost" data-testid={`button-edit-customer-${c.id}`} onClick={() => openEditCustomer(c)}>
-                                  <Pencil className="w-4 h-4" />
-                                </Button>
-                                <Button size="icon" variant="ghost" data-testid={`button-delete-customer-${c.id}`} onClick={() => { if (confirm("Delete this customer?")) deleteCustomerMutation.mutate(c.id); }}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            )}
-                          </td>
+            <Select value={customerTypeFilter} onValueChange={setCustomerTypeFilter}>
+              <SelectTrigger className="w-48" data-testid="select-customer-type-filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__" data-testid="option-customer-filter-all">All Customers</SelectItem>
+                <SelectItem value="end_user" data-testid="option-customer-filter-end_user">End User</SelectItem>
+                <SelectItem value="business" data-testid="option-customer-filter-business">Business</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {(() => {
+            const filteredCustomers = (customers ?? []).filter((c) => {
+              const ct = c.customerType === "business" ? "business" : "end_user";
+              if (customerTypeFilter !== "__all__" && ct !== customerTypeFilter) return false;
+              if (!customerSearchQuery) return true;
+              const q = customerSearchQuery.toLowerCase();
+              return (
+                c.name.toLowerCase().includes(q) ||
+                (c.email || "").toLowerCase().includes(q) ||
+                (c.phone || "").toLowerCase().includes(q) ||
+                (c.gstNumber || "").toLowerCase().includes(q) ||
+                (c.contactPerson || "").toLowerCase().includes(q)
+              );
+            });
+            return (
+              <Card>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3 font-medium text-muted-foreground">Name</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Email</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Phone</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">GST</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                         </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={5} className="p-8 text-center text-muted-foreground">No customers found.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+                      </thead>
+                      <tbody>
+                        {customersLoading ? (
+                          <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                        ) : filteredCustomers.length > 0 ? (
+                          filteredCustomers.map((c) => (
+                            <tr key={c.id} className="border-b last:border-0" data-testid={`row-customer-${c.id}`}>
+                              <td className="p-3 font-medium" data-testid={`text-customer-name-${c.id}`}>{c.name}</td>
+                              <td className="p-3"><CustomerTypeBadge type={c.customerType} /></td>
+                              <td className="p-3 text-muted-foreground">{c.email || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{c.phone || "—"}</td>
+                              <td className="p-3 text-muted-foreground">{c.gstNumber || "—"}</td>
+                              <td className="p-3 text-right">
+                                {!isReadOnly && (
+                                  <div className="flex items-center justify-end gap-1">
+                                    <Button size="icon" variant="ghost" data-testid={`button-edit-customer-${c.id}`} onClick={() => openEditCustomer(c)}>
+                                      <Pencil className="w-4 h-4" />
+                                    </Button>
+                                    <Button size="icon" variant="ghost" data-testid={`button-delete-customer-${c.id}`} onClick={() => { if (confirm("Delete this customer?")) deleteCustomerMutation.mutate(c.id); }}>
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                              {customerSearchQuery || customerTypeFilter !== "__all__" ? "No customers match your filters." : "No customers found."}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
         </TabsContent>
       </Tabs>
 
@@ -2445,9 +2519,26 @@ export default function Sales() {
               <Label htmlFor="custAddress">Address</Label>
               <Input id="custAddress" data-testid="input-customer-address" value={customerForm.address} onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })} />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="custContact">Contact Person</Label>
-              <Input id="custContact" data-testid="input-customer-contact" value={customerForm.contactPerson} onChange={(e) => setCustomerForm({ ...customerForm, contactPerson: e.target.value })} />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="custContact">Contact Person</Label>
+                <Input id="custContact" data-testid="input-customer-contact" value={customerForm.contactPerson} onChange={(e) => setCustomerForm({ ...customerForm, contactPerson: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="custType">Customer Type <span className="text-destructive">*</span></Label>
+                <Select
+                  value={customerForm.customerType}
+                  onValueChange={(v) => setCustomerForm({ ...customerForm, customerType: (v as "end_user" | "business") })}
+                >
+                  <SelectTrigger id="custType" data-testid="select-customer-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="end_user" data-testid="option-customer-type-end_user">End User</SelectItem>
+                    <SelectItem value="business" data-testid="option-customer-type-business">Business</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           <DialogFooter>

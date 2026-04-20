@@ -23,8 +23,10 @@ import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type Merg
 const customerTypeLabel = (t?: string | null) => (t === "business" ? "Business" : "End User");
 function CustomerTypeBadge({ type }: { type?: string | null }) {
   const t = type === "business" ? "business" : "end_user";
+  // Business -> default (primary, prominent); End User -> secondary (neutral). Existing variants only.
+  const variant = t === "business" ? "default" : "secondary";
   return (
-    <Badge variant="secondary" className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${t}`}>
+    <Badge variant={variant} className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${t}`}>
       {customerTypeLabel(t)}
     </Badge>
   );

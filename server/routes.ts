@@ -890,7 +890,7 @@ export async function registerRoutes(
         const csvText = req.file.buffer.toString("utf-8");
         let records: Record<string, string>[];
         try {
-          records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true }) as Record<string, string>[];
+          records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true }) as Record<string, string>[];
         } catch (e: any) {
           return res.status(400).json({ message: `CSV parse error: ${e.message}` });
         }

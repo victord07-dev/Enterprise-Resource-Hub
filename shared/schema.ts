@@ -62,7 +62,7 @@ export const products = pgTable("products", {
   gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   needsPricingReview: boolean("needs_pricing_review").notNull().default(false),
   minMarginPct: decimal("min_margin_pct", { precision: 5, scale: 2 }).notNull().default("5.00"),
-  brandId: varchar("brand_id"),
+  brandId: varchar("brand_id").references(() => brands.id, { onDelete: "restrict" }),
   distributorPrice: decimal("distributor_price", { precision: 12, scale: 2 }),
   warrantyPeriod: text("warranty_period"),
   mrp: decimal("mrp", { precision: 12, scale: 2 }),
@@ -740,6 +740,30 @@ export const productCategoryValues = [
   "Solar Combo / SPGS",
 ] as const;
 export const productCategorySchema = z.enum(productCategoryValues);
+
+/**
+ * Default HSN code + GST rate per product category.
+ * These are sensible Indian-tax defaults that pre-fill the Products form
+ * when a category is selected. Operator can always override per product.
+ */
+export const productCategoryDefaults: Record<typeof productCategoryValues[number], { hsnCode: string; gstRate: string }> = {
+  "Solar PCU - Sine Wave":         { hsnCode: "8504", gstRate: "18" },
+  "Solar PCU - MPPT":              { hsnCode: "8504", gstRate: "18" },
+  "Grid Tie Inverter - 1 Phase":   { hsnCode: "8504", gstRate: "18" },
+  "Grid Tie Inverter - 3 Phase":   { hsnCode: "8504", gstRate: "18" },
+  "Hybrid Inverter":               { hsnCode: "8504", gstRate: "18" },
+  "Home UPS / Inverter":           { hsnCode: "8504", gstRate: "18" },
+  "Solar Battery - Lead Acid":     { hsnCode: "8507", gstRate: "18" },
+  "Solar Battery - Lithium":       { hsnCode: "8507", gstRate: "18" },
+  "Home Battery - Lead Acid":      { hsnCode: "8507", gstRate: "18" },
+  "Rack / Wall Battery":           { hsnCode: "8507", gstRate: "18" },
+  "Solar Panel / PV Module":       { hsnCode: "85414300", gstRate: "12" },
+  "Solar Charge Controller":       { hsnCode: "8504", gstRate: "18" },
+  "GTI Accessory":                 { hsnCode: "8538", gstRate: "18" },
+  "Inverter Accessory":            { hsnCode: "8538", gstRate: "18" },
+  "Solar BOS Kit":                 { hsnCode: "8541", gstRate: "12" },
+  "Solar Combo / SPGS":            { hsnCode: "8541", gstRate: "12" },
+};
 export const insertPurchaseOrderItemSchema = createInsertSchema(purchaseOrderItems).omit({ id: true });
 export const insertStockMovementSchema = createInsertSchema(stockMovements).omit({ id: true, createdAt: true });
 export const insertDeliveryChallanSchema = createInsertSchema(deliveryChallans).omit({ id: true, createdAt: true });

@@ -1,7 +1,7 @@
 import { db } from "./db";
 import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
 import {
-  users, customers, suppliers, products, warehouses, inventoryStock,
+  users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
@@ -9,7 +9,7 @@ import {
   type WhatsappWebhookRejectedPayload,
   debugPayloadCaptures, type DebugPayloadCapture,
   expenseCategories, expenses, type ExpenseCategory, type Expense, type InsertExpense, type InsertExpenseCategory,
-  type User, type InsertUser, type Customer, type Supplier, type Product,
+  type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
@@ -82,6 +82,13 @@ export interface IStorage {
   createProduct(data: Omit<Product, "id">): Promise<Product>;
   updateProduct(id: string, data: Partial<Omit<Product, "id">>): Promise<Product | undefined>;
   deleteProduct(id: string): Promise<boolean>;
+
+  // Brands
+  getBrands(): Promise<Brand[]>;
+  getBrand(id: string): Promise<Brand | undefined>;
+  createBrand(data: InsertBrand): Promise<Brand>;
+  updateBrand(id: string, data: Partial<InsertBrand>): Promise<Brand | undefined>;
+  deleteBrand(id: string): Promise<boolean>;
 
   // Warehouses
   getWarehouses(): Promise<Warehouse[]>;
@@ -576,6 +583,27 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProduct(id: string): Promise<boolean> {
     await db.delete(products).where(eq(products.id, id));
+    return true;
+  }
+
+  // Brands
+  async getBrands(): Promise<Brand[]> {
+    return db.select().from(brands).orderBy(brands.name);
+  }
+  async getBrand(id: string): Promise<Brand | undefined> {
+    const [b] = await db.select().from(brands).where(eq(brands.id, id));
+    return b;
+  }
+  async createBrand(data: InsertBrand): Promise<Brand> {
+    const [created] = await db.insert(brands).values(data).returning();
+    return created;
+  }
+  async updateBrand(id: string, data: Partial<InsertBrand>): Promise<Brand | undefined> {
+    const [updated] = await db.update(brands).set(data).where(eq(brands.id, id)).returning();
+    return updated;
+  }
+  async deleteBrand(id: string): Promise<boolean> {
+    await db.delete(brands).where(eq(brands.id, id));
     return true;
   }
 

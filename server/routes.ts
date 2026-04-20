@@ -24,6 +24,7 @@ import {
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
+  insertBrandSchema,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -778,6 +779,54 @@ export async function registerRoutes(
       res.json({ message: "Supplier deleted" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete supplier" });
+    }
+  });
+
+  // ======================== BRANDS ========================
+  app.get("/api/brands", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.getBrands();
+      res.json(data);
+    } catch {
+      res.status(500).json({ message: "Failed to fetch brands" });
+    }
+  });
+
+  app.post("/api/brands", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const parsed = insertBrandSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createBrand(parsed.data);
+      await logAction(req.user.id, "create", "brands", `Created brand ${parsed.data.name}`);
+      res.status(201).json(created);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Brand name already exists" });
+      res.status(500).json({ message: "Failed to create brand" });
+    }
+  });
+
+  app.patch("/api/brands/:id", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const parsed = insertBrandSchema.partial().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const updated = await storage.updateBrand(req.params.id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Brand not found" });
+      await logAction(req.user.id, "update", "brands", `Updated brand ${updated.name}`);
+      res.json(updated);
+    } catch (error: any) {
+      if (error.code === "23505") return res.status(409).json({ message: "Brand name already exists" });
+      res.status(500).json({ message: "Failed to update brand" });
+    }
+  });
+
+  app.delete("/api/brands/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      await storage.deleteBrand(req.params.id);
+      await logAction(req.user.id, "delete", "brands", `Deleted brand ${req.params.id}`);
+      res.json({ message: "Brand deleted" });
+    } catch (error: any) {
+      if (error.code === "23503") return res.status(409).json({ message: "Cannot delete: brand is in use by one or more products" });
+      res.status(500).json({ message: "Failed to delete brand" });
     }
   });
 

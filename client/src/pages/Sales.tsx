@@ -203,8 +203,14 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   effectivePrices?: Record<string, EffectivePriceEntry>;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
-  const productItems = products.filter(p => p.type === "product");
-  const serviceItems = products.filter(p => p.type === "service");
+  // Exclude products whose lifecycle is discontinued or replaced from the line-item picker.
+  // (Existing items already on a saved order remain — they were valid at order time.)
+  const isPickable = (p: Product) => {
+    const ls = (p as any).lifecycleStatus;
+    return ls !== "discontinued" && ls !== "replaced";
+  };
+  const productItems = products.filter(p => p.type === "product" && isPickable(p));
+  const serviceItems = products.filter(p => p.type === "service" && isPickable(p));
 
   const updateItem = (index: number, field: string, value: any) => {
     const updated = [...items];

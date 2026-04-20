@@ -1,25 +1,105 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product } from "@shared/schema";
+import {
+  type Product,
+  type Brand,
+  productCategoryValues,
+  productCategoryDefaults,
+  applicableRegionValues,
+  productLifecycleValues,
+} from "@shared/schema";
 
-const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
+
+const PANEL_CATEGORY = "Solar Panel / PV Module";
+
+type TierKey = "end_user" | "business";
+const TIER_LABELS: Record<TierKey, string> = {
+  end_user: "End User (retail)",
+  business: "Business (GST-registered)",
+};
+
+type ProductForm = {
+  name: string;
+  sku: string;
+  category: string;
+  description: string;
+  unitPrice: string;
+  brand: string;            // legacy free-text fallback (kept for back-compat)
+  brandId: string;          // new — FK to brands
+  unit: string;
+  minStockLevel: string;
+  type: string;
+  hsnCode: string;
+  gstRate: string;
+  minMarginPct: string;
+  distributorPrice: string;
+  warrantyPeriod: string;
+  mrp: string;
+  packSize: string;
+  almm: boolean;
+  dcrCompliant: boolean;
+  modelSeries: string;
+  lifecycleStatus: string;
+  applicableRegions: string[];
+  priceListVersion: string;
+  customerTierPrice: Record<TierKey, string>;
+};
+
+const emptyProductForm = (): ProductForm => ({
+  name: "", sku: "", category: "Solar Panel / PV Module", description: "",
+  unitPrice: "", brand: "", brandId: "", unit: "pcs", minStockLevel: "10", type: "product",
+  hsnCode: productCategoryDefaults["Solar Panel / PV Module"].hsnCode,
+  gstRate: productCategoryDefaults["Solar Panel / PV Module"].gstRate,
+  minMarginPct: "5.00",
+  distributorPrice: "",
+  warrantyPeriod: "",
+  mrp: "",
+  packSize: "",
+  almm: false,
+  dcrCompliant: false,
+  modelSeries: "",
+  lifecycleStatus: "active",
+  applicableRegions: [],
+  priceListVersion: "",
+  customerTierPrice: { end_user: "", business: "" },
+});
+
+const emptyServiceForm = (): ProductForm => ({
+  ...emptyProductForm(),
+  type: "service",
+  category: "Installation",
+  unit: "service",
+  minStockLevel: "0",
+  sku: `SVC-${Date.now().toString(36).toUpperCase()}`,
+});
+
+function computeAutoUnitPrice(distributorPrice: string, minMarginPct: string): string {
+  const dp = parseFloat(distributorPrice);
+  const mp = parseFloat(minMarginPct);
+  if (!isFinite(dp) || dp <= 0) return "";
+  const margin = isFinite(mp) ? mp : 0;
+  return (dp * (1 + margin / 100)).toFixed(2);
+}
 
 export default function Products() {
   const { toast } = useToast();
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  const { data: brands } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
   const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
   const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean; source: string; blendedCost: string | null; globalFloorPrice: string | null; strictFloorPrice: string | null }>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
@@ -30,15 +110,23 @@ export default function Products() {
     },
   });
 
+  const brandsById = useMemo(() => {
+    const m = new Map<string, Brand>();
+    (brands ?? []).forEach((b) => m.set(b.id, b));
+    return m;
+  }, [brands]);
+
   const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [productForm, setProductForm] = useState({
-    name: "", sku: "", category: "Solar Panels", description: "",
-    unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
-    hsnCode: "", gstRate: "18", minMarginPct: "5.00",
-  });
+  const [productForm, setProductForm] = useState<ProductForm>(emptyProductForm());
+
+  // Brand mini-dialog state
+  const [brandDialogOpen, setBrandDialogOpen] = useState(false);
+  const [newBrandName, setNewBrandName] = useState("");
+  const [newBrandMargin, setNewBrandMargin] = useState("10.00");
+  const [newBrandNotes, setNewBrandNotes] = useState("");
 
   const productsOnly = allProducts?.filter(p => p.type !== "service") ?? [];
   const servicesOnly = allProducts?.filter(p => p.type === "service") ?? [];
@@ -48,10 +136,11 @@ export default function Products() {
   const filteredItems = currentList.filter((p) => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
+    const brandName = p.brandId ? brandsById.get(p.brandId)?.name : p.brand;
     return (
       p.name.toLowerCase().includes(q) ||
       p.sku.toLowerCase().includes(q) ||
-      (p.brand && p.brand.toLowerCase().includes(q)) ||
+      (brandName && brandName.toLowerCase().includes(q)) ||
       p.category.toLowerCase().includes(q)
     );
   });
@@ -89,41 +178,64 @@ export default function Products() {
     },
   });
 
+  const brandMutation = useMutation({
+    mutationFn: async (data: { name: string; defaultMarginPct: string; notes: string }) => {
+      return await apiRequest("POST", "/api/brands", data);
+    },
+    onSuccess: async (response: any) => {
+      const created = await response.json();
+      queryClient.invalidateQueries({ queryKey: ["/api/brands"] });
+      toast({ title: "Brand created", description: `${created.name} added` });
+      setProductForm((f) => ({ ...f, brandId: created.id }));
+      setBrandDialogOpen(false);
+      setNewBrandName(""); setNewBrandMargin("10.00"); setNewBrandNotes("");
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const isService = productForm.type === "service";
+  const isPanel = !isService && productForm.category === PANEL_CATEGORY;
+  const autoUnitPrice = computeAutoUnitPrice(productForm.distributorPrice, productForm.minMarginPct);
 
   const openNewItem = () => {
     setEditingProduct(null);
-    if (activeTab === "services") {
-      setProductForm({
-        name: "", sku: `SVC-${Date.now().toString(36).toUpperCase()}`, category: "Installation", description: "",
-        unitPrice: "", brand: "", unit: "service", minStockLevel: "0", type: "service",
-        hsnCode: "", gstRate: "18", minMarginPct: "5.00",
-      });
-    } else {
-      setProductForm({
-        name: "", sku: "", category: "Solar Panels", description: "",
-        unitPrice: "", brand: "", unit: "pcs", minStockLevel: "10", type: "product",
-        hsnCode: "", gstRate: "18", minMarginPct: "5.00",
-      });
-    }
+    setProductForm(activeTab === "services" ? emptyServiceForm() : emptyProductForm());
     setProductDialogOpen(true);
   };
 
   const openEditProduct = (p: Product) => {
     setEditingProduct(p);
+    const tier = (p.customerTierPrice as Record<string, string> | null) ?? {};
     setProductForm({
       name: p.name,
       sku: p.sku,
       category: p.category,
       description: p.description || "",
-      unitPrice: String(p.unitPrice),
+      unitPrice: String(p.unitPrice ?? ""),
       brand: p.brand || "",
+      brandId: p.brandId || "",
       unit: p.unit,
       minStockLevel: String(p.minStockLevel),
       type: p.type || "product",
       hsnCode: p.hsnCode || "",
       gstRate: p.gstRate ? String(p.gstRate) : "18",
       minMarginPct: p.minMarginPct ? String(p.minMarginPct) : "5.00",
+      distributorPrice: p.distributorPrice ? String(p.distributorPrice) : "",
+      warrantyPeriod: p.warrantyPeriod || "",
+      mrp: p.mrp ? String(p.mrp) : "",
+      packSize: p.packSize || "",
+      almm: !!p.almm,
+      dcrCompliant: !!p.dcrCompliant,
+      modelSeries: p.modelSeries || "",
+      lifecycleStatus: p.lifecycleStatus || "active",
+      applicableRegions: (p.applicableRegions as string[] | null) ?? [],
+      priceListVersion: p.priceListVersion || "",
+      customerTierPrice: {
+        end_user: String(tier.end_user ?? ""),
+        business: String(tier.business ?? ""),
+      },
     });
     setProductDialogOpen(true);
   };
@@ -142,22 +254,104 @@ export default function Products() {
       setProductForm({
         ...productForm,
         type: "product",
-        category: "Solar Panels",
+        category: "Solar Panel / PV Module",
+        hsnCode: productCategoryDefaults["Solar Panel / PV Module"].hsnCode,
+        gstRate: productCategoryDefaults["Solar Panel / PV Module"].gstRate,
         unit: "pcs",
         minStockLevel: "10",
       });
     }
   };
 
+  const handleCategoryChange = (cat: string) => {
+    const next: ProductForm = { ...productForm, category: cat };
+    // Auto-fill HSN + GST defaults for product categories (only if user hasn't typed something custom)
+    if (productForm.type === "product" && cat in productCategoryDefaults) {
+      const def = productCategoryDefaults[cat as keyof typeof productCategoryDefaults];
+      // Auto-fill HSN if empty OR if it currently equals the previous category default (i.e. unchanged from auto)
+      const prevDefault = productForm.category in productCategoryDefaults
+        ? productCategoryDefaults[productForm.category as keyof typeof productCategoryDefaults]
+        : null;
+      if (!productForm.hsnCode || (prevDefault && productForm.hsnCode === prevDefault.hsnCode)) {
+        next.hsnCode = def.hsnCode;
+      }
+      if (!productForm.gstRate || productForm.gstRate === "0" || (prevDefault && productForm.gstRate === prevDefault.gstRate)) {
+        next.gstRate = def.gstRate;
+      }
+      // Reset panel-only fields if leaving panel category
+      if (cat !== PANEL_CATEGORY) {
+        next.almm = false;
+        next.dcrCompliant = false;
+      }
+    }
+    setProductForm(next);
+  };
+
+  const handleDistributorPriceChange = (v: string) => {
+    const next = { ...productForm, distributorPrice: v };
+    // If unitPrice is empty, populate it with auto value
+    if (!productForm.unitPrice) {
+      const auto = computeAutoUnitPrice(v, productForm.minMarginPct);
+      if (auto) next.unitPrice = auto;
+    }
+    setProductForm(next);
+  };
+
+  const applyAutoUnitPrice = () => {
+    if (autoUnitPrice) setProductForm({ ...productForm, unitPrice: autoUnitPrice });
+  };
+
+  const toggleRegion = (r: string) => {
+    setProductForm((f) => ({
+      ...f,
+      applicableRegions: f.applicableRegions.includes(r)
+        ? f.applicableRegions.filter((x) => x !== r)
+        : [...f.applicableRegions, r],
+    }));
+  };
+
   const handleSubmitProduct = () => {
+    const isProd = productForm.type === "product";
+    const tier: Record<string, number> = {};
+    for (const k of ["end_user", "business"] as TierKey[]) {
+      const v = parseFloat(productForm.customerTierPrice[k]);
+      if (isFinite(v) && v > 0) tier[k] = v;
+    }
+
+    // Resolve brand display name from brandId for back-compat with `brand` text column
+    const brandObj = productForm.brandId ? brandsById.get(productForm.brandId) : null;
+    const brandText = brandObj?.name || productForm.brand || null;
+
     const data: any = {
-      ...productForm,
+      name: productForm.name,
+      sku: productForm.sku,
+      category: productForm.category,
+      description: productForm.description || null,
+      unitPrice: productForm.unitPrice || "0",
+      brand: brandText,
+      brandId: productForm.brandId || null,
+      unit: productForm.unit,
       minStockLevel: Number(productForm.minStockLevel),
-      brand: productForm.brand || null,
+      type: productForm.type,
       hsnCode: productForm.hsnCode || null,
       gstRate: productForm.gstRate || "0",
       minMarginPct: productForm.minMarginPct ? String(parseFloat(productForm.minMarginPct).toFixed(2)) : "5.00",
     };
+
+    if (isProd) {
+      data.distributorPrice = productForm.distributorPrice || null;
+      data.warrantyPeriod = productForm.warrantyPeriod || null;
+      data.mrp = productForm.mrp || null;
+      data.packSize = productForm.packSize || null;
+      data.almm = isPanel ? productForm.almm : false;
+      data.dcrCompliant = isPanel ? productForm.dcrCompliant : false;
+      data.modelSeries = productForm.modelSeries || null;
+      data.lifecycleStatus = productForm.lifecycleStatus || "active";
+      data.applicableRegions = productForm.applicableRegions.length > 0 ? productForm.applicableRegions : null;
+      data.priceListVersion = productForm.priceListVersion || null;
+      data.customerTierPrice = Object.keys(tier).length > 0 ? tier : null;
+    }
+
     if (data.type === "service" && !data.sku) {
       data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
     }
@@ -175,6 +369,7 @@ export default function Products() {
                 {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">SKU</th>}
                 <th className="text-left p-3 font-medium text-muted-foreground">Brand</th>
                 <th className="text-left p-3 font-medium text-muted-foreground">Category</th>
+                {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">Warranty</th>}
                 {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">HSN</th>}
                 <th className="text-right p-3 font-medium text-muted-foreground">GST %</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">{isServiceTab ? "Service Charge (₹)" : "Selling Price (₹)"}</th>
@@ -186,13 +381,16 @@ export default function Products() {
               {productsLoading ? (
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i} className="border-b">
-                    {Array.from({ length: isServiceTab ? 7 : 9 }).map((_, j) => (
+                    {Array.from({ length: isServiceTab ? 7 : 10 }).map((_, j) => (
                       <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                     ))}
                   </tr>
                 ))
               ) : items.length > 0 ? (
-                items.map((item) => (
+                items.map((item) => {
+                  // Fall back to legacy 'brand' text column if brandId is set but the brand record is missing/orphaned.
+                  const brandName = (item.brandId ? brandsById.get(item.brandId)?.name : null) || item.brand;
+                  return (
                   <tr
                     key={item.id}
                     className="border-b last:border-0"
@@ -206,15 +404,31 @@ export default function Products() {
                             Pricing Review
                           </Badge>
                         )}
+                        {!isServiceTab && item.lifecycleStatus && item.lifecycleStatus !== "active" && (
+                          <Badge variant="outline" className={`text-xs ${item.lifecycleStatus === "discontinued" ? "border-red-400 text-red-600 dark:text-red-400" : item.lifecycleStatus === "replaced" ? "border-orange-400 text-orange-600 dark:text-orange-400" : "border-slate-400 text-slate-600 dark:text-slate-400"}`} data-testid={`badge-lifecycle-${item.id}`}>
+                            {item.lifecycleStatus}
+                          </Badge>
+                        )}
+                        {!isServiceTab && item.almm && (
+                          <Badge variant="outline" className="text-xs border-emerald-500 text-emerald-700 dark:text-emerald-400" data-testid={`badge-almm-${item.id}`}>ALMM ✓</Badge>
+                        )}
+                        {!isServiceTab && item.dcrCompliant && (
+                          <Badge variant="outline" className="text-xs border-blue-500 text-blue-700 dark:text-blue-400" data-testid={`badge-dcr-${item.id}`}>DCR ✓</Badge>
+                        )}
                       </div>
                     </td>
                     {!isServiceTab && <td className="p-3 text-muted-foreground" data-testid={`text-item-sku-${item.id}`}>{item.sku}</td>}
-                    <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>{item.brand || "—"}</td>
+                    <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>{brandName || "—"}</td>
                     <td className="p-3">
                       <Badge variant="secondary" className="no-default-active-elevate" data-testid={`badge-item-category-${item.id}`}>
                         {item.category}
                       </Badge>
                     </td>
+                    {!isServiceTab && (
+                      <td className="p-3 text-muted-foreground text-xs" data-testid={`text-item-warranty-${item.id}`}>
+                        {item.warrantyPeriod || "—"}
+                      </td>
+                    )}
                     {!isServiceTab && (
                       <td className="p-3 text-muted-foreground text-xs" data-testid={`text-item-hsn-${item.id}`}>
                         {item.hsnCode || "—"}
@@ -244,10 +458,11 @@ export default function Products() {
                       </div>
                     </td>
                   </tr>
-                ))
+                );
+                })
               ) : (
                 <tr>
-                  <td colSpan={isServiceTab ? 7 : 9} className="p-8 text-center text-muted-foreground">
+                  <td colSpan={isServiceTab ? 7 : 10} className="p-8 text-center text-muted-foreground">
                     {searchQuery
                       ? `No ${isServiceTab ? "services" : "products"} match your search.`
                       : `No ${isServiceTab ? "services" : "products"} found. Add your first ${isServiceTab ? "service" : "product"}.`}
@@ -465,14 +680,15 @@ export default function Products() {
       </Tabs>
 
       <Dialog open={productDialogOpen} onOpenChange={setProductDialogOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingProduct ? (isService ? "Edit Service" : "Edit Product") : (isService ? "Add Service" : "Add Product")}</DialogTitle>
             <DialogDescription>
               {isService ? "Service items for installation, maintenance, etc." : "Physical product or material"}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+          <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+            {/* Type */}
             <div className="space-y-2">
               <Label>Type</Label>
               <Select value={productForm.type} onValueChange={handleTypeChange}>
@@ -485,40 +701,94 @@ export default function Products() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="prodName">Name</Label>
-              <Input id="prodName" data-testid="input-product-name" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} placeholder={isService ? "e.g. Solar Panel Installation" : "e.g. 400W Solar Panel"} />
-            </div>
-            {!isService && (
+
+            {/* Name + SKU */}
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="prodSku">SKU</Label>
-                <Input id="prodSku" data-testid="input-product-sku" value={productForm.sku} onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })} />
+                <Label htmlFor="prodName">Name</Label>
+                <Input id="prodName" data-testid="input-product-name" value={productForm.name} onChange={(e) => setProductForm({ ...productForm, name: e.target.value })} placeholder={isService ? "e.g. Solar Panel Installation" : "e.g. 400W Mono PERC Panel"} />
               </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="prodBrand">Brand / Company</Label>
-              <Input id="prodBrand" data-testid="input-product-brand" value={productForm.brand} onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })} placeholder="e.g. Havells, Luminous" />
+              {!isService && (
+                <div className="space-y-2">
+                  <Label htmlFor="prodSku">SKU</Label>
+                  <Input id="prodSku" data-testid="input-product-sku" value={productForm.sku} onChange={(e) => setProductForm({ ...productForm, sku: e.target.value })} />
+                </div>
+              )}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="prodCategory">Category</Label>
-              <Select value={productForm.category} onValueChange={(v) => setProductForm({ ...productForm, category: v })}>
-                <SelectTrigger data-testid="select-product-category">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(isService ? serviceCategories : productCategories).map((c) => (
-                    <SelectItem key={c} value={c}>{c}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+            {/* Brand + Category */}
+            <div className="grid grid-cols-2 gap-4">
+              {!isService ? (
+                <div className="space-y-2">
+                  <Label>Brand</Label>
+                  <div className="flex gap-2">
+                    <Select value={productForm.brandId} onValueChange={(v) => setProductForm({ ...productForm, brandId: v })}>
+                      <SelectTrigger className="flex-1" data-testid="select-product-brand">
+                        <SelectValue placeholder="Select brand…" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(brands ?? []).map((b) => (
+                          <SelectItem key={b.id} value={b.id} data-testid={`option-brand-${b.id}`}>{b.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button type="button" variant="outline" size="icon" data-testid="button-add-brand" onClick={() => setBrandDialogOpen(true)} title="Add new brand">
+                      <Plus className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label htmlFor="prodBrand">Brand / Company</Label>
+                  <Input id="prodBrand" data-testid="input-product-brand" value={productForm.brand} onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })} placeholder="e.g. ITFI" />
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="prodCategory">Category</Label>
+                <Select value={productForm.category} onValueChange={handleCategoryChange}>
+                  <SelectTrigger data-testid="select-product-category">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(isService ? serviceCategories : productCategoryValues).map((c) => (
+                      <SelectItem key={c} value={c} data-testid={`option-category-${c.replace(/[^a-zA-Z0-9]/g, "-")}`}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
+
+            {/* Description */}
             <div className="space-y-2">
               <Label htmlFor="prodDesc">Description</Label>
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
+
+            {/* Pricing block: distributor + auto unit price */}
+            {!isService && (
+              <div className="rounded-md border p-3 space-y-3 bg-muted/20">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prodDistPrice">Distributor Price (₹)</Label>
+                    <Input id="prodDistPrice" type="number" step="0.01" min="0" data-testid="input-product-distributor-price"
+                      value={productForm.distributorPrice}
+                      onChange={(e) => handleDistributorPriceChange(e.target.value)}
+                      placeholder="From brand's published rate" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodMinMargin">Min Margin %</Label>
+                    <Input id="prodMinMargin" type="number" step="0.01" min="0" max="100" data-testid="input-product-min-margin"
+                      value={productForm.minMarginPct}
+                      onChange={(e) => setProductForm({ ...productForm, minMarginPct: e.target.value })}
+                      placeholder="5.00" />
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="prodSellingPrice" className="flex items-center gap-1.5">
-                {isService ? "Service Charge (₹)" : "Selling Price (₹)"}
+                {isService ? "Service Charge (₹)" : "Selling Price / Unit Price (₹)"}
                 {editingProduct && !isService && effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday && (
                   <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded">
                     <Lock className="w-3 h-3" />
@@ -536,6 +806,13 @@ export default function Products() {
                   disabled={!!editingProduct && !isService && !!effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday}
                   className={editingProduct && !isService && effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday ? "bg-muted cursor-not-allowed" : ""}
                 />
+                {!isService && autoUnitPrice && (
+                  <button type="button" onClick={applyAutoUnitPrice} data-testid="button-apply-auto-price"
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 flex items-center gap-1">
+                    <Calculator className="w-3 h-3" />
+                    Auto: ₹{Number(autoUnitPrice).toLocaleString("en-IN")} (distributor × {Number(productForm.minMarginPct || "0")}% margin) — click to apply
+                  </button>
+                )}
                 {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
                   <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                     <TrendingUp className="w-3 h-3 text-blue-500" />
@@ -547,9 +824,11 @@ export default function Products() {
                 )}
               </div>
             </div>
+
+            {/* Tax */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="prodGstRate">GST Rate</Label>
+                <Label htmlFor="prodGstRate">GST Rate {!isService && <span className="text-xs text-muted-foreground">(auto from category)</span>}</Label>
                 <Select value={productForm.gstRate} onValueChange={(v) => setProductForm({ ...productForm, gstRate: v })}>
                   <SelectTrigger data-testid="select-product-gst-rate">
                     <SelectValue />
@@ -563,50 +842,184 @@ export default function Products() {
               </div>
               {!isService && (
                 <div className="space-y-2">
-                  <Label htmlFor="prodHsn">HSN Code</Label>
-                  <Input id="prodHsn" data-testid="input-product-hsn" value={productForm.hsnCode} onChange={(e) => setProductForm({ ...productForm, hsnCode: e.target.value })} placeholder="e.g. 85414011" />
+                  <Label htmlFor="prodHsn">HSN Code <span className="text-xs text-muted-foreground">(auto from category)</span></Label>
+                  <Input id="prodHsn" data-testid="input-product-hsn" value={productForm.hsnCode} onChange={(e) => setProductForm({ ...productForm, hsnCode: e.target.value })} placeholder="e.g. 85414300" />
                 </div>
               )}
             </div>
+
+            {/* Product-only blocks below */}
             {!isService && (
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="prodUnit">Unit</Label>
-                  <Select value={productForm.unit} onValueChange={(v) => setProductForm({ ...productForm, unit: v })}>
-                    <SelectTrigger data-testid="select-product-unit">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {["pcs", "kg", "ltr", "mtr", "box"].map((u) => (
-                        <SelectItem key={u} value={u}>{u}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              <>
+                {/* MRP + Warranty */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prodMrp">MRP (₹)</Label>
+                    <Input id="prodMrp" type="number" step="0.01" min="0" data-testid="input-product-mrp"
+                      value={productForm.mrp}
+                      onChange={(e) => setProductForm({ ...productForm, mrp: e.target.value })}
+                      placeholder="Manufacturer's published retail price" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodWarranty">Warranty Period</Label>
+                    <Input id="prodWarranty" data-testid="input-product-warranty"
+                      value={productForm.warrantyPeriod}
+                      onChange={(e) => setProductForm({ ...productForm, warrantyPeriod: e.target.value })}
+                      placeholder="e.g. 25 years / 2 years" />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="prodMinStock">Min Stock Level</Label>
-                  <Input id="prodMinStock" type="number" data-testid="input-product-min-stock" value={productForm.minStockLevel} onChange={(e) => setProductForm({ ...productForm, minStockLevel: e.target.value })} />
+
+                {/* Pack size + Model series */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prodPackSize">Pack Size</Label>
+                    <Input id="prodPackSize" data-testid="input-product-pack-size"
+                      value={productForm.packSize}
+                      onChange={(e) => setProductForm({ ...productForm, packSize: e.target.value })}
+                      placeholder="e.g. 10 / 1 box of 20" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodModelSeries">Model Series</Label>
+                    <Input id="prodModelSeries" data-testid="input-product-model-series"
+                      value={productForm.modelSeries}
+                      onChange={(e) => setProductForm({ ...productForm, modelSeries: e.target.value })}
+                      placeholder="e.g. EM-W3 / Solarverter Pro" />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="prodMinMargin">Min Margin % (FIFO pricing floor)</Label>
-                  <Input
-                    id="prodMinMargin"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    data-testid="input-product-min-margin"
-                    value={productForm.minMarginPct}
-                    onChange={(e) => setProductForm({ ...productForm, minMarginPct: e.target.value })}
-                    placeholder="5.00"
-                  />
+
+                {/* ALMM / DCR — panels only */}
+                {isPanel && (
+                  <div className="rounded-md border p-3 space-y-2 bg-blue-50/40 dark:bg-blue-950/10">
+                    <Label className="text-xs uppercase tracking-wide text-blue-700 dark:text-blue-400">Solar Panel Compliance</Label>
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox checked={productForm.almm} onCheckedChange={(v) => setProductForm({ ...productForm, almm: !!v })} data-testid="checkbox-almm" />
+                        <span>ALMM-listed</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox checked={productForm.dcrCompliant} onCheckedChange={(v) => setProductForm({ ...productForm, dcrCompliant: !!v })} data-testid="checkbox-dcr" />
+                        <span>DCR-compliant</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Lifecycle + Price List Version */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Lifecycle Status</Label>
+                    <Select value={productForm.lifecycleStatus} onValueChange={(v) => setProductForm({ ...productForm, lifecycleStatus: v })}>
+                      <SelectTrigger data-testid="select-product-lifecycle">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {productLifecycleValues.map((v) => (
+                          <SelectItem key={v} value={v} data-testid={`option-lifecycle-${v}`}>{v}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodPriceListVer">Price List Version</Label>
+                    <Input id="prodPriceListVer" data-testid="input-product-price-list-version"
+                      value={productForm.priceListVersion}
+                      onChange={(e) => setProductForm({ ...productForm, priceListVersion: e.target.value })}
+                      placeholder="e.g. Eastman 2026-Q2" />
+                  </div>
                 </div>
-              </div>
+
+                {/* Applicable regions */}
+                <div className="space-y-2">
+                  <Label>Applicable Regions</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {applicableRegionValues.map((r) => {
+                      const active = productForm.applicableRegions.includes(r);
+                      return (
+                        <button key={r} type="button" onClick={() => toggleRegion(r)} data-testid={`chip-region-${r}`}
+                          className={`px-3 py-1 rounded-full text-xs border transition-colors ${active ? "bg-blue-600 text-white border-blue-600" : "bg-background border-border hover:border-blue-400"}`}>
+                          {active && <X className="w-3 h-3 inline mr-1" />}
+                          {r}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Empty = applicable everywhere</p>
+                </div>
+
+                {/* Customer tier prices */}
+                <div className="space-y-2">
+                  <Label>Customer Tier Prices (₹) — optional</Label>
+                  <div className="rounded-md border divide-y">
+                    {(["end_user", "business"] as TierKey[]).map((tier) => (
+                      <div key={tier} className="flex items-center gap-3 p-2.5">
+                        <span className="text-sm w-48 text-muted-foreground">{TIER_LABELS[tier]}</span>
+                        <Input type="number" step="0.01" min="0" className="h-8" data-testid={`input-tier-price-${tier}`}
+                          value={productForm.customerTierPrice[tier]}
+                          onChange={(e) => setProductForm({ ...productForm, customerTierPrice: { ...productForm.customerTierPrice, [tier]: e.target.value } })}
+                          placeholder="(blank = use selling price)" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Inventory */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prodUnit">Unit</Label>
+                    <Select value={productForm.unit} onValueChange={(v) => setProductForm({ ...productForm, unit: v })}>
+                      <SelectTrigger data-testid="select-product-unit">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {["pcs", "kg", "ltr", "mtr", "box"].map((u) => (
+                          <SelectItem key={u} value={u}>{u}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodMinStock">Min Stock Level</Label>
+                    <Input id="prodMinStock" type="number" data-testid="input-product-min-stock" value={productForm.minStockLevel} onChange={(e) => setProductForm({ ...productForm, minStockLevel: e.target.value })} />
+                  </div>
+                </div>
+              </>
             )}
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-product" disabled={productMutation.isPending} onClick={handleSubmitProduct}>
               {productMutation.isPending ? "Saving..." : editingProduct ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Brand mini-dialog */}
+      <Dialog open={brandDialogOpen} onOpenChange={setBrandDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add New Brand</DialogTitle>
+            <DialogDescription>Brands you onboard appear in the Brand selector across the catalog.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="newBrandName">Name</Label>
+              <Input id="newBrandName" data-testid="input-new-brand-name" value={newBrandName} onChange={(e) => setNewBrandName(e.target.value)} placeholder="e.g. Vikram Solar" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="newBrandMargin">Default Margin %</Label>
+              <Input id="newBrandMargin" type="number" step="0.01" min="0" max="100" data-testid="input-new-brand-margin" value={newBrandMargin} onChange={(e) => setNewBrandMargin(e.target.value)} />
+              <p className="text-xs text-muted-foreground">Used as a fallback when products of this brand have no min-margin set.</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="newBrandNotes">Notes (optional)</Label>
+              <Textarea id="newBrandNotes" data-testid="input-new-brand-notes" value={newBrandNotes} onChange={(e) => setNewBrandNotes(e.target.value)} rows={2} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBrandDialogOpen(false)} data-testid="button-cancel-brand">Cancel</Button>
+            <Button data-testid="button-submit-brand" disabled={!newBrandName.trim() || brandMutation.isPending}
+              onClick={() => brandMutation.mutate({ name: newBrandName.trim(), defaultMarginPct: newBrandMargin || "10.00", notes: newBrandNotes.trim() })}>
+              {brandMutation.isPending ? "Adding..." : "Add Brand"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -13,7 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2 } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -130,10 +130,321 @@ function computeLandedChain(distributorPrice: string, logisticsCost: string, gst
 
 const formatINR = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// ── CSV Template columns (in human-readable order) ────────────────────────
+const CSV_TEMPLATE_HEADERS = [
+  "name","sku","brand","category","type","description",
+  "distributorPrice","logisticsCost","unitPrice","targetMarginPct","gstRate","hsnCode",
+  "mrp","minMarginPct","minStockLevel","unit","packSize","warrantyPeriod",
+  "lifecycleStatus","priceListVersion","productFamily","modelSeries",
+  "almm","dcrCompliant","applicableRegions",
+  "customerTierPrice","specs","supplierSku",
+];
+
+const CSV_VALID_CATEGORIES = productCategoryValues.join(" | ");
+
+const EXAMPLE_ROW: Record<string, string> = {
+  name: "Example Solar Panel 400W",
+  sku: "ADN-SP-400W-MONO",
+  brand: "Adani Solar",
+  category: "Solar Panel / PV Module",
+  type: "product",
+  description: "Monocrystalline 400W panel with anti-reflective coating",
+  distributorPrice: "8500",
+  logisticsCost: "",
+  unitPrice: "",
+  targetMarginPct: "15",
+  gstRate: "12",
+  hsnCode: "85414011",
+  mrp: "12000",
+  minMarginPct: "8",
+  minStockLevel: "10",
+  unit: "pcs",
+  packSize: "",
+  warrantyPeriod: "25 years",
+  lifecycleStatus: "active",
+  priceListVersion: "PL-2025-Q2",
+  productFamily: "Adani HiKu6",
+  modelSeries: "HiKu6 Mono PERC",
+  almm: "true",
+  dcrCompliant: "true",
+  applicableRegions: "Assam, Meghalaya",
+  customerTierPrice: '{"end_user":11000,"business":10000}',
+  specs: '{"wattage":"400Wp","efficiency":"20.9%","cellType":"Mono PERC"}',
+  supplierSku: "ADN-SP400W",
+};
+
+function generateTemplateCsv(): string {
+  const comment = `# Valid categories: ${CSV_VALID_CATEGORIES}`;
+  const header = CSV_TEMPLATE_HEADERS.join(",");
+  const exampleVals = CSV_TEMPLATE_HEADERS.map(h => {
+    const v = EXAMPLE_ROW[h] ?? "";
+    return v.includes(",") || v.startsWith("{") ? `"${v.replace(/"/g, '""')}"` : v;
+  }).join(",");
+  return `${comment}\n${header}\n${exampleVals}\n`;
+}
+
+function downloadCsv(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+type ImportDryRunResult = {
+  mode: "dry_run";
+  would_import: number;
+  would_skip: number;
+  errors: ImportErrorRow[];
+  duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
+  brands_to_auto_create: string[];
+};
+
+type ImportCommitResult = {
+  mode: "commit";
+  imported: number;
+  skipped: number;
+  errors: ImportErrorRow[];
+  duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
+};
+
+type ImportErrorRow = {
+  row_number: number; sku: string; product_name: string;
+  error_type: string; error_message: string;
+};
+
+function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose: () => void; onSuccess: () => void }) {
+  const { toast } = useToast();
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [priceListVersion, setPriceListVersion] = useState("");
+  const [defaultMargin, setDefaultMargin] = useState("");
+  const [dryRunResult, setDryRunResult] = useState<ImportDryRunResult | null>(null);
+  const [commitResult, setCommitResult] = useState<ImportCommitResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [fileInputEl, setFileInputEl] = useState<HTMLInputElement | null>(null);
+
+  function reset() {
+    setSelectedFile(null);
+    setPriceListVersion("");
+    setDefaultMargin("");
+    setDryRunResult(null);
+    setCommitResult(null);
+    if (fileInputEl) fileInputEl.value = "";
+  }
+
+  async function runImport(mode: "dry_run" | "commit") {
+    if (!selectedFile) { toast({ title: "No file selected", variant: "destructive" }); return; }
+    setLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", selectedFile);
+      if (priceListVersion.trim()) fd.append("priceListVersion", priceListVersion.trim());
+      if (defaultMargin.trim()) fd.append("defaultTargetMarginPct", defaultMargin.trim());
+      const token = localStorage.getItem("token");
+      const res = await fetch(`/api/products/import?mode=${mode}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok) { toast({ title: "Import error", description: json.message, variant: "destructive" }); return; }
+      if (mode === "dry_run") {
+        setDryRunResult(json as ImportDryRunResult);
+        setCommitResult(null);
+      } else {
+        setCommitResult(json as ImportCommitResult);
+        setDryRunResult(null);
+        toast({ title: `Imported ${json.imported} products successfully` });
+        queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+        onSuccess();
+      }
+    } catch (e: any) {
+      toast({ title: "Network error", description: e.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function downloadErrorCsv(errors: ImportErrorRow[]) {
+    const header = "row_number,sku,product_name,error_type,error_message";
+    const rows = errors.map(e =>
+      [e.row_number, e.sku, `"${e.product_name.replace(/"/g, '""')}"`, e.error_type, `"${e.error_message.replace(/"/g, '""')}"`].join(",")
+    ).join("\n");
+    downloadCsv("import_errors.csv", `${header}\n${rows}\n`);
+  }
+
+  const allErrors = (dryRunResult?.errors ?? commitResult?.errors ?? []);
+  const hasDryRun = !!dryRunResult;
+  const hasCommit = !!commitResult;
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) { reset(); onClose(); } }}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Upload className="w-5 h-5" />
+            Bulk Import Products from CSV
+          </DialogTitle>
+          <DialogDescription>
+            Upload a CSV file to import multiple products at once. Run a dry-run preview first, then commit.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Template download */}
+          <div className="flex items-center justify-between rounded-md border p-3 bg-muted/30">
+            <div className="flex items-center gap-2 text-sm">
+              <FileText className="w-4 h-4 text-muted-foreground" />
+              <span>Download the CSV template with an example row</span>
+            </div>
+            <Button variant="outline" size="sm" data-testid="button-download-csv-template" onClick={() => downloadCsv("products_import_template.csv", generateTemplateCsv())}>
+              <Download className="w-4 h-4 mr-1" />
+              Template
+            </Button>
+          </div>
+
+          {/* File picker */}
+          <div className="space-y-1">
+            <Label>CSV File <span className="text-destructive">*</span></Label>
+            <div className="flex items-center gap-2">
+              <input
+                ref={(el) => setFileInputEl(el)}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                data-testid="input-csv-file-hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setSelectedFile(f);
+                  setDryRunResult(null);
+                  setCommitResult(null);
+                }}
+              />
+              <Button variant="outline" className="flex-1" data-testid="button-choose-csv-file" onClick={() => fileInputEl?.click()}>
+                <Upload className="w-4 h-4 mr-2" />
+                {selectedFile ? selectedFile.name : "Choose .csv file…"}
+              </Button>
+              {selectedFile && (
+                <Button variant="ghost" size="icon" data-testid="button-clear-csv-file" onClick={() => { setSelectedFile(null); if (fileInputEl) fileInputEl.value = ""; setDryRunResult(null); setCommitResult(null); }}>
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Options row */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="import-plv">Price List Version <span className="text-muted-foreground text-xs">(optional global)</span></Label>
+              <Input id="import-plv" data-testid="input-import-price-list-version" placeholder="e.g. PL-2025-Q2" value={priceListVersion} onChange={e => setPriceListVersion(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="import-margin">Default Target Margin % <span className="text-muted-foreground text-xs">(optional)</span></Label>
+              <Input id="import-margin" data-testid="input-import-default-margin" type="number" placeholder="e.g. 15" value={defaultMargin} onChange={e => setDefaultMargin(e.target.value)} />
+            </div>
+          </div>
+
+          {/* Action buttons */}
+          {!hasCommit && (
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" data-testid="button-dry-run-import" disabled={!selectedFile || loading} onClick={() => runImport("dry_run")}>
+                {loading && !hasDryRun ? <span className="animate-spin mr-2 w-4 h-4 border-2 border-current border-t-transparent rounded-full inline-block" /> : null}
+                Preview (Dry Run)
+              </Button>
+              {hasDryRun && (
+                <Button className="flex-1" data-testid="button-commit-import" disabled={loading || (dryRunResult?.would_import ?? 0) === 0} onClick={() => runImport("commit")}>
+                  {loading ? <span className="animate-spin mr-2 w-4 h-4 border-2 border-current border-t-transparent rounded-full inline-block" /> : null}
+                  Commit Import ({dryRunResult?.would_import ?? 0} rows)
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* Dry run result panel */}
+          {hasDryRun && !hasCommit && (
+            <div className="rounded-md border p-4 space-y-3 bg-muted/20">
+              <div className="flex items-center gap-2 font-medium text-sm">
+                <CheckCircle2 className="w-4 h-4 text-green-500" />
+                Dry Run Preview
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center text-sm">
+                <div className="rounded bg-green-50 dark:bg-green-950 p-2">
+                  <div className="text-2xl font-bold text-green-700 dark:text-green-400" data-testid="text-would-import-count">{dryRunResult!.would_import}</div>
+                  <div className="text-muted-foreground">Would Import</div>
+                </div>
+                <div className="rounded bg-yellow-50 dark:bg-yellow-950 p-2">
+                  <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-400" data-testid="text-would-skip-count">{dryRunResult!.would_skip}</div>
+                  <div className="text-muted-foreground">Would Skip</div>
+                </div>
+                <div className="rounded bg-red-50 dark:bg-red-950 p-2">
+                  <div className="text-2xl font-bold text-red-700 dark:text-red-400" data-testid="text-error-count">{dryRunResult!.errors.length}</div>
+                  <div className="text-muted-foreground">Errors</div>
+                </div>
+              </div>
+              {dryRunResult!.brands_to_auto_create?.length > 0 && (
+                <div className="text-sm text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 rounded p-2">
+                  New brands to auto-create: {dryRunResult!.brands_to_auto_create.join(", ")}
+                </div>
+              )}
+              {allErrors.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-destructive flex items-center gap-1"><XCircle className="w-3.5 h-3.5" /> Errors ({allErrors.length})</span>
+                    <Button variant="ghost" size="sm" data-testid="button-download-error-csv" onClick={() => downloadErrorCsv(allErrors)}>
+                      <Download className="w-3.5 h-3.5 mr-1" /> Download error CSV
+                    </Button>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto rounded border text-xs font-mono">
+                    {allErrors.slice(0, 50).map((e, idx) => (
+                      <div key={idx} className="flex gap-2 px-2 py-1 border-b last:border-0 hover:bg-muted/40">
+                        <span className="text-muted-foreground w-10 shrink-0">row {e.row_number}</span>
+                        <span className="text-destructive shrink-0">[{e.error_type}]</span>
+                        <span className="truncate" title={e.error_message}>{e.error_message}</span>
+                      </div>
+                    ))}
+                    {allErrors.length > 50 && <div className="px-2 py-1 text-muted-foreground">… and {allErrors.length - 50} more (download CSV to see all)</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Commit result panel */}
+          {hasCommit && (
+            <div className="rounded-md border border-green-300 bg-green-50 dark:bg-green-950 p-4 space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-green-700 dark:text-green-400">
+                <CheckCircle2 className="w-5 h-5" />
+                Import Complete
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-sm text-center">
+                <div>
+                  <span className="text-2xl font-bold text-green-700 dark:text-green-400" data-testid="text-imported-count">{commitResult!.imported}</span>
+                  <div className="text-muted-foreground">Imported</div>
+                </div>
+                <div>
+                  <span className="text-2xl font-bold text-yellow-700 dark:text-yellow-400" data-testid="text-skipped-count">{commitResult!.skipped}</span>
+                  <div className="text-muted-foreground">Skipped</div>
+                </div>
+              </div>
+              {commitResult!.errors.length > 0 && (
+                <Button variant="ghost" size="sm" data-testid="button-download-error-csv-commit" onClick={() => downloadErrorCsv(commitResult!.errors)}>
+                  <Download className="w-3.5 h-3.5 mr-1" /> Download {commitResult!.errors.length} error rows
+                </Button>
+              )}
+              <Button className="w-full mt-2" data-testid="button-import-done" onClick={() => { reset(); onClose(); }}>Done</Button>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function Products() {
   const { toast } = useToast();
   const { data: currentUser } = useCurrentUser();
   const canSeeCosts = !!currentUser && (COST_VISIBLE_ROLES as readonly string[]).includes(currentUser.role);
+  const canImport = !!currentUser && (currentUser.role === "admin" || currentUser.role === "accountant");
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: brands } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
   const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
@@ -155,6 +466,7 @@ export default function Products() {
   const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
   const [familyFilter, setFamilyFilter] = useState<string>("__all__");
+  const [showImportDialog, setShowImportDialog] = useState(false);
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productForm, setProductForm] = useState<ProductForm>(emptyProductForm());
@@ -643,12 +955,20 @@ export default function Products() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Products & Services</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage your product catalog and service offerings</p>
         </div>
-        {activeTab !== "prices" && (
-          <Button data-testid="button-add-item" onClick={openNewItem}>
-            <Plus className="w-4 h-4 mr-2" />
-            {activeTab === "services" ? "Add Service" : "Add Product"}
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canImport && activeTab === "products" && (
+            <Button variant="outline" data-testid="button-import-csv" onClick={() => setShowImportDialog(true)}>
+              <Upload className="w-4 h-4 mr-2" />
+              Import CSV
+            </Button>
+          )}
+          {activeTab !== "prices" && (
+            <Button data-testid="button-add-item" onClick={openNewItem}>
+              <Plus className="w-4 h-4 mr-2" />
+              {activeTab === "services" ? "Add Service" : "Add Product"}
+            </Button>
+          )}
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSearchQuery(""); }}>
@@ -1259,6 +1579,13 @@ export default function Products() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Bulk CSV Import dialog */}
+      <ImportCSVDialog
+        open={showImportDialog}
+        onClose={() => setShowImportDialog(false)}
+        onSuccess={() => setShowImportDialog(false)}
+      />
     </div>
   );
 }

@@ -1,0 +1,95 @@
+Phase 5 verified manually. ALMM/DCR chips on Solar Panel lines, subsidy scheme select with warnings (including PM Surya Ghar DCR-specific), MRP soft-warn for end-users, tier price reference panel, warranty on quotation PDF, and touched-line gating — all working.
+Approved — start Phase 6 (Bulk CSV Import).
+Scope as per ticket:
+1. New endpoint: POST /api/products/import
+
+Multipart form, accepts CSV file
+Query param mode=dry_run|commit
+Dry Run validates and shows preview, writes nothing
+Commit runs full import inside a single transaction
+
+2. CSV columns (in this order for the downloadable template):
+name, sku, brand, category, description, distributorPrice, logisticsCost, unitPrice, targetMarginPct, gstRate, hsnCode, unit, minStockLevel, minMarginPct, warrantyPeriod, mrp, type, packSize, almm, dcrCompliant, modelSeries, lifecycleStatus, applicableRegions, priceListVersion, productFamily, customerTierPrice (JSON), specs (JSON), supplierSku
+Required columns: name, category. Everything else optional/nullable.
+3. Validation rules:
+
+Category must match one of the 16 predefined categories (reject row if not)
+Brand: auto-create if not found (case-insensitive match against existing brands first). When auto-creating, set isActive = true and leave defaultMarginPct null.
+SKU: if blank, auto-generate as {brand_prefix}-{timestamp_base36} (same pattern as manual entry in Phase 2)
+Existing SKU in DB: skip the row, add to error report (don't overwrite)
+Duplicate SKU within same CSV file: flag in Dry Run preview with row numbers, operator decides abort vs proceed (if proceed, only first row imports, rest skipped)
+unitPrice: if blank AND both distributorPrice and logisticsCost are present, auto-compute as (distributorPrice + logisticsCost) × (1 + gstRate/100) × (1 + targetMarginPct/100). Uses targetMarginPct from the row if present, otherwise falls back to a per-import-dialog default the operator can set.
+logisticsCost: if blank, auto-compute as distributorPrice × 0.02 (2% default)
+priceListVersion: if blank, auto-stamp from a single field at the top of the import dialog (operator enters version once, applies to all rows)
+applicableRegions: stored as text array. Accept comma-separated values in CSV (e.g., "North,East,Northeast") or keyword "All India" which stores as NULL
+customerTierPrice: accept as JSON string in CSV. Validate 2 rows: end_user, business. Reject if shape is wrong.
+specs: accept as JSON string in CSV. Validate against category template if category has one; otherwise accept any key-value shape. Reject if malformed JSON.
+almm, dcrCompliant: accept "true"/"false"/"yes"/"no"/"1"/"0" case-insensitive. Null if blank.
+lifecycleStatus: accept "active"/"discontinued"/"replaced"/"draft" case-insensitive. Default to "active" if blank.
+
+4. Supplier products auto-link:
+When a row's brand value matches an existing supplier name (case-insensitive), auto-create a supplier_products row:
+
+supplierPrice = distributorPrice from the row
+supplierSku = from CSV column if provided, else NULL
+isPrimary = true, unless another isPrimary link already exists for that product (then false)
+
+This handles the common case where your suppliers ARE the brands (Eastman = brand + supplier).
+5. Transaction safety:
+
+Commit mode: entire import inside single DB transaction. If any row fails critical validation, either (a) abort entire import, or (b) skip bad rows and commit valid ones — your call which pattern is cleaner. Document whichever you pick.
+Dry Run: NO database writes under any circumstance. Validate, report, done.
+
+6. Response shape:
+{
+  mode: "dry_run" | "commit",
+  imported: number,
+  skipped: number,
+  errors: [{row_number, sku, product_name, error_type, error_message}],
+  duplicates_within_file: [{row_number, sku, first_occurrence_row}]
+}
+7. Frontend — Import CSV dialog:
+Add "Import CSV" button next to "+ Add Product" on Products page (admin and accountant roles only).
+Dialog contains:
+
+File picker (.csv only)
+Optional "Price List Version" text field (auto-stamps blank rows)
+Optional "Default Target Margin %" number field (used when row has blank targetMarginPct AND blank unitPrice)
+"Download Template" link that exports a .csv with header row and 4 example rows: one Solar Panel, one PCU, one Battery, one Accessory (other categories share the same columns, no need for 16 examples)
+Dry Run / Commit toggle (default: Dry Run)
+Submit button
+
+8. Results UI:
+After submission, show preview pane:
+
+"Would import: X rows" (Dry Run) or "Imported: X rows" (Commit)
+"Would skip: Y rows" / "Skipped: Y rows"
+Errors list with row-level details
+Duplicates-within-file warnings if any (only in Dry Run)
+Download Error CSV button — downloads a .csv with columns {row_number, sku, product_name, error_type, error_message}
+
+After Commit success: show success summary with counts matching Dry Run, confirm transaction committed.
+9. Role gating:
+CSV import endpoint requires admin or accountant role. Sales managers and below: 403.
+10. Architectural constraints (reminder):
+
+No changes to existing Products form or list behavior (except the new Import button)
+No changes to Daily Pricing engine
+No changes to existing supplier_products shape
+No changes to existing product PATCH/POST endpoints
+New endpoint only; additive
+
+Stop gate at end of Phase 6 — commit, push, then present:
+
+Screenshot of Import CSV dialog with all fields visible
+Screenshot of Dry Run preview showing would-import count, would-skip count, and errors list on a real 5-10 row CSV
+Screenshot of Dry Run showing duplicate-within-file warning when 2 rows share an SKU
+Screenshot of Commit success summary
+Screenshot confirming auto-generated supplier_products link row was created when brand matched an existing supplier name (SQL query result or Supply Chain page view)
+Screenshot of Error CSV download with correct column structure
+Confirmation: re-uploading a row with an existing SKU skips it (not overwrites)
+Confirmation: uploading a row with invalid category produces a proper error in the error list
+Confirmation: SKU auto-generation works when SKU column is blank
+Confirmation: sales_manager role gets 403 on the import endpoint
+
+Do not start Phase 7 (Bundle engine) until I verify all 10 items with real-data testing.

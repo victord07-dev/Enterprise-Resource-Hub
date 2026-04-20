@@ -26,6 +26,8 @@ import {
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
   insertBrandSchema, COST_VISIBLE_ROLES, COST_FIELDS_TO_REDACT,
   productSpecsSchema, customerTierPriceSchema, productCategorySchema,
+  productCategoryValues, productCategoryDefaults, productLifecycleValues,
+  brands as brandsTable, supplierProducts as supplierProductsTable,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -40,6 +42,7 @@ import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateM
 import { broadcastWhatsappEvent } from "./wsHub";
 import crypto from "crypto";
 import multer from "multer";
+import { parse as csvParse } from "csv-parse/sync";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
 
@@ -852,6 +855,348 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to fetch products" });
     }
   });
+
+  // ── Phase 6: Bulk CSV Import ───────────────────────────────────────────
+  const csvUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype === "text/csv" || file.mimetype === "application/vnd.ms-excel" || (file.originalname ?? "").toLowerCase().endsWith(".csv")) {
+        cb(null, true);
+      } else {
+        cb(new Error("Only .csv files are accepted"));
+      }
+    },
+  });
+
+  function parseBoolCsv(val: string | undefined): boolean | null {
+    if (!val || val.trim() === "") return null;
+    const v = val.trim().toLowerCase();
+    if (["true", "yes", "1"].includes(v)) return true;
+    if (["false", "no", "0"].includes(v)) return false;
+    return null;
+  }
+
+  app.post("/api/products/import", authenticateToken, requireRole("admin", "accountant"), (req: any, res: any) => {
+    csvUpload.single("file")(req, res, async (err: any) => {
+      if (err) return res.status(400).json({ message: err.message });
+      if (!req.file) return res.status(400).json({ message: "CSV file is required (field name: file)" });
+
+      const mode = req.query.mode === "commit" ? "commit" : "dry_run";
+      const priceListVersionGlobal = ((req.body?.priceListVersion as string) ?? "").trim() || null;
+      const defaultTargetMarginPct = req.body?.defaultTargetMarginPct ? Number(req.body.defaultTargetMarginPct) : null;
+
+      try {
+        const csvText = req.file.buffer.toString("utf-8");
+        let records: Record<string, string>[];
+        try {
+          records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true }) as Record<string, string>[];
+        } catch (e: any) {
+          return res.status(400).json({ message: `CSV parse error: ${e.message}` });
+        }
+        if (records.length === 0) {
+          return res.json({ mode, imported: 0, skipped: 0, would_import: 0, would_skip: 0, errors: [], duplicates_within_file: [] });
+        }
+
+        // ── Pre-fetch reference data ──────────────────────────────────────────
+        const allBrandsRows = (await db.execute(sql`SELECT id, name FROM brands`)).rows as { id: string; name: string }[];
+        const brandNameToId = new Map<string, string>(allBrandsRows.map(b => [b.name.toLowerCase(), b.id]));
+
+        const allSuppliersRows = (await db.execute(sql`SELECT id, name FROM suppliers`)).rows as { id: string; name: string }[];
+        const supplierNameToId = new Map<string, string>(allSuppliersRows.map(s => [s.name.toLowerCase(), s.id]));
+
+        const existingSkus = new Set<string>(
+          ((await db.execute(sql`SELECT sku FROM products WHERE sku IS NOT NULL`)).rows as { sku: string }[]).map(r => r.sku)
+        );
+
+        type ErrEntry = { row_number: number; sku: string; product_name: string; error_type: string; error_message: string };
+        type DupEntry = { row_number: number; sku: string; first_occurrence_row: number };
+        const errors: ErrEntry[] = [];
+        const duplicatesWithinFile: DupEntry[] = [];
+        const seenSkusInFile = new Map<string, number>();
+        const brandsToAutoCreate = new Map<string, string>(); // lowerName → actual brand name
+
+        type ValidRow = {
+          name: string; sku: string | null; brandId: string | null; brandLowerName: string | null;
+          brandActualName: string | null; category: string; description: string | null;
+          distributorPrice: number | null; logisticsCost: number | null; unitPrice: number;
+          targetMarginPct: number | null; gstRate: number; hsnCode: string | null; unit: string | null;
+          minStockLevel: number | null; minMarginPct: number | null; warrantyPeriod: string | null;
+          mrp: number | null; type: string; packSize: string | null; almm: boolean; dcrCompliant: boolean;
+          modelSeries: string | null; lifecycleStatus: string; applicableRegions: string[] | null;
+          priceListVersion: string | null; productFamily: string | null;
+          customerTierPrice: Record<string, number> | null; specs: Record<string, any> | null;
+          supplierSku: string | null; supplierIdForAutoLink: string | null;
+        };
+
+        const validRows: ValidRow[] = [];
+
+        for (let i = 0; i < records.length; i++) {
+          const row = records[i];
+          const rowNum = i + 2;
+          const rowName = (row["name"] ?? "").trim();
+          const rowCategory = (row["category"] ?? "").trim();
+          const rowSkuRaw = (row["sku"] ?? "").trim() || null;
+
+          if (!rowName) {
+            errors.push({ row_number: rowNum, sku: "", product_name: "", error_type: "missing_required", error_message: "name is required" });
+            continue;
+          }
+          if (!rowCategory) {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "missing_required", error_message: "category is required" });
+            continue;
+          }
+          if (!(productCategoryValues as readonly string[]).includes(rowCategory)) {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_category", error_message: `"${rowCategory}" is not one of the 16 valid categories` });
+            continue;
+          }
+
+          // ── SKU duplicate / existence checks ─────────────────────────────────
+          let finalSku: string | null = rowSkuRaw;
+          if (finalSku) {
+            if (seenSkusInFile.has(finalSku)) {
+              const firstRow = seenSkusInFile.get(finalSku)!;
+              duplicatesWithinFile.push({ row_number: rowNum, sku: finalSku, first_occurrence_row: firstRow });
+              errors.push({ row_number: rowNum, sku: finalSku, product_name: rowName, error_type: "duplicate_sku_in_file", error_message: `SKU "${finalSku}" already in this file at row ${firstRow} — only first row will import` });
+              continue;
+            }
+            seenSkusInFile.set(finalSku, rowNum);
+            if (existingSkus.has(finalSku)) {
+              errors.push({ row_number: rowNum, sku: finalSku, product_name: rowName, error_type: "sku_exists", error_message: `SKU "${finalSku}" already exists in the database — row skipped` });
+              continue;
+            }
+          }
+
+          // ── Brand resolution ──────────────────────────────────────────────────
+          const rowBrandRaw = (row["brand"] ?? "").trim();
+          let resolvedBrandId: string | null = null;
+          let brandLowerName: string | null = null;
+          let brandActualName: string | null = null;
+          if (rowBrandRaw) {
+            const lb = rowBrandRaw.toLowerCase();
+            brandLowerName = lb;
+            if (brandNameToId.has(lb)) {
+              resolvedBrandId = brandNameToId.get(lb)!;
+            } else {
+              brandsToAutoCreate.set(lb, rowBrandRaw);
+              resolvedBrandId = `__new__${lb}`;
+              brandActualName = rowBrandRaw;
+            }
+          }
+
+          // ── Numeric fields ────────────────────────────────────────────────────
+          const distributorPrice = (row["distributorPrice"] ?? "").trim() ? Number(row["distributorPrice"]) : null;
+          const rawLogistics = (row["logisticsCost"] ?? "").trim();
+          const logisticsCost = rawLogistics ? Number(rawLogistics) : (distributorPrice != null ? distributorPrice * 0.02 : null);
+          const gstRate = (row["gstRate"] ?? "").trim() ? Number(row["gstRate"]) : 0;
+          const targetMarginPct = (row["targetMarginPct"] ?? "").trim() ? Number(row["targetMarginPct"]) : defaultTargetMarginPct;
+          const catDefaults = productCategoryDefaults[rowCategory as keyof typeof productCategoryDefaults];
+
+          let unitPrice: number;
+          const rawUP = (row["unitPrice"] ?? "").trim();
+          if (rawUP) {
+            unitPrice = Number(rawUP);
+          } else if (distributorPrice != null && logisticsCost != null && targetMarginPct != null) {
+            unitPrice = (distributorPrice + logisticsCost) * (1 + gstRate / 100) * (1 + targetMarginPct / 100);
+          } else if (distributorPrice != null) {
+            unitPrice = distributorPrice;
+          } else {
+            unitPrice = 0;
+          }
+
+          // ── applicableRegions ─────────────────────────────────────────────────
+          const rawReg = (row["applicableRegions"] ?? "").trim();
+          let applicableRegions: string[] | null = null;
+          if (rawReg && rawReg.toLowerCase() !== "all india") {
+            applicableRegions = rawReg.split(",").map(r => r.trim()).filter(Boolean);
+          }
+
+          // ── customerTierPrice JSON ────────────────────────────────────────────
+          const rawTier = (row["customerTierPrice"] ?? "").trim();
+          let customerTierPrice: Record<string, number> | null = null;
+          if (rawTier) {
+            try {
+              const parsed = JSON.parse(rawTier);
+              const v = customerTierPriceSchema.safeParse(parsed);
+              if (!v.success) {
+                errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_customer_tier_price", error_message: `customerTierPrice invalid: ${v.error.errors[0]?.message}` });
+                continue;
+              }
+              customerTierPrice = parsed;
+            } catch {
+              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_json", error_message: "customerTierPrice is not valid JSON" });
+              continue;
+            }
+          }
+
+          // ── specs JSON ────────────────────────────────────────────────────────
+          const rawSpecs = (row["specs"] ?? "").trim();
+          let specs: Record<string, any> | null = null;
+          if (rawSpecs) {
+            try {
+              specs = JSON.parse(rawSpecs);
+              if (typeof specs !== "object" || Array.isArray(specs)) throw new Error("must be an object");
+              const v2 = productSpecsSchema.safeParse(specs);
+              if (!v2.success) {
+                errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_specs", error_message: `specs invalid: ${v2.error.errors[0]?.message}` });
+                continue;
+              }
+            } catch {
+              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_json", error_message: "specs is not valid JSON" });
+              continue;
+            }
+          }
+
+          // ── Booleans, lifecycle, type ─────────────────────────────────────────
+          const almm = parseBoolCsv(row["almm"]) ?? false;
+          const dcrCompliant = parseBoolCsv(row["dcrCompliant"]) ?? false;
+          const rawLifecycle = (row["lifecycleStatus"] ?? "").trim().toLowerCase();
+          const lifecycleStatus = (productLifecycleValues as readonly string[]).includes(rawLifecycle) ? rawLifecycle : "active";
+          const rowType = (row["type"] ?? "").trim().toLowerCase();
+          const productType = rowType === "service" ? "service" : "product";
+          const plv = (row["priceListVersion"] ?? "").trim();
+          const priceListVersion = plv || priceListVersionGlobal || null;
+
+          const supplierIdForAutoLink = rowBrandRaw ? (supplierNameToId.get(rowBrandRaw.toLowerCase()) ?? null) : null;
+
+          validRows.push({
+            name: rowName,
+            sku: finalSku,
+            brandId: resolvedBrandId,
+            brandLowerName,
+            brandActualName,
+            category: rowCategory,
+            description: (row["description"] ?? "").trim() || null,
+            distributorPrice,
+            logisticsCost,
+            unitPrice,
+            targetMarginPct,
+            gstRate,
+            hsnCode: (row["hsnCode"] ?? "").trim() || catDefaults?.hsnCode || null,
+            unit: (row["unit"] ?? "").trim() || null,
+            minStockLevel: (row["minStockLevel"] ?? "").trim() ? Number(row["minStockLevel"]) : null,
+            minMarginPct: (row["minMarginPct"] ?? "").trim() ? Number(row["minMarginPct"]) : null,
+            warrantyPeriod: (row["warrantyPeriod"] ?? "").trim() || null,
+            mrp: (row["mrp"] ?? "").trim() ? Number(row["mrp"]) : null,
+            type: productType,
+            packSize: (row["packSize"] ?? "").trim() || null,
+            almm,
+            dcrCompliant,
+            modelSeries: (row["modelSeries"] ?? "").trim() || null,
+            lifecycleStatus,
+            applicableRegions,
+            priceListVersion,
+            productFamily: (row["productFamily"] ?? "").trim() || null,
+            customerTierPrice,
+            specs,
+            supplierSku: (row["supplierSku"] ?? "").trim() || null,
+            supplierIdForAutoLink,
+          });
+        }
+
+        const skippedCount = records.length - validRows.length;
+
+        // ── DRY RUN ───────────────────────────────────────────────────────────
+        if (mode === "dry_run") {
+          return res.json({
+            mode: "dry_run",
+            would_import: validRows.length,
+            would_skip: skippedCount,
+            imported: 0,
+            skipped: skippedCount,
+            errors,
+            duplicates_within_file: duplicatesWithinFile,
+            brands_to_auto_create: [...brandsToAutoCreate.values()],
+          });
+        }
+
+        // ── COMMIT MODE ───────────────────────────────────────────────────────
+        // 1) Auto-create brands outside transaction so IDs are available
+        const newBrandIdMap = new Map<string, string>(); // lowerName → new id
+        for (const [lb, actualName] of brandsToAutoCreate) {
+          const [nb] = await db.insert(brandsTable).values({ name: actualName, isActive: true }).returning();
+          newBrandIdMap.set(lb, nb.id);
+          brandNameToId.set(lb, nb.id);
+        }
+
+        // 2) Insert products + supplier links in single transaction
+        let importedCount = 0;
+        await db.transaction(async (tx) => {
+          for (const r of validRows) {
+            // Resolve brand id (replace __new__ placeholder)
+            let brandId = r.brandId;
+            if (brandId?.startsWith("__new__") && r.brandLowerName) {
+              brandId = newBrandIdMap.get(r.brandLowerName) ?? null;
+            }
+            // Auto-generate SKU if blank
+            const sku = r.sku ?? `${(r.brandActualName ?? "PRD").slice(0, 3).toUpperCase()}-${(Date.now() + importedCount).toString(36).toUpperCase()}`;
+
+            const inserted = await tx.execute(sql`
+              INSERT INTO products (
+                name, sku, brand_id, category, description,
+                distributor_price, logistics_cost, unit_price,
+                target_margin_pct, gst_rate, hsn_code, unit,
+                min_stock_level, min_margin_pct, warranty_period, mrp,
+                type, pack_size, almm, dcr_compliant, model_series,
+                lifecycle_status, applicable_regions, price_list_version,
+                product_family, customer_tier_price, specs, needs_pricing_review
+              ) VALUES (
+                ${r.name}, ${sku}, ${brandId}, ${r.category}, ${r.description},
+                ${r.distributorPrice}, ${r.logisticsCost}, ${r.unitPrice},
+                ${r.targetMarginPct}, ${r.gstRate}, ${r.hsnCode},
+                COALESCE(${r.unit}, 'pcs'),
+                COALESCE(${r.minStockLevel}, 10), COALESCE(${r.minMarginPct}, 5),
+                ${r.warrantyPeriod}, ${r.mrp},
+                ${r.type}, ${r.packSize}, ${r.almm}, ${r.dcrCompliant}, ${r.modelSeries},
+                ${r.lifecycleStatus},
+                ${r.applicableRegions?.length ? r.applicableRegions : null}::text[],
+                ${r.priceListVersion}, ${r.productFamily},
+                ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb,
+                ${r.specs ? JSON.stringify(r.specs) : null}::jsonb,
+                false
+              ) RETURNING id
+            `);
+
+            const productId = (inserted.rows[0] as any).id as string;
+            importedCount++;
+
+            // Supplier auto-link
+            if (r.supplierIdForAutoLink) {
+              const existingPrimary = await tx.execute(sql`
+                SELECT id FROM supplier_products WHERE supplier_id = ${r.supplierIdForAutoLink} AND product_id = ${productId} LIMIT 1
+              `);
+              if (existingPrimary.rows.length === 0) {
+                // Check if any isPrimary already exists for this supplier
+                const anyPrimary = await tx.execute(sql`
+                  SELECT id FROM supplier_products WHERE supplier_id = ${r.supplierIdForAutoLink} AND is_primary = true LIMIT 1
+                `);
+                const isPrimary = anyPrimary.rows.length === 0;
+                await tx.execute(sql`
+                  INSERT INTO supplier_products (supplier_id, product_id, supplier_price, supplier_sku, is_primary)
+                  VALUES (${r.supplierIdForAutoLink}, ${productId}, ${r.distributorPrice}, ${r.supplierSku}, ${isPrimary})
+                `);
+              }
+            }
+          }
+        });
+
+        await logAction(req.user.id, "create", "products", `Bulk CSV import: ${importedCount} products imported, ${skippedCount} skipped`);
+
+        return res.json({
+          mode: "commit",
+          imported: importedCount,
+          skipped: skippedCount,
+          errors,
+          duplicates_within_file: duplicatesWithinFile,
+        });
+
+      } catch (e: any) {
+        console.error("CSV import error:", e);
+        return res.status(500).json({ message: `Import failed: ${e.message}` });
+      }
+    });
+  });
+  // ── End Phase 6 ───────────────────────────────────────────────────────────
 
   app.get("/api/products/last-sold-prices", authenticateToken, async (_req, res) => {
     try {

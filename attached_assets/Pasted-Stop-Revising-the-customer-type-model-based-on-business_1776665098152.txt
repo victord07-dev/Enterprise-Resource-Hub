@@ -1,0 +1,46 @@
+Stop. Revising the customer type model based on business reality.
+Decision: 2-type customer model, not 5.
+Our actual customer taxonomy is simpler than the 5-type system suggests:
+
+end_user — direct retail customer, typically no GST registration, one-off purchase
+business — dealer / vendor / small distributor / any commercial buyer with GST registration, buying for resale or business use
+
+Drop distributor, dealer, project, govt. These were over-classification for our business. We don't need those granular distinctions.
+Required changes:
+1. Schema: Revise the customerType enum to two values: end_user and business. Default remains end_user.
+2. Migration — redo with GSTIN-based logic:
+The migration that just ran needs to be redone. The current state has 1 dealer + 15 end_user based on defaults, which doesn't reflect reality.
+New migration logic:
+
+If customer has a non-empty GSTIN → classify as business
+If GSTIN is null/empty → classify as end_user
+Generate the per-customer mapping report as before (customer name, current type, GSTIN value, suggested new type)
+Allow operator override on individual rows before commit
+Commit inside a single transaction
+
+3. Downstream ripple effects in Phase 2:
+
+customerTierPrice JSONB grid becomes 2 rows instead of 4 — just end_user and business
+MRP warnings in Phase 5 fire only for end_user (unchanged behavior, just 1 type instead of needing to distinguish 5)
+Customer badge in Phase 3: 2 colors, not 5
+CSV template and form fields align with 2-tier system
+
+4. What to clean up from the migration that already ran:
+Since that migration committed, revert or re-run:
+
+If any customer is classified as dealer from the prior migration → reclassify based on GSTIN check
+The schema enum change (5 values → 2 values) must handle the existing dealer value gracefully — either migrate it forward to business as part of this correction, or drop dependency on old values cleanly
+
+Do this all inside a single transaction: schema change + data migration + enum cleanup.
+5. Phase gate discipline — explicit reminder:
+You mentioned planning to come back at the Phase 5 stop gate. The plan has explicit commit-push-stop-await-approval discipline at the end of EVERY phase, not just Phase 5 and Phase 6. End of Phase 2, end of Phase 3, end of Phase 4, end of Phase 5 — all require a stop gate before the next phase starts. Confirm you'll stop at each one.
+Sequence from here:
+(a) Revise schema (customerType enum → 2 values)
+(b) Generate new mapping report based on GSTIN presence
+(c) Paste the report — show me which customers have GSTIN and which don't
+(d) I review, send overrides if any
+(e) You commit migration in a transaction
+(f) Paste the post-migration customer list (SELECT id, name, gstin, customerType FROM customers ORDER BY name)
+(g) I verify
+(h) I approve Phase 2 start
+Do not start Phase 2 until step (h). Phase 2 doesn't start automatically after migration — wait for explicit approval.

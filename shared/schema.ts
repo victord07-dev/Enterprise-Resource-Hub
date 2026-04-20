@@ -712,7 +712,7 @@ export const customerTierPriceSchema = z.object({
 
 export const productSpecsSchema = z.record(z.union([z.string(), z.number(), z.boolean(), z.null()]));
 
-export const customerTypeValues = ["distributor", "dealer", "end_user", "project", "govt"] as const;
+export const customerTypeValues = ["end_user", "business"] as const;
 export const customerTypeSchema = z.enum(customerTypeValues);
 
 export const productLifecycleValues = ["active", "discontinued", "replaced", "draft"] as const;

@@ -33,7 +33,7 @@ export function SpecsEditor({ category, value, onChange }: SpecsEditorProps) {
   const customKeys = useMemo(() => Object.keys(value).filter((k) => !tplKeys.has(k)), [value, tplKeys]);
 
   const { data: suggestions } = useQuery<string[]>({
-    queryKey: ["/api/custom-field-suggestions", category],
+    queryKey: [`/api/custom-field-suggestions?category=${encodeURIComponent(category)}`],
     enabled: !!category,
   });
 

@@ -246,7 +246,16 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       const prod = products.find(p => p.id === value);
       if (prod) {
         const ep = effectivePrices?.[prod.id];
-        const priceToUse = ep && !ep.noConfirmedPrice ? Number(ep.effectivePrice) : Number(prod.unitPrice);
+        // Phase 5: if customer has a known type and product has a matching tier price, use it.
+        // Otherwise fall back to effective price sheet / list price.
+        const tp = (prod as any)?.customerTierPrice as Record<string, number> | null | undefined;
+        const ctype = customer?.customerType;
+        const tierPrice = (tp && ctype && tp[ctype] != null) ? Number(tp[ctype]) : null;
+        const priceToUse = tierPrice != null
+          ? tierPrice
+          : ep && !ep.noConfirmedPrice
+            ? Number(ep.effectivePrice)
+            : Number(prod.unitPrice);
         item.unitPrice = priceToUse;
         item.description = prod.name;
         item.itemType = prod.type;
@@ -405,11 +414,33 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                 const euPrice = tp.end_user != null ? Number(tp.end_user) : null;
                 const bPrice = tp.business != null ? Number(tp.business) : null;
                 if (euPrice == null && bPrice == null) return null;
+                const activeTier = customer?.customerType === "end_user" ? "end_user"
+                  : customer?.customerType === "business" ? "business"
+                  : null;
+                const tierEntry = (key: "end_user" | "business", price: number | null) => {
+                  if (price == null) return null;
+                  const isActive = activeTier === key;
+                  const label = key === "end_user" ? "End User" : "Business";
+                  return (
+                    <span
+                      key={key}
+                      className={isActive
+                        ? "font-semibold text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30 px-1 py-0.5 rounded"
+                        : "text-muted-foreground opacity-60"
+                      }
+                      data-testid={`tier-price-${key}-${i}`}
+                    >
+                      {label}: ₹{price.toLocaleString("en-IN")}
+                      {isActive && <span className="ml-0.5 text-[9px]">← active</span>}
+                    </span>
+                  );
+                };
                 return (
-                  <div className="mt-0.5 text-[10px] text-muted-foreground" data-testid={`panel-tier-price-${i}`}>
-                    {euPrice != null && <span>End User: ₹{euPrice.toLocaleString("en-IN")}</span>}
-                    {euPrice != null && bPrice != null && <span className="mx-1">|</span>}
-                    {bPrice != null && <span>Business: ₹{bPrice.toLocaleString("en-IN")}</span>}
+                  <div className="mt-1 flex items-center gap-1.5 text-[10px]" data-testid={`panel-tier-price-${i}`}>
+                    <span className="text-muted-foreground shrink-0">Tier Ref:</span>
+                    {tierEntry("end_user", euPrice)}
+                    {euPrice != null && bPrice != null && <span className="text-muted-foreground">|</span>}
+                    {tierEntry("business", bPrice)}
                   </div>
                 );
               })()}

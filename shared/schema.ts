@@ -90,7 +90,8 @@ export const COST_FIELDS_TO_REDACT = [
   "targetMarginPct",
   "minMarginPct",
   "costPrice",
-  "customerTierPrice",
+  // customerTierPrice intentionally NOT redacted — it is a selling reference price, not a buying cost.
+  // Sales managers must see it to offer customers the correct tier.
 ] as const;
 
 export const productBundleItems = pgTable("product_bundle_items", {

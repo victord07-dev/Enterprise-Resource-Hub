@@ -1,5 +1,5 @@
 import jsPDF from "jspdf";
-import type { Quotation, QuotationItem, Customer } from "@shared/schema";
+import type { Quotation, QuotationItem, Customer, Product } from "@shared/schema";
 
 const COLORS = {
   headerBg: [30, 41, 59] as [number, number, number],
@@ -23,7 +23,8 @@ function drawRoundedRect(doc: jsPDF, x: number, y: number, w: number, h: number,
 export function generateQuotationPDF(
   quotation: Quotation,
   items: QuotationItem[],
-  customer: Customer | undefined
+  customer: Customer | undefined,
+  products?: Product[]
 ) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -161,7 +162,11 @@ export function generateQuotationPDF(
 
   let subtotal = 0;
   items.forEach((item, idx) => {
-    const rowH = 7;
+    // Phase 5 — expand row height to accommodate warranty line if present
+    const prod = products?.find(p => p.id === item.productId);
+    const warranty = prod?.warrantyPeriod && String(prod.warrantyPeriod).trim() ? String(prod.warrantyPeriod).trim() : null;
+    const rowH = warranty ? 12 : 7;
+
     const maxPageY = doc.internal.pageSize.getHeight() - 40;
     if (y + rowH > maxPageY) {
       doc.addPage();
@@ -191,6 +196,15 @@ export function generateQuotationPDF(
     doc.setFont("helvetica", "bold");
     doc.text(formatCurrency(item.totalPrice), colX.total - 2, y + 5, { align: "right" });
     doc.setFont("helvetica", "normal");
+
+    // Phase 5 — warranty line (small grey text, no totals impact, omitted if null)
+    if (warranty) {
+      doc.setFontSize(6);
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text(`Warranty: ${warranty}`, colX.desc, y + 10);
+      doc.setFontSize(8);
+      doc.setTextColor(...COLORS.textPrimary);
+    }
 
     subtotal += Number(item.totalPrice);
     y += rowH;

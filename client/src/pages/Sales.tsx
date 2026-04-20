@@ -12,12 +12,16 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3 } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
+
+/** Phase 5 constants */
+const SOLAR_PANEL_CATEGORY = "Solar Panel / PV Module";
+const SUBSIDY_SCHEMES = ["none", "PM Surya Ghar", "MNRE Rooftop", "KUSUM", "Other"] as const;
 
 /** Phase 3: customer-type label + badge — uses existing Badge variants (no new colors invented). */
 const customerTypeLabel = (t?: string | null) => (t === "business" ? "Business" : "End User");
@@ -207,13 +211,21 @@ function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry 
   );
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
   discount?: DiscountState;
   onDiscountChange?: (d: DiscountState) => void;
   effectivePrices?: Record<string, EffectivePriceEntry>;
+  /** Phase 5 — subsidy scheme for warning logic (orders only) */
+  subsidyScheme?: string;
+  /** Phase 5 — selected customer for MRP warning */
+  customer?: Customer;
+  /** Phase 5 — indices of lines the user has touched/edited after Phase 5 deploy */
+  touchedLineIndices: Set<number>;
+  /** Phase 5 — called when a line is edited/added (for warning gating) */
+  onLineTouched: (idx: number) => void;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
   // Exclude products whose lifecycle is discontinued or replaced from the line-item picker.
@@ -226,6 +238,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   const serviceItems = products.filter(p => p.type === "service" && isPickable(p));
 
   const updateItem = (index: number, field: string, value: any) => {
+    onLineTouched(index);
     const updated = [...items];
     const item = { ...updated[index], [field]: value };
 
@@ -267,7 +280,10 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     onChange(updated);
   };
 
-  const addItem = () => onChange([...items, emptyLineItem()]);
+  const addItem = () => {
+    onLineTouched(items.length);
+    onChange([...items, emptyLineItem()]);
+  };
   const removeItem = (index: number) => onChange(items.filter((_, i) => i !== index));
 
   const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
@@ -327,6 +343,34 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <X className="w-4 h-4" />
             </Button>
           </div>
+          {/* Phase 5 — ALMM / DCR status chips (Solar Panel lines only, always visible) */}
+          {(() => {
+            if (item.itemType !== "product" || !item.productId) return null;
+            const prod = products.find(p => p.id === item.productId);
+            if (!prod || (prod as any).category !== SOLAR_PANEL_CATEGORY) return null;
+            const almmOk = !!(prod as any).almm;
+            const dcrOk = !!(prod as any).dcrCompliant;
+            return (
+              <div className="flex items-center gap-2 flex-wrap" data-testid={`chips-almm-dcr-${i}`}>
+                <Badge
+                  variant="outline"
+                  className={`text-xs px-2 py-0.5 inline-flex items-center gap-1 ${almmOk ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}
+                  data-testid={`badge-almm-line-${i}`}
+                >
+                  <Sun className="w-3 h-3" />
+                  ALMM {almmOk ? "✓" : "✗"}
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className={`text-xs px-2 py-0.5 inline-flex items-center gap-1 ${dcrOk ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}
+                  data-testid={`badge-dcr-line-${i}`}
+                >
+                  <ShieldCheck className="w-3 h-3" />
+                  DCR {dcrOk ? "✓" : "✗"}
+                </Badge>
+              </div>
+            );
+          })()}
           <div>
             <Label className="text-xs text-muted-foreground">Description</Label>
             <Input className="h-8 text-xs" value={item.description} onChange={(e) => updateItem(i, "description", e.target.value)} placeholder="Item description" data-testid={`input-item-desc-${i}`} />
@@ -352,6 +396,23 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                   </div>
                 );
               })()}
+              {/* Phase 5 — Tier price reference panel (always visible when product has tier pricing) */}
+              {(() => {
+                if (!item.productId) return null;
+                const prod = products.find(p => p.id === item.productId);
+                const tp = (prod as any)?.customerTierPrice as Record<string, number> | null | undefined;
+                if (!tp || typeof tp !== "object") return null;
+                const euPrice = tp.end_user != null ? Number(tp.end_user) : null;
+                const bPrice = tp.business != null ? Number(tp.business) : null;
+                if (euPrice == null && bPrice == null) return null;
+                return (
+                  <div className="mt-0.5 text-[10px] text-muted-foreground" data-testid={`panel-tier-price-${i}`}>
+                    {euPrice != null && <span>End User: ₹{euPrice.toLocaleString("en-IN")}</span>}
+                    {euPrice != null && bPrice != null && <span className="mx-1">|</span>}
+                    {bPrice != null && <span>Business: ₹{bPrice.toLocaleString("en-IN")}</span>}
+                  </div>
+                );
+              })()}
             </div>
             <div>
               <Label className="text-xs text-muted-foreground">GST %</Label>
@@ -367,6 +428,54 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               </Select>
             </div>
           </div>
+          {/* Phase 5 — Subsidy + MRP warnings (gated: only touched lines) */}
+          {touchedLineIndices.has(i) && (() => {
+            if (item.itemType !== "product" || !item.productId) return null;
+            const prod = products.find(p => p.id === item.productId);
+            if (!prod) return null;
+            const isPanel = (prod as any).category === SOLAR_PANEL_CATEGORY;
+            const scheme = subsidyScheme || "none";
+            const hasSubsidy = scheme !== "none";
+            const isPmSuryaGhar = scheme === "PM Surya Ghar";
+
+            const showAlmmWarn = isPanel && hasSubsidy && !(prod as any).almm;
+            const showDcrWarn = isPanel && isPmSuryaGhar && !(prod as any).dcrCompliant;
+
+            const mrp = (prod as any).mrp != null ? Number((prod as any).mrp) : null;
+            const ctype = customer?.customerType;
+            const showMrpWarnEndUser = mrp != null && item.unitPrice > mrp && ctype === "end_user";
+            const showMrpInfoBusiness = mrp != null && ctype === "business";
+
+            if (!showAlmmWarn && !showDcrWarn && !showMrpWarnEndUser && !showMrpInfoBusiness) return null;
+            return (
+              <div className="space-y-1.5" data-testid={`warnings-${i}`}>
+                {showAlmmWarn && (
+                  <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5 text-amber-800 dark:text-amber-300" data-testid={`warn-almm-${i}`}>
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>This panel is not ALMM-listed. If the subsidy scheme requires ALMM (most schemes do), the application will be rejected.</span>
+                  </div>
+                )}
+                {showDcrWarn && (
+                  <div className="flex items-start gap-1.5 text-[11px] bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded px-2 py-1.5 text-red-800 dark:text-red-300" data-testid={`warn-dcr-${i}`}>
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>PM Surya Ghar subsidy requires DCR-compliant panels. This panel is not flagged as DCR-compliant.</span>
+                  </div>
+                )}
+                {showMrpWarnEndUser && (
+                  <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5 text-amber-800 dark:text-amber-300" data-testid={`warn-mrp-${i}`}>
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>Unit price ₹{item.unitPrice.toLocaleString("en-IN")} exceeds MRP ₹{mrp!.toLocaleString("en-IN")} for end-user customer.</span>
+                  </div>
+                )}
+                {showMrpInfoBusiness && !showMrpWarnEndUser && (
+                  <div className="text-[10px] text-muted-foreground" data-testid={`info-mrp-${i}`}>
+                    MRP is ₹{mrp!.toLocaleString("en-IN")}.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
             <div className="bg-muted/40 rounded px-2 py-1">
               <span className="block text-[10px] mb-0.5">Item Amount</span>
@@ -394,8 +503,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               >
                 <BarChart3 className="w-3 h-3" />
                 Check Margin
-                {ep.noConfirmedPrice && <AlertTriangle className="w-3 h-3 text-red-500 ml-0.5" title="No confirmed price sheet exists" />}
-                {!ep.noConfirmedPrice && !ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" title="No confirmed price sheet for today" />}
+                {ep.noConfirmedPrice && <AlertTriangle className="w-3 h-3 text-red-500 ml-0.5" aria-label="No confirmed price sheet exists" />}
+                {!ep.noConfirmedPrice && !ep.hasConfirmedToday && <AlertTriangle className="w-3 h-3 text-amber-500 ml-0.5" aria-label="No confirmed price sheet for today" />}
               </button>
             );
           })()}
@@ -515,15 +624,21 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
+  // Phase 5 — touched-line tracking: warnings only shown on lines edited after Phase 5 deploy
+  const [orderTouchedLines, setOrderTouchedLines] = useState<Set<number>>(new Set());
+  const handleOrderLineTouched = (idx: number) => setOrderTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
 
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
   const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
   const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
+  // Phase 5 — touched-line tracking for quotes
+  const [quoteTouchedLines, setQuoteTouchedLines] = useState<Set<number>>(new Set());
+  const handleQuoteLineTouched = (idx: number) => setQuoteTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -983,9 +1098,10 @@ export default function Sales() {
   const openNewOrder = () => {
     setEditingOrder(null);
     const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "" });
+    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
+    setOrderTouchedLines(new Set()); // Phase 5: fresh order — start empty, warn on any line the user touches
     setOrderDialogOpen(true);
   };
 
@@ -1003,7 +1119,9 @@ export default function Sales() {
       deliveryCost: (order as any).deliveryCost ? String((order as any).deliveryCost) : "",
       deliveryAddress: (order as any).deliveryAddress || "",
       warehouseId: order.warehouseId || "",
+      subsidyScheme: (order as any).subsidyScheme || "none",
     });
+    setOrderTouchedLines(new Set()); // Phase 5: editing existing order — pre-existing lines are untouched
     setOrderDiscount({
       discountType: order.discountType || "none",
       discountValue: order.discountValue ? Number(order.discountValue) : 0,
@@ -1040,6 +1158,7 @@ export default function Sales() {
     setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
+    setQuoteTouchedLines(new Set()); // Phase 5: fresh quote — start empty
     setQuoteDialogOpen(true);
   };
 
@@ -1060,19 +1179,23 @@ export default function Sales() {
       discountType: q.discountType || "none",
       discountValue: q.discountValue ? Number(q.discountValue) : 0,
     });
+    setQuoteTouchedLines(new Set()); // Phase 5: editing existing quote — pre-existing lines are untouched
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        setQuoteItems(data.map((it: QuotationItem) => ({
+        setQuoteItems(data.map((it: any) => ({
           itemType: it.itemType || "product",
           productId: it.productId || "",
           description: it.description || "",
           quantity: it.quantity,
           unitPrice: Number(it.unitPrice),
           totalPrice: Number(it.totalPrice),
+          gstRate: Number(it.gstRate) || 0,
+          hsnCode: it.hsnCode || "",
+          taxAmount: Number(it.taxAmount) || 0,
         })));
       } else {
         setQuoteItems([emptyLineItem()]);
@@ -1186,7 +1309,7 @@ export default function Sales() {
       if (!res.ok) throw new Error("Failed to fetch items");
       const qItems: QuotationItem[] = await res.json();
       const customer = customers?.find(c => c.id === q.customerId);
-      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer);
+      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || []);
       toast({ title: "PDF downloaded", description: q.quoteNumber });
     } catch {
       toast({ title: "Failed to generate PDF", variant: "destructive" });
@@ -2215,6 +2338,26 @@ export default function Sales() {
                 <Input id="orderNotes" data-testid="input-order-notes" value={orderForm.notes} onChange={(e) => setOrderForm({ ...orderForm, notes: e.target.value })} />
               </div>
             </div>
+            {/* Phase 5 — Subsidy Scheme */}
+            <div className="space-y-2">
+              <Label htmlFor="orderSubsidyScheme">Subsidy Scheme <span className="text-muted-foreground font-normal text-xs">(applies to entire order)</span></Label>
+              <Select value={orderForm.subsidyScheme} onValueChange={(v) => setOrderForm({ ...orderForm, subsidyScheme: v })}>
+                <SelectTrigger id="orderSubsidyScheme" data-testid="select-order-subsidy-scheme" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SUBSIDY_SCHEMES.map((s) => (
+                    <SelectItem key={s} value={s}>{s === "none" ? "None (no subsidy)" : s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {orderForm.subsidyScheme !== "none" && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                  Subsidy active — ALMM/DCR requirements apply to Solar Panel lines below.
+                </p>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="orderPaymentTerms">Payment Terms</Label>
@@ -2270,7 +2413,18 @@ export default function Sales() {
                 </Select>
               </div>
             )}
-            <LineItemsEditor items={orderItems} onChange={setOrderItems} products={products || []} discount={orderDiscount} onDiscountChange={setOrderDiscount} effectivePrices={effectivePrices} />
+            <LineItemsEditor
+              items={orderItems}
+              onChange={setOrderItems}
+              products={products || []}
+              discount={orderDiscount}
+              onDiscountChange={setOrderDiscount}
+              effectivePrices={effectivePrices}
+              subsidyScheme={orderForm.subsidyScheme}
+              customer={customers?.find(c => c.id === orderForm.customerId)}
+              touchedLineIndices={orderTouchedLines}
+              onLineTouched={handleOrderLineTouched}
+            />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-order" disabled={orderMutation.isPending} onClick={() => orderMutation.mutate(orderForm)}>
@@ -2358,7 +2512,17 @@ export default function Sales() {
                 </div>
               )}
             </div>
-            <LineItemsEditor items={quoteItems} onChange={setQuoteItems} products={products || []} discount={quoteDiscount} onDiscountChange={setQuoteDiscount} effectivePrices={effectivePrices} />
+            <LineItemsEditor
+              items={quoteItems}
+              onChange={setQuoteItems}
+              products={products || []}
+              discount={quoteDiscount}
+              onDiscountChange={setQuoteDiscount}
+              effectivePrices={effectivePrices}
+              customer={customers?.find(c => c.id === quoteForm.customerId)}
+              touchedLineIndices={quoteTouchedLines}
+              onLineTouched={handleQuoteLineTouched}
+            />
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending} onClick={() => quoteMutation.mutate(quoteForm)}>

@@ -1,0 +1,64 @@
+Phase 4 verified manually. Category-specific spec fields rendering correctly for all 12 stable categories. Kit/accessory categories correctly show custom-fields-only mode. Specs badge and tooltip working on product list.
+Approved — start Phase 5 (Sales module surfaces).
+Scope as per ticket:
+
+ALMM + DCR chips on Solar Panel line items. Render ✓/✗ chips next to the product name on any quotation or sales order line item where the product's category is "Solar Panel / PV Module". Use the existing Badge component — don't invent new styling. ALMM chip shows ✓ green if product.almm is true, ✗ amber if false. Same for DCR chip using product.dcrCompliant.
+Subsidy scheme field on Sales Orders. Add a new field on the Sales Order form: subsidyScheme (enum select with options: none, PM Surya Ghar, MNRE Rooftop, KUSUM, Other). Default: none. This field applies to the entire order, not per line. Place it in the order header area near customer selection.
+Subsidy warning logic — two-tier:
+Primary ALMM check (applies to PM Surya Ghar, MNRE Rooftop, KUSUM — basically any scheme ≠ none): If subsidyScheme ≠ none AND any Solar Panel line on the order has almm = false, show inline warning on that line: "This panel is not ALMM-listed. If the subsidy scheme requires ALMM (most schemes do), the application will be rejected."
+Additional DCR check for PM Surya Ghar specifically: If subsidyScheme = PM Surya Ghar AND any Solar Panel line has dcrCompliant = false, show a SECOND warning alongside the ALMM one: "PM Surya Ghar subsidy requires DCR-compliant panels. This panel is not flagged as DCR-compliant."
+Both warnings are inline (not blocking). Both visible simultaneously if both conditions are met.
+MRP soft-warning on unit price change. When the user edits a line item's unitPrice:
+
+If customer.customerType = end_user AND unitPrice > product.mrp: show soft-warn "Unit price ₹X exceeds MRP ₹Y for end-user customer." — not blocking, just a warning icon + tooltip or inline note.
+If customer.customerType = business: informational note only (small gray text, not a warning). "MRP is ₹Y."
+If product.mrp is null: no warning at all (some brands don't publish MRP, like Eastman).
+
+
+Tier price reference panel. Next to the unit-price input field on each line item, show a small reference panel (or hover tooltip) displaying product.customerTierPrice values:
+
+End User: ₹X | Business: ₹Y
+If customerTierPrice is empty/null, hide the panel entirely (don't show "End User: — | Business: —").
+Purpose: sales rep can see the two-tier pricing at a glance while quoting.
+
+
+Warranty line on quotation PDF. In the existing jsPDF quotation output, under each line item, add a warranty line:
+
+If product.warrantyPeriod has a value: render as "Warranty: [value]" directly below the product name or description
+Handle multi-part warranty strings correctly. Luminous batteries show things like "24+12*", "36+24*", "60+15*" (months standard + extended). Eastman shows "10 Years" or "25 Years". These are stored as text — render as-is, don't try to parse or reformat.
+Text should be small gray under the line, not prominent. Doesn't add to totals or tax calc.
+If warrantyPeriod is null: omit the line entirely (don't print "Warranty: —").
+
+
+Warnings only on newly-edited lines. Critical: pre-existing draft quotations created before Phase 5 deploy must NOT retroactively show warnings on lines that were already saved. Implementation approach (your call — pick whichever is cleaner):
+
+Gate warnings on whether the line's lastEditedAt timestamp is after Phase 5 deploy timestamp
+OR: Set a flag on the line record when it's edited after Phase 5 and only show warnings for flagged lines
+OR: Any simpler equivalent that achieves the same behavior
+
+Newly added lines to an old draft DO show warnings. Old untouched lines stay quiet.
+
+Architectural constraints (reminder):
+
+No changes to existing pricing/margin logic
+No changes to Daily Pricing engine
+No changes to Sales totals math (taxAmount, grandTotal)
+All additions must be NULL-tolerant for existing products without ALMM/DCR/MRP/warranty set
+Service products should not show any of these warnings (they don't have panels, MRP, etc.)
+
+Stop gate at end of Phase 5 — commit, push, then present:
+
+Screenshot of quotation line item showing ALMM ✓ and DCR ✓ chips on a DCR-compliant ALMM-listed panel
+Screenshot of quotation line showing ALMM ✗ chip on a non-ALMM panel
+Screenshot of subsidy scheme dropdown in Sales Order header
+Screenshot of subsidy warning firing on a non-ALMM panel with any subsidy scheme set
+Screenshot showing BOTH ALMM and DCR warnings firing when subsidyScheme = PM Surya Ghar and panel is non-ALMM + non-DCR
+Screenshot of MRP soft-warning when end_user customer + unitPrice > MRP
+Screenshot showing NO MRP warning when business customer has unitPrice > MRP (just informational note)
+Screenshot of tier price reference panel showing End User and Business prices
+Screenshot of quotation PDF output with warranty text under a line item (test with both multi-part warranty like "36+24*" and simple warranty like "10 Years")
+Screenshot of quotation PDF with a line that has NULL warranty — confirm no "Warranty: —" line appears
+Confirmation that an old draft quotation (created before Phase 5 deploy) does not surface new warnings on its pre-existing lines
+Confirmation that adding a NEW line to that same old draft DOES surface warnings on the new line
+
+Do not start Phase 6 (CSV bulk import) until I verify all 12 items.

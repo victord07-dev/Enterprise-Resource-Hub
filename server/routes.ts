@@ -1128,8 +1128,9 @@ export async function registerRoutes(
             if (brandId?.startsWith("__new__") && r.brandLowerName) {
               brandId = newBrandIdMap.get(r.brandLowerName) ?? null;
             }
-            // Auto-generate SKU if blank
-            const sku = r.sku ?? `${(r.brandActualName ?? "PRD").slice(0, 3).toUpperCase()}-${(Date.now() + importedCount).toString(36).toUpperCase()}`;
+            // Auto-generate SKU if blank (use brand name as prefix, fall back to "PRD")
+            const brandPrefix = (r.brandActualName ?? r.brandLowerName ?? "prd").slice(0, 3).toUpperCase();
+            const sku = r.sku ?? `${brandPrefix}-${(Date.now() + importedCount).toString(36).toUpperCase()}`;
 
             const inserted = await tx.execute(sql`
               INSERT INTO products (

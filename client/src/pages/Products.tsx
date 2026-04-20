@@ -12,7 +12,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X } from "lucide-react";
+import { useCurrentUser } from "@/lib/auth";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -21,7 +22,10 @@ import {
   productCategoryDefaults,
   applicableRegionValues,
   productLifecycleValues,
+  COST_VISIBLE_ROLES,
 } from "@shared/schema";
+
+const LOGISTICS_DEFAULT_PCT = 0.02; // 2% of distributor price as fallback per-unit logistics estimate
 
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
 
@@ -40,7 +44,7 @@ type ProductForm = {
   description: string;
   unitPrice: string;
   brand: string;            // legacy free-text fallback (kept for back-compat)
-  brandId: string;          // new — FK to brands
+  brandId: string;          // FK to brands
   unit: string;
   minStockLevel: string;
   type: string;
@@ -58,6 +62,10 @@ type ProductForm = {
   applicableRegions: string[];
   priceListVersion: string;
   customerTierPrice: Record<TierKey, string>;
+  // Phase 2.5
+  logisticsCost: string;
+  targetMarginPct: string;
+  productFamily: string;
 };
 
 const emptyProductForm = (): ProductForm => ({
@@ -77,6 +85,9 @@ const emptyProductForm = (): ProductForm => ({
   applicableRegions: [],
   priceListVersion: "",
   customerTierPrice: { end_user: "", business: "" },
+  logisticsCost: "",
+  targetMarginPct: "",
+  productFamily: "",
 });
 
 const emptyServiceForm = (): ProductForm => ({
@@ -88,16 +99,35 @@ const emptyServiceForm = (): ProductForm => ({
   sku: `SVC-${Date.now().toString(36).toUpperCase()}`,
 });
 
-function computeAutoUnitPrice(distributorPrice: string, minMarginPct: string): string {
-  const dp = parseFloat(distributorPrice);
-  const mp = parseFloat(minMarginPct);
-  if (!isFinite(dp) || dp <= 0) return "";
-  const margin = isFinite(mp) ? mp : 0;
-  return (dp * (1 + margin / 100)).toFixed(2);
+/**
+ * Landed-cost-based auto pricing chain (Phase 2.5):
+ *   landedExclGst  = distributorPrice + logisticsCost (default = 2% of distributorPrice)
+ *   landedInclGst  = landedExclGst * (1 + gstRate/100)
+ *   suggestedPrice = landedInclGst * (1 + targetMarginPct/100)
+ * Returns numbers (or null) so the UI can render each line independently.
+ */
+function computeLandedChain(distributorPrice: string, logisticsCost: string, gstRate: string, targetMarginPct: string) {
+  const D = parseFloat(distributorPrice);
+  if (!isFinite(D) || D <= 0) return { D: null, L: null, gst: null, T: null, landedExcl: null, landedIncl: null, suggested: null, logisticsIsDefault: false };
+  const Lraw = parseFloat(logisticsCost);
+  const logisticsIsDefault = !isFinite(Lraw) || Lraw < 0;
+  const L = logisticsIsDefault ? D * LOGISTICS_DEFAULT_PCT : Lraw;
+  const gst = parseFloat(gstRate);
+  const gstPct = isFinite(gst) ? gst : 0;
+  const T = parseFloat(targetMarginPct);
+  const Tpct = isFinite(T) ? T : null;
+  const landedExcl = D + L;
+  const landedIncl = landedExcl * (1 + gstPct / 100);
+  const suggested = Tpct !== null ? landedIncl * (1 + Tpct / 100) : null;
+  return { D, L, gst: gstPct, T: Tpct, landedExcl, landedIncl, suggested, logisticsIsDefault };
 }
+
+const formatINR = (n: number) => `₹${n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function Products() {
   const { toast } = useToast();
+  const { data: currentUser } = useCurrentUser();
+  const canSeeCosts = !!currentUser && (COST_VISIBLE_ROLES as readonly string[]).includes(currentUser.role);
   const { data: allProducts, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: brands } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
   const { data: lastSoldPrices } = useQuery<Record<string, { price: string; lastSoldAt: string }>>({ queryKey: ["/api/products/last-sold-prices"] });
@@ -118,6 +148,7 @@ export default function Products() {
 
   const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
+  const [familyFilter, setFamilyFilter] = useState<string>("__all__");
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productForm, setProductForm] = useState<ProductForm>(emptyProductForm());
@@ -133,15 +164,23 @@ export default function Products() {
 
   const currentList = activeTab === "services" ? servicesOnly : productsOnly;
 
+  const productFamilies = useMemo(() => {
+    const set = new Set<string>();
+    productsOnly.forEach(p => { if (p.productFamily) set.add(p.productFamily); });
+    return Array.from(set).sort();
+  }, [productsOnly]);
+
   const filteredItems = currentList.filter((p) => {
+    if (familyFilter !== "__all__" && p.productFamily !== familyFilter) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
-    const brandName = p.brandId ? brandsById.get(p.brandId)?.name : p.brand;
+    const brandName = (p.brandId ? brandsById.get(p.brandId)?.name : null) || p.brand;
     return (
       p.name.toLowerCase().includes(q) ||
       p.sku.toLowerCase().includes(q) ||
       (brandName && brandName.toLowerCase().includes(q)) ||
-      p.category.toLowerCase().includes(q)
+      p.category.toLowerCase().includes(q) ||
+      (p.productFamily && p.productFamily.toLowerCase().includes(q))
     );
   });
 
@@ -197,7 +236,15 @@ export default function Products() {
 
   const isService = productForm.type === "service";
   const isPanel = !isService && productForm.category === PANEL_CATEGORY;
-  const autoUnitPrice = computeAutoUnitPrice(productForm.distributorPrice, productForm.minMarginPct);
+  const landed = useMemo(
+    () => computeLandedChain(productForm.distributorPrice, productForm.logisticsCost, productForm.gstRate, productForm.targetMarginPct),
+    [productForm.distributorPrice, productForm.logisticsCost, productForm.gstRate, productForm.targetMarginPct],
+  );
+  // GST manual-override warning: did the user pick a GST rate that differs from the category's published default?
+  const gstDefaultForCategory = productForm.category in productCategoryDefaults
+    ? productCategoryDefaults[productForm.category as keyof typeof productCategoryDefaults].gstRate
+    : null;
+  const gstOverridden = !isService && gstDefaultForCategory && productForm.gstRate !== gstDefaultForCategory;
 
   const openNewItem = () => {
     setEditingProduct(null);
@@ -236,6 +283,9 @@ export default function Products() {
         end_user: String(tier.end_user ?? ""),
         business: String(tier.business ?? ""),
       },
+      logisticsCost: p.logisticsCost ? String(p.logisticsCost) : "",
+      targetMarginPct: p.targetMarginPct ? String(p.targetMarginPct) : "",
+      productFamily: p.productFamily || "",
     });
     setProductDialogOpen(true);
   };
@@ -287,18 +337,10 @@ export default function Products() {
     setProductForm(next);
   };
 
-  const handleDistributorPriceChange = (v: string) => {
-    const next = { ...productForm, distributorPrice: v };
-    // If unitPrice is empty, populate it with auto value
-    if (!productForm.unitPrice) {
-      const auto = computeAutoUnitPrice(v, productForm.minMarginPct);
-      if (auto) next.unitPrice = auto;
+  const applySuggestedPrice = () => {
+    if (landed.suggested != null) {
+      setProductForm({ ...productForm, unitPrice: landed.suggested.toFixed(2) });
     }
-    setProductForm(next);
-  };
-
-  const applyAutoUnitPrice = () => {
-    if (autoUnitPrice) setProductForm({ ...productForm, unitPrice: autoUnitPrice });
   };
 
   const toggleRegion = (r: string) => {
@@ -312,6 +354,21 @@ export default function Products() {
 
   const handleSubmitProduct = () => {
     const isProd = productForm.type === "product";
+
+    // Phase 2.5 minimum-required-fields enforcement: name, category, brand (for products), unit
+    if (!productForm.name.trim()) {
+      toast({ title: "Name is required", variant: "destructive" }); return;
+    }
+    if (!productForm.category) {
+      toast({ title: "Category is required", variant: "destructive" }); return;
+    }
+    if (!productForm.unit) {
+      toast({ title: "Unit is required", variant: "destructive" }); return;
+    }
+    if (isProd && !productForm.brandId) {
+      toast({ title: "Brand is required", description: "Select an existing brand or click + to add one.", variant: "destructive" }); return;
+    }
+
     const tier: Record<string, number> = {};
     for (const k of ["end_user", "business"] as TierKey[]) {
       const v = parseFloat(productForm.customerTierPrice[k]);
@@ -322,16 +379,21 @@ export default function Products() {
     const brandObj = productForm.brandId ? brandsById.get(productForm.brandId) : null;
     const brandText = brandObj?.name || productForm.brand || null;
 
+    // Auto-generate SKU if blank — quotable products do not require a manually-entered SKU.
+    const autoSku = isProd
+      ? `${(brandText || "PRD").toString().slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, "")}-${Date.now().toString(36).toUpperCase()}`
+      : `SVC-${Date.now().toString(36).toUpperCase()}`;
+
     const data: any = {
-      name: productForm.name,
-      sku: productForm.sku,
+      name: productForm.name.trim(),
+      sku: productForm.sku.trim() || autoSku,
       category: productForm.category,
       description: productForm.description || null,
       unitPrice: productForm.unitPrice || "0",
       brand: brandText,
       brandId: productForm.brandId || null,
       unit: productForm.unit,
-      minStockLevel: Number(productForm.minStockLevel),
+      minStockLevel: Number(productForm.minStockLevel) || 0,
       type: productForm.type,
       hsnCode: productForm.hsnCode || null,
       gstRate: productForm.gstRate || "0",
@@ -350,11 +412,12 @@ export default function Products() {
       data.applicableRegions = productForm.applicableRegions.length > 0 ? productForm.applicableRegions : null;
       data.priceListVersion = productForm.priceListVersion || null;
       data.customerTierPrice = Object.keys(tier).length > 0 ? tier : null;
+      // Phase 2.5
+      data.logisticsCost = productForm.logisticsCost || null;
+      data.targetMarginPct = productForm.targetMarginPct ? String(parseFloat(productForm.targetMarginPct).toFixed(2)) : null;
+      data.productFamily = productForm.productFamily.trim() || null;
     }
 
-    if (data.type === "service" && !data.sku) {
-      data.sku = `SVC-${Date.now().toString(36).toUpperCase()}`;
-    }
     productMutation.mutate(data);
   };
 
@@ -535,17 +598,30 @@ export default function Products() {
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
-                placeholder="Search by name, SKU, brand, category..."
+                placeholder="Search by name, SKU, brand, category, family..."
                 className="pl-9"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 data-testid="input-search-products"
               />
             </div>
+            {productFamilies.length > 0 && (
+              <Select value={familyFilter} onValueChange={setFamilyFilter}>
+                <SelectTrigger className="w-60" data-testid="select-family-filter">
+                  <SelectValue placeholder="Filter by family" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All families</SelectItem>
+                  {productFamilies.map((f) => (
+                    <SelectItem key={f} value={f} data-testid={`option-family-${f.replace(/[^a-zA-Z0-9]/g, "-")}`}>{f}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           {renderTable(filteredItems, false)}
@@ -764,25 +840,61 @@ export default function Products() {
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
 
-            {/* Pricing block: distributor + auto unit price */}
-            {!isService && (
-              <div className="rounded-md border p-3 space-y-3 bg-muted/20">
+            {/* Cost & landed price block — admin/accountant only */}
+            {!isService && canSeeCosts && (
+              <div className="rounded-md border p-3 space-y-3 bg-muted/20" data-testid="section-cost-block">
+                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Cost & Landed Price (admin / accountant only)</Label>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="prodDistPrice">Distributor Price (₹)</Label>
                     <Input id="prodDistPrice" type="number" step="0.01" min="0" data-testid="input-product-distributor-price"
                       value={productForm.distributorPrice}
-                      onChange={(e) => handleDistributorPriceChange(e.target.value)}
+                      onChange={(e) => setProductForm({ ...productForm, distributorPrice: e.target.value })}
                       placeholder="From brand's published rate" />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="prodMinMargin">Min Margin %</Label>
+                    <Label htmlFor="prodLogistics">Logistics Cost / Unit (₹)</Label>
+                    <Input id="prodLogistics" type="number" step="0.01" min="0" data-testid="input-product-logistics-cost"
+                      value={productForm.logisticsCost}
+                      onChange={(e) => setProductForm({ ...productForm, logisticsCost: e.target.value })}
+                      placeholder={landed.D ? `est. 2% of distributor = ${formatINR(landed.D * LOGISTICS_DEFAULT_PCT)}` : "—"} />
+                    {landed.D && landed.logisticsIsDefault && (
+                      <p className="text-xs text-muted-foreground" data-testid="text-logistics-default-hint">
+                        Using 2% default = {formatINR(landed.L!)} (override anytime)
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="prodTargetMargin">Target Margin %</Label>
+                    <Input id="prodTargetMargin" type="number" step="0.01" min="0" max="100" data-testid="input-product-target-margin"
+                      value={productForm.targetMarginPct}
+                      onChange={(e) => setProductForm({ ...productForm, targetMarginPct: e.target.value })}
+                      placeholder="e.g. 18 (drives suggested selling price)" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="prodMinMargin">Min Margin % (floor)</Label>
                     <Input id="prodMinMargin" type="number" step="0.01" min="0" max="100" data-testid="input-product-min-margin"
                       value={productForm.minMarginPct}
                       onChange={(e) => setProductForm({ ...productForm, minMarginPct: e.target.value })}
                       placeholder="5.00" />
                   </div>
                 </div>
+
+                {/* Computed landed-cost display */}
+                {landed.D != null && (
+                  <div className="rounded-md bg-background border p-2.5 text-xs space-y-1" data-testid="display-landed-chain">
+                    <div className="flex justify-between"><span className="text-muted-foreground">Landed Cost (excl. GST)</span><span className="font-mono" data-testid="text-landed-excl">{formatINR(landed.landedExcl!)}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Landed Cost (incl. {landed.gst}% GST)</span><span className="font-mono" data-testid="text-landed-incl">{formatINR(landed.landedIncl!)}</span></div>
+                    {landed.suggested != null && (
+                      <div className="flex justify-between pt-1 border-t">
+                        <span className="text-muted-foreground">Suggested Selling Price (× {landed.T}% target margin)</span>
+                        <span className="font-mono font-semibold text-blue-700 dark:text-blue-400" data-testid="text-suggested-price">{formatINR(landed.suggested)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -806,11 +918,11 @@ export default function Products() {
                   disabled={!!editingProduct && !isService && !!effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday}
                   className={editingProduct && !isService && effectivePricesMap?.[editingProduct.id]?.hasConfirmedToday ? "bg-muted cursor-not-allowed" : ""}
                 />
-                {!isService && autoUnitPrice && (
-                  <button type="button" onClick={applyAutoUnitPrice} data-testid="button-apply-auto-price"
+                {!isService && canSeeCosts && landed.suggested != null && (
+                  <button type="button" onClick={applySuggestedPrice} data-testid="button-apply-suggested-price"
                     className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 flex items-center gap-1">
                     <Calculator className="w-3 h-3" />
-                    Auto: ₹{Number(autoUnitPrice).toLocaleString("en-IN")} (distributor × {Number(productForm.minMarginPct || "0")}% margin) — click to apply
+                    Suggested: {formatINR(landed.suggested)} (landed incl. GST × {landed.T}% target margin) — click to apply
                   </button>
                 )}
                 {editingProduct && !isService && effectivePricesMap?.[editingProduct.id] && (
@@ -839,6 +951,12 @@ export default function Products() {
                     ))}
                   </SelectContent>
                 </Select>
+                {gstOverridden && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400 flex items-start gap-1 mt-1" data-testid="warning-gst-override">
+                    <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                    Non-standard rate for this category (default is {gstDefaultForCategory}%). Make sure this is intentional.
+                  </p>
+                )}
               </div>
               {!isService && (
                 <div className="space-y-2">
@@ -885,6 +1003,19 @@ export default function Products() {
                       onChange={(e) => setProductForm({ ...productForm, modelSeries: e.target.value })}
                       placeholder="e.g. EM-W3 / Solarverter Pro" />
                   </div>
+                </div>
+
+                {/* Product family — flat grouping label, optional */}
+                <div className="space-y-2">
+                  <Label htmlFor="prodFamily">Product Family <span className="text-xs text-muted-foreground">(optional grouping label)</span></Label>
+                  <Input id="prodFamily" data-testid="input-product-family"
+                    value={productForm.productFamily}
+                    onChange={(e) => setProductForm({ ...productForm, productFamily: e.target.value })}
+                    placeholder="e.g. Luminous OPTIMUS Series / Eastman Smart Series"
+                    list="product-family-suggestions" />
+                  <datalist id="product-family-suggestions">
+                    {productFamilies.map((f) => <option key={f} value={f} />)}
+                  </datalist>
                 </div>
 
                 {/* ALMM / DCR — panels only */}

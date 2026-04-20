@@ -24,7 +24,7 @@ import {
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
-  insertBrandSchema,
+  insertBrandSchema, COST_VISIBLE_ROLES, COST_FIELDS_TO_REDACT,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -831,10 +831,22 @@ export async function registerRoutes(
   });
 
   // ======================== PRODUCTS ========================
-  app.get("/api/products", authenticateToken, async (_req, res) => {
+  app.get("/api/products", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getProducts();
-      res.json(data);
+      const role = req.user?.role;
+      const canSeeCosts = (COST_VISIBLE_ROLES as readonly string[]).includes(role);
+      if (canSeeCosts) {
+        res.json(data);
+      } else {
+        // Strip cost-sensitive fields for sales / warehouse / hr / field roles
+        const redacted = data.map((p) => {
+          const out: any = { ...p };
+          for (const k of COST_FIELDS_TO_REDACT) delete out[k];
+          return out;
+        });
+        res.json(redacted);
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch products" });
     }
@@ -870,11 +882,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/products/:id", authenticateToken, async (req, res) => {
+  app.get("/api/products/:id", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getProduct(req.params.id);
       if (!data) return res.status(404).json({ message: "Product not found" });
-      res.json(data);
+      const canSeeCosts = (COST_VISIBLE_ROLES as readonly string[]).includes(req.user?.role);
+      if (canSeeCosts) return res.json(data);
+      const out: any = { ...data };
+      for (const k of COST_FIELDS_TO_REDACT) delete out[k];
+      res.json(out);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch product" });
     }

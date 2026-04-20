@@ -76,7 +76,22 @@ export const products = pgTable("products", {
   applicableRegions: text("applicable_regions").array(),
   priceListVersion: text("price_list_version"),
   customerTierPrice: jsonb("customer_tier_price"),
+  // Phase 2.5 additions
+  logisticsCost: decimal("logistics_cost", { precision: 10, scale: 2 }),       // per-unit estimate; if NULL, UI defaults to 2% of distributor price
+  targetMarginPct: decimal("target_margin_pct", { precision: 5, scale: 2 }),   // separate from minMarginPct (floor); used for auto-selling-price
+  productFamily: varchar("product_family", { length: 100 }),                   // free-text grouping label (e.g. "Luminous OPTIMUS Series")
 });
+
+/** Roles allowed to view product cost data (distributor price, logistics, landed cost, margins). */
+export const COST_VISIBLE_ROLES = ["admin", "accountant"] as const;
+export const COST_FIELDS_TO_REDACT = [
+  "distributorPrice",
+  "logisticsCost",
+  "targetMarginPct",
+  "minMarginPct",
+  "costPrice",
+  "customerTierPrice",
+] as const;
 
 export const productBundleItems = pgTable("product_bundle_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

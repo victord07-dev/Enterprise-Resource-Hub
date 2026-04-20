@@ -1,0 +1,65 @@
+Before approving Phase 3, I want to fold 5 additions into the current Phase 2 work. These address real business needs that surfaced during review. All are additive, none break existing Phase 2 code.
+Addition 1: Logistics cost with 2% smart default
+Add logisticsCost DECIMAL(10,2) NULL to products table — per-unit logistics estimate.
+In the Products form: if logisticsCost is empty, display "(est. 2% of distributor price = ₹X)" as a computed default hint. User can override with a specific number.
+Reasoning: Logistics cost varies too much per shipment (fuel, distance, carrier, weight) to model precisely, but CEO needs landed-cost visibility in Products list. A 2% flat default gives a workable display estimate. Actual logistics continues to flow through GRN lots — those remain the source of truth for pricing. Product master logisticsCost is purely for display/fallback before GRN history exists.
+Addition 2: Target margin with auto-calculated selling price
+Add targetMarginPct DECIMAL(5,2) NULL to products table. Separate from existing minMarginPct (which is the floor).
+In the Products form behavior: when user enters distributorPrice + logisticsCost (or default) + targetMarginPct, auto-compute:
+
+Landed Cost (excl. GST) = distributorPrice + logisticsCost
+Landed Cost (incl. GST) = Landed Cost (excl. GST) × (1 + gstRate/100)
+Selling Price = Landed Cost (incl. GST) × (1 + targetMarginPct/100)
+
+Display these three as read-only computed values near the price section. User can manually override the final unitPrice (selling price) afterwards — that stays editable. Auto-calc is a smart default, not a forced mode.
+The Daily Pricing engine remains the authoritative source for actual selling prices. This auto-calc is the fallback when no Daily Price Sheet exists.
+Addition 3: Product family grouping (flat products, not hierarchy)
+Add productFamily VARCHAR(100) NULL to products table. Free-text grouping label (e.g., "Luminous OPTIMUS Series", "Eastman Smart Series").
+Each product/SKU remains its own flat row — no parent-variant hierarchy. Products list optionally adds a "Group by Family" filter for browsing. CSV import accepts productFamily column.
+Zero changes to Sales, Pricing, Inventory, or Bundle logic. SKUs remain first-class. Each family member is selected directly in the sales picker by its own SKU.
+Reasoning: Luminous HKVA price list has 17 models in one series. A parent-variant hierarchy would require refactoring every module that references products, for marginal catalog-browsing benefit. Flat products with a grouping label captures the organizational value without the architectural cost.
+Addition 4: Role-based cost column visibility
+Cost-related columns in the Products list must be role-gated:
+
+Admin and Accountant: see distributorPrice, logisticsCost, Landed Cost (excl. GST), Landed Cost (incl. GST), targetMarginPct, unitPrice, MRP — full cost transparency
+Sales Manager and Sales Rep: see only unitPrice (selling price), MRP, stock, warranty — NO landed cost, NO distributor price, NO margin
+Field Staff: no change from current
+
+Same rule in the Products form — non-admin/accountant roles should not see cost breakdown fields at all.
+Reasoning: Sales team seeing landed cost creates information leakage risks (cost shared with customers, leverage in commission negotiations) and adds noise to their decision-making. They quote from selling price + MRP anchor — landed cost isn't their concern.
+Addition 5: Minimum required fields — most others optional
+Review the current Products form and confirm required fields are ONLY: name, category, brand, unit.
+Everything else must be optional/nullable at DB and UI level:
+
+MRP (Eastman doesn't publish MRP — many brands don't)
+ALMM, DCR (only for solar panels — shouldn't apply to PCUs/batteries)
+Model series, pack size, applicable regions
+customerTierPrice, logisticsCost, targetMarginPct
+Warranty period
+distributorPrice (some products may not have known cost at first)
+
+Required fields are the absolute minimum to have a quotable product. The rest get filled in as data becomes available (especially on CSV import).
+What we're NOT building in this ticket (explicit defer list):
+
+Auto-updating product master with blended landed cost on GRN confirmation — future ticket, requires touching GRN workflow which is out of scope here
+Cached currentLandedCost field on product — same reason, future
+Rigid "selling price mode" toggle (auto vs fixed) — simplified to: auto-calc as default, manual override always allowed, no toggle needed
+Full logistics provider / rate master (per-kg, per-km calculators) — separate concept, defer
+Per-product estimated vs actual logistics variance reports — belongs in Path C reports, future
+
+Confirm before proceeding:
+(a) All 5 additions fit cleanly into current Phase 2 without breaking existing work
+(b) Migrations are clean (new columns NULL or have safe defaults on existing products)
+(c) Role-based visibility is enforced both in the list component AND the edit dialog — not just a UI hide
+(d) After these changes, the Phase 2 manual verification checklist will be:
+
+Existing products (with NULL in new columns) open, edit, and save cleanly
+New product creation: brand selection, 16-category dropdown, GST/HSN auto-fill, distributorPrice entry triggers auto-fill of logisticsCost (2% default), landed cost excl/incl GST shows correctly, targetMarginPct triggers auto-unitPrice, manual unitPrice override works
+Role check: log in as sales_manager (if such test account exists) — confirm cost columns and cost fields in form are hidden
+productFamily field saves and displays
+Brand deletion properly blocked by FK when products linked
+GST manual override triggers "Non-standard rate" warning
+ALMM/DCR chips on panel products
+Lifecycle filter on Sales picker (discontinued/replaced hidden)
+
+Fold all 5 additions in, then present the updated stop gate. Do not start Phase 3 until I verify.

@@ -25,6 +25,7 @@ import {
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
   insertBrandSchema, COST_VISIBLE_ROLES, COST_FIELDS_TO_REDACT,
+  productSpecsSchema, customerTierPriceSchema, productCategorySchema,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 
@@ -896,11 +897,58 @@ export async function registerRoutes(
     }
   });
 
+  /**
+   * Phase 4 — Validate JSONB fields (`specs`, `customerTierPrice`) and
+   * compute the set of "custom" spec keys (anything not in the canonical
+   * category template) for usage-stat tracking.
+   */
+  function validateProductJsonbFields(body: any): { ok: true } | { ok: false; message: string; errors?: any } {
+    if (body.specs !== undefined && body.specs !== null) {
+      const r = productSpecsSchema.safeParse(body.specs);
+      if (!r.success) return { ok: false, message: "Invalid `specs` JSONB shape", errors: r.error.errors };
+    }
+    if (body.customerTierPrice !== undefined && body.customerTierPrice !== null) {
+      const r = customerTierPriceSchema.safeParse(body.customerTierPrice);
+      if (!r.success) return { ok: false, message: "Invalid `customerTierPrice` JSONB shape", errors: r.error.errors };
+    }
+    return { ok: true };
+  }
+
+  // Lazy-loaded category templates so the server knows which keys are "custom".
+  // Mirrors `client/src/constants/categorySpecTemplates.ts`. Kept inline to avoid
+  // a client-side import inside the server bundle.
+  const SERVER_CATEGORY_TEMPLATE_KEYS: Record<string, string[]> = {
+    "Solar PCU - Sine Wave": ["capacity_va", "battery_voltage", "waveform", "topology"],
+    "Solar PCU - MPPT": ["capacity_va", "battery_voltage", "mppt_voltage_range", "max_pv_input_w"],
+    "Grid Tie Inverter - 1 Phase": ["output_power_kw", "mppt_channels", "max_pv_input_v", "efficiency_pct"],
+    "Grid Tie Inverter - 3 Phase": ["output_power_kw", "mppt_channels", "max_pv_input_v", "efficiency_pct"],
+    "Hybrid Inverter": ["output_power_kw", "battery_voltage", "mppt_channels", "backup_capable"],
+    "Home UPS / Inverter": ["capacity_va", "battery_voltage", "waveform"],
+    "Solar Battery - Lead Acid": ["capacity_ah", "voltage_v", "c_rating", "warranty_cycles"],
+    "Solar Battery - Lithium": ["capacity_ah", "voltage_v", "cycles", "chemistry", "dod_pct"],
+    "Home Battery - Lead Acid": ["capacity_ah", "voltage_v", "battery_type"],
+    "Rack / Wall Battery": ["capacity_kwh", "voltage_v", "chemistry", "cycles"],
+    "Solar Panel / PV Module": ["wattage_w", "vmp_v", "imp_a", "cells", "cell_type", "efficiency_pct", "dimensions_mm"],
+    "Solar Charge Controller": ["controller_type", "current_rating_a", "system_voltage_v", "max_pv_input_v"],
+  };
+  function customSpecKeysFor(category: string, specs: any): string[] {
+    if (!specs || typeof specs !== "object") return [];
+    const tpl = new Set(SERVER_CATEGORY_TEMPLATE_KEYS[category] ?? []);
+    return Object.keys(specs).filter((k) => !tpl.has(k));
+  }
+
   app.post("/api/products", authenticateToken, async (req: any, res) => {
     try {
+      const jsonbCheck = validateProductJsonbFields(req.body);
+      if (!jsonbCheck.ok) return res.status(400).json({ message: jsonbCheck.message, errors: jsonbCheck.errors });
       const parsed = insertProductSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createProduct(parsed.data as any);
+      // Phase 4 — increment custom-field usage counts for any non-template keys
+      const customKeys = customSpecKeysFor(created.category, created.specs);
+      if (customKeys.length > 0) {
+        try { await storage.incrementCustomFieldUsage(created.category, customKeys); } catch { /* non-fatal */ }
+      }
       await logAction(req.user.id, "create", "products", `Created product ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -922,12 +970,37 @@ export async function registerRoutes(
           });
         }
       }
+      const jsonbCheck = validateProductJsonbFields(req.body);
+      if (!jsonbCheck.ok) return res.status(400).json({ message: jsonbCheck.message, errors: jsonbCheck.errors });
+      // Snapshot prior specs so we only count NEW custom keys introduced by this update.
+      const before = req.body.specs !== undefined ? await storage.getProduct(req.params.id) : null;
       const updated = await storage.updateProduct(req.params.id, req.body);
       if (!updated) return res.status(404).json({ message: "Product not found" });
+      if (req.body.specs !== undefined && updated.specs) {
+        const beforeKeys = new Set(before?.specs && typeof before.specs === "object" ? Object.keys(before.specs as any) : []);
+        const newCustomKeys = customSpecKeysFor(updated.category, updated.specs).filter((k) => !beforeKeys.has(k));
+        if (newCustomKeys.length > 0) {
+          try { await storage.incrementCustomFieldUsage(updated.category, newCustomKeys); } catch { /* non-fatal */ }
+        }
+      }
       await logAction(req.user.id, "update", "products", `Updated product ${updated.name}`);
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update product" });
+    }
+  });
+
+  app.get("/api/custom-field-suggestions", authenticateToken, async (req: any, res) => {
+    try {
+      const category = String(req.query.category || "").trim();
+      if (!category) return res.json([]);
+      const cat = productCategorySchema.safeParse(category);
+      if (!cat.success) return res.json([]);
+      const minCount = req.query.minCount ? Math.max(1, parseInt(String(req.query.minCount), 10) || 3) : 3;
+      const suggestions = await storage.getCustomFieldSuggestions(cat.data, minCount);
+      res.json(suggestions);
+    } catch {
+      res.status(500).json({ message: "Failed to fetch custom field suggestions" });
     }
   });
 

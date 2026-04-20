@@ -13,7 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -24,6 +24,9 @@ import {
   productLifecycleValues,
   COST_VISIBLE_ROLES,
 } from "@shared/schema";
+import { SpecsEditor, type SpecsValue } from "@/components/SpecsEditor";
+import { hasSpecTemplate } from "@/constants/categorySpecTemplates";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
 const LOGISTICS_DEFAULT_PCT = 0.02; // 2% of distributor price as fallback per-unit logistics estimate
 
@@ -66,6 +69,8 @@ type ProductForm = {
   logisticsCost: string;
   targetMarginPct: string;
   productFamily: string;
+  // Phase 4 — JSONB specs
+  specs: SpecsValue;
 };
 
 const emptyProductForm = (): ProductForm => ({
@@ -88,6 +93,7 @@ const emptyProductForm = (): ProductForm => ({
   logisticsCost: "",
   targetMarginPct: "",
   productFamily: "",
+  specs: {},
 });
 
 const emptyServiceForm = (): ProductForm => ({
@@ -286,6 +292,7 @@ export default function Products() {
       logisticsCost: p.logisticsCost ? String(p.logisticsCost) : "",
       targetMarginPct: p.targetMarginPct ? String(p.targetMarginPct) : "",
       productFamily: p.productFamily || "",
+      specs: (p.specs as SpecsValue | null) ?? {},
     });
     setProductDialogOpen(true);
   };
@@ -448,6 +455,13 @@ export default function Products() {
       data.logisticsCost = productForm.logisticsCost || null;
       data.targetMarginPct = productForm.targetMarginPct ? String(parseFloat(productForm.targetMarginPct).toFixed(2)) : null;
       data.productFamily = productForm.productFamily.trim() || null;
+      // Phase 4 — Specs JSONB. Strip empty-string values so we never store noise.
+      const cleanSpecs: SpecsValue = {};
+      for (const [k, v] of Object.entries(productForm.specs)) {
+        if (v === "" || v == null) continue;
+        cleanSpecs[k.trim()] = v;
+      }
+      data.specs = Object.keys(cleanSpecs).length > 0 ? cleanSpecs : null;
     }
 
     productMutation.mutate(data);
@@ -519,6 +533,28 @@ export default function Products() {
                         {!isServiceTab && item.dcrCompliant && (
                           <Badge variant="outline" className="text-xs border-blue-500 text-blue-700 dark:text-blue-400" data-testid={`badge-dcr-${item.id}`}>DCR ✓</Badge>
                         )}
+                        {!isServiceTab && !!item.specs && typeof item.specs === "object" && Object.keys(item.specs as object).length > 0 ? (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Badge variant="outline" className="text-xs border-purple-400 text-purple-700 dark:text-purple-400 cursor-help inline-flex items-center gap-1" data-testid={`badge-specs-${item.id}`}>
+                                  <Settings2 className="w-3 h-3" />
+                                  Specs
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent side="top" className="max-w-xs">
+                                <div className="space-y-0.5 text-xs">
+                                  {Object.entries(item.specs as Record<string, unknown>).slice(0, 8).map(([k, v]) => (
+                                    <div key={k}><span className="font-medium">{k}:</span> {String(v)}</div>
+                                  ))}
+                                  {Object.keys(item.specs as object).length > 8 && (
+                                    <div className="text-muted-foreground italic">+ {Object.keys(item.specs as object).length - 8} more…</div>
+                                  )}
+                                </div>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : null}
                       </div>
                     </td>
                     {!isServiceTab && <td className="p-3 text-muted-foreground" data-testid={`text-item-sku-${item.id}`}>{item.sku}</td>}
@@ -1153,6 +1189,13 @@ export default function Products() {
                     ))}
                   </div>
                 </div>
+
+                {/* Phase 4 — Specifications */}
+                <SpecsEditor
+                  category={productForm.category}
+                  value={productForm.specs}
+                  onChange={(next) => setProductForm({ ...productForm, specs: next })}
+                />
 
                 {/* Inventory */}
                 <div className="grid grid-cols-2 gap-4">

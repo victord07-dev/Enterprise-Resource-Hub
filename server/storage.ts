@@ -9,6 +9,7 @@ import {
   type WhatsappWebhookRejectedPayload,
   debugPayloadCaptures, type DebugPayloadCapture,
   expenseCategories, expenses, type ExpenseCategory, type Expense, type InsertExpense, type InsertExpenseCategory,
+  customFieldUsageStats, type CustomFieldUsageStat,
   type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
@@ -82,6 +83,10 @@ export interface IStorage {
   createProduct(data: Omit<Product, "id">): Promise<Product>;
   updateProduct(id: string, data: Partial<Omit<Product, "id">>): Promise<Product | undefined>;
   deleteProduct(id: string): Promise<boolean>;
+
+  // Phase 4 — custom spec field usage tracking
+  getCustomFieldSuggestions(category: string, minCount?: number): Promise<string[]>;
+  incrementCustomFieldUsage(category: string, fieldKeys: string[]): Promise<void>;
 
   // Brands
   getBrands(): Promise<Brand[]>;
@@ -584,6 +589,32 @@ export class DatabaseStorage implements IStorage {
   async deleteProduct(id: string): Promise<boolean> {
     await db.delete(products).where(eq(products.id, id));
     return true;
+  }
+
+  // Phase 4 — custom spec field usage tracking
+  async getCustomFieldSuggestions(category: string, minCount = 3): Promise<string[]> {
+    const rows = await db
+      .select({ fieldKey: customFieldUsageStats.fieldKey, count: customFieldUsageStats.count })
+      .from(customFieldUsageStats)
+      .where(and(eq(customFieldUsageStats.category, category), gte(customFieldUsageStats.count, minCount)))
+      .orderBy(desc(customFieldUsageStats.count));
+    return rows.map((r) => r.fieldKey);
+  }
+
+  async incrementCustomFieldUsage(category: string, fieldKeys: string[]): Promise<void> {
+    if (!category || fieldKeys.length === 0) return;
+    // Upsert each (category, fieldKey) and increment count by 1.
+    for (const fieldKey of fieldKeys) {
+      const trimmed = String(fieldKey).trim();
+      if (!trimmed) continue;
+      await db
+        .insert(customFieldUsageStats)
+        .values({ category, fieldKey: trimmed, count: 1 })
+        .onConflictDoUpdate({
+          target: [customFieldUsageStats.category, customFieldUsageStats.fieldKey],
+          set: { count: sql`${customFieldUsageStats.count} + 1` },
+        });
+    }
   }
 
   // Brands

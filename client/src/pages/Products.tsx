@@ -343,6 +343,38 @@ export default function Products() {
     }
   };
 
+  /**
+   * Auto-population on distributor / target-margin / GST entry — but never overwrites a value the user has already typed.
+   *  - If logisticsCost is blank, populate with 2% of distributor.
+   *  - If unitPrice is blank and target margin is set, populate with the suggested landed price.
+   * Preserves manual override: once any value is set by the user, this never touches it.
+   */
+  const handleDistributorPriceChange = (v: string) => {
+    setProductForm((f) => {
+      const next: ProductForm = { ...f, distributorPrice: v };
+      const D = parseFloat(v);
+      if (isFinite(D) && D > 0) {
+        if (!f.logisticsCost) next.logisticsCost = (D * LOGISTICS_DEFAULT_PCT).toFixed(2);
+        if (!f.unitPrice) {
+          const chain = computeLandedChain(v, next.logisticsCost, f.gstRate, f.targetMarginPct);
+          if (chain.suggested != null) next.unitPrice = chain.suggested.toFixed(2);
+        }
+      }
+      return next;
+    });
+  };
+
+  const handleTargetMarginChange = (v: string) => {
+    setProductForm((f) => {
+      const next: ProductForm = { ...f, targetMarginPct: v };
+      if (!f.unitPrice) {
+        const chain = computeLandedChain(f.distributorPrice, f.logisticsCost, f.gstRate, v);
+        if (chain.suggested != null) next.unitPrice = chain.suggested.toFixed(2);
+      }
+      return next;
+    });
+  };
+
   const toggleRegion = (r: string) => {
     setProductForm((f) => ({
       ...f,
@@ -435,6 +467,12 @@ export default function Products() {
                 {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">Warranty</th>}
                 {!isServiceTab && <th className="text-left p-3 font-medium text-muted-foreground">HSN</th>}
                 <th className="text-right p-3 font-medium text-muted-foreground">GST %</th>
+                {!isServiceTab && canSeeCosts && (
+                  <>
+                    <th className="text-right p-3 font-medium text-muted-foreground" data-testid="th-distributor-price">Distributor (₹)</th>
+                    <th className="text-right p-3 font-medium text-muted-foreground" data-testid="th-landed-cost">Landed incl GST (₹)</th>
+                  </>
+                )}
                 <th className="text-right p-3 font-medium text-muted-foreground">{isServiceTab ? "Service Charge (₹)" : "Selling Price (₹)"}</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
                 <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
@@ -442,13 +480,16 @@ export default function Products() {
             </thead>
             <tbody>
               {productsLoading ? (
-                Array.from({ length: 4 }).map((_, i) => (
+                Array.from({ length: 4 }).map((_, i) => {
+                  const cols = isServiceTab ? 7 : (10 + (canSeeCosts ? 2 : 0));
+                  return (
                   <tr key={i} className="border-b">
-                    {Array.from({ length: isServiceTab ? 7 : 10 }).map((_, j) => (
+                    {Array.from({ length: cols }).map((_, j) => (
                       <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                     ))}
                   </tr>
-                ))
+                  );
+                })
               ) : items.length > 0 ? (
                 items.map((item) => {
                   // Fall back to legacy 'brand' text column if brandId is set but the brand record is missing/orphaned.
@@ -502,6 +543,26 @@ export default function Products() {
                         {Number(item.gstRate || 0)}%
                       </Badge>
                     </td>
+                    {!isServiceTab && canSeeCosts && (() => {
+                      const D = parseFloat(item.distributorPrice ?? "");
+                      const Lraw = parseFloat(item.logisticsCost ?? "");
+                      const G = parseFloat(item.gstRate ?? "0");
+                      let landedIncl: number | null = null;
+                      if (isFinite(D) && D > 0) {
+                        const L = isFinite(Lraw) && Lraw >= 0 ? Lraw : D * LOGISTICS_DEFAULT_PCT;
+                        landedIncl = (D + L) * (1 + (isFinite(G) ? G : 0) / 100);
+                      }
+                      return (
+                        <>
+                          <td className="p-3 text-right text-muted-foreground" data-testid={`text-item-distributor-${item.id}`}>
+                            {isFinite(D) && D > 0 ? `₹${D.toLocaleString("en-IN")}` : "—"}
+                          </td>
+                          <td className="p-3 text-right text-muted-foreground" data-testid={`text-item-landed-${item.id}`}>
+                            {landedIncl != null ? `₹${landedIncl.toLocaleString("en-IN", { maximumFractionDigits: 0 })}` : "—"}
+                          </td>
+                        </>
+                      );
+                    })()}
                     <td className="p-3 text-right font-medium" data-testid={`text-item-price-${item.id}`}>
                       ₹{Number(item.unitPrice).toLocaleString()}
                     </td>
@@ -525,7 +586,7 @@ export default function Products() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={isServiceTab ? 7 : 10} className="p-8 text-center text-muted-foreground">
+                  <td colSpan={isServiceTab ? 7 : (10 + (canSeeCosts ? 2 : 0))} className="p-8 text-center text-muted-foreground">
                     {searchQuery
                       ? `No ${isServiceTab ? "services" : "products"} match your search.`
                       : `No ${isServiceTab ? "services" : "products"} found. Add your first ${isServiceTab ? "service" : "product"}.`}
@@ -849,7 +910,7 @@ export default function Products() {
                     <Label htmlFor="prodDistPrice">Distributor Price (₹)</Label>
                     <Input id="prodDistPrice" type="number" step="0.01" min="0" data-testid="input-product-distributor-price"
                       value={productForm.distributorPrice}
-                      onChange={(e) => setProductForm({ ...productForm, distributorPrice: e.target.value })}
+                      onChange={(e) => handleDistributorPriceChange(e.target.value)}
                       placeholder="From brand's published rate" />
                   </div>
                   <div className="space-y-2">
@@ -870,7 +931,7 @@ export default function Products() {
                     <Label htmlFor="prodTargetMargin">Target Margin %</Label>
                     <Input id="prodTargetMargin" type="number" step="0.01" min="0" max="100" data-testid="input-product-target-margin"
                       value={productForm.targetMarginPct}
-                      onChange={(e) => setProductForm({ ...productForm, targetMarginPct: e.target.value })}
+                      onChange={(e) => handleTargetMarginChange(e.target.value)}
                       placeholder="e.g. 18 (drives suggested selling price)" />
                   </div>
                   <div className="space-y-2">

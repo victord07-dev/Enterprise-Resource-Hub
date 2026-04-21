@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
@@ -249,14 +250,21 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   onLineTouched: (idx: number) => void;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
-  // Exclude products whose lifecycle is discontinued or replaced from the line-item picker.
-  // (Existing items already on a saved order remain — they were valid at order time.)
-  const isPickable = (p: Product) => {
-    const ls = (p as any).lifecycleStatus;
-    return ls !== "discontinued" && ls !== "replaced";
+  // Phase 6.5 F1: include draft / discontinued / replaced products in the picker (with a
+  // lifecycle badge), but hard-block selection at the change handler so they cannot end up
+  // on a line. Existing lines on a saved order remain — they were valid at order time.
+  const productItems = products.filter(p => p.type === "product");
+  const serviceItems = products.filter(p => p.type === "service");
+  const { toast: lineToast } = useToast();
+
+  const lifecycleLabel = (ls: string | undefined): { text: string; badgeCls: string } => {
+    switch (ls) {
+      case "draft":        return { text: "DRAFT",        badgeCls: "border-slate-400 text-slate-600 dark:text-slate-300" };
+      case "discontinued": return { text: "DISCONTINUED", badgeCls: "border-red-400 text-red-700 dark:text-red-300" };
+      case "replaced":     return { text: "REPLACED",     badgeCls: "border-amber-400 text-amber-700 dark:text-amber-300" };
+      default:             return { text: "",             badgeCls: "" };
+    }
   };
-  const productItems = products.filter(p => p.type === "product" && isPickable(p));
-  const serviceItems = products.filter(p => p.type === "service" && isPickable(p));
 
   const updateItem = (index: number, field: string, value: any) => {
     onLineTouched(index);
@@ -265,6 +273,35 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
 
     if (field === "productId" && value) {
       const prod = products.find(p => p.id === value);
+      // Phase 6.5 F1+F2: hard-block non-active products at selection time.
+      if (prod) {
+        const ls = (prod as any).lifecycleStatus as string | undefined;
+        if (ls && ls !== "active") {
+          const replId: string | null = (prod as any).replacedByProductId || null;
+          const replacement = replId ? products.find(p => p.id === replId) : null;
+          const labelMap: Record<string, string> = { draft: "draft", discontinued: "discontinued", replaced: "replaced" };
+          const label = labelMap[ls] || ls;
+          lineToast({
+            title: `Cannot add ${label} product`,
+            description: ls === "replaced" && replacement
+              ? `${prod.name} has been replaced by ${replacement.name}. Use the replacement instead.`
+              : `${prod.name} is marked ${label} and cannot be sold. Pick an active product.`,
+            variant: "destructive",
+            action: ls === "replaced" && replacement
+              ? (
+                <ToastAction
+                  altText="Switch to replacement"
+                  onClick={() => updateItem(index, "productId", replacement.id)}
+                  data-testid={`button-switch-replacement-${index}`}
+                >
+                  Switch to {replacement.name}
+                </ToastAction>
+              )
+              : undefined,
+          });
+          return; // do not apply the selection
+        }
+      }
       if (prod) {
         const ep = effectivePrices?.[prod.id];
         // Phase 5: if customer has a known type and product has a matching tier price, use it.
@@ -359,9 +396,18 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                       const ep = effectivePrices?.[p.id];
                       const displayPrice = (ep && !ep.noConfirmedPrice) ? Number(ep.effectivePrice) : Number(p.unitPrice);
                       const hasEP = ep && !ep.noConfirmedPrice;
+                      const ls = (p as any).lifecycleStatus as string | undefined;
+                      const lc = lifecycleLabel(ls);
                       return (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.name} — ₹{displayPrice.toLocaleString()}{hasEP ? " ✓" : ""}
+                        <SelectItem key={p.id} value={p.id} data-testid={`option-product-${p.id}`}>
+                          <span className="inline-flex items-center gap-1.5">
+                            {lc.text && (
+                              <Badge variant="outline" className={`text-[9px] px-1 py-0 leading-tight ${lc.badgeCls}`} data-testid={`badge-lifecycle-${p.id}`}>
+                                {lc.text}
+                              </Badge>
+                            )}
+                            <span>{p.name} — ₹{displayPrice.toLocaleString()}{hasEP ? " ✓" : ""}</span>
+                          </span>
                         </SelectItem>
                       );
                     })}

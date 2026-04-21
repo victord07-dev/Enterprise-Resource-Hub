@@ -916,9 +916,25 @@ export async function registerRoutes(
         const allSuppliersRows = (await db.execute(sql`SELECT id, name FROM suppliers`)).rows as { id: string; name: string }[];
         const supplierNameToId = new Map<string, string>(allSuppliersRows.map(s => [s.name.toLowerCase(), s.id]));
 
-        const existingSkus = new Set<string>(
-          ((await db.execute(sql`SELECT sku FROM products WHERE sku IS NOT NULL`)).rows as { sku: string }[]).map(r => r.sku)
-        );
+        // Phase 6.6 A1: pre-fetch full product rows for UPDATE-mode diffing (was Set<sku> before).
+        type ExistingProduct = {
+          id: string; sku: string; name: string; brand_id: string | null; category: string;
+          hsn_code: string | null; gst_rate: string | null;
+          distributor_price: string | null; unit_price: string | null; mrp: string | null;
+          specs: any; warranty_period: string | null; applicable_regions: string[] | null;
+          almm: boolean | null; dcr_compliant: boolean | null; model_series: string | null;
+          lifecycle_status: string | null; price_list_version: string | null; pack_size: string | null;
+          logistics_cost: string | null; min_margin_pct: string | null; target_margin_pct: string | null;
+          customer_tier_price: any;
+        };
+        const existingProductRows = (await db.execute(sql`
+          SELECT id, sku, name, brand_id, category, hsn_code, gst_rate,
+                 distributor_price, unit_price, mrp, specs, warranty_period, applicable_regions,
+                 almm, dcr_compliant, model_series, lifecycle_status, price_list_version, pack_size,
+                 logistics_cost, min_margin_pct, target_margin_pct, customer_tier_price
+          FROM products WHERE sku IS NOT NULL
+        `)).rows as ExistingProduct[];
+        const existingProductBySku = new Map<string, ExistingProduct>(existingProductRows.map(r => [r.sku, r]));
 
         type ErrEntry = { row_number: number; sku: string; product_name: string; error_type: string; error_message: string };
         type DupEntry = { row_number: number; sku: string; first_occurrence_row: number };
@@ -930,8 +946,10 @@ export async function registerRoutes(
         const suppliersToAutoCreate = new Map<string, string>(); // lowerName → actual supplier name
 
         type ValidRow = {
+          rowNumber: number;
           name: string; sku: string | null; brandId: string | null; brandLowerName: string | null;
-          brandActualName: string | null; category: string; description: string | null;
+          brandActualName: string | null; brandRaw: string | null;
+          category: string; description: string | null;
           distributorPrice: number | null; logisticsCost: number | null; unitPrice: number;
           targetMarginPct: number | null; gstRate: number; hsnCode: string | null; unit: string | null;
           minStockLevel: number | null; minMarginPct: number | null; warrantyPeriod: string | null;
@@ -941,6 +959,9 @@ export async function registerRoutes(
           customerTierPrice: Record<string, number> | null; specs: Record<string, any> | null;
           supplierSku: string | null; supplierIdForAutoLink: string | null;
           warnings: string[];
+          // Phase 6.6 A1: UPDATE-mode bookkeeping
+          isUpdate: boolean;
+          existingProduct: ExistingProduct | null;
         };
 
         const validRows: ValidRow[] = [];
@@ -992,10 +1013,7 @@ export async function registerRoutes(
               continue;
             }
             seenSkusInFile.set(finalSku, rowNum);
-            if (existingSkus.has(finalSku)) {
-              errors.push({ row_number: rowNum, sku: finalSku, product_name: rowName, error_type: "sku_exists", error_message: `SKU "${finalSku}" already exists in the database — row skipped` });
-              continue;
-            }
+            // Phase 6.6 A1: SKU-exists no longer errors — row is routed into UPDATE mode below.
           }
 
           // ── Brand resolution ──────────────────────────────────────────────────
@@ -1161,12 +1179,20 @@ export async function registerRoutes(
             }
           }
 
+          // Phase 6.6 A1: detect UPDATE vs INSERT
+          const existingProduct = finalSku ? (existingProductBySku.get(finalSku) ?? null) : null;
+          const isUpdate = !!existingProduct;
+
           validRows.push({
+            rowNumber: rowNum,
             name: rowName,
             sku: finalSku,
             brandId: resolvedBrandId,
             brandLowerName,
             brandActualName,
+            brandRaw: rowBrandRaw || null,
+            isUpdate,
+            existingProduct,
             category: rowCategory,
             description: (row["description"] ?? "").trim() || null,
             distributorPrice,
@@ -1199,20 +1225,169 @@ export async function registerRoutes(
 
         const skippedCount = records.length - validRows.length;
 
+        // ── Phase 6.6 A1/A3: split into INSERT vs UPDATE buckets and compute diffs ──
+        const updateRows = validRows.filter(r => r.isUpdate);
+        const insertRows = validRows.filter(r => !r.isUpdate);
+
+        // Updatable / immutable per spec
+        const UPDATABLE_FIELDS: Array<{ key: string; rowVal: (r: ValidRow) => any; existVal: (e: ExistingProduct) => any }> = [
+          { key: "distributorPrice", rowVal: r => r.distributorPrice, existVal: e => e.distributor_price != null ? Number(e.distributor_price) : null },
+          { key: "unitPrice",        rowVal: r => r.unitPrice,        existVal: e => e.unit_price != null ? Number(e.unit_price) : null },
+          { key: "mrp",              rowVal: r => r.mrp,              existVal: e => e.mrp != null ? Number(e.mrp) : null },
+          { key: "specs",            rowVal: r => r.specs,            existVal: e => e.specs ?? null },
+          { key: "warrantyPeriod",   rowVal: r => r.warrantyPeriod,   existVal: e => e.warranty_period },
+          { key: "applicableRegions",rowVal: r => r.applicableRegions,existVal: e => e.applicable_regions },
+          { key: "almm",             rowVal: r => r.almm,             existVal: e => !!e.almm },
+          { key: "dcrCompliant",     rowVal: r => r.dcrCompliant,     existVal: e => !!e.dcr_compliant },
+          { key: "modelSeries",      rowVal: r => r.modelSeries,      existVal: e => e.model_series },
+          { key: "lifecycleStatus",  rowVal: r => r.lifecycleStatus,  existVal: e => e.lifecycle_status },
+          { key: "priceListVersion", rowVal: r => r.priceListVersion, existVal: e => e.price_list_version },
+          { key: "packSize",         rowVal: r => r.packSize,         existVal: e => e.pack_size },
+          { key: "logisticsCost",    rowVal: r => r.logisticsCost,    existVal: e => e.logistics_cost != null ? Number(e.logistics_cost) : null },
+          { key: "minMarginPct",     rowVal: r => r.minMarginPct,     existVal: e => e.min_margin_pct != null ? Number(e.min_margin_pct) : null },
+          { key: "targetMarginPct",  rowVal: r => r.targetMarginPct,  existVal: e => e.target_margin_pct != null ? Number(e.target_margin_pct) : null },
+          { key: "customerTierPrice",rowVal: r => r.customerTierPrice,existVal: e => e.customer_tier_price ?? null },
+          { key: "supplierSku",      rowVal: r => r.supplierSku,      existVal: e => null }, // tracked at supplier_products, not products — info only
+        ];
+        const FLAG_FIELDS = new Set(["almm", "dcrCompliant"]);
+
+        function valuesEqual(a: any, b: any): boolean {
+          if (a === b) return true;
+          if (a == null && b == null) return true;
+          if (a == null || b == null) return false;
+          if (Array.isArray(a) && Array.isArray(b)) {
+            if (a.length !== b.length) return false;
+            return a.every((v, i) => v === b[i]);
+          }
+          if (typeof a === "object" && typeof b === "object") {
+            try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+          }
+          if (typeof a === "number" || typeof b === "number") {
+            return Number(a) === Number(b);
+          }
+          return String(a) === String(b);
+        }
+
+        type UpdateChange = { field: string; old_value: any; new_value: any };
+        type WouldUpdateEntry = { row_number: number; sku: string; product_name: string; changes: UpdateChange[] };
+        type FlagChangeEntry = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
+        type ImmutableWarning = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
+
+        const wouldUpdate: WouldUpdateEntry[] = [];
+        const flagChanges: FlagChangeEntry[] = [];
+        const immutableWarnings: ImmutableWarning[] = [];
+
+        for (const r of updateRows) {
+          const existing = r.existingProduct!;
+          const changes: UpdateChange[] = [];
+          // Updatable fields diff
+          for (const f of UPDATABLE_FIELDS) {
+            if (f.key === "supplierSku") continue; // not stored on products table
+            const oldV = f.existVal(existing);
+            const newV = f.rowVal(r);
+            if (!valuesEqual(oldV, newV)) {
+              changes.push({ field: f.key, old_value: oldV, new_value: newV });
+              if (FLAG_FIELDS.has(f.key)) {
+                flagChanges.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: f.key, old_value: oldV, new_value: newV });
+              }
+            }
+          }
+          // Immutable-field warnings (CSV value differs from existing — field will be skipped)
+          if (r.name && existing.name && r.name !== existing.name) {
+            immutableWarnings.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: "name", old_value: existing.name, new_value: r.name });
+          }
+          if (r.category && existing.category && r.category !== existing.category) {
+            immutableWarnings.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: "category", old_value: existing.category, new_value: r.category });
+          }
+          if (r.brandRaw && existing.brand_id) {
+            // Compare incoming brand name vs existing brand id by reverse-lookup
+            const existingBrandName = allBrandsRows.find(b => b.id === existing.brand_id)?.name;
+            if (existingBrandName && r.brandRaw.toLowerCase() !== existingBrandName.toLowerCase()) {
+              immutableWarnings.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: "brand", old_value: existingBrandName, new_value: r.brandRaw });
+            }
+          }
+          if (r.hsnCode && existing.hsn_code && r.hsnCode !== existing.hsn_code) {
+            immutableWarnings.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: "hsnCode", old_value: existing.hsn_code, new_value: r.hsnCode });
+          }
+          if (existing.gst_rate != null && Number(existing.gst_rate) !== r.gstRate) {
+            immutableWarnings.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, field: "gstRate", old_value: Number(existing.gst_rate), new_value: r.gstRate });
+          }
+          if (changes.length > 0) {
+            wouldUpdate.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, changes });
+          }
+        }
+
+        // ── Phase 6.6 B1/B2: fuzzy-duplicate detection on NEW-SKU rows ──
+        function normName(s: string): string {
+          return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+        }
+        function levRatio(a: string, b: string): number {
+          if (!a && !b) return 1;
+          if (!a || !b) return 0;
+          const m = a.length, n = b.length;
+          const dp: number[] = new Array(n + 1).fill(0);
+          for (let j = 0; j <= n; j++) dp[j] = j;
+          for (let i = 1; i <= m; i++) {
+            let prev = dp[0];
+            dp[0] = i;
+            for (let j = 1; j <= n; j++) {
+              const tmp = dp[j];
+              if (a[i - 1] === b[j - 1]) dp[j] = prev;
+              else dp[j] = 1 + Math.min(prev, dp[j - 1], dp[j]);
+              prev = tmp;
+            }
+          }
+          return 1 - dp[n] / Math.max(m, n);
+        }
+        type PossibleDuplicate = { row_number: number; incoming_sku: string; incoming_name: string; existing_sku: string; existing_name: string; similarity_pct: number };
+        const possibleDuplicates: PossibleDuplicate[] = [];
+        const brandIdToName = new Map(allBrandsRows.map(b => [b.id, b.name.toLowerCase()]));
+        for (const r of insertRows) {
+          if (!r.brandRaw) continue;
+          const incomingBrandLower = r.brandRaw.toLowerCase();
+          const incomingNorm = normName(r.name);
+          if (!incomingNorm) continue;
+          for (const e of existingProductRows) {
+            if (e.category !== r.category) continue;
+            const existingBrandLower = e.brand_id ? brandIdToName.get(e.brand_id) : undefined;
+            const sameBrand =
+              (r.brandId && r.brandId === e.brand_id) ||
+              (existingBrandLower && existingBrandLower === incomingBrandLower);
+            if (!sameBrand) continue;
+            const ratio = levRatio(incomingNorm, normName(e.name));
+            if (ratio >= 0.85) {
+              possibleDuplicates.push({
+                row_number: r.rowNumber,
+                incoming_sku: r.sku ?? "",
+                incoming_name: r.name,
+                existing_sku: e.sku,
+                existing_name: e.name,
+                similarity_pct: Math.round(ratio * 100),
+              });
+            }
+          }
+        }
+
         // ── DRY RUN ───────────────────────────────────────────────────────────
         if (mode === "dry_run") {
           // Collect non-blocking warnings across all valid rows
           const allWarnings = validRows.flatMap(r =>
-            r.warnings.map(w => ({ row_number: validRows.indexOf(r) + preambleLineCount + 2, product_name: r.name, sku: r.sku ?? "", warning: w }))
+            r.warnings.map(w => ({ row_number: r.rowNumber, product_name: r.name, sku: r.sku ?? "", warning: w }))
           );
           return res.json({
             mode: "dry_run",
-            would_import: validRows.length,
+            would_import: insertRows.length,
+            would_update: wouldUpdate,
+            would_update_count: updateRows.length,
             would_skip: skippedCount,
             imported: 0,
+            updated: 0,
             skipped: skippedCount,
             errors,
             warnings: allWarnings,
+            flag_changes: flagChanges,
+            immutable_field_warnings: immutableWarnings,
+            possible_duplicates: possibleDuplicates,
             duplicates_within_file: duplicatesWithinFile,
             brands_to_auto_create: [...brandsToAutoCreate.values()],
             suppliers_to_auto_create: [...suppliersToAutoCreate.values()],
@@ -1222,6 +1397,7 @@ export async function registerRoutes(
         // ── COMMIT MODE ───────────────────────────────────────────────────────
         // Bug 5: create brands INSIDE the transaction so they are rolled back on failure
         let importedCount = 0;
+        let updatedCount = 0;
         await db.transaction(async (tx) => {
           // 1) Auto-create brands within transaction
           const newBrandIdMap = new Map<string, string>(); // lowerName → new id
@@ -1248,6 +1424,35 @@ export async function registerRoutes(
             if (brandId?.startsWith("__new__") && r.brandLowerName) {
               brandId = newBrandIdMap.get(r.brandLowerName) ?? null;
             }
+
+            // Phase 6.6 A3: UPDATE branch for existing SKUs.
+            // Only updatable fields are written; immutable fields (sku/name/brand/category/hsnCode/gstRate)
+            // are intentionally NOT in the SET clause — diffing them only emits warnings.
+            if (r.isUpdate && r.existingProduct) {
+              await tx.execute(sql`
+                UPDATE products SET
+                  distributor_price   = ${r.distributorPrice},
+                  unit_price          = ${r.unitPrice},
+                  mrp                 = ${r.mrp},
+                  specs               = ${r.specs ? JSON.stringify(r.specs) : null}::jsonb,
+                  warranty_period     = ${r.warrantyPeriod},
+                  applicable_regions  = ${r.applicableRegions?.length ? r.applicableRegions : null}::text[],
+                  almm                = ${r.almm},
+                  dcr_compliant       = ${r.dcrCompliant},
+                  model_series        = ${r.modelSeries},
+                  lifecycle_status    = ${r.lifecycleStatus},
+                  price_list_version  = ${r.priceListVersion},
+                  pack_size           = ${r.packSize},
+                  logistics_cost      = ${r.logisticsCost},
+                  min_margin_pct      = COALESCE(${r.minMarginPct}, min_margin_pct),
+                  target_margin_pct   = ${r.targetMarginPct},
+                  customer_tier_price = ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb
+                WHERE id = ${r.existingProduct.id}
+              `);
+              updatedCount++;
+              continue;
+            }
+
             // Auto-generate SKU if blank (use brand name as prefix, fall back to "PRD")
             const brandPrefix = (r.brandActualName ?? r.brandLowerName ?? "prd").slice(0, 3).toUpperCase();
             const sku = r.sku ?? `${brandPrefix}-${(Date.now() + importedCount).toString(36).toUpperCase()}`;
@@ -1306,11 +1511,12 @@ export async function registerRoutes(
           }
         });
 
-        await logAction(req.user.id, "create", "products", `Bulk CSV import: ${importedCount} products imported, ${skippedCount} skipped`);
+        await logAction(req.user.id, "create", "products", `Bulk CSV import: ${importedCount} products imported, ${updatedCount} updated, ${skippedCount} skipped`);
 
         return res.json({
           mode: "commit",
           imported: importedCount,
+          updated: updatedCount,
           skipped: skippedCount,
           errors,
           duplicates_within_file: duplicatesWithinFile,

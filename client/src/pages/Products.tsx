@@ -191,11 +191,22 @@ function downloadCsv(filename: string, content: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+type UpdateChange = { field: string; old_value: any; new_value: any };
+type WouldUpdateEntry = { row_number: number; sku: string; product_name: string; changes: UpdateChange[] };
+type FlagChangeEntry = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
+type ImmutableWarning = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
+type PossibleDuplicate = { row_number: number; incoming_sku: string; incoming_name: string; existing_sku: string; existing_name: string; similarity_pct: number };
+
 type ImportDryRunResult = {
   mode: "dry_run";
   would_import: number;
+  would_update: WouldUpdateEntry[];
+  would_update_count: number;
   would_skip: number;
   errors: ImportErrorRow[];
+  flag_changes: FlagChangeEntry[];
+  immutable_field_warnings: ImmutableWarning[];
+  possible_duplicates: PossibleDuplicate[];
   duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
   brands_to_auto_create: string[];
 };
@@ -203,6 +214,7 @@ type ImportDryRunResult = {
 type ImportCommitResult = {
   mode: "commit";
   imported: number;
+  updated: number;
   skipped: number;
   errors: ImportErrorRow[];
   duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
@@ -367,10 +379,14 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                 <CheckCircle2 className="w-4 h-4 text-green-500" />
                 Dry Run Preview
               </div>
-              <div className="grid grid-cols-3 gap-2 text-center text-sm">
+              <div className="grid grid-cols-4 gap-2 text-center text-sm">
                 <div className="rounded bg-green-50 dark:bg-green-950 p-2">
                   <div className="text-2xl font-bold text-green-700 dark:text-green-400" data-testid="text-would-import-count">{dryRunResult!.would_import}</div>
                   <div className="text-muted-foreground">Would Import</div>
+                </div>
+                <div className="rounded bg-blue-50 dark:bg-blue-950 p-2">
+                  <div className="text-2xl font-bold text-blue-700 dark:text-blue-400" data-testid="text-would-update-count">{dryRunResult!.would_update_count ?? 0}</div>
+                  <div className="text-muted-foreground">Would Update</div>
                 </div>
                 <div className="rounded bg-yellow-50 dark:bg-yellow-950 p-2">
                   <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-400" data-testid="text-would-skip-count">{dryRunResult!.would_skip}</div>
@@ -385,6 +401,102 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                 <div className="text-sm text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 rounded p-2">
                   New brands to auto-create: {dryRunResult!.brands_to_auto_create.join(", ")}
                 </div>
+              )}
+
+              {/* Phase 6.6 A2: Regulatory flag-changes panel — surfaced ABOVE general changes */}
+              {dryRunResult!.flag_changes?.length > 0 && (
+                <details className="rounded border border-orange-300 dark:border-orange-800 bg-orange-50 dark:bg-orange-950" open>
+                  <summary className="cursor-pointer p-2 text-sm font-medium text-orange-700 dark:text-orange-300 flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Flag changes ({dryRunResult!.flag_changes.length}) — regulatory
+                  </summary>
+                  <div className="max-h-40 overflow-y-auto text-xs font-mono px-2 pb-2" data-testid="panel-flag-changes">
+                    {dryRunResult!.flag_changes.map((f, i) => (
+                      <div key={i} className="flex gap-2 py-1 border-t first:border-0">
+                        <span className="text-muted-foreground w-12 shrink-0">row {f.row_number}</span>
+                        <span className="font-semibold w-24 shrink-0">{f.sku}</span>
+                        <span className="w-24 shrink-0">{f.field}</span>
+                        <span className="text-red-600 dark:text-red-400">{String(f.old_value)}</span>
+                        <span>→</span>
+                        <span className="text-green-700 dark:text-green-400">{String(f.new_value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Phase 6.6 B3: Possible-duplicates panel — yellow, above changes */}
+              {dryRunResult!.possible_duplicates?.length > 0 && (
+                <details className="rounded border border-yellow-400 dark:border-yellow-700 bg-yellow-50 dark:bg-yellow-950" open>
+                  <summary className="cursor-pointer p-2 text-sm font-medium text-yellow-800 dark:text-yellow-300 flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Possible duplicates ({dryRunResult!.possible_duplicates.length}) — review before commit
+                  </summary>
+                  <div className="max-h-40 overflow-y-auto text-xs px-2 pb-2" data-testid="panel-possible-duplicates">
+                    {dryRunResult!.possible_duplicates.map((d, i) => (
+                      <div key={i} className="py-1 border-t first:border-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted-foreground w-12 shrink-0">row {d.row_number}</span>
+                          <span className="font-semibold">{d.similarity_pct}% match</span>
+                        </div>
+                        <div className="ml-14 text-muted-foreground">
+                          <div>NEW: <span className="font-mono">{d.incoming_sku}</span> — {d.incoming_name}</div>
+                          <div>EXIST: <span className="font-mono">{d.existing_sku}</span> — {d.existing_name}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Phase 6.6 A2: Immutable-field warnings */}
+              {dryRunResult!.immutable_field_warnings?.length > 0 && (
+                <details className="rounded border bg-amber-50 dark:bg-amber-950">
+                  <summary className="cursor-pointer p-2 text-sm font-medium text-amber-800 dark:text-amber-300">
+                    Immutable fields skipped ({dryRunResult!.immutable_field_warnings.length})
+                  </summary>
+                  <div className="max-h-40 overflow-y-auto text-xs font-mono px-2 pb-2">
+                    {dryRunResult!.immutable_field_warnings.map((w, i) => (
+                      <div key={i} className="flex gap-2 py-1 border-t first:border-0">
+                        <span className="text-muted-foreground w-12 shrink-0">row {w.row_number}</span>
+                        <span className="w-20 shrink-0">{w.sku}</span>
+                        <span className="w-20 shrink-0">{w.field}</span>
+                        <span className="truncate" title={`old: ${w.old_value}\nnew: ${w.new_value}`}>kept "{String(w.old_value)}"</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Phase 6.6 A2: Changes preview (general updatable fields) */}
+              {dryRunResult!.would_update?.length > 0 && (
+                <details className="rounded border bg-blue-50/40 dark:bg-blue-950/30">
+                  <summary className="cursor-pointer p-2 text-sm font-medium text-blue-800 dark:text-blue-300">
+                    Changes preview ({dryRunResult!.would_update.length} products with diffs)
+                  </summary>
+                  <div className="max-h-60 overflow-y-auto text-xs px-2 pb-2" data-testid="panel-changes-preview">
+                    {dryRunResult!.would_update.slice(0, 100).map((u, i) => (
+                      <div key={i} className="py-1 border-t first:border-0">
+                        <div className="font-medium">
+                          <span className="text-muted-foreground">row {u.row_number}</span> — {u.sku} — {u.product_name}
+                        </div>
+                        <div className="ml-4 font-mono">
+                          {u.changes.map((c, j) => (
+                            <div key={j} className="flex gap-1">
+                              <span className="text-muted-foreground w-32 shrink-0">{c.field}:</span>
+                              <span className="text-red-600 dark:text-red-400 truncate max-w-[140px]" title={JSON.stringify(c.old_value)}>{c.old_value === null ? "—" : typeof c.old_value === "object" ? JSON.stringify(c.old_value).slice(0, 40) : String(c.old_value)}</span>
+                              <span>→</span>
+                              <span className="text-green-700 dark:text-green-400 truncate max-w-[140px]" title={JSON.stringify(c.new_value)}>{c.new_value === null ? "—" : typeof c.new_value === "object" ? JSON.stringify(c.new_value).slice(0, 40) : String(c.new_value)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {dryRunResult!.would_update.length > 100 && (
+                      <div className="px-2 py-1 text-muted-foreground">… and {dryRunResult!.would_update.length - 100} more</div>
+                    )}
+                  </div>
+                </details>
               )}
               {allErrors.length > 0 && (
                 <div className="space-y-1">
@@ -416,10 +528,14 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                 <CheckCircle2 className="w-5 h-5" />
                 Import Complete
               </div>
-              <div className="grid grid-cols-2 gap-2 text-sm text-center">
+              <div className="grid grid-cols-3 gap-2 text-sm text-center">
                 <div>
                   <span className="text-2xl font-bold text-green-700 dark:text-green-400" data-testid="text-imported-count">{commitResult!.imported}</span>
                   <div className="text-muted-foreground">Imported</div>
+                </div>
+                <div>
+                  <span className="text-2xl font-bold text-blue-700 dark:text-blue-400" data-testid="text-updated-count">{commitResult!.updated ?? 0}</span>
+                  <div className="text-muted-foreground">Updated</div>
                 </div>
                 <div>
                   <span className="text-2xl font-bold text-yellow-700 dark:text-yellow-400" data-testid="text-skipped-count">{commitResult!.skipped}</span>

@@ -50,7 +50,7 @@ async function main() {
       supplierId = existing.id;
     } else {
       const created = (await db.execute(sql`
-        INSERT INTO suppliers (name, is_active) VALUES (${p.brand_name}, true) RETURNING id
+        INSERT INTO suppliers (name) VALUES (${p.brand_name}) RETURNING id
       `)).rows[0] as { id: string };
       supplierId = created.id;
       createdSuppliers++;

@@ -1235,7 +1235,7 @@ export async function registerRoutes(
           const newSupplierIdMap = new Map<string, string>(); // lowerName → new id
           for (const [ls, actualName] of suppliersToAutoCreate) {
             const inserted = await tx.execute(sql`
-              INSERT INTO suppliers (name, is_active) VALUES (${actualName}, true) RETURNING id
+              INSERT INTO suppliers (name) VALUES (${actualName}) RETURNING id
             `);
             const newId = (inserted.rows[0] as any).id as string;
             newSupplierIdMap.set(ls, newId);
@@ -1437,7 +1437,7 @@ export async function registerRoutes(
       if (existingSup) {
         supplierId = existingSup.id;
       } else {
-        const created = (await db.execute(sql`INSERT INTO suppliers (name, is_active) VALUES (${brandName}, true) RETURNING id`)).rows[0] as { id: string };
+        const created = (await db.execute(sql`INSERT INTO suppliers (name) VALUES (${brandName}) RETURNING id`)).rows[0] as { id: string };
         supplierId = created.id;
       }
       if (!supplierId) return;

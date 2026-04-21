@@ -2725,6 +2725,26 @@ export async function registerRoutes(
     try {
       const { items } = req.body;
       if (!Array.isArray(items)) return res.status(400).json({ message: "Items must be an array" });
+      // Phase 6.5 D2: if the parent PO is in an "issued" status, block when any line refers to
+      // a product whose master distributor_price is null/zero. Run this BEFORE the validItems
+      // filter — otherwise lines with auto-prefilled unitCost=0 get silently dropped and the
+      // user sees the misleading "no valid line items" 400 instead of the real cause.
+      const parentPo = await storage.getPurchaseOrder(req.params.id);
+      if (parentPo && PO_ISSUED_STATUSES.has(parentPo.status as any)) {
+        const productIds = items
+          .filter((it: any) => it?.productId)
+          .map((it: any) => String(it.productId));
+        if (productIds.length > 0) {
+          const dpOffenders = await findZeroPriceProducts(productIds, "distributor_price");
+          if (dpOffenders.length > 0) {
+            return res.status(422).json({
+              code: "zero_distributor_price_products",
+              message: "Cannot issue PO: " + dpOffenders.map(p => `${p.name} (${p.sku})`).join(", ") + " have no distributor price set. Save the PO as Pending until distributor pricing is established.",
+              products: dpOffenders,
+            });
+          }
+        }
+      }
       const validItems = items.filter((item: any) => item.quantity > 0 && Number(item.unitCost) > 0 && (item.productId || item.description));
       if (validItems.length === 0) return res.status(400).json({ message: "At least one valid line item is required" });
       await storage.deletePurchaseOrderItems(req.params.id);

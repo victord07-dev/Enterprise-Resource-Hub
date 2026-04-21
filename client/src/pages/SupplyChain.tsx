@@ -410,7 +410,20 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
               {editingSp ? (
                 <Input value={productMap.get(editingSp.productId)?.name || ""} disabled />
               ) : (
-                <Select value={spForm.productId} onValueChange={(v) => setSpForm({ ...spForm, productId: v })}>
+                <>
+                <Select
+                  value={spForm.productId}
+                  onValueChange={(v) => {
+                    const picked = productMap.get(v);
+                    const dp = picked?.distributorPrice;
+                    const autofill = !editingSp && dp != null && Number(dp) > 0 && !spForm.supplierPrice;
+                    setSpForm({
+                      ...spForm,
+                      productId: v,
+                      supplierPrice: autofill ? String(dp) : spForm.supplierPrice,
+                    });
+                  }}
+                >
                   <SelectTrigger data-testid="select-sp-product">
                     <SelectValue placeholder="Select product" />
                   </SelectTrigger>
@@ -420,6 +433,12 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
                     ))}
                   </SelectContent>
                 </Select>
+                {!editingSp && spForm.productId && productMap.get(spForm.productId)?.distributorPrice != null && Number(productMap.get(spForm.productId)?.distributorPrice) > 0 && (
+                  <p className="text-xs text-muted-foreground" data-testid="text-sp-autofill-hint">
+                    Auto-filled from product's distributor price (₹{Number(productMap.get(spForm.productId)?.distributorPrice).toLocaleString()}). Edit if this supplier charges differently.
+                  </p>
+                )}
+                </>
               )}
             </div>
             <div className="space-y-2">
@@ -441,7 +460,7 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
               />
             </div>
             <div className="space-y-2">
-              <Label>Lead Time (days)</Label>
+              <Label>Lead Time (days) <span className="text-xs text-muted-foreground font-normal">— optional</span></Label>
               <Input
                 type="number"
                 value={spForm.leadTimeDays}

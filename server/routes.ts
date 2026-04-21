@@ -1354,6 +1354,21 @@ export async function registerRoutes(
     }
   });
 
+  // Phase 6.5 A3: list product IDs that have no supplier_products link.
+  // MUST be registered before /api/products/:id so Express doesn't match "missing-supplier" as an :id.
+  app.get("/api/products/missing-supplier", authenticateToken, async (_req, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT p.id FROM products p
+        LEFT JOIN supplier_products sp ON sp.product_id = p.id
+        WHERE sp.id IS NULL
+      `);
+      res.json((result.rows as { id: string }[]).map(r => r.id));
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch products missing supplier" });
+    }
+  });
+
   app.get("/api/products/:id", authenticateToken, async (req: any, res) => {
     try {
       const data = await storage.getProduct(req.params.id);
@@ -1439,20 +1454,6 @@ export async function registerRoutes(
       console.warn("ensureSupplierLinkFromBrand failed (non-fatal):", e);
     }
   }
-
-  // Phase 6.5 A3: list product IDs that have no supplier_products link
-  app.get("/api/products/missing-supplier", authenticateToken, async (_req, res) => {
-    try {
-      const result = await db.execute(sql`
-        SELECT p.id FROM products p
-        LEFT JOIN supplier_products sp ON sp.product_id = p.id
-        WHERE sp.id IS NULL
-      `);
-      res.json((result.rows as { id: string }[]).map(r => r.id));
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch products missing supplier" });
-    }
-  });
 
   app.post("/api/products", authenticateToken, async (req: any, res) => {
     try {

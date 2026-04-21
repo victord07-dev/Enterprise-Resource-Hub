@@ -1,0 +1,38 @@
+Phase 6.5 — Supplier plumbing, procurement guards, sales hardening
+Build sections A through F below, commit and push after each section. Zero changes to Daily Pricing engine, computeFifoLots, GRN confirmation, sales totals math, auth, or audit trail — additions only. The permitted server/index.ts addition (cron) is held for Phase 7.
+Section A — Supplier auto-link and backfill
+A1. Extend POST /api/products/import: if row.brand does not match any existing supplier name (case-insensitive), auto-create a bare supplier { name: row.brand, phone: null, email: null, gstNumber: null, address: null, isActive: true } inside the same transaction as the product insert, then create the supplier_products link with supplierPrice = distributorPrice, supplierSku from the row, isPrimary = true unless another primary link already exists. If row.brand is blank, skip both supplier creation and link, record a warning. Add suppliers_to_auto_create: string[] to the dry-run response. Display it in the import dialog preview, exact same pattern as brands_to_auto_create on Products.tsx lines 384–388.
+A2. On manual product POST/PATCH: when brandId is set and no supplier_products row exists for that product, apply find-or-create-supplier-by-brand-name logic. Silent — no user confirmation. Operator can reassign via SupplyChain → Supplier Product Catalog afterwards.
+A3. Products list: add ⚠ No supplier badge on any product row with zero supplier_products rows. Use red-amber outline badge, same styling pattern as existing Pricing Review / Lifecycle / ALMM / DCR / Specs badges (Products.tsx lines 830–870). Add a count banner at the top of the Products page next to the noSellingPriceProducts count (line 505): "X products have no supplier linked — click to filter." Clicking filters the list.
+A4. One-time backfill script npm run backfill:supplier-links. For every existing product with brandId: ensure a supplier_products link exists; auto-create a bare supplier by brand name if none exists. Idempotent. I will run this manually after A1–A3 are verified.
+Section B — Supplier catalog form UX
+B1. SupplierProductCatalog (SupplyChain.tsx line 239 et seq.): when the Add dialog opens, auto-populate supplierPrice with the selected product's distributorPrice. Field stays editable. Edit dialog does NOT auto-overwrite.
+B2. Change label "Lead Time (days)" → "Lead Time (days) — optional" (SupplyChain.tsx line 444). Verify Zod schema for supplier_products allows leadTimeDays null/undefined. Verify DB column is nullable.
+Section C — Incomplete-supplier warning + PO block
+C1. A supplier is "incomplete" if ANY of gstNumber, phone, address is empty/null (email remains optional). On Suppliers list in SupplyChain: show ⚠ Incomplete badge per incomplete supplier + top banner "X suppliers need details filled before PO issue."
+C2. On PO issue endpoints AND UI: if selected supplier is incomplete, display blocking modal "Supplier details incomplete. Fill GST, phone, and address before issuing a PO." with a "Edit Supplier" button that opens the supplier edit dialog. Server-side block too (defense in depth). Allow saving as draft with incomplete supplier; block issue/confirm.
+Section D — Zero-price hard blocks
+D1. Sales/quotation line save: if selected product has unitPrice = 0 OR null, block with "Product [name] has no selling price. Fill unit price in Products before quoting." Provide "Go to Product" link.
+D2. PO issue: if any line item's product has distributorPrice = 0 OR null, block with "Product [name] has no distributor price. Fill distributor price in Products before raising PO."
+Section E — Sales warning tightening (supersedes Phase 5 behaviours)
+E1. MRP soft-warn: Phase 5 limited it to customerType = end_user. Extend to fire for ALL customer types when unitPrice > mrp. Stay soft — no block.
+E2. Subsidy + non-ALMM: Phase 5 made this a warning. Elevate to HARD BLOCK on save: if subsidyScheme ≠ none AND any Solar Panel line has almm = false, block quotation/sales-order save with "Cannot save: Non-ALMM panel [name] cannot be used under subsidy scheme [scheme]. Remove the panel or clear the subsidy scheme." Keep touched-line gating from Phase 5 — pre-existing draft orders don't retroactively block.
+Section F — Sales picker: show inactive products with hard-block on selection
+F1. Sales/quotation line-item product picker: currently filters OUT products with lifecycleStatus in {draft, discontinued, replaced} (Phase 2 behaviour). Change: SHOW these products in the picker with their lifecycle badge visible (use the existing badge rendering from Products.tsx lines 837–841 as reference). But on selection, HARD-BLOCK with a toast: "Cannot add [name]: product is [status]. Choose an active product." No line is added.
+F2. For the replaced case specifically, if the product has replacedByProductId set, the toast says "Cannot add [name]: product is replaced. Use [new product name] instead." and offers a "Switch to replacement" button that selects the replacement product.
+Stop gate — end of Phase 6.5, BEFORE Batch 2
+Push after each section. I verify in the UI:
+(a) 3-row test CSV with brand "TestBrand99" (no matching supplier): Dry Run preview shows suppliers_to_auto_create: ["TestBrand99"]. Commit → "TestBrand99" supplier exists with only name filled.
+(b) TestBrand99 supplier's Product Catalog shows the 3 test products with supplierPrice = distributorPrice.
+(c) Manual product with existing-brand → silently linked, no ⚠ No supplier badge.
+(d) Manual product with NO brand → ⚠ No supplier badge on list, count banner increments, click-to-filter works.
+(e) SupplyChain Add-Product-to-Supplier: select product with distributorPrice ₹5000 → supplierPrice auto-fills with 5000, editable.
+(f) Lead Time Days saves blank without error; label reads "optional".
+(g) Supplier with only name → ⚠ Incomplete badge; top banner shows count; PO against that supplier blocked with edit-supplier modal.
+(h) Product with unitPrice = 0 → blocked from adding to quotation.
+(i) Product with distributorPrice = 0 → blocked from PO.
+(j) Quotation for dealer customer, unitPrice > MRP → soft warning fires (previously didn't).
+(k) Quotation with subsidyScheme = "PM Surya Ghar" + non-ALMM panel → save blocked. Remove panel → save works.
+(l) Pre-existing draft quotation with same setup on OLD line → save still works (touched-line gating).
+(m) Draft/discontinued/replaced product: visible in sales picker with lifecycle badge; selecting shows toast and does not add; if replaced with a replacedByProductId, toast offers switch-to-replacement.
+(n) After I run backfill script, ⚠ No supplier badge remaining only on products with no brand.

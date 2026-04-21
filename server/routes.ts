@@ -926,6 +926,8 @@ export async function registerRoutes(
         const duplicatesWithinFile: DupEntry[] = [];
         const seenSkusInFile = new Map<string, number>();
         const brandsToAutoCreate = new Map<string, string>(); // lowerName → actual brand name
+        // Phase 6.5 A1: track suppliers we'll auto-create from the brand column
+        const suppliersToAutoCreate = new Map<string, string>(); // lowerName → actual supplier name
 
         type ValidRow = {
           name: string; sku: string | null; brandId: string | null; brandLowerName: string | null;
@@ -1146,7 +1148,18 @@ export async function registerRoutes(
             warnings.push("distributorPrice is blank — product will be stored with unitPrice ₹0");
           }
 
-          const supplierIdForAutoLink = rowBrandRaw ? (supplierNameToId.get(rowBrandRaw.toLowerCase()) ?? null) : null;
+          // Phase 6.5 A1: if brand is set but no supplier of the same name exists,
+          // queue a supplier auto-creation and use a placeholder id.
+          let supplierIdForAutoLink: string | null = null;
+          if (rowBrandRaw) {
+            const sLower = rowBrandRaw.toLowerCase();
+            if (supplierNameToId.has(sLower)) {
+              supplierIdForAutoLink = supplierNameToId.get(sLower)!;
+            } else {
+              suppliersToAutoCreate.set(sLower, rowBrandRaw);
+              supplierIdForAutoLink = `__new_supplier__${sLower}`;
+            }
+          }
 
           validRows.push({
             name: rowName,
@@ -1202,6 +1215,7 @@ export async function registerRoutes(
             warnings: allWarnings,
             duplicates_within_file: duplicatesWithinFile,
             brands_to_auto_create: [...brandsToAutoCreate.values()],
+            suppliers_to_auto_create: [...suppliersToAutoCreate.values()],
           });
         }
 
@@ -1215,6 +1229,17 @@ export async function registerRoutes(
             const [nb] = await tx.insert(brandsTable).values({ name: actualName, isActive: true }).returning();
             newBrandIdMap.set(lb, nb.id);
             brandNameToId.set(lb, nb.id);
+          }
+
+          // Phase 6.5 A1: auto-create suppliers within the same transaction
+          const newSupplierIdMap = new Map<string, string>(); // lowerName → new id
+          for (const [ls, actualName] of suppliersToAutoCreate) {
+            const inserted = await tx.execute(sql`
+              INSERT INTO suppliers (name, is_active) VALUES (${actualName}, true) RETURNING id
+            `);
+            const newId = (inserted.rows[0] as any).id as string;
+            newSupplierIdMap.set(ls, newId);
+            supplierNameToId.set(ls, newId);
           }
 
           for (const r of validRows) {
@@ -1256,20 +1281,25 @@ export async function registerRoutes(
             const productId = (inserted.rows[0] as any).id as string;
             importedCount++;
 
-            // Supplier auto-link
-            if (r.supplierIdForAutoLink) {
+            // Supplier auto-link (Phase 6.5 A1: resolve __new_supplier__ placeholder)
+            let supplierLinkId = r.supplierIdForAutoLink;
+            if (supplierLinkId?.startsWith("__new_supplier__")) {
+              const ls = supplierLinkId.slice("__new_supplier__".length);
+              supplierLinkId = newSupplierIdMap.get(ls) ?? null;
+            }
+            if (supplierLinkId) {
               const existingPrimary = await tx.execute(sql`
-                SELECT id FROM supplier_products WHERE supplier_id = ${r.supplierIdForAutoLink} AND product_id = ${productId} LIMIT 1
+                SELECT id FROM supplier_products WHERE supplier_id = ${supplierLinkId} AND product_id = ${productId} LIMIT 1
               `);
               if (existingPrimary.rows.length === 0) {
                 // Check if any isPrimary already exists for this supplier
                 const anyPrimary = await tx.execute(sql`
-                  SELECT id FROM supplier_products WHERE supplier_id = ${r.supplierIdForAutoLink} AND is_primary = true LIMIT 1
+                  SELECT id FROM supplier_products WHERE supplier_id = ${supplierLinkId} AND is_primary = true LIMIT 1
                 `);
                 const isPrimary = anyPrimary.rows.length === 0;
                 await tx.execute(sql`
                   INSERT INTO supplier_products (supplier_id, product_id, supplier_price, supplier_sku, is_primary)
-                  VALUES (${r.supplierIdForAutoLink}, ${productId}, ${r.distributorPrice}, ${r.supplierSku}, ${isPrimary})
+                  VALUES (${supplierLinkId}, ${productId}, ${r.distributorPrice}, ${r.supplierSku}, ${isPrimary})
                 `);
               }
             }
@@ -1378,6 +1408,52 @@ export async function registerRoutes(
     return Object.keys(specs).filter((k) => !tpl.has(k));
   }
 
+  // Phase 6.5 A2: silent find-or-create supplier matching the brand, then ensure
+  // a supplier_products link exists for the given product. Best-effort, non-fatal.
+  async function ensureSupplierLinkFromBrand(productId: string, brandId: string | null | undefined, distributorPrice: any) {
+    if (!brandId) return;
+    try {
+      const brandRow = (await db.execute(sql`SELECT name FROM brands WHERE id = ${brandId} LIMIT 1`)).rows[0] as { name: string } | undefined;
+      if (!brandRow?.name) return;
+      const brandName = brandRow.name;
+      const sLower = brandName.toLowerCase();
+      let supplierId: string | null = null;
+      const existingSup = (await db.execute(sql`SELECT id FROM suppliers WHERE LOWER(name) = ${sLower} LIMIT 1`)).rows[0] as { id: string } | undefined;
+      if (existingSup) {
+        supplierId = existingSup.id;
+      } else {
+        const created = (await db.execute(sql`INSERT INTO suppliers (name, is_active) VALUES (${brandName}, true) RETURNING id`)).rows[0] as { id: string };
+        supplierId = created.id;
+      }
+      if (!supplierId) return;
+      const existingLink = (await db.execute(sql`SELECT id FROM supplier_products WHERE supplier_id = ${supplierId} AND product_id = ${productId} LIMIT 1`)).rows[0];
+      if (existingLink) return;
+      const anyPrimary = (await db.execute(sql`SELECT id FROM supplier_products WHERE supplier_id = ${supplierId} AND is_primary = true LIMIT 1`)).rows[0];
+      const isPrimary = !anyPrimary;
+      const dp = (distributorPrice != null && distributorPrice !== "") ? distributorPrice : 0;
+      await db.execute(sql`
+        INSERT INTO supplier_products (supplier_id, product_id, supplier_price, is_primary)
+        VALUES (${supplierId}, ${productId}, ${dp}, ${isPrimary})
+      `);
+    } catch (e) {
+      console.warn("ensureSupplierLinkFromBrand failed (non-fatal):", e);
+    }
+  }
+
+  // Phase 6.5 A3: list product IDs that have no supplier_products link
+  app.get("/api/products/missing-supplier", authenticateToken, async (_req, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT p.id FROM products p
+        LEFT JOIN supplier_products sp ON sp.product_id = p.id
+        WHERE sp.id IS NULL
+      `);
+      res.json((result.rows as { id: string }[]).map(r => r.id));
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch products missing supplier" });
+    }
+  });
+
   app.post("/api/products", authenticateToken, async (req: any, res) => {
     try {
       const jsonbCheck = validateProductJsonbFields(req.body);
@@ -1390,6 +1466,8 @@ export async function registerRoutes(
       if (customKeys.length > 0) {
         try { await storage.incrementCustomFieldUsage(created.category, customKeys); } catch { /* non-fatal */ }
       }
+      // Phase 6.5 A2: silent supplier auto-link
+      await ensureSupplierLinkFromBrand(created.id, (created as any).brandId, (created as any).distributorPrice);
       await logAction(req.user.id, "create", "products", `Created product ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -1423,6 +1501,10 @@ export async function registerRoutes(
         if (newCustomKeys.length > 0) {
           try { await storage.incrementCustomFieldUsage(updated.category, newCustomKeys); } catch { /* non-fatal */ }
         }
+      }
+      // Phase 6.5 A2: if brand was set/changed, ensure supplier link exists
+      if (req.body.brandId !== undefined && (updated as any).brandId) {
+        await ensureSupplierLinkFromBrand((updated as any).id, (updated as any).brandId, (updated as any).distributorPrice);
       }
       await logAction(req.user.id, "update", "products", `Updated product ${updated.name}`);
       res.json(updated);

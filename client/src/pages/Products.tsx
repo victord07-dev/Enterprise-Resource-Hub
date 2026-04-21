@@ -490,6 +490,7 @@ export default function Products() {
 
   const filteredItems = currentList.filter((p) => {
     if (familyFilter !== "__all__" && p.productFamily !== familyFilter) return false;
+    if (showOnlyMissingSupplier && activeTab !== "services" && !missingSupplierSet.has(p.id)) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     const brandName = (p.brandId ? brandsById.get(p.brandId)?.name : null) || p.brand;
@@ -504,6 +505,12 @@ export default function Products() {
 
   const noSellingPriceProducts = productsOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
   const noSellingPriceServices = servicesOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
+
+  // Phase 6.5 A3: products missing a supplier link
+  const { data: missingSupplierIds } = useQuery<string[]>({ queryKey: ["/api/products/missing-supplier"] });
+  const missingSupplierSet = useMemo(() => new Set(missingSupplierIds ?? []), [missingSupplierIds]);
+  const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
+  const missingSupplierProductCount = productsOnly.filter(p => missingSupplierSet.has(p.id)).length;
 
   const productMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -870,7 +877,16 @@ export default function Products() {
                       </div>
                     </td>
                     {!isServiceTab && <td className="p-3 text-muted-foreground" data-testid={`text-item-sku-${item.id}`}>{item.sku}</td>}
-                    <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>{brandName || "—"}</td>
+                    <td className="p-3 text-muted-foreground" data-testid={`text-item-brand-${item.id}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{brandName || "—"}</span>
+                        {!isServiceTab && missingSupplierSet.has(item.id) && (
+                          <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-700 dark:text-amber-400 inline-flex items-center gap-1" data-testid={`badge-no-supplier-${item.id}`}>
+                            <AlertCircle className="w-3 h-3" /> No supplier
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
                     <td className="p-3">
                       <Badge variant="secondary" className="no-default-active-elevate" data-testid={`badge-item-category-${item.id}`}>
                         {item.category}
@@ -1014,6 +1030,25 @@ export default function Products() {
               </Card>
             )}
           </div>
+
+          {missingSupplierProductCount > 0 && (
+            <div className="flex items-center justify-between gap-3 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800" data-testid="banner-missing-supplier">
+              <div className="flex items-center gap-2 text-sm text-amber-900 dark:text-amber-200">
+                <AlertCircle className="w-4 h-4" />
+                <span>
+                  <strong data-testid="text-missing-supplier-count">{missingSupplierProductCount}</strong> product{missingSupplierProductCount === 1 ? "" : "s"} have no linked supplier — purchase orders cannot be raised against them.
+                </span>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowOnlyMissingSupplier(!showOnlyMissingSupplier)}
+                data-testid="button-toggle-missing-supplier-filter"
+              >
+                {showOnlyMissingSupplier ? "Show all" : "Show only these"}
+              </Button>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 flex-wrap">
             <div className="relative flex-1 max-w-sm">

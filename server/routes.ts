@@ -2498,8 +2498,37 @@ export async function registerRoutes(
     }
   });
 
+  // Phase 6.5 C2: helper — does this supplier have GST + phone + address?
+  async function getSupplierIncompleteness(supplierId: string | null | undefined) {
+    if (!supplierId) return { incomplete: true, missing: ["supplier"] as string[], supplier: null as any };
+    const row = (await db.execute(sql`SELECT id, name, gst_number, phone, address FROM suppliers WHERE id = ${supplierId} LIMIT 1`)).rows[0] as any;
+    if (!row) return { incomplete: true, missing: ["supplier"], supplier: null };
+    const missing: string[] = [];
+    if (!row.gst_number || String(row.gst_number).trim() === "") missing.push("gst");
+    if (!row.phone || String(row.phone).trim() === "") missing.push("phone");
+    if (!row.address || String(row.address).trim() === "") missing.push("address");
+    return { incomplete: missing.length > 0, missing, supplier: row };
+  }
+
+  // Phase 6.5 C2: statuses that constitute "issuing" the PO to the supplier (block if supplier incomplete)
+  const PO_ISSUED_STATUSES = new Set(["approved", "shipped", "partial", "received"]);
+
   app.post("/api/purchase-orders", authenticateToken, async (req: any, res) => {
     try {
+      // C2: block create-and-issue when supplier is incomplete (drafts/pending always allowed)
+      const incomingStatus = (req.body?.status || "pending") as string;
+      if (PO_ISSUED_STATUSES.has(incomingStatus)) {
+        const check = await getSupplierIncompleteness(req.body?.supplierId);
+        if (check.incomplete) {
+          return res.status(422).json({
+            code: "supplier_incomplete",
+            message: "Supplier is missing required details (" + check.missing.join(", ") + "). Save as Pending or complete the supplier profile.",
+            missing: check.missing,
+            supplierId: check.supplier?.id || req.body?.supplierId || null,
+            supplierName: check.supplier?.name || null,
+          });
+        }
+      }
       let poNumber = req.body.poNumber;
       if (!poNumber || poNumber.trim() === "") {
         const allPOs = await storage.getPurchaseOrders();
@@ -2536,6 +2565,25 @@ export async function registerRoutes(
         updateData.expectedDelivery = null;
       } else if (updateData.expectedDelivery) {
         updateData.expectedDelivery = new Date(updateData.expectedDelivery);
+      }
+      // Phase 6.5 C2: block transitioning into an "issued" status when supplier is incomplete
+      const targetStatus = updateData.status as string | undefined;
+      if (targetStatus && PO_ISSUED_STATUSES.has(targetStatus)) {
+        const existing = await storage.getPurchaseOrder(req.params.id);
+        const wasIssued = existing && PO_ISSUED_STATUSES.has(existing.status as any);
+        if (!wasIssued) {
+          const supplierIdToCheck = (updateData.supplierId as string | undefined) || existing?.supplierId || null;
+          const check = await getSupplierIncompleteness(supplierIdToCheck);
+          if (check.incomplete) {
+            return res.status(422).json({
+              code: "supplier_incomplete",
+              message: "Supplier is missing required details (" + check.missing.join(", ") + "). Keep PO as Pending or complete the supplier profile.",
+              missing: check.missing,
+              supplierId: check.supplier?.id || supplierIdToCheck,
+              supplierName: check.supplier?.name || null,
+            });
+          }
+        }
       }
       const updated = await storage.updatePurchaseOrder(req.params.id, updateData);
       if (!updated) return res.status(404).json({ message: "Purchase order not found" });

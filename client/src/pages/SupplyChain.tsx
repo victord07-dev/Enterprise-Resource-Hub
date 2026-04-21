@@ -47,6 +47,36 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// Phase 6.5 C1: which required-for-issuance fields is this supplier missing?
+function getSupplierMissingFields(s: Supplier): string[] {
+  const missing: string[] = [];
+  if (!s.gstNumber || String(s.gstNumber).trim() === "") missing.push("GST");
+  if (!s.phone || String(s.phone).trim() === "") missing.push("Phone");
+  if (!s.address || String(s.address).trim() === "") missing.push("Address");
+  return missing;
+}
+
+// Phase 6.5 C2: parse `supplier_incomplete` error from apiRequest's "STATUS: BODY" message
+function parseSupplierIncompleteError(err: unknown): { supplierId: string | null; supplierName: string | null; missing: string[]; message: string } | null {
+  if (!err) return null;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!msg.startsWith("422")) return null;
+  const idx = msg.indexOf("{");
+  if (idx === -1) return null;
+  try {
+    const body = JSON.parse(msg.slice(idx));
+    if (body?.code !== "supplier_incomplete") return null;
+    return {
+      supplierId: body.supplierId ?? null,
+      supplierName: body.supplierName ?? null,
+      missing: Array.isArray(body.missing) ? body.missing : [],
+      message: body.message ?? "Supplier is missing required details.",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function SupplierDropdown({ poLineItems, allSupplierProducts, suppliers, value, onChange }: {
   poLineItems: POLineItem[];
   allSupplierProducts: SupplierProduct[];
@@ -717,6 +747,14 @@ export default function SupplyChain() {
   const [cancelPoId, setCancelPoId] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
+  // Phase 6.5 C2: state for the "supplier incomplete" modal raised when PO issuance is blocked
+  const [incompleteSupplierBlock, setIncompleteSupplierBlock] = useState<{
+    supplierId: string | null;
+    supplierName: string | null;
+    missing: string[];
+    message: string;
+  } | null>(null);
+
   const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
   const { data: allSupplierProducts } = useQuery<SupplierProduct[]>({ queryKey: ["/api/supplier-products"] });
 
@@ -763,6 +801,12 @@ export default function SupplyChain() {
       setEditingPo(null);
     },
     onError: (error: Error) => {
+      // Phase 6.5 C2: convert structured supplier_incomplete error into modal instead of generic toast
+      const parsed = parseSupplierIncompleteError(error);
+      if (parsed) {
+        setIncompleteSupplierBlock(parsed);
+        return;
+      }
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
@@ -1475,6 +1519,27 @@ export default function SupplyChain() {
         </TabsContent>
 
         <TabsContent value="suppliers" className="space-y-4">
+          {/* Phase 6.5 C1: count banner of suppliers missing required-for-issuance fields */}
+          {suppliers && (() => {
+            const incomplete = suppliers.filter(s => getSupplierMissingFields(s).length > 0);
+            if (incomplete.length === 0) return null;
+            return (
+              <div
+                className="flex items-start gap-3 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800"
+                data-testid="banner-suppliers-incomplete"
+              >
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                <div className="flex-1 text-sm">
+                  <p className="font-medium text-amber-900 dark:text-amber-200">
+                    {incomplete.length} supplier{incomplete.length === 1 ? "" : "s"} missing GST, phone or address.
+                  </p>
+                  <p className="text-amber-800 dark:text-amber-300 text-xs mt-0.5">
+                    Purchase orders cannot be approved/shipped/received against these suppliers until the profile is completed.
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
           <Button size="sm" data-testid="button-add-supplier" onClick={openNewSupplier}>
             <Plus className="w-4 h-4 mr-2" />
             Add Supplier
@@ -1510,7 +1575,26 @@ export default function SupplyChain() {
                               <td className="p-3">
                                 {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
                               </td>
-                              <td className="p-3 font-medium">{s.name}</td>
+                              <td className="p-3 font-medium">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span>{s.name}</span>
+                                  {(() => {
+                                    const m = getSupplierMissingFields(s);
+                                    if (m.length === 0) return null;
+                                    return (
+                                      <Badge
+                                        variant="outline"
+                                        className="border-amber-400 text-amber-700 dark:text-amber-300 dark:border-amber-700 text-[10px]"
+                                        title={`Missing: ${m.join(", ")}`}
+                                        data-testid={`badge-supplier-incomplete-${s.id}`}
+                                      >
+                                        <AlertTriangle className="w-3 h-3 mr-1" />
+                                        Incomplete: {m.join(", ")}
+                                      </Badge>
+                                    );
+                                  })()}
+                                </div>
+                              </td>
                               <td className="p-3 text-muted-foreground">{s.category || "—"}</td>
                               <td className="p-3 text-muted-foreground">{s.contactPerson || "—"}</td>
                               <td className="p-3 text-muted-foreground">{s.phone || "—"}</td>
@@ -1942,6 +2026,60 @@ export default function SupplyChain() {
             >
               {createGrnFromPoMutation.isPending ? "Creating..." : "Create Draft GRN"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Phase 6.5 C2: blocked-by-incomplete-supplier modal */}
+      <Dialog open={!!incompleteSupplierBlock} onOpenChange={(o) => { if (!o) setIncompleteSupplierBlock(null); }}>
+        <DialogContent data-testid="dialog-supplier-incomplete-block">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              Supplier profile incomplete
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p>
+              {incompleteSupplierBlock?.supplierName ? (
+                <>Cannot issue this purchase order to <span className="font-medium">{incompleteSupplierBlock.supplierName}</span>.</>
+              ) : (
+                <>Cannot issue this purchase order.</>
+              )}
+            </p>
+            {incompleteSupplierBlock && incompleteSupplierBlock.missing.length > 0 && (
+              <div>
+                <p className="text-muted-foreground mb-1">Missing required fields:</p>
+                <ul className="list-disc list-inside space-y-0.5">
+                  {incompleteSupplierBlock.missing.map(f => (
+                    <li key={f} className="font-medium" data-testid={`text-missing-field-${f}`}>{f.toUpperCase()}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="text-muted-foreground text-xs">
+              Save the PO as <strong>Pending</strong> instead, or open the supplier and fill in the missing details before issuing.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setIncompleteSupplierBlock(null)} data-testid="button-incomplete-cancel">
+              Close
+            </Button>
+            {incompleteSupplierBlock?.supplierId && (
+              <Button
+                data-testid="button-incomplete-edit-supplier"
+                onClick={() => {
+                  const sid = incompleteSupplierBlock.supplierId;
+                  const sup = suppliers?.find(s => s.id === sid);
+                  setIncompleteSupplierBlock(null);
+                  setPoDialogOpen(false);
+                  if (sup) openEditSupplier(sup);
+                }}
+              >
+                <Pencil className="w-4 h-4 mr-2" />
+                Edit Supplier
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

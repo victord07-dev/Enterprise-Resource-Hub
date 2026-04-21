@@ -364,9 +364,9 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                 Preview (Dry Run)
               </Button>
               {hasDryRun && (
-                <Button className="flex-1" data-testid="button-commit-import" disabled={loading || ((dryRunResult?.would_import ?? 0) === 0 && (dryRunResult?.would_update ?? 0) === 0)} onClick={() => runImport("commit")}>
+                <Button className="flex-1" data-testid="button-commit-import" disabled={loading || ((dryRunResult?.would_import ?? 0) === 0 && (dryRunResult?.would_update?.length ?? 0) === 0)} onClick={() => runImport("commit")}>
                   {loading ? <span className="animate-spin mr-2 w-4 h-4 border-2 border-current border-t-transparent rounded-full inline-block" /> : null}
-                  Commit Import ({(dryRunResult?.would_import ?? 0) + (dryRunResult?.would_update ?? 0)} rows: {dryRunResult?.would_import ?? 0} new, {dryRunResult?.would_update ?? 0} updates)
+                  Commit Import ({(dryRunResult?.would_import ?? 0) + (dryRunResult?.would_update?.length ?? 0)} rows: {dryRunResult?.would_import ?? 0} new, {dryRunResult?.would_update?.length ?? 0} updates)
                 </Button>
               )}
             </div>

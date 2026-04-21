@@ -1,0 +1,36 @@
+Classic temporal dead zone error — a variable is being used on line 493 before its useState / useMemo declaration further down in the component. This is a bug Replit AI introduced in Batch 1 Section A3 (the count banner + click-to-filter) and it's crashing the Products page entirely.
+Do not start Batch 2. Do not continue verification. Send this to Replit AI immediately:
+
+
+Runtime error on Products page — Phase 6.5 Section A3 bug
+Products.tsx is crashing with:
+Cannot access 'showOnlyMissingSupplier' before initialization
+at Products /home/runner/workspace/client/src/pages/Products.tsx:493:5
+The showOnlyMissingSupplier state variable (and likely missingSupplierSet too) is being referenced inside the filteredItems filter on line 493 before its useState / useMemo declaration appears in the component body. JavaScript temporal dead zone — let/const bindings from hooks can't be read before they're declared.
+Fix: move the useState for showOnlyMissingSupplier and the useMemo (or derivation) for missingSupplierSet ABOVE the filteredItems definition (line ~491). All hooks that filteredItems depends on must be declared first.
+Also check: is missingSupplierSet derived from a query that might be undefined on first render? If so, guard the filter: if (showOnlyMissingSupplier && activeTab !== "services" && missingSupplierSet && !missingSupplierSet.has(p.id)) return false; — or initialize missingSupplierSet as an empty Set when the query is still loading.
+After fix: reload the Products page in the browser. The page must render. Then click the "X products have no supplier linked" banner — the list must filter to only those products. Click again to clear the filter.
+While you're in there, confirm the same pattern isn't broken elsewhere in the file. Search Products.tsx for any other state/memo added during Phase 6.5 Section A3 that might have the same ordering issue.
+This is a blocker — the Products page is completely unusable right now. Ship the fix, push, confirm the page loads, then I'll resume the 14-point stop gate verification.
+
+
+Why this slipped past Replit AI
+Its internal testing skill likely tested the banner feature in isolation (e.g., via a direct API call or a scripted click path) but never did a plain page-load of the Products route after the banner was added. A basic GET /products render would have caught this in seconds. Worth noting for later batches — a page-load smoke test on every touched route should be part of Replit AI's self-test before it says "shipped." Consider adding this instruction when you send Batch 2:
+
+Before declaring any section complete, do a cold reload of every page whose file you touched. If the page throws a runtime error, the section isn't done — even if the feature "works" in isolation.
+
+What this means for the stop gate
+Don't resume the 14-point checklist until the fix is pushed AND you've reloaded the Products page successfully. Once the page loads:
+
+Verify the banner + click-to-filter actually works (item d in your checklist).
+Then continue with the remaining items (a) through (n).
+Investigate the "104 missing suppliers" number during item (n) — that's the backfill verification step. When you run the backfill script, watch the output carefully. You expect: every product with a brandId gets linked (bare supplier auto-created if needed), and only products with NO brand at all should keep the ⚠ No supplier badge.
+
+If after backfill the count is still non-zero, investigate:
+
+Products with brandId but somehow backfill missed them (script bug).
+Products genuinely with no brand (legitimate — they keep the badge).
+Products where the brand record was orphaned (brand row deleted, brandId points to nothing).
+
+Send me the post-backfill count + a sample of remaining-badged products if anything looks off.
+Hold Batch 2 until: (1) this fix is pushed and Products page loads, (2) you've walked all 14 stop-gate items, (3) backfill has run and the remaining count makes sense. Don't rush it — the next batch touches PO unit-cost source, supplier price sync, and the pricing engine display. A broken foundation makes that work ten times harder to debug.

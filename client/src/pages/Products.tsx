@@ -488,6 +488,13 @@ export default function Products() {
     return Array.from(set).sort();
   }, [productsOnly]);
 
+  // Phase 6.5 A3: products missing a supplier link — declared above filteredItems so the
+  // filter on line ~493 can read showOnlyMissingSupplier / missingSupplierSet without
+  // hitting a temporal-dead-zone error.
+  const { data: missingSupplierIds } = useQuery<string[]>({ queryKey: ["/api/products/missing-supplier"] });
+  const missingSupplierSet = useMemo(() => new Set(missingSupplierIds ?? []), [missingSupplierIds]);
+  const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
+
   const filteredItems = currentList.filter((p) => {
     if (familyFilter !== "__all__" && p.productFamily !== familyFilter) return false;
     if (showOnlyMissingSupplier && activeTab !== "services" && !missingSupplierSet.has(p.id)) return false;
@@ -505,11 +512,6 @@ export default function Products() {
 
   const noSellingPriceProducts = productsOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
   const noSellingPriceServices = servicesOnly.filter(p => !p.unitPrice || p.unitPrice === "0").length;
-
-  // Phase 6.5 A3: products missing a supplier link
-  const { data: missingSupplierIds } = useQuery<string[]>({ queryKey: ["/api/products/missing-supplier"] });
-  const missingSupplierSet = useMemo(() => new Set(missingSupplierIds ?? []), [missingSupplierIds]);
-  const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
   const missingSupplierProductCount = productsOnly.filter(p => missingSupplierSet.has(p.id)).length;
 
   const productMutation = useMutation({

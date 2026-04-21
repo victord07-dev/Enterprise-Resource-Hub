@@ -890,7 +890,7 @@ export async function registerRoutes(
         const csvText = req.file.buffer.toString("utf-8");
         let records: Record<string, string>[];
         try {
-          records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true }) as Record<string, string>[];
+          records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true, comment: '#' }) as Record<string, string>[];
         } catch (e: any) {
           return res.status(400).json({ message: `CSV parse error: ${e.message}` });
         }
@@ -1006,8 +1006,9 @@ export async function registerRoutes(
 
           // ── applicableRegions ─────────────────────────────────────────────────
           const rawReg = (row["applicableRegions"] ?? "").trim();
+          const ALL_INDIA_SYNONYMS = ["all india", "pan india", "all", "pan-india", "india"];
           let applicableRegions: string[] | null = null;
-          if (rawReg && rawReg.toLowerCase() !== "all india") {
+          if (rawReg && !ALL_INDIA_SYNONYMS.includes(rawReg.toLowerCase())) {
             applicableRegions = rawReg.split(",").map(r => r.trim()).filter(Boolean);
           }
 

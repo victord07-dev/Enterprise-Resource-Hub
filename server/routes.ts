@@ -150,6 +150,22 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
   const prodMap = new Map(allProds.map(p => [p.id, p]));
   const otherReserved = await calculateReservedStockForOtherOrders(orderId, storage);
 
+  // Phase 6.6 C5 (Task #75): pre-fetch primary supplier price per product so auto-PR unit cost
+  // pulls from supplier_products instead of products.costPrice (WAC).
+  const productIdsToCheck = productItems.map(it => it.productId).filter(Boolean) as string[];
+  const primarySupplierPriceMap = new Map<string, string>();
+  if (productIdsToCheck.length > 0) {
+    const sps = await db.execute(sql`
+      SELECT DISTINCT ON (product_id) product_id, supplier_price
+      FROM supplier_products
+      WHERE product_id = ANY(${productIdsToCheck}::varchar[])
+      ORDER BY product_id, is_primary DESC, supplier_price ASC
+    `);
+    for (const row of sps.rows as { product_id: string; supplier_price: string }[]) {
+      primarySupplierPriceMap.set(row.product_id, row.supplier_price);
+    }
+  }
+
   for (const item of productItems) {
     const totalStock = allStock
       .filter(s => s.productId === item.productId)
@@ -158,13 +174,15 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
     const availableStock = Math.max(0, totalStock - reservedByOthers);
     if (availableStock < item.quantity) {
       const prod = item.productId ? prodMap.get(item.productId) : null;
+      const primarySupplierPrice = item.productId ? primarySupplierPriceMap.get(item.productId) : undefined;
       shortfallItems.push({
         productId: item.productId!,
         description: item.description || prod?.name || "",
         required: item.quantity,
         available: availableStock,
         shortfall: item.quantity - availableStock,
-        costPrice: prod?.costPrice || null,
+        // Phase 6.6 C5: prefer supplier_products.supplierPrice, fallback to product.costPrice (WAC) if no link.
+        costPrice: primarySupplierPrice ?? prod?.costPrice ?? null,
       });
     }
   }
@@ -280,6 +298,15 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
 }
 
 // ─── FIFO Lot Engine ───────────────────────────────────────────────────────
+// Phase 6.6 C7 — Cost source chain:
+//   products.distributorPrice
+//     → supplier_products.supplierPrice (auto-linked on product create)
+//     → po_items.unitCost (defaults from supplier_products, editable;
+//        saving updates supplier_products and sets needsPricingReview)
+//     → grn_items.unitCost (locks on GRN confirm)
+//     → FIFO lot consumption (this engine).
+// Supplier price updates affect FUTURE POs/GRNs only; existing lots preserve their
+// locked-in landed cost. This engine is the canonical cost source for blendedCost.
 
 interface FifoLot {
   grnId: string;
@@ -1562,6 +1589,26 @@ export async function registerRoutes(
 
   // Phase 6.5 A3: list product IDs that have no supplier_products link.
   // MUST be registered before /api/products/:id so Express doesn't match "missing-supplier" as an :id.
+  // Phase 6.6 C6: primary supplier price per product (used by Pricing page Supplier-Price column).
+  // Picks isPrimary=true row first, else falls back to lowest supplierPrice row.
+  app.get("/api/products/primary-supplier-prices", authenticateToken, async (_req, res) => {
+    try {
+      const rows = (await db.execute(sql`
+        SELECT DISTINCT ON (product_id)
+          product_id, supplier_id, supplier_price, last_price_updated_at
+        FROM supplier_products
+        ORDER BY product_id, is_primary DESC, supplier_price ASC
+      `)).rows as { product_id: string; supplier_id: string; supplier_price: string; last_price_updated_at: string | null }[];
+      const map: Record<string, { supplierId: string; supplierPrice: string; lastPriceUpdatedAt: string | null }> = {};
+      for (const r of rows) {
+        map[r.product_id] = { supplierId: r.supplier_id, supplierPrice: r.supplier_price, lastPriceUpdatedAt: r.last_price_updated_at };
+      }
+      res.json(map);
+    } catch (e: any) {
+      res.status(500).json({ message: "Failed to fetch primary supplier prices: " + e.message });
+    }
+  });
+
   app.get("/api/products/missing-supplier", authenticateToken, async (_req, res) => {
     try {
       const result = await db.execute(sql`
@@ -2968,6 +3015,44 @@ export async function registerRoutes(
         total += Number(c.totalCost);
       }
       await storage.updatePurchaseOrder(req.params.id, { totalAmount: String(total) } as any);
+
+      // Phase 6.6 C3: sync supplier_products.supplierPrice when PO line cost differs from current.
+      // Sets lastPriceUpdatedAt, flips product.needsPricingReview, writes audit row.
+      if (parentPo?.supplierId) {
+        const supplierId = parentPo.supplierId;
+        for (const it of validItems) {
+          if (!it.productId) continue;
+          const newCost = Number(it.unitCost);
+          if (!isFinite(newCost) || newCost <= 0) continue;
+          const existingSp = (await db.execute(sql`
+            SELECT id, supplier_price FROM supplier_products
+            WHERE supplier_id = ${supplierId} AND product_id = ${it.productId} LIMIT 1
+          `)).rows[0] as { id: string; supplier_price: string } | undefined;
+          if (existingSp) {
+            const oldPrice = Number(existingSp.supplier_price);
+            if (Math.abs(oldPrice - newCost) > 0.001) {
+              await db.execute(sql`
+                UPDATE supplier_products
+                SET supplier_price = ${newCost}, last_price_updated_at = NOW()
+                WHERE id = ${existingSp.id}
+              `);
+              await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${it.productId}`);
+              await logAction(req.user.id, "supplier_price_updated", "supply_chain",
+                JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice, newPrice: newCost, poId: req.params.id }));
+            }
+          } else {
+            // Create the link if missing (defensive — backfill normally handles this)
+            await db.execute(sql`
+              INSERT INTO supplier_products (supplier_id, product_id, supplier_price, last_price_updated_at)
+              VALUES (${supplierId}, ${it.productId}, ${newCost}, NOW())
+            `);
+            await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${it.productId}`);
+            await logAction(req.user.id, "supplier_price_updated", "supply_chain",
+              JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice: null, newPrice: newCost, poId: req.params.id }));
+          }
+        }
+      }
+
       res.status(201).json(created);
     } catch (error) {
       res.status(500).json({ message: "Failed to save PO items" });

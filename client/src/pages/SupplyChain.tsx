@@ -145,8 +145,11 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
       if (prod) {
         item.description = prod.name;
         const sp = spMap.get(value);
+        // Phase 6.6 C2: prefer supplier_products.supplierPrice; fallback to products.distributorPrice (NOT costPrice).
         if (sp) {
           item.unitCost = Number(sp.supplierPrice);
+        } else if (prod.distributorPrice) {
+          item.unitCost = Number(prod.distributorPrice);
         } else {
           item.unitCost = prod.costPrice ? Number(prod.costPrice) : Number(prod.unitPrice);
         }
@@ -404,6 +407,14 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
                     <td className={`p-2 text-right font-medium ${isCheapest ? "text-green-600 dark:text-green-400" : ""}`}>
                       ₹{Number(sp.supplierPrice).toLocaleString()}
                       {isCheapest && <Badge variant="secondary" className="ml-1 text-[10px]">Lowest</Badge>}
+                      {/* Phase 6.6 C4: hint when supplier price was updated by a PO save */}
+                      {(sp as any).lastPriceUpdatedAt && (() => {
+                        const ts = new Date((sp as any).lastPriceUpdatedAt);
+                        const ageMs = Date.now() - ts.getTime();
+                        const days = Math.floor(ageMs / 86400000);
+                        const hint = days <= 0 ? "(updated just now)" : days === 1 ? "(updated 1 day ago)" : `(updated ${days} days ago)`;
+                        return <div className="text-[10px] font-normal text-muted-foreground" data-testid={`text-supplier-price-updated-${sp.id}`}>{hint}</div>;
+                      })()}
                     </td>
                     <td className="p-2 text-center text-muted-foreground">{sp.leadTimeDays ? `${sp.leadTimeDays} days` : "—"}</td>
                     <td className="p-2 text-center">

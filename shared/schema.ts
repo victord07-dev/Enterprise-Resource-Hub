@@ -412,6 +412,8 @@ export const supplierProducts = pgTable("supplier_products", {
   isPreferred: boolean("is_preferred").notNull().default(false),
   isPrimary: boolean("is_primary").notNull().default(false),
   notes: text("notes"),
+  // Phase 6.6 C1: timestamp set by PO save when supplier price changes (used by SupplyChain catalog hint).
+  lastPriceUpdatedAt: timestamp("last_price_updated_at"),
 });
 
 export const purchaseOrderItems = pgTable("purchase_order_items", {

@@ -50,6 +50,11 @@ export default function Pricing() {
 
   const { data: products } = useQuery<Product[]>({ queryKey: ["/api/products"] });
 
+  // Phase 6.6 C6: primary supplier price per product (replaces stale product.costPrice).
+  const { data: primarySupplierPrices } = useQuery<Record<string, { supplierId: string; supplierPrice: string; lastPriceUpdatedAt: string | null }>>({
+    queryKey: ["/api/products/primary-supplier-prices"],
+  });
+
   const { data: todaySheets, isLoading: sheetsLoading, refetch: refetchSheets } = useQuery<any[]>({
     queryKey: ["/api/daily-price-sheets", todayStr],
     queryFn: async () => {
@@ -348,7 +353,9 @@ export default function Pricing() {
                   const blendedCost = sheet ? Number(sheet.blendedCost) : null;
                   const globalFloor = sheet ? Number(sheet.globalFloorPrice) : null;
                   const strictFloor = sheet?.strictFloorPrice ? Number(sheet.strictFloorPrice) : null;
-                  const supplierPrice = product.costPrice ? Number(product.costPrice) : null;
+                  // Phase 6.6 C6: Supplier price now sourced from supplier_products (primary), not products.costPrice (WAC).
+                  const psp = primarySupplierPrices?.[product.id];
+                  const supplierPrice = psp ? Number(psp.supplierPrice) : null;
                   const proposed = sheet?.proposedPrice ? Number(sheet.proposedPrice) : null;
                   const effectivePrice = ep ? Number(ep.effectivePrice) : null;
                   const margin = (blendedCost && proposed && proposed > 0)

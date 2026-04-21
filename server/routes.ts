@@ -4255,17 +4255,70 @@ export async function registerRoutes(
 
       const batchId = crypto.randomUUID();
 
-      // Pre-compute FIFO lots per product BEFORE entering the transaction (uses main DB pool).
+      // Phase 7 — expand bundle items into per-component stock operations.
+      // Each op consumes one productId × qty in the source warehouse. Regular (non-bundle) items
+      // become a single op; bundles fan out to one op per component, qty = component.qty × bundle qty.
+      type StockOp = {
+        challanItemId: string;
+        productId: string;
+        qty: number;
+        // bundle metadata (null for regular items)
+        parentBundleProductId: string | null;
+        parentBundleSku: string | null;
+        parentBundleName: string | null;
+      };
+      const stockOps: StockOp[] = [];
+      // Cache of product lookups so we don't re-fetch per loop iteration.
+      const productCache: Record<string, any> = {};
+      const getCachedProduct = async (pid: string) => {
+        if (productCache[pid] !== undefined) return productCache[pid];
+        const p = await storage.getProduct(pid);
+        productCache[pid] = p ?? null;
+        return p;
+      };
+
+      for (const item of items) {
+        const prod = await getCachedProduct(item.productId);
+        const qty = dispatchQtys[item.id];
+        if (prod && prod.type === "bundle") {
+          const components = await storage.getBundleItems(item.productId);
+          if (components.length === 0) {
+            return res.status(400).json({ message: `Bundle "${prod.name}" has no components configured — cannot dispatch.` });
+          }
+          for (const comp of components) {
+            const compQty = Number(comp.quantity) * qty;
+            stockOps.push({
+              challanItemId: item.id,
+              productId: comp.componentProductId,
+              qty: compQty,
+              parentBundleProductId: prod.id,
+              parentBundleSku: prod.sku,
+              parentBundleName: prod.name,
+            });
+          }
+        } else {
+          stockOps.push({
+            challanItemId: item.id,
+            productId: item.productId,
+            qty,
+            parentBundleProductId: null,
+            parentBundleSku: null,
+            parentBundleName: null,
+          });
+        }
+      }
+
+      // Pre-compute FIFO lots per UNIQUE productId BEFORE entering the transaction (uses main DB pool).
       // This determines which GRN lots each dispatched unit is attributed to (for grn_id tracking).
-      // Note: concurrency risk is low but acknowledged — a TODO for optimistic locking in future.
+      const uniqueProductIds = Array.from(new Set(stockOps.map(o => o.productId)));
       const fifoLotsPerProduct: Record<string, FifoLot[]> = {};
       if (challan.sourceType === "warehouse") {
-        for (const item of items) {
+        for (const pid of uniqueProductIds) {
           try {
-            fifoLotsPerProduct[item.productId] = await computeFifoLots(item.productId, { warehouseId: challan.sourceId });
+            fifoLotsPerProduct[pid] = await computeFifoLots(pid, { warehouseId: challan.sourceId });
           } catch (e) {
-            console.error(`[FIFO][DISPATCH] computeFifoLots failed for productId=${item.productId} warehouseId=${challan.sourceId} challan=${challan.challanNumber}:`, (e as Error).message);
-            fifoLotsPerProduct[item.productId] = [];
+            console.error(`[FIFO][DISPATCH] computeFifoLots failed for productId=${pid} warehouseId=${challan.sourceId} challan=${challan.challanNumber}:`, (e as Error).message);
+            fifoLotsPerProduct[pid] = [];
           }
         }
       }
@@ -4278,60 +4331,100 @@ export async function registerRoutes(
           throw new Error("Challan is no longer in draft status — concurrent dispatch may have already occurred");
         }
 
+        // Phase 7 — pre-check ALL component shortages and report every one,
+        // not just the first. Required quantities are summed across ops (e.g. if the
+        // same component appears in two bundles on the same challan).
         if (challan.sourceType === "warehouse") {
-          for (const item of items) {
-            const qty = dispatchQtys[item.id];
+          const requiredByProduct: Record<string, number> = {};
+          for (const op of stockOps) {
+            requiredByProduct[op.productId] = (requiredByProduct[op.productId] || 0) + op.qty;
+          }
+          const shortages: Array<{ productId: string; productName: string; required: number; available: number; bundleContext: string[] }> = [];
+          for (const pid of Object.keys(requiredByProduct)) {
+            const required = requiredByProduct[pid];
             const [stockRow] = await tx.execute(sql`
               SELECT quantity FROM inventory_stock
-              WHERE product_id = ${item.productId} AND warehouse_id = ${challan.sourceId}
+              WHERE product_id = ${pid} AND warehouse_id = ${challan.sourceId}
               LIMIT 1
               FOR UPDATE
             `);
-            const currentStock = stockRow ? Number((stockRow as any).quantity ?? 0) : 0;
-            if (qty > currentStock) {
-              throw new Error(`Insufficient stock for product. Available: ${currentStock}, Required: ${qty}`);
+            const available = stockRow ? Number((stockRow as any).quantity ?? 0) : 0;
+            if (required > available) {
+              const prod = await getCachedProduct(pid);
+              const bundleContext = Array.from(new Set(
+                stockOps.filter(o => o.productId === pid && o.parentBundleSku)
+                  .map(o => `${o.parentBundleName} (${o.parentBundleSku})`)
+              ));
+              shortages.push({
+                productId: pid,
+                productName: prod?.name ?? pid,
+                required,
+                available,
+                bundleContext,
+              });
             }
+          }
+          if (shortages.length > 0) {
+            const lines = shortages.map(s => {
+              const ctx = s.bundleContext.length > 0 ? ` [from ${s.bundleContext.join(", ")}]` : "";
+              return `  • ${s.productName}: need ${s.required}, have ${s.available}${ctx}`;
+            }).join("\n");
+            const err = new Error(`Insufficient stock for ${shortages.length} component(s):\n${lines}`);
+            (err as any).shortages = shortages;
+            throw err;
           }
         }
 
         if (challan.sourceType === "warehouse") {
-          for (const item of items) {
-            const qty = dispatchQtys[item.id];
-            const lots = fifoLotsPerProduct[item.productId] ?? [];
-            let remaining = qty;
+          // Track lot consumption across ops sharing the same productId.
+          // We deep-copy each lot so we can decrement remainingQty in-place during this loop only.
+          const lotsCursor: Record<string, FifoLot[]> = {};
+          for (const pid of uniqueProductIds) {
+            lotsCursor[pid] = (fifoLotsPerProduct[pid] ?? []).map(l => ({ ...l }));
+          }
 
-            // Create one movement per FIFO lot consumed so grn_id is correctly attributed
+          for (const op of stockOps) {
+            const isBundleOp = op.parentBundleProductId !== null;
+            const lots = lotsCursor[op.productId] ?? [];
+            let remaining = op.qty;
+
+            const refType = isBundleOp ? "bundle_dispatch" : "challan";
+            const baseNote = isBundleOp
+              ? `Dispatched via challan ${challan.challanNumber} as component of bundle ${op.parentBundleName} (${op.parentBundleSku}), challanItem=${op.challanItemId}`
+              : `Dispatched via challan ${challan.challanNumber}`;
+
+            // One movement per FIFO lot consumed so grn_id is correctly attributed.
             for (const lot of lots) {
               if (remaining <= 0) break;
-              const consumed = Math.min(remaining, Math.floor(lot.remainingQty));
-              if (consumed <= 0) continue;
+              const available = Math.floor(lot.remainingQty);
+              if (available <= 0) continue;
+              const consumed = Math.min(remaining, available);
               await addLedgerEntry(tx, {
-                productId: item.productId,
+                productId: op.productId,
                 warehouseId: challan.sourceId,
                 movementType: "out",
                 quantity: consumed,
-                referenceType: "challan",
+                referenceType: refType,
                 referenceId: challan.id,
                 grnId: lot.grnId,
-                notes: `Dispatched via challan ${challan.challanNumber} (FIFO from GRN ${lot.grnNumber}, batch ${batchId})`,
+                notes: `${baseNote} (FIFO from GRN ${lot.grnNumber}, batch ${batchId})`,
                 createdBy: req.user.id,
               });
+              lot.remainingQty -= consumed;
               remaining -= consumed;
             }
 
-            // If qty is not fully covered by known lots (e.g. manual stock adjustments), record remainder without grnId.
-            // This is expected for stock that entered outside the GRN workflow (adjustments, opening balances).
-            // Log a WARNING so data-integrity drift is visible in server logs.
+            // Fallback for stock entered outside the GRN workflow (manual adjustments / opening balances).
             if (remaining > 0) {
-              console.warn(`[FIFO][DISPATCH][FALLBACK] productId=${item.productId} warehouseId=${challan.sourceId} challan=${challan.challanNumber} unattributed_qty=${remaining} totalQty=${qty} — no matching GRN lots (manual/adjusted stock)`);
+              console.warn(`[FIFO][DISPATCH][FALLBACK] productId=${op.productId} warehouseId=${challan.sourceId} challan=${challan.challanNumber} unattributed_qty=${remaining} totalQty=${op.qty} bundle=${op.parentBundleSku ?? "-"} — no matching GRN lots (manual/adjusted stock)`);
               await addLedgerEntry(tx, {
-                productId: item.productId,
+                productId: op.productId,
                 warehouseId: challan.sourceId,
                 movementType: "out",
                 quantity: remaining,
-                referenceType: "challan",
+                referenceType: refType,
                 referenceId: challan.id,
-                notes: `Dispatched via challan ${challan.challanNumber} (no FIFO lot — manual/adjusted stock, batch ${batchId})`,
+                notes: `${baseNote} (no FIFO lot — manual/adjusted stock, batch ${batchId})`,
                 createdBy: req.user.id,
               });
             }
@@ -4369,7 +4462,9 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error("dispatch error:", error);
       const msg = error?.message || "Failed to dispatch challan";
-      res.status(msg.startsWith("Insufficient") ? 400 : 500).json({ message: msg });
+      const shortages = (error as any)?.shortages;
+      const status = msg.startsWith("Insufficient") ? 400 : 500;
+      res.status(status).json(shortages ? { message: msg, shortages } : { message: msg });
     }
   });
 

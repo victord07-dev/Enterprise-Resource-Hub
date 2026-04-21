@@ -887,7 +887,18 @@ export async function registerRoutes(
       const defaultTargetMarginPct = req.body?.defaultTargetMarginPct ? Number(req.body.defaultTargetMarginPct) : null;
 
       try {
-        const csvText = req.file.buffer.toString("utf-8");
+        // Bug 8: strip UTF-8 BOM that Excel adds (\uFEFF at start)
+        const csvText = req.file.buffer.toString("utf-8").replace(/^\uFEFF/, "");
+
+        // Bug 3: count preamble lines (comment / blank) so row numbers match the original file
+        const rawLines = csvText.split(/\r?\n/);
+        let preambleLineCount = 0;
+        for (const line of rawLines) {
+          if (line.trim() === "" || line.trim().startsWith("#")) preambleLineCount++;
+          else break;
+        }
+        // rowNum = preambleLineCount (comments) + 1 (header) + (i + 1) = preambleLineCount + i + 2
+
         let records: Record<string, string>[];
         try {
           records = csvParse(csvText, { columns: true, skip_empty_lines: true, trim: true, relax_quotes: true, relax_column_count: true, comment: '#' }) as Record<string, string>[];
@@ -927,15 +938,27 @@ export async function registerRoutes(
           priceListVersion: string | null; productFamily: string | null;
           customerTierPrice: Record<string, number> | null; specs: Record<string, any> | null;
           supplierSku: string | null; supplierIdForAutoLink: string | null;
+          warnings: string[];
         };
 
         const validRows: ValidRow[] = [];
 
         for (let i = 0; i < records.length; i++) {
           const row = records[i];
-          const rowNum = i + 2;
+          // Bug 3: row number accounts for preamble comment/blank lines
+          const rowNum = preambleLineCount + i + 2;
           const rowName = (row["name"] ?? "").trim();
-          const rowCategory = (row["category"] ?? "").trim();
+
+          // Bug 7: normalize em-dash (U+2014), en-dash (U+2013), and similar to ASCII hyphen
+          const normalizeDashes = (s: string) => s.replace(/[\u2013\u2014\u2015\u2212]/g, "-");
+          const rowCategoryRaw = normalizeDashes((row["category"] ?? "").trim());
+
+          // Attempt fuzzy match for category — helps surface helpful error if no match after normalization
+          const matchedCategory = (productCategoryValues as readonly string[]).find(
+            c => normalizeDashes(c) === rowCategoryRaw
+          ) ?? rowCategoryRaw;
+          const rowCategory = matchedCategory;
+
           const rowSkuRaw = (row["sku"] ?? "").trim() || null;
 
           if (!rowName) {
@@ -947,7 +970,13 @@ export async function registerRoutes(
             continue;
           }
           if (!(productCategoryValues as readonly string[]).includes(rowCategory)) {
-            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_category", error_message: `"${rowCategory}" is not one of the 16 valid categories` });
+            // Bug 7: give a helpful hint if the only difference is a dash/em-dash variant
+            const normInput = normalizeDashes(rowCategoryRaw);
+            const suggestion = (productCategoryValues as readonly string[]).find(
+              c => normalizeDashes(c).toLowerCase() === normInput.toLowerCase()
+            );
+            const hint = suggestion ? ` Did you mean "${suggestion}"? (check em-dash vs hyphen)` : "";
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_category", error_message: `"${rowCategoryRaw}" is not a valid category.${hint}` });
             continue;
           }
 
@@ -984,13 +1013,54 @@ export async function registerRoutes(
             }
           }
 
-          // ── Numeric fields ────────────────────────────────────────────────────
-          const distributorPrice = (row["distributorPrice"] ?? "").trim() ? Number(row["distributorPrice"]) : null;
-          const rawLogistics = (row["logisticsCost"] ?? "").trim();
-          const logisticsCost = rawLogistics ? Number(rawLogistics) : (distributorPrice != null ? distributorPrice * 0.02 : null);
-          const gstRate = (row["gstRate"] ?? "").trim() ? Number(row["gstRate"]) : 0;
-          const targetMarginPct = (row["targetMarginPct"] ?? "").trim() ? Number(row["targetMarginPct"]) : defaultTargetMarginPct;
+          // ── Category defaults (must be before numeric fields) ─────────────────
           const catDefaults = productCategoryDefaults[rowCategory as keyof typeof productCategoryDefaults];
+
+          // ── Numeric fields ────────────────────────────────────────────────────
+          // Bug 2: helper — rejects non-finite values (NaN, Infinity) from bad input like "14,590" or "TBD"
+          function parseNumericCsv(raw: string, fieldName: string): number | null | "error" {
+            const s = raw.trim();
+            if (!s) return null;
+            const cleaned = s.replace(/,/g, ""); // tolerate thousands separators
+            const n = Number(cleaned);
+            if (!isFinite(n)) return "error";
+            return n;
+          }
+
+          const dpRaw = (row["distributorPrice"] ?? "").trim();
+          const distributorPriceResult = parseNumericCsv(dpRaw, "distributorPrice");
+          if (distributorPriceResult === "error") {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_number", error_message: `distributorPrice "${dpRaw}" is not a valid number` });
+            continue;
+          }
+          const distributorPrice: number | null = distributorPriceResult;
+
+          const lcRaw = (row["logisticsCost"] ?? "").trim();
+          const lcResult = parseNumericCsv(lcRaw, "logisticsCost");
+          if (lcResult === "error") {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_number", error_message: `logisticsCost "${lcRaw}" is not a valid number` });
+            continue;
+          }
+          const logisticsCost: number | null = lcResult ?? (distributorPrice != null ? distributorPrice * 0.02 : null);
+
+          const mrpRaw = (row["mrp"] ?? "").trim();
+          const mrpResult = parseNumericCsv(mrpRaw, "mrp");
+          if (mrpResult === "error") {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_number", error_message: `mrp "${mrpRaw}" is not a valid number` });
+            continue;
+          }
+          const mrp: number | null = mrpResult;
+
+          // Bug 1: gstRate falls back to category default when blank; only hard-defaults to 0 if no category default
+          const gstRaw = (row["gstRate"] ?? "").trim();
+          const gstResult = parseNumericCsv(gstRaw, "gstRate");
+          if (gstResult === "error") {
+            errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_number", error_message: `gstRate "${gstRaw}" is not a valid number` });
+            continue;
+          }
+          const gstRate: number = gstResult ?? (catDefaults?.gstRate != null ? Number(catDefaults.gstRate) : 0);
+
+          const targetMarginPct = (row["targetMarginPct"] ?? "").trim() ? Number(row["targetMarginPct"]) : defaultTargetMarginPct;
 
           let unitPrice: number;
           const rawUP = (row["unitPrice"] ?? "").trim();
@@ -1053,10 +1123,17 @@ export async function registerRoutes(
           const dcrCompliant = parseBoolCsv(row["dcrCompliant"]) ?? false;
           const rawLifecycle = (row["lifecycleStatus"] ?? "").trim().toLowerCase();
           const lifecycleStatus = (productLifecycleValues as readonly string[]).includes(rawLifecycle) ? rawLifecycle : "active";
+          // Bug 11: accept "product", "service", "bundle"; anything else defaults to "product"
           const rowType = (row["type"] ?? "").trim().toLowerCase();
-          const productType = rowType === "service" ? "service" : "product";
+          const productType = ["product", "service", "bundle"].includes(rowType) ? rowType : "product";
           const plv = (row["priceListVersion"] ?? "").trim();
           const priceListVersion = plv || priceListVersionGlobal || null;
+
+          // Bug 4: warn (non-blocking) when distributorPrice is blank — product will be stored at ₹0
+          const warnings: string[] = [];
+          if (distributorPrice == null) {
+            warnings.push("distributorPrice is blank — product will be stored with unitPrice ₹0");
+          }
 
           const supplierIdForAutoLink = rowBrandRaw ? (supplierNameToId.get(rowBrandRaw.toLowerCase()) ?? null) : null;
 
@@ -1078,7 +1155,7 @@ export async function registerRoutes(
             minStockLevel: (row["minStockLevel"] ?? "").trim() ? Number(row["minStockLevel"]) : null,
             minMarginPct: (row["minMarginPct"] ?? "").trim() ? Number(row["minMarginPct"]) : null,
             warrantyPeriod: (row["warrantyPeriod"] ?? "").trim() || null,
-            mrp: (row["mrp"] ?? "").trim() ? Number(row["mrp"]) : null,
+            mrp,
             type: productType,
             packSize: (row["packSize"] ?? "").trim() || null,
             almm,
@@ -1092,6 +1169,7 @@ export async function registerRoutes(
             specs,
             supplierSku: (row["supplierSku"] ?? "").trim() || null,
             supplierIdForAutoLink,
+            warnings,
           });
         }
 
@@ -1099,6 +1177,10 @@ export async function registerRoutes(
 
         // ── DRY RUN ───────────────────────────────────────────────────────────
         if (mode === "dry_run") {
+          // Collect non-blocking warnings across all valid rows
+          const allWarnings = validRows.flatMap(r =>
+            r.warnings.map(w => ({ row_number: validRows.indexOf(r) + preambleLineCount + 2, product_name: r.name, sku: r.sku ?? "", warning: w }))
+          );
           return res.json({
             mode: "dry_run",
             would_import: validRows.length,
@@ -1106,23 +1188,24 @@ export async function registerRoutes(
             imported: 0,
             skipped: skippedCount,
             errors,
+            warnings: allWarnings,
             duplicates_within_file: duplicatesWithinFile,
             brands_to_auto_create: [...brandsToAutoCreate.values()],
           });
         }
 
         // ── COMMIT MODE ───────────────────────────────────────────────────────
-        // 1) Auto-create brands outside transaction so IDs are available
-        const newBrandIdMap = new Map<string, string>(); // lowerName → new id
-        for (const [lb, actualName] of brandsToAutoCreate) {
-          const [nb] = await db.insert(brandsTable).values({ name: actualName, isActive: true }).returning();
-          newBrandIdMap.set(lb, nb.id);
-          brandNameToId.set(lb, nb.id);
-        }
-
-        // 2) Insert products + supplier links in single transaction
+        // Bug 5: create brands INSIDE the transaction so they are rolled back on failure
         let importedCount = 0;
         await db.transaction(async (tx) => {
+          // 1) Auto-create brands within transaction
+          const newBrandIdMap = new Map<string, string>(); // lowerName → new id
+          for (const [lb, actualName] of brandsToAutoCreate) {
+            const [nb] = await tx.insert(brandsTable).values({ name: actualName, isActive: true }).returning();
+            newBrandIdMap.set(lb, nb.id);
+            brandNameToId.set(lb, nb.id);
+          }
+
           for (const r of validRows) {
             // Resolve brand id (replace __new__ placeholder)
             let brandId = r.brandId;

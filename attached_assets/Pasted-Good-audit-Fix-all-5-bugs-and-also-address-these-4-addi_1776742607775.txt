@@ -1,0 +1,23 @@
+Good audit. Fix all 5 bugs, and also address these 4 additional issues I found:
+Bug 7 — Category name matching must tolerate em-dash vs hyphen:
+The seeded categories use em-dashes (Grid Tie Inverter — 1 Phase with — U+2014). Excel and many editors auto-convert these to regular hyphens (- U+002D) on save. When the CSV is re-imported, string matching fails and the row is rejected.
+Fix: normalize both em-dashes and hyphens to a canonical form before comparison. Either treat both as equivalent during category validation, OR reject with a helpful error: "Category '[X]' not found. Did you mean '[Y]' (note em-dash vs hyphen)?"
+Bug 8 — Strip UTF-8 BOM before parsing:
+Excel-saved CSVs include a UTF-8 BOM (\uFEFF) at file start. Without stripping, the first header becomes \uFEFFname instead of name and the name column lookup fails silently. All rows fail with "missing required field: name" despite data being present.
+Fix: strip BOM from file content before passing to CSV parser.
+Bug 9 — HSN code default from category:
+Related to Bug 1 (GST default). If gstRate falls back to the category's default when CSV is blank, hsnCode should too. Does the category registry store default HSN codes? If yes, apply the same fallback pattern. If no, document whether HSN stays NULL or reject the row.
+Bug 10 — Empty string vs NULL rule:
+Document the rule for empty CSV cells across all 27 columns:
+
+Numeric fields (distributorPrice, logisticsCost, mrp, gstRate, etc.): blank → NULL or compute default? (Bug 1, Bug 4 cover parts of this)
+Text fields (warrantyPeriod, modelSeries, description): blank → NULL or empty string?
+Array fields (applicableRegions): blank → NULL (all India) or empty array []?
+JSON fields (customerTierPrice, specs): blank → NULL or empty object {}?
+
+Consistency matters. Document and enforce one rule.
+Bug 11 — type column handling:
+My new CSV includes a type column (values "product" or "bundle"). Does your parser accept it, ignore it, or error out? If ignored, valuable data is lost. Recommend: accept and store in products.type field, with default "product" if blank.
+Yes — fix Bugs 1, 2, 3, 4, 5, 7, 8 now in one pass. Document Bug 6 as intended behavior. Clarify Bugs 9, 10, 11 in your response.
+After fixes, re-run Dry Run against my actual Eastman CSV to validate.
+Do NOT start Phase 7 until these are clean and I've successfully imported my Eastman catalog.

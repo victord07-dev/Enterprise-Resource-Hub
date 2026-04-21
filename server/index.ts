@@ -288,6 +288,90 @@ app.use((req, res, next) => {
   cron.schedule("15 4 * * *", runDebugCaptureCleanup, { timezone: "Asia/Kolkata" });
   setTimeout(runDebugCaptureCleanup, 45_000).unref();
 
+  // ── Phase 7 B5: Bundle auto-price drift check (02:00 IST nightly) ──────────
+  // For every active product where type='bundle' and pricingMode='auto',
+  // recompute the live auto price (Σ component effective × qty for today).
+  // If the drift versus the stored sellingPrice exceeds AUTO_DRIFT_THRESHOLD,
+  // mark the bundle as needsPricingReview and write an audit row so a human
+  // approves the new number. We never auto-update sellingPrice — drift is a
+  // signal for review, not a silent change.
+  const AUTO_DRIFT_THRESHOLD = 0.05; // 5 %
+  async function runBundleAutoPriceDriftCheck() {
+    try {
+      const allProducts = await storage.getProducts();
+      const autoBundles = allProducts.filter(
+        (p: any) => p.type === "bundle" && p.pricingMode === "auto" && p.lifecycleStatus === "active",
+      );
+      if (autoBundles.length === 0) {
+        console.log("[BUNDLE DRIFT] No auto-priced bundles — skipping");
+        return;
+      }
+      // IST date string YYYY-MM-DD for the effective-price lookup.
+      const istNow = new Date(Date.now() + 5.5 * 3600_000);
+      const today = istNow.toISOString().slice(0, 10);
+
+      let flagged = 0;
+      let skipped = 0;
+      for (const bundle of autoBundles) {
+        try {
+          const result = await storage.computeBundleAutoPrice(bundle.id, today);
+          const newPrice = Number(result.totalPrice);
+          const stored = Number(bundle.sellingPrice ?? 0);
+          if (!Number.isFinite(newPrice) || newPrice <= 0) {
+            skipped++;
+            console.warn(`[BUNDLE DRIFT] ${bundle.sku} (${bundle.name}) — auto price unavailable (component price missing); skipped`);
+            continue;
+          }
+          if (stored <= 0) {
+            // No baseline to drift against — flag for review so admin sets first price.
+            await storage.updateProduct(bundle.id, { needsPricingReview: true } as any);
+            await storage.createAuditLog({
+              userId: "system",
+              action: "bundle_drift_flag",
+              module: "products",
+              details: JSON.stringify({
+                bundleId: bundle.id,
+                sku: bundle.sku,
+                name: bundle.name,
+                reason: "no_baseline",
+                computedPrice: newPrice.toFixed(2),
+              }),
+            });
+            flagged++;
+            continue;
+          }
+          const drift = Math.abs(newPrice - stored) / stored;
+          if (drift > AUTO_DRIFT_THRESHOLD) {
+            await storage.updateProduct(bundle.id, { needsPricingReview: true } as any);
+            await storage.createAuditLog({
+              userId: "system",
+              action: "bundle_drift_flag",
+              module: "products",
+              details: JSON.stringify({
+                bundleId: bundle.id,
+                sku: bundle.sku,
+                name: bundle.name,
+                storedPrice: stored.toFixed(2),
+                computedPrice: newPrice.toFixed(2),
+                driftPct: (drift * 100).toFixed(2),
+                threshold: (AUTO_DRIFT_THRESHOLD * 100).toFixed(2),
+              }),
+            });
+            flagged++;
+            console.log(`[BUNDLE DRIFT] ${bundle.sku} (${bundle.name}) drift ${(drift * 100).toFixed(2)}% — flagged (stored=${stored.toFixed(2)} computed=${newPrice.toFixed(2)})`);
+          }
+        } catch (perBundleErr) {
+          skipped++;
+          console.error(`[BUNDLE DRIFT] ${bundle.sku} (${bundle.name}) failed:`, perBundleErr);
+        }
+      }
+      console.log(`[BUNDLE DRIFT] Complete — checked ${autoBundles.length}, flagged ${flagged}, skipped ${skipped}`);
+    } catch (err) {
+      console.error("[BUNDLE DRIFT] Cron failed:", err);
+    }
+  }
+  cron.schedule("0 2 * * *", runBundleAutoPriceDriftCheck, { timezone: "Asia/Kolkata" });
+
   // ── Webhook Silence Detector (Task #67 Phase 4) ────────────────────────────
   // Hourly during business hours (09:00–19:00 IST), check the last received
   // webhook timestamp. If silent for >SILENCE_THRESHOLD_HOURS, create an

@@ -1299,7 +1299,7 @@ export async function registerRoutes(
                 const isPrimary = anyPrimary.rows.length === 0;
                 await tx.execute(sql`
                   INSERT INTO supplier_products (supplier_id, product_id, supplier_price, supplier_sku, is_primary)
-                  VALUES (${supplierLinkId}, ${productId}, ${r.distributorPrice}, ${r.supplierSku}, ${isPrimary})
+                  VALUES (${supplierLinkId}, ${productId}, ${r.distributorPrice ?? r.unitPrice ?? 0}, ${r.supplierSku}, ${isPrimary})
                 `);
               }
             }

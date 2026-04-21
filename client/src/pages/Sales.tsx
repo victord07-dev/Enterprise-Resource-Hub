@@ -151,6 +151,27 @@ function calculateDiscount(subtotal: number, discount: DiscountState): number {
   return 0;
 }
 
+// Phase 6.5 E2 — Returns indices of touched lines whose product is a non-ALMM Solar Panel under an active subsidy scheme.
+// These lines hard-block save until the operator either picks an ALMM panel or sets the subsidy scheme to "none".
+function findAlmmHardBlockIndices(
+  items: LineItem[],
+  products: Product[] | undefined,
+  subsidyScheme: string | undefined,
+  touched: Set<number>,
+): number[] {
+  if (!subsidyScheme || subsidyScheme === "none" || !products?.length) return [];
+  const blocked: number[] = [];
+  items.forEach((it, idx) => {
+    if (!touched.has(idx)) return;
+    if (it.itemType !== "product" || !it.productId) return;
+    const prod = products.find(p => p.id === it.productId) as any;
+    if (!prod) return;
+    if (prod.category !== SOLAR_PANEL_CATEGORY) return;
+    if (!prod.almm) blocked.push(idx);
+  });
+  return blocked;
+}
+
 type EffectivePriceEntry = {
   effectivePrice: string;
   sheetDate: string | null;
@@ -469,21 +490,24 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             const hasSubsidy = scheme !== "none";
             const isPmSuryaGhar = scheme === "PM Surya Ghar";
 
-            const showAlmmWarn = isPanel && hasSubsidy && !(prod as any).almm;
+            // Phase 6.5 E2: ALMM violation on a subsidy-active panel is now a HARD BLOCK at save (red, not amber).
+            const isAlmmHardBlock = isPanel && hasSubsidy && !(prod as any).almm;
             const showDcrWarn = isPanel && isPmSuryaGhar && !(prod as any).dcrCompliant;
 
             const mrp = (prod as any).mrp != null ? Number((prod as any).mrp) : null;
             const ctype = customer?.customerType;
-            const showMrpWarnEndUser = mrp != null && item.unitPrice > mrp && ctype === "end_user";
-            const showMrpInfoBusiness = mrp != null && ctype === "business";
+            // Phase 6.5 E1: MRP soft-warn now fires for ALL customer types (was end_user only).
+            const showMrpWarn = mrp != null && item.unitPrice > mrp;
+            // Show MRP-info row for business/distributor customers when not exceeding (so the operator sees the reference).
+            const showMrpInfo = mrp != null && !showMrpWarn && (ctype === "business" || ctype === "distributor");
 
-            if (!showAlmmWarn && !showDcrWarn && !showMrpWarnEndUser && !showMrpInfoBusiness) return null;
+            if (!isAlmmHardBlock && !showDcrWarn && !showMrpWarn && !showMrpInfo) return null;
             return (
               <div className="space-y-1.5" data-testid={`warnings-${i}`}>
-                {showAlmmWarn && (
-                  <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5 text-amber-800 dark:text-amber-300" data-testid={`warn-almm-${i}`}>
+                {isAlmmHardBlock && (
+                  <div className="flex items-start gap-1.5 text-[11px] bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-2 py-1.5 text-red-800 dark:text-red-300" data-testid={`block-almm-${i}`}>
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>This panel is not ALMM-listed. If the subsidy scheme requires ALMM (most schemes do), the application will be rejected.</span>
+                    <span><strong>Cannot save:</strong> Panel is not ALMM-listed but subsidy scheme is active. Either pick an ALMM panel or set the subsidy scheme to "None".</span>
                   </div>
                 )}
                 {showDcrWarn && (
@@ -492,13 +516,13 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                     <span>PM Surya Ghar subsidy requires DCR-compliant panels. This panel is not flagged as DCR-compliant.</span>
                   </div>
                 )}
-                {showMrpWarnEndUser && (
+                {showMrpWarn && (
                   <div className="flex items-start gap-1.5 text-[11px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5 text-amber-800 dark:text-amber-300" data-testid={`warn-mrp-${i}`}>
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                    <span>Unit price ₹{item.unitPrice.toLocaleString("en-IN")} exceeds MRP ₹{mrp!.toLocaleString("en-IN")} for end-user customer.</span>
+                    <span>Unit price ₹{item.unitPrice.toLocaleString("en-IN")} exceeds MRP ₹{mrp!.toLocaleString("en-IN")}.</span>
                   </div>
                 )}
-                {showMrpInfoBusiness && !showMrpWarnEndUser && (
+                {showMrpInfo && (
                   <div className="text-[10px] text-muted-foreground" data-testid={`info-mrp-${i}`}>
                     MRP is ₹{mrp!.toLocaleString("en-IN")}.
                   </div>
@@ -2457,11 +2481,24 @@ export default function Sales() {
               onLineTouched={handleOrderLineTouched}
             />
           </div>
-          <DialogFooter>
-            <Button data-testid="button-submit-order" disabled={orderMutation.isPending} onClick={() => orderMutation.mutate(orderForm)}>
-              {orderMutation.isPending ? "Saving..." : editingOrder ? "Update Order" : "Create Order"}
-            </Button>
-          </DialogFooter>
+          {(() => {
+            const blocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
+            return (
+              <>
+                {blocked.length > 0 && (
+                  <div className="mt-2 flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-order-almm-block">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>Cannot save: line{blocked.length > 1 ? "s" : ""} {blocked.map(i => `#${i + 1}`).join(", ")} use a non-ALMM panel under an active subsidy scheme. Pick an ALMM panel or set the subsidy scheme to "None".</span>
+                  </div>
+                )}
+                <DialogFooter>
+                  <Button data-testid="button-submit-order" disabled={orderMutation.isPending || blocked.length > 0} onClick={() => orderMutation.mutate(orderForm)}>
+                    {orderMutation.isPending ? "Saving..." : editingOrder ? "Update Order" : "Create Order"}
+                  </Button>
+                </DialogFooter>
+              </>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 

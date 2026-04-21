@@ -13,8 +13,22 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+/** Phase 7 — Bundle / Kit Engine.
+ *  A single component row inside a bundle, as returned by GET /api/products/:id/bundle-items. */
+type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
@@ -233,7 +247,7 @@ function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry 
   );
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
@@ -248,12 +262,23 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   touchedLineIndices: Set<number>;
   /** Phase 5 — called when a line is edited/added (for warning gating) */
   onLineTouched: (idx: number) => void;
+  /** Phase 7 — bundle component cache + loader + per-product physical stock totals */
+  bundleComponentsMap: Record<string, BundleItemRow[]>;
+  loadBundleComponents: (bundleId: string) => Promise<BundleItemRow[]>;
+  inventoryByProduct: Map<string, number>;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
+  // Phase 7 — discontinued-component confirm dialog (when a bundle has a non-active component)
+  const [discontinuedDialog, setDiscontinuedDialog] = useState<{
+    lineIndex: number;
+    bundleName: string;
+    issues: Array<{ name: string; status: string }>;
+  } | null>(null);
   // Phase 6.5 F1: include draft / discontinued / replaced products in the picker (with a
   // lifecycle badge), but hard-block selection at the change handler so they cannot end up
   // on a line. Existing lines on a saved order remain — they were valid at order time.
-  const productItems = products.filter(p => p.type === "product");
+  // Phase 7: bundles are quotable too — include them alongside type='product'.
+  const productItems = products.filter(p => p.type === "product" || p.type === "bundle");
   const serviceItems = products.filter(p => p.type === "service");
   const { toast: lineToast } = useToast();
 
@@ -316,12 +341,31 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             : Number(prod.unitPrice);
         item.unitPrice = priceToUse;
         item.description = prod.name;
+        // Phase 7: keep the actual product type (so itemType='bundle' for bundles).
         item.itemType = prod.type;
         item.gstRate = Number(prod.gstRate || 0);
         item.hsnCode = prod.hsnCode || "";
         const lineTotal = item.quantity * priceToUse;
         item.totalPrice = lineTotal;
         item.taxAmount = lineTotal * item.gstRate / 100;
+
+        // Phase 7: bundle selected → load components, then surface a confirm dialog if any
+        // component is non-active. Stock-shortage badges render inline in the row panel below.
+        if (prod.type === "bundle") {
+          loadBundleComponents(prod.id).then((comps) => {
+            const issues = comps
+              .map((row) => {
+                const comp = products.find(p => p.id === row.componentProductId);
+                const ls = (comp as any)?.lifecycleStatus as string | undefined;
+                if (comp && ls && ls !== "active") return { name: comp.name, status: ls };
+                return null;
+              })
+              .filter(Boolean) as Array<{ name: string; status: string }>;
+            if (issues.length > 0) {
+              setDiscontinuedDialog({ lineIndex: index, bundleName: prod.name, issues });
+            }
+          });
+        }
       }
     }
     if (field === "quantity" || field === "unitPrice") {
@@ -444,6 +488,68 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                   <ShieldCheck className="w-3 h-3" />
                   DCR {dcrOk ? "✓" : "✗"}
                 </Badge>
+              </div>
+            );
+          })()}
+          {/* Phase 7 — Bundle components panel: lists each component (qty × unit) under the bundle line,
+               with informational stock badges and a per-component lifecycle pill. No prices shown. */}
+          {(() => {
+            if (!item.productId) return null;
+            const prod = products.find(p => p.id === item.productId);
+            if (!prod || prod.type !== "bundle") return null;
+            const comps = bundleComponentsMap[prod.id];
+            if (!comps) {
+              return (
+                <div className="text-[11px] text-muted-foreground italic px-2" data-testid={`bundle-loading-${i}`}>
+                  Loading bundle components…
+                </div>
+              );
+            }
+            if (comps.length === 0) {
+              return (
+                <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-300" data-testid={`bundle-empty-${i}`}>
+                  This bundle has no components configured.
+                </div>
+              );
+            }
+            return (
+              <div className="rounded border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 p-2 space-y-1" data-testid={`bundle-components-${i}`}>
+                <div className="flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                  <Boxes className="w-3 h-3" /> Bundle components × {item.quantity || 1}
+                </div>
+                {comps.map((row) => {
+                  const comp = products.find(p => p.id === row.componentProductId);
+                  const compLs = (comp as any)?.lifecycleStatus as string | undefined;
+                  const lc = lifecycleLabel(compLs);
+                  const perUnit = Number(row.quantity) || 0;
+                  const totalNeeded = perUnit * (Number(item.quantity) || 0);
+                  const onHand = comp ? (inventoryByProduct.get(comp.id) ?? 0) : 0;
+                  const short = comp ? totalNeeded > onHand : false;
+                  return (
+                    <div key={row.componentProductId} className="flex items-center gap-2 text-[11px] pl-3" data-testid={`bundle-comp-${i}-${row.componentProductId}`}>
+                      <span className="text-muted-foreground">↳</span>
+                      <span className="flex-1 truncate">{comp?.name ?? row.componentProductId}</span>
+                      {lc.text && (
+                        <Badge variant="outline" className={`text-[9px] px-1 py-0 leading-tight ${lc.badgeCls}`}>
+                          {lc.text}
+                        </Badge>
+                      )}
+                      <span className="text-muted-foreground">{totalNeeded} {row.unit}</span>
+                      {comp && (
+                        short ? (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-red-500 text-red-700 dark:text-red-400" data-testid={`bundle-comp-short-${i}-${comp.id}`}>
+                            Short ({onHand} on hand)
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-emerald-500 text-emerald-700 dark:text-emerald-400">
+                            OK ({onHand})
+                          </Badge>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="text-[10px] text-muted-foreground pl-3 italic">Invoiced as one line at the bundle GST rate.</div>
               </div>
             );
           })()}
@@ -697,6 +803,46 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
           </Dialog>
         );
       })()}
+      {/* Phase 7 — discontinued-component confirm dialog */}
+      <AlertDialog open={!!discontinuedDialog} onOpenChange={(open) => { if (!open) setDiscontinuedDialog(null); }}>
+        <AlertDialogContent data-testid="dialog-discontinued-component">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bundle has non-active components</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  <span className="font-medium">{discontinuedDialog?.bundleName}</span> includes the following components
+                  that are not currently active:
+                </p>
+                <ul className="list-disc pl-5 text-sm">
+                  {discontinuedDialog?.issues.map((it, k) => (
+                    <li key={k}>
+                      <span className="font-medium">{it.name}</span> — <span className="capitalize">{it.status}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  Continuing will keep this bundle on the line. Dispatch may fail later if these components remain unavailable.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              data-testid="button-discontinued-cancel"
+              onClick={() => {
+                if (discontinuedDialog) updateItem(discontinuedDialog.lineIndex, "productId", "");
+                setDiscontinuedDialog(null);
+              }}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction data-testid="button-discontinued-continue" onClick={() => setDiscontinuedDialog(null)}>
+              Continue anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -711,6 +857,36 @@ export default function Sales() {
   const { data: customers, isLoading: customersLoading } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: quotations, isLoading: quotationsLoading } = useQuery<Quotation[]>({ queryKey: ["/api/quotations"] });
   const { data: products } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  // Phase 7 — total physical stock per product, summed across all warehouses (informational only).
+  const { data: inventoryStockRaw } = useQuery<Array<{ productId: string; warehouseId: string; quantity: number }>>({
+    queryKey: ["/api/inventory-stock"],
+    staleTime: 60 * 1000,
+  });
+  const inventoryByProduct = useState(() => new Map<string, number>())[0];
+  // recompute every render — cheap, dataset is tiny
+  inventoryByProduct.clear();
+  (inventoryStockRaw ?? []).forEach(row => {
+    inventoryByProduct.set(row.productId, (inventoryByProduct.get(row.productId) ?? 0) + Number(row.quantity || 0));
+  });
+  // Phase 7 — bundle components cache (productId → component rows). Loaded lazily on bundle selection.
+  const [bundleComponentsMap, setBundleComponentsMap] = useState<Record<string, BundleItemRow[]>>({});
+  const loadBundleComponents = useCallback(async (bundleId: string): Promise<BundleItemRow[]> => {
+    if (bundleComponentsMap[bundleId]) return bundleComponentsMap[bundleId];
+    try {
+      const res = await fetch(`/api/products/${bundleId}/bundle-items`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) return [];
+      const items = await res.json();
+      const list: BundleItemRow[] = (items ?? []).map((i: any) => ({
+        componentProductId: i.componentProductId,
+        quantity: i.quantity,
+        unit: i.unit || "pcs",
+      }));
+      setBundleComponentsMap(prev => ({ ...prev, [bundleId]: list }));
+      return list;
+    } catch { return []; }
+  }, [bundleComponentsMap]);
   const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
@@ -1410,7 +1586,28 @@ export default function Sales() {
       if (!res.ok) throw new Error("Failed to fetch items");
       const qItems: QuotationItem[] = await res.json();
       const customer = customers?.find(c => c.id === q.customerId);
-      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || []);
+      // Phase 7 — collect bundle component rows for any bundle line in this quotation,
+      // resolving names + GST from the products list. Components are loaded lazily.
+      const bundlePdfMap: Record<string, Array<{ name: string; quantity: number; unit: string; gstRate: number }>> = {};
+      const bundleLineProductIds = Array.from(new Set(
+        (Array.isArray(qItems) ? qItems : [])
+          .map(it => it.productId)
+          .filter((pid): pid is string => !!pid)
+          .filter(pid => products?.find(p => p.id === pid)?.type === "bundle")
+      ));
+      await Promise.all(bundleLineProductIds.map(async (bid) => {
+        const comps = await loadBundleComponents(bid);
+        bundlePdfMap[bid] = comps.map(row => {
+          const comp = products?.find(p => p.id === row.componentProductId);
+          return {
+            name: comp?.name ?? row.componentProductId,
+            quantity: Number(row.quantity) || 0,
+            unit: row.unit || "pcs",
+            gstRate: Number((comp as any)?.gstRate || 0),
+          };
+        });
+      }));
+      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || [], bundlePdfMap);
       toast({ title: "PDF downloaded", description: q.quoteNumber });
     } catch {
       toast({ title: "Failed to generate PDF", variant: "destructive" });
@@ -2525,6 +2722,9 @@ export default function Sales() {
               customer={customers?.find(c => c.id === orderForm.customerId)}
               touchedLineIndices={orderTouchedLines}
               onLineTouched={handleOrderLineTouched}
+              bundleComponentsMap={bundleComponentsMap}
+              loadBundleComponents={loadBundleComponents}
+              inventoryByProduct={inventoryByProduct}
             />
           </div>
           {(() => {
@@ -2636,6 +2836,9 @@ export default function Sales() {
               customer={customers?.find(c => c.id === quoteForm.customerId)}
               touchedLineIndices={quoteTouchedLines}
               onLineTouched={handleQuoteLineTouched}
+              bundleComponentsMap={bundleComponentsMap}
+              loadBundleComponents={loadBundleComponents}
+              inventoryByProduct={inventoryByProduct}
             />
           </div>
           <DialogFooter>

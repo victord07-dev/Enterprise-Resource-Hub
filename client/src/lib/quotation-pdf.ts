@@ -20,11 +20,16 @@ function drawRoundedRect(doc: jsPDF, x: number, y: number, w: number, h: number,
   doc.roundedRect(x, y, w, h, r, r, "F");
 }
 
+/** Phase 7 — bundleItemsMap: bundle product id → list of components (with name + GST resolved upstream).
+ *  Rendered as indented sub-lines under the bundle row, with no pricing. */
+export type BundlePdfComponent = { name: string; quantity: number; unit: string; gstRate: number };
+
 export function generateQuotationPDF(
   quotation: Quotation,
   items: QuotationItem[],
   customer: Customer | undefined,
-  products?: Product[]
+  products?: Product[],
+  bundleItemsMap?: Record<string, BundlePdfComponent[]>
 ) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -165,7 +170,11 @@ export function generateQuotationPDF(
     // Phase 5 — expand row height to accommodate warranty line if present
     const prod = products?.find(p => p.id === item.productId);
     const warranty = prod?.warrantyPeriod && String(prod.warrantyPeriod).trim() ? String(prod.warrantyPeriod).trim() : null;
-    const rowH = warranty ? 12 : 7;
+    // Phase 7 — bundle sub-lines (one row per component, no pricing)
+    const isBundle = prod?.type === "bundle";
+    const bundleComps = isBundle && item.productId ? (bundleItemsMap?.[item.productId] ?? []) : [];
+    const bundleSubH = isBundle ? bundleComps.length * 4 + (bundleComps.length > 0 ? 2 : 0) : 0;
+    const rowH = (warranty ? 12 : 7) + bundleSubH;
 
     const maxPageY = doc.internal.pageSize.getHeight() - 40;
     if (y + rowH > maxPageY) {
@@ -202,6 +211,22 @@ export function generateQuotationPDF(
       doc.setFontSize(6);
       doc.setTextColor(...COLORS.textSecondary);
       doc.text(`Warranty: ${warranty}`, colX.desc, y + 10);
+      doc.setFontSize(8);
+      doc.setTextColor(...COLORS.textPrimary);
+    }
+
+    // Phase 7 — bundle component sub-lines (indented, no pricing)
+    if (isBundle && bundleComps.length > 0) {
+      const baseY = y + (warranty ? 12 : 7);
+      doc.setFontSize(6.5);
+      doc.setTextColor(...COLORS.textSecondary);
+      bundleComps.forEach((comp, ci) => {
+        const subY = baseY + ci * 4 + 2;
+        const totalQty = Number(comp.quantity) * Number(item.quantity || 1);
+        doc.text(`> ${comp.name}`, colX.desc + 2, subY);
+        doc.text(`${totalQty} ${comp.unit}`, colX.qty, subY, { align: "right" });
+        doc.text(`GST ${comp.gstRate}%`, colX.unit + 15, subY, { align: "right" });
+      });
       doc.setFontSize(8);
       doc.setTextColor(...COLORS.textPrimary);
     }

@@ -80,6 +80,11 @@ export const products = pgTable("products", {
   logisticsCost: decimal("logistics_cost", { precision: 10, scale: 2 }),       // per-unit estimate; if NULL, UI defaults to 2% of distributor price
   targetMarginPct: decimal("target_margin_pct", { precision: 5, scale: 2 }),   // separate from minMarginPct (floor); used for auto-selling-price
   productFamily: varchar("product_family", { length: 100 }),                   // free-text grouping label (e.g. "Luminous OPTIMUS Series")
+  // Phase 7 — Bundle / Kit Engine
+  // pricingMode is only meaningful when type='bundle'.
+  //   'manual' = unitPrice/distributorPrice are set by user (current behaviour)
+  //   'auto'   = unitPrice = Σ (component effective price × qty), recomputed live in UI + nightly cron
+  pricingMode: text("pricing_mode").notNull().default("manual"),
 });
 
 /** Roles allowed to view product cost data (distributor price, logistics, landed cost, margins). */

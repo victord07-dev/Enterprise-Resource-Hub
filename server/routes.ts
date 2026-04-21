@@ -7572,6 +7572,89 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Phase 7 — Bundle / Kit Engine ─────────────────────────────────────
+  // GET bundle items (components) for a bundle product
+  app.get("/api/products/:id/bundle-items", authenticateToken, async (req: any, res) => {
+    try {
+      const items = await storage.getBundleItems(req.params.id);
+      res.json(items);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch bundle items" });
+    }
+  });
+
+  // PUT bundle items — replaces all components for a bundle.
+  // Validates: parent must be type='bundle'; no nested bundles; no service components.
+  app.put("/api/products/:id/bundle-items", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
+    try {
+      const bundleId = req.params.id;
+      const parent = await storage.getProduct(bundleId);
+      if (!parent) return res.status(404).json({ message: "Bundle product not found" });
+      if (parent.type !== "bundle") {
+        return res.status(400).json({ message: "Parent product must be of type 'bundle'" });
+      }
+
+      const items = Array.isArray(req.body?.items) ? req.body.items : [];
+      // Validate each row
+      const cleaned: Array<{ componentProductId: string; quantity: string; unit: string }> = [];
+      for (const it of items) {
+        if (!it?.componentProductId || it.componentProductId === bundleId) {
+          return res.status(400).json({ message: "Invalid component (cannot reference self)" });
+        }
+        const comp = await storage.getProduct(it.componentProductId);
+        if (!comp) return res.status(400).json({ message: `Component product ${it.componentProductId} not found` });
+        if (comp.type === "bundle") {
+          return res.status(400).json({ message: `Component "${comp.name}" is itself a bundle. Nested bundles are not allowed.` });
+        }
+        if (comp.type === "service") {
+          return res.status(400).json({ message: `Component "${comp.name}" is a service. Services must be added as separate sales-order lines, not bundle components.` });
+        }
+        const qtyNum = Number(it.quantity);
+        if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+          return res.status(400).json({ message: `Quantity must be > 0 for component "${comp.name}"` });
+        }
+        cleaned.push({
+          componentProductId: it.componentProductId,
+          quantity: String(qtyNum),
+          unit: it.unit || "pcs",
+        });
+      }
+
+      const saved = await storage.replaceBundleItems(bundleId, cleaned as any);
+
+      // If any component is non-active, flag bundle for pricing review
+      const components = await Promise.all(cleaned.map(c => storage.getProduct(c.componentProductId)));
+      const hasNonActive = components.some(c => c && c.lifecycleStatus !== "active");
+      if (hasNonActive && !parent.needsPricingReview) {
+        await storage.updateProduct(bundleId, { needsPricingReview: true } as any);
+      }
+
+      res.json({ items: saved, hasNonActiveComponent: hasNonActive });
+    } catch (err) {
+      console.error("[BUNDLE] PUT bundle-items failed:", err);
+      res.status(500).json({ message: "Failed to save bundle items" });
+    }
+  });
+
+  // GET computed auto-price for a bundle (Σ component effective price × qty).
+  // Returns full breakdown for live preview in the form.
+  app.get("/api/products/:id/bundle-effective-price", authenticateToken, async (req: any, res) => {
+    try {
+      const bundleId = req.params.id;
+      const parent = await storage.getProduct(bundleId);
+      if (!parent) return res.status(404).json({ message: "Bundle not found" });
+      if (parent.type !== "bundle") {
+        return res.status(400).json({ message: "Product is not a bundle" });
+      }
+      const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+      const result = await storage.computeBundleAutoPrice(bundleId, date);
+      res.json(result);
+    } catch (err) {
+      console.error("[BUNDLE] effective-price failed:", err);
+      res.status(500).json({ message: "Failed to compute bundle price" });
+    }
+  });
+
   app.get("/api/daily-price-sheets", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
       const { productId, sheetDate, date, status } = req.query as { productId?: string; sheetDate?: string; date?: string; status?: string };

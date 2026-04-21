@@ -1,0 +1,62 @@
+Phase 7 — Bundle / Kit Engine
+Composition rules (locked):
+
+No nested bundles. Component picker filters out type = bundle.
+Services NOT allowed as components. Installation/service charges are added as separate sales-order lines by sales staff.
+Same component allowed in multiple rows of the same bundle (do NOT force-merge).
+
+Bundle GST (locked):
+
+Bundle product has its own gstRate field (reuse existing products.gstRate; default 5% for new bundles, editable).
+Invoice/quotation: bundle is ONE line at its own GST rate. Component GST rates are informational only — shown indented in PDF for transparency, do NOT affect math.
+NO mixed-GST validator. Components' rates can differ from bundle's.
+Form hint below bundle GST field: "Bundle is invoiced as one line at this rate. Components' individual rates are informational only."
+
+Schema:
+
+Add 'bundle' to products.type enum.
+Confirm product_bundle_items (Phase 1) has: id, parentProductId, componentProductId, qty, unit. Add any missing.
+
+Product form (Products.tsx):
+
+"Components" section visible when type = bundle: add/remove rows of { component product picker, qty, unit }. Duplicate rows of same component allowed.
+"Pricing Mode" toggle: Manual (user sets fixed unit price) OR Auto (Σ component effective price × qty; recomputes live).
+If any component has lifecycleStatus ≠ 'active': auto-set parent bundle's needsPricingReview = true and show warning banner on bundle detail page: "Component [name] is [status]".
+
+Sales flow (Sales.tsx):
+
+Selecting a bundle for a line: per-component insufficient-stock warning if applicable (informational, not blocking).
+Discontinued-component gate: if selected bundle has any component with lifecycleStatus ≠ 'active', show confirmation modal: "Component [name] in this bundle is [status]. Continue anyway?" with Continue / Cancel. No save block; just acknowledgment.
+Quotation PDF (pdfGenerator.ts): bundle line shows bundle name + bundle's own unit price + bundle's own GST. Below it, indented sub-lines list each component: name, qty, unit, (informational) component GST %. Sub-lines do NOT show pricing.
+
+Dispatch (atomic):
+
+All component stock deductions happen in ONE DB transaction with challan creation.
+Pre-check inside transaction: if any component is short, entire dispatch fails. Error message lists EVERY insufficient component as [name]: have X, need Y (not just the first). Zero stock_movements written on failure.
+Each component deduction: one stock_movements row with reference = { type: 'bundle_dispatch', parentProductId, parentBundleSku, challanId, bundleLineId }.
+FIFO per component independently. Do NOT touch computeFifoLots — orchestration only at the dispatch layer.
+
+Mandatory internal stop gate BEFORE adding cron:
+
+Create bundle with 3+ components (a panel, a lithium battery, a PCU).
+Create sales order with that bundle, qty 1.
+Dispatch via delivery challan. Confirm 3 new stock_movements rows with correct qty + reference populated.
+Understock ONE component. Dispatch qty 1 of the bundle. Confirm: blocked, error names the shortage, zero stock_movements written.
+Understock TWO components. Dispatch. Error names BOTH.
+
+Only after (1)–(5) pass: add nightly cron to server/index.ts
+
+Cron at 02:00 IST daily — the one permitted addition to server/index.ts in ticket #74.
+For every type = bundle, pricingMode = auto product: recompute price from current component effective prices.
+Threshold: 5%. If drift vs. yesterday's stored price > 5%, set needsPricingReview = true on the bundle, write audit entry { action: 'bundle_price_drift', bundleId, oldPrice, newPrice, driftPct }.
+
+Stop gate end of Phase 7 (before Batch 4):
+(a) Bundle saves; Auto mode shows correct computed price; recomputes live on component edit.
+(b) Bundle on sales order: per-component insufficient-stock warning when applicable.
+(c) Bundle with discontinued component: selection triggers click-to-confirm modal; continue adds line; cancel does nothing.
+(d) Dispatch with enough stock → 3 stock_movements rows with correct reference.
+(e) Dispatch with one or more short components → blocked atomically; error lists all shortages; zero writes.
+(f) Simulate component price spike > 5% + run cron → bundle's needsPricingReview = true; audit entry present.
+(g) Quotation PDF: bundle line with bundle GST on the math; indented components show rates informational.
+(h) Regression triple: pre-#74 non-bundle sales order OK; pre-#74 GRN OK; Daily Pricing non-zero blendedCost for pre-#74 product with confirmed lot.
+NOT in Phase 7: nested bundles, per-bundle configurable drift, bundle return/unbundle, auto-bundle-template from sales order, bundle-level discount waterfall.

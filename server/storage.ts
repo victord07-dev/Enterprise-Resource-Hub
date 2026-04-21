@@ -3,7 +3,7 @@ import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
 import {
   users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -12,7 +12,7 @@ import {
   customFieldUsageStats, type CustomFieldUsageStat,
   type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
-  type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment,
+  type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment, type ProductBundleItem, type InsertProductBundleItem,
   type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
   type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
   type WhatsappTemplateSyncLog, type InsertWhatsappTemplateSyncLog,
@@ -385,6 +385,26 @@ export interface IStorage {
   getDailyPriceSheetLots(sheetId: string): Promise<DailyPriceSheetLot[]>;
   upsertDailyPriceSheetLots(sheetId: string, lots: Omit<DailyPriceSheetLot, "id">[]): Promise<DailyPriceSheetLot[]>;
   getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string | null; sheetDate: string | null; noConfirmedPrice: boolean; source: "today" | "fallback" | "none" } | null>;
+
+  // Phase 7 — Bundle / Kit Engine
+  getBundleItems(bundleId: string): Promise<ProductBundleItem[]>;
+  replaceBundleItems(bundleId: string, items: Omit<InsertProductBundleItem, "bundleProductId">[]): Promise<ProductBundleItem[]>;
+  computeBundleAutoPrice(bundleId: string, date: string): Promise<{
+    totalPrice: string;
+    components: Array<{
+      componentProductId: string;
+      componentName: string;
+      componentSku: string | null;
+      lifecycleStatus: string;
+      quantity: string;
+      unit: string;
+      effectivePrice: string | null;
+      lineTotal: string;
+      priceSource: "today" | "fallback" | "none";
+    }>;
+    hasNonActiveComponent: boolean;
+    nonActiveComponentNames: string[];
+  }>;
 
   // WhatsApp CRM
   getWhatsappConversations(): Promise<WhatsappConversation[]>;
@@ -1724,6 +1744,56 @@ export class DatabaseStorage implements IStorage {
       sheetDate: null,
       noConfirmedPrice: true,
       source: "none",
+    };
+  }
+
+  // ─── Phase 7 — Bundle / Kit Engine ────────────────────────────────────
+  async getBundleItems(bundleId: string): Promise<ProductBundleItem[]> {
+    return db.select().from(productBundleItems).where(eq(productBundleItems.bundleProductId, bundleId));
+  }
+
+  async replaceBundleItems(bundleId: string, items: Omit<InsertProductBundleItem, "bundleProductId">[]): Promise<ProductBundleItem[]> {
+    return await db.transaction(async (tx) => {
+      await tx.delete(productBundleItems).where(eq(productBundleItems.bundleProductId, bundleId));
+      if (items.length === 0) return [];
+      const rows = items.map(it => ({ ...it, bundleProductId: bundleId }));
+      return tx.insert(productBundleItems).values(rows as any).returning();
+    });
+  }
+
+  async computeBundleAutoPrice(bundleId: string, date: string) {
+    const items = await this.getBundleItems(bundleId);
+    const components: Array<any> = [];
+    let total = 0;
+    const nonActiveNames: string[] = [];
+
+    for (const item of items) {
+      const [comp] = await db.select().from(products).where(eq(products.id, item.componentProductId));
+      if (!comp) continue;
+      const effInfo = await this.getEffectivePriceForProduct(item.componentProductId, date);
+      const effPrice = effInfo?.effectivePrice ?? null;
+      const qtyNum = Number(item.quantity);
+      const lineTotal = effPrice != null ? Number(effPrice) * qtyNum : 0;
+      total += lineTotal;
+      if (comp.lifecycleStatus !== "active") nonActiveNames.push(comp.name);
+      components.push({
+        componentProductId: item.componentProductId,
+        componentName: comp.name,
+        componentSku: comp.sku,
+        lifecycleStatus: comp.lifecycleStatus,
+        quantity: item.quantity,
+        unit: item.unit,
+        effectivePrice: effPrice,
+        lineTotal: lineTotal.toFixed(2),
+        priceSource: effInfo?.source ?? "none",
+      });
+    }
+
+    return {
+      totalPrice: total.toFixed(2),
+      components,
+      hasNonActiveComponent: nonActiveNames.length > 0,
+      nonActiveComponentNames: nonActiveNames,
     };
   }
 

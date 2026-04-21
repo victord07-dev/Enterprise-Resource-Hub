@@ -1949,6 +1949,16 @@ export async function registerRoutes(
     try {
       const items = req.body.items;
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
+      // Phase 6.5 D1: hard-block save when any product line refers to a product whose master unitPrice is null/zero.
+      const productIds = items.filter((i: any) => i?.productId).map((i: any) => String(i.productId));
+      const offenders = await findZeroPriceProducts(productIds, "unit_price");
+      if (offenders.length > 0) {
+        return res.status(422).json({
+          code: "zero_price_products",
+          message: "Cannot save: " + offenders.map(p => `${p.name} (${p.sku})`).join(", ") + " have no unit price set. Set a unit price on each product before adding it to a sales order.",
+          products: offenders,
+        });
+      }
       await storage.deleteSalesOrderItems(req.params.id);
       const created = [];
       for (const item of items) {
@@ -2007,6 +2017,16 @@ export async function registerRoutes(
     try {
       const items = req.body.items;
       if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "Items must be a non-empty array" });
+      // Phase 6.5 D1: hard-block save when any product line refers to a product whose master unitPrice is null/zero.
+      const productIds = items.filter((i: any) => i?.productId).map((i: any) => String(i.productId));
+      const offenders = await findZeroPriceProducts(productIds, "unit_price");
+      if (offenders.length > 0) {
+        return res.status(422).json({
+          code: "zero_price_products",
+          message: "Cannot save: " + offenders.map(p => `${p.name} (${p.sku})`).join(", ") + " have no unit price set. Set a unit price on each product before adding it to a quotation.",
+          products: offenders,
+        });
+      }
       await storage.deleteQuotationItems(req.params.id);
       const created = [];
       for (const item of items) {
@@ -2498,6 +2518,27 @@ export async function registerRoutes(
     }
   });
 
+  // Phase 6.5 D: find products from a given list whose master price (unitPrice or distributorPrice) is null/zero.
+  // Used to hard-block sales/quotation save (D1) and PO issue (D2).
+  async function findZeroPriceProducts(productIds: string[], priceField: "unit_price" | "distributor_price"): Promise<{ id: string; name: string; sku: string }[]> {
+    const ids = productIds.filter(Boolean);
+    if (ids.length === 0) return [];
+    const rows = (await db.execute(sql`
+      SELECT id, name, sku, unit_price, distributor_price
+      FROM products
+      WHERE id IN (${sql.join(ids.map(i => sql`${i}`), sql`, `)})
+    `)).rows as any[];
+    const offenders: { id: string; name: string; sku: string }[] = [];
+    for (const r of rows) {
+      const raw = priceField === "unit_price" ? r.unit_price : r.distributor_price;
+      const v = raw == null ? null : Number(raw);
+      if (v == null || isNaN(v) || v <= 0) {
+        offenders.push({ id: r.id, name: r.name, sku: r.sku });
+      }
+    }
+    return offenders;
+  }
+
   // Phase 6.5 C2: helper — does this supplier have GST + phone + address?
   async function getSupplierIncompleteness(supplierId: string | null | undefined) {
     if (!supplierId) return { incomplete: true, missing: ["supplier"] as string[], supplier: null as any };
@@ -2527,6 +2568,20 @@ export async function registerRoutes(
             supplierId: check.supplier?.id || req.body?.supplierId || null,
             supplierName: check.supplier?.name || null,
           });
+        }
+        // D2: also block PO issue when any product line refers to a product whose master distributorPrice is null/zero.
+        // (For PO POST, lineItems are typically saved separately, but if the caller sends them inline we check.)
+        const inlineItems = Array.isArray((req.body as any)?.lineItems) ? (req.body as any).lineItems : (Array.isArray((req.body as any)?.items) ? (req.body as any).items : []);
+        const inlineProductIds = inlineItems.filter((i: any) => i?.productId).map((i: any) => String(i.productId));
+        if (inlineProductIds.length > 0) {
+          const dpOffenders = await findZeroPriceProducts(inlineProductIds, "distributor_price");
+          if (dpOffenders.length > 0) {
+            return res.status(422).json({
+              code: "zero_distributor_price_products",
+              message: "Cannot issue PO: " + dpOffenders.map(p => `${p.name} (${p.sku})`).join(", ") + " have no distributor price set. Save as Pending until distributor pricing is established.",
+              products: dpOffenders,
+            });
+          }
         }
       }
       let poNumber = req.body.poNumber;
@@ -2582,6 +2637,19 @@ export async function registerRoutes(
               supplierId: check.supplier?.id || supplierIdToCheck,
               supplierName: check.supplier?.name || null,
             });
+          }
+          // Phase 6.5 D2: scan saved PO line items — block if any product has null/zero distributorPrice.
+          const existingItems = await storage.getPurchaseOrderItems(req.params.id);
+          const linePids = existingItems.map(it => it.productId).filter(Boolean) as string[];
+          if (linePids.length > 0) {
+            const dpOffenders = await findZeroPriceProducts(linePids, "distributor_price");
+            if (dpOffenders.length > 0) {
+              return res.status(422).json({
+                code: "zero_distributor_price_products",
+                message: "Cannot issue PO: " + dpOffenders.map(p => `${p.name} (${p.sku})`).join(", ") + " have no distributor price set. Keep PO as Pending until distributor pricing is established.",
+                products: dpOffenders,
+              });
+            }
           }
         }
       }

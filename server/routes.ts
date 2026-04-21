@@ -4324,9 +4324,10 @@ export async function registerRoutes(
       }
 
       await db.transaction(async (tx) => {
-        const [lockedChallan] = await tx.execute(sql`
+        const lockedRes = await tx.execute(sql`
           SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
         `);
+        const lockedChallan = (lockedRes as any).rows?.[0];
         if (!lockedChallan || (lockedChallan as any).status !== "draft") {
           throw new Error("Challan is no longer in draft status — concurrent dispatch may have already occurred");
         }
@@ -4342,13 +4343,14 @@ export async function registerRoutes(
           const shortages: Array<{ productId: string; productName: string; required: number; available: number; bundleContext: string[] }> = [];
           for (const pid of Object.keys(requiredByProduct)) {
             const required = requiredByProduct[pid];
-            const [stockRow] = await tx.execute(sql`
+            const stockRes = await tx.execute(sql`
               SELECT quantity FROM inventory_stock
               WHERE product_id = ${pid} AND warehouse_id = ${challan.sourceId}
               LIMIT 1
               FOR UPDATE
             `);
-            const available = stockRow ? Number((stockRow as any).quantity ?? 0) : 0;
+            const stockRow = (stockRes as any).rows?.[0];
+            const available = stockRow ? Number(stockRow.quantity ?? 0) : 0;
             if (required > available) {
               const prod = await getCachedProduct(pid);
               const bundleContext = Array.from(new Set(

@@ -13,7 +13,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle, Boxes, Info } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -71,6 +71,15 @@ type ProductForm = {
   productFamily: string;
   // Phase 4 — JSONB specs
   specs: SpecsValue;
+  // Phase 7 — Bundle / Kit Engine. Only meaningful when type='bundle'.
+  pricingMode: "manual" | "auto";
+};
+
+// Phase 7: a single component row inside a bundle. Same component allowed multiple times.
+type BundleItemRow = {
+  componentProductId: string;
+  quantity: string;
+  unit: string;
 };
 
 const emptyProductForm = (): ProductForm => ({
@@ -94,6 +103,7 @@ const emptyProductForm = (): ProductForm => ({
   targetMarginPct: "",
   productFamily: "",
   specs: {},
+  pricingMode: "manual",
 });
 
 const emptyServiceForm = (): ProductForm => ({
@@ -586,6 +596,8 @@ export default function Products() {
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productForm, setProductForm] = useState<ProductForm>(emptyProductForm());
+  // Phase 7: bundle component rows (separate from productForm because saved via different endpoint)
+  const [bundleItems, setBundleItems] = useState<BundleItemRow[]>([]);
 
   // Brand mini-dialog state
   const [brandDialogOpen, setBrandDialogOpen] = useState(false);
@@ -631,11 +643,23 @@ export default function Products() {
   const missingSupplierProductCount = productsOnly.filter(p => missingSupplierSet.has(p.id)).length;
 
   const productMutation = useMutation({
-    mutationFn: async (data: any) => {
+    // Phase 7: when saving a bundle, chain a PUT /bundle-items call after the product is saved
+    // so the components list is persisted in the same user action.
+    mutationFn: async (payload: { data: any; bundleItems?: BundleItemRow[] }) => {
+      const { data, bundleItems: items } = payload;
+      let savedId: string | undefined = editingProduct?.id;
       if (editingProduct) {
-        await apiRequest("PATCH", `/api/products/${editingProduct.id}`, data);
+        const res = await apiRequest("PATCH", `/api/products/${editingProduct.id}`, data);
+        try { const j = await res.json(); savedId = j?.id ?? savedId; } catch {}
       } else {
-        await apiRequest("POST", "/api/products", data);
+        const res = await apiRequest("POST", "/api/products", data);
+        const created = await res.json();
+        savedId = created?.id;
+      }
+      if (data.type === "bundle" && savedId) {
+        await apiRequest("PUT", `/api/products/${savedId}/bundle-items`, {
+          items: (items ?? []).filter(r => r.componentProductId && Number(r.quantity) > 0),
+        });
       }
     },
     onSuccess: () => {
@@ -643,6 +667,7 @@ export default function Products() {
       toast({ title: editingProduct ? (activeTab === "services" ? "Service updated" : "Product updated") : (activeTab === "services" ? "Service created" : "Product created") });
       setProductDialogOpen(false);
       setEditingProduct(null);
+      setBundleItems([]);
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -678,7 +703,48 @@ export default function Products() {
   });
 
   const isService = productForm.type === "service";
-  const isPanel = !isService && productForm.category === PANEL_CATEGORY;
+  const isBundle = productForm.type === "bundle";
+  const isPanel = !isService && !isBundle && productForm.category === PANEL_CATEGORY;
+
+  // Phase 7: components available to pick = all real products (not bundles, not services, not self).
+  const availableComponentProducts = useMemo(() => {
+    return (allProducts ?? []).filter(p =>
+      p.type !== "bundle" && p.type !== "service" && p.id !== editingProduct?.id
+    );
+  }, [allProducts, editingProduct?.id]);
+
+  // Phase 7: client-side auto-price preview (Σ component effective price × qty).
+  // Uses effectivePricesMap (already loaded) so it recomputes live as user edits rows.
+  const productById = useMemo(() => {
+    const m = new Map<string, Product>();
+    (allProducts ?? []).forEach(p => m.set(p.id, p));
+    return m;
+  }, [allProducts]);
+  const bundleAutoPriceClient = useMemo(() => {
+    let total = 0;
+    let allHavePrice = true;
+    const lines = bundleItems.map((row) => {
+      const comp = row.componentProductId ? productById.get(row.componentProductId) : null;
+      const eff = comp ? effectivePricesMap?.[comp.id] : null;
+      const effPrice = eff?.effectivePrice ? Number(eff.effectivePrice)
+        : comp?.unitPrice ? Number(comp.unitPrice) : null;
+      const qty = Number(row.quantity) || 0;
+      const lineTotal = effPrice != null ? effPrice * qty : null;
+      if (lineTotal != null) total += lineTotal; else allHavePrice = false;
+      return {
+        name: comp?.name ?? "(select component)",
+        sku: comp?.sku ?? "",
+        lifecycleStatus: comp?.lifecycleStatus ?? "active",
+        gstRate: comp?.gstRate ?? "0",
+        qty: row.quantity,
+        unit: row.unit,
+        effPrice,
+        lineTotal,
+      };
+    });
+    const nonActive = lines.filter(l => l.lifecycleStatus !== "active" && l.name !== "(select component)");
+    return { total, lines, allHavePrice, nonActiveComponents: nonActive };
+  }, [bundleItems, productById, effectivePricesMap]);
   const landed = useMemo(
     () => computeLandedChain(productForm.distributorPrice, productForm.logisticsCost, productForm.gstRate, productForm.targetMarginPct),
     [productForm.distributorPrice, productForm.logisticsCost, productForm.gstRate, productForm.targetMarginPct],
@@ -692,10 +758,11 @@ export default function Products() {
   const openNewItem = () => {
     setEditingProduct(null);
     setProductForm(activeTab === "services" ? emptyServiceForm() : emptyProductForm());
+    setBundleItems([]);
     setProductDialogOpen(true);
   };
 
-  const openEditProduct = (p: Product) => {
+  const openEditProduct = async (p: Product) => {
     setEditingProduct(p);
     const tier = (p.customerTierPrice as Record<string, string> | null) ?? {};
     setProductForm({
@@ -730,7 +797,25 @@ export default function Products() {
       targetMarginPct: p.targetMarginPct ? String(p.targetMarginPct) : "",
       productFamily: p.productFamily || "",
       specs: (p.specs as SpecsValue | null) ?? {},
+      pricingMode: ((p as any).pricingMode === "auto" ? "auto" : "manual"),
     });
+    // Phase 7: pre-load bundle components for edit
+    setBundleItems([]);
+    if (p.type === "bundle") {
+      try {
+        const res = await fetch(`/api/products/${p.id}/bundle-items`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        });
+        if (res.ok) {
+          const items = await res.json();
+          setBundleItems((items ?? []).map((i: any) => ({
+            componentProductId: i.componentProductId,
+            quantity: String(i.quantity),
+            unit: i.unit || "pcs",
+          })));
+        }
+      } catch {/* ignore — empty list shown */}
+    }
     setProductDialogOpen(true);
   };
 
@@ -744,6 +829,19 @@ export default function Products() {
         minStockLevel: "0",
         sku: productForm.sku || `SVC-${Date.now().toString(36).toUpperCase()}`,
       });
+      setBundleItems([]);
+    } else if (type === "bundle") {
+      // Phase 7: bundles default to 5% GST (per spec) and 'manual' pricing.
+      // Stock-tracking fields are irrelevant (parent bundle has no stock of its own).
+      setProductForm({
+        ...productForm,
+        type: "bundle",
+        category: productForm.category || "Solar Panel / PV Module",
+        gstRate: productForm.gstRate || "5",
+        unit: productForm.unit || "kit",
+        minStockLevel: "0",
+        pricingMode: "manual",
+      });
     } else {
       setProductForm({
         ...productForm,
@@ -754,8 +852,15 @@ export default function Products() {
         unit: "pcs",
         minStockLevel: "10",
       });
+      setBundleItems([]);
     }
   };
+
+  // Phase 7: bundle row helpers
+  const addBundleRow = () => setBundleItems(prev => [...prev, { componentProductId: "", quantity: "1", unit: "pcs" }]);
+  const removeBundleRow = (idx: number) => setBundleItems(prev => prev.filter((_, i) => i !== idx));
+  const updateBundleRow = (idx: number, patch: Partial<BundleItemRow>) =>
+    setBundleItems(prev => prev.map((r, i) => i === idx ? { ...r, ...patch } : r));
 
   const handleCategoryChange = (cat: string) => {
     const next: ProductForm = { ...productForm, category: cat };
@@ -830,6 +935,7 @@ export default function Products() {
 
   const handleSubmitProduct = () => {
     const isProd = productForm.type === "product";
+    const isBundleSubmit = productForm.type === "bundle";
 
     // Phase 2.5 minimum-required-fields enforcement: name, category, brand (for products), unit
     if (!productForm.name.trim()) {
@@ -843,6 +949,15 @@ export default function Products() {
     }
     if (isProd && !productForm.brandId) {
       toast({ title: "Brand is required", description: "Select an existing brand or click + to add one.", variant: "destructive" }); return;
+    }
+
+    // Phase 7: bundle-specific guardrails
+    if (isBundleSubmit) {
+      const validRows = bundleItems.filter(r => r.componentProductId && Number(r.quantity) > 0);
+      if (validRows.length === 0) {
+        toast({ title: "At least one component is required", description: "A bundle must contain one or more components.", variant: "destructive" });
+        return;
+      }
     }
 
     const tier: Record<string, number> = {};
@@ -860,12 +975,18 @@ export default function Products() {
       ? `${(brandText || "PRD").toString().slice(0, 4).toUpperCase().replace(/[^A-Z0-9]/g, "")}-${Date.now().toString(36).toUpperCase()}`
       : `SVC-${Date.now().toString(36).toUpperCase()}`;
 
+    // Phase 7: in Auto pricing mode, the bundle's stored unitPrice == client-computed Σ.
+    // (server cron also recomputes nightly — this just keeps the saved value coherent today.)
+    const computedBundlePrice = isBundleSubmit && productForm.pricingMode === "auto" && bundleAutoPriceClient.allHavePrice
+      ? bundleAutoPriceClient.total.toFixed(2)
+      : null;
+
     const data: any = {
       name: productForm.name.trim(),
       sku: productForm.sku.trim() || autoSku,
       category: productForm.category,
       description: productForm.description || null,
-      unitPrice: productForm.unitPrice || "0",
+      unitPrice: computedBundlePrice ?? (productForm.unitPrice || "0"),
       brand: brandText,
       brandId: productForm.brandId || null,
       unit: productForm.unit,
@@ -874,6 +995,7 @@ export default function Products() {
       hsnCode: productForm.hsnCode || null,
       gstRate: productForm.gstRate || "0",
       minMarginPct: productForm.minMarginPct ? String(parseFloat(productForm.minMarginPct).toFixed(2)) : "5.00",
+      pricingMode: isBundleSubmit ? productForm.pricingMode : "manual",
     };
 
     if (isProd) {
@@ -901,7 +1023,7 @@ export default function Products() {
       data.specs = Object.keys(cleanSpecs).length > 0 ? cleanSpecs : null;
     }
 
-    productMutation.mutate(data);
+    productMutation.mutate({ data, bundleItems });
   };
 
   const renderTable = (items: Product[], isServiceTab: boolean) => (
@@ -1344,6 +1466,7 @@ export default function Products() {
                 <SelectContent>
                   <SelectItem value="product"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Product</span></SelectItem>
                   <SelectItem value="service"><span className="flex items-center gap-1"><Wrench className="w-3 h-3" /> Service</span></SelectItem>
+                  <SelectItem value="bundle" data-testid="option-type-bundle"><span className="flex items-center gap-1"><Boxes className="w-3 h-3" /> Bundle / Kit</span></SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1410,8 +1533,168 @@ export default function Products() {
               <Input id="prodDesc" data-testid="input-product-description" value={productForm.description} onChange={(e) => setProductForm({ ...productForm, description: e.target.value })} />
             </div>
 
-            {/* Cost & landed price block — admin/accountant only */}
-            {!isService && canSeeCosts && (
+            {/* Phase 7: Bundle / Kit components section — only when type='bundle' */}
+            {isBundle && (
+              <div className="rounded-md border-2 border-blue-200 dark:border-blue-900 p-3 space-y-3 bg-blue-50/30 dark:bg-blue-950/10" data-testid="section-bundle-components">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-semibold flex items-center gap-1.5">
+                      <Boxes className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                      Bundle Components
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Components are dispatched as one kit. Nested bundles and services are not allowed.
+                    </p>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={addBundleRow} data-testid="button-add-bundle-component">
+                    <Plus className="w-3 h-3 mr-1" /> Add Component
+                  </Button>
+                </div>
+
+                {/* Pricing Mode toggle */}
+                <div className="flex items-center gap-3 rounded-md bg-background border p-2.5">
+                  <Label className="text-xs uppercase tracking-wide text-muted-foreground shrink-0">Pricing Mode</Label>
+                  <div className="flex gap-1 ml-auto">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={productForm.pricingMode === "manual" ? "default" : "outline"}
+                      onClick={() => setProductForm({ ...productForm, pricingMode: "manual" })}
+                      data-testid="button-pricing-mode-manual"
+                    >
+                      Manual
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={productForm.pricingMode === "auto" ? "default" : "outline"}
+                      onClick={() => setProductForm({ ...productForm, pricingMode: "auto" })}
+                      data-testid="button-pricing-mode-auto"
+                    >
+                      Auto (Σ component prices)
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Lifecycle warning banner */}
+                {bundleAutoPriceClient.nonActiveComponents.length > 0 && (
+                  <div className="rounded-md border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30 p-2.5 text-xs flex items-start gap-2" data-testid="banner-bundle-lifecycle-warning">
+                    <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 mt-0.5 shrink-0" />
+                    <div className="text-red-800 dark:text-red-300 space-y-0.5">
+                      {bundleAutoPriceClient.nonActiveComponents.map((c, i) => (
+                        <div key={i}>
+                          Component <strong>{c.name}</strong> is <strong>{c.lifecycleStatus}</strong>.
+                        </div>
+                      ))}
+                      <div className="text-red-700 dark:text-red-400 italic mt-1">
+                        Bundle will be flagged for pricing review on save.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Component rows */}
+                {bundleItems.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="empty-bundle-components">
+                    No components yet. Click <strong>Add Component</strong> to start building this kit.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {bundleItems.map((row, idx) => {
+                      const line = bundleAutoPriceClient.lines[idx];
+                      return (
+                        <div key={idx} className="grid grid-cols-12 gap-2 items-start" data-testid={`row-bundle-component-${idx}`}>
+                          <div className="col-span-6">
+                            <Select
+                              value={row.componentProductId}
+                              onValueChange={(v) => {
+                                const comp = productById.get(v);
+                                updateBundleRow(idx, {
+                                  componentProductId: v,
+                                  unit: row.unit || comp?.unit || "pcs",
+                                });
+                              }}
+                            >
+                              <SelectTrigger data-testid={`select-bundle-component-${idx}`}>
+                                <SelectValue placeholder="Select component…" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {availableComponentProducts.map((p) => (
+                                  <SelectItem key={p.id} value={p.id}>
+                                    {p.name} <span className="text-muted-foreground">({p.sku})</span>
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            {line && line.lifecycleStatus !== "active" && line.name !== "(select component)" && (
+                              <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                                Status: {line.lifecycleStatus}
+                              </p>
+                            )}
+                          </div>
+                          <div className="col-span-2">
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              value={row.quantity}
+                              placeholder="Qty"
+                              onChange={(e) => updateBundleRow(idx, { quantity: e.target.value })}
+                              data-testid={`input-bundle-qty-${idx}`}
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <Input
+                              value={row.unit}
+                              placeholder="Unit"
+                              onChange={(e) => updateBundleRow(idx, { unit: e.target.value })}
+                              data-testid={`input-bundle-unit-${idx}`}
+                            />
+                          </div>
+                          <div className="col-span-2 flex items-center justify-end gap-2">
+                            {line && line.effPrice != null && (
+                              <span className="text-xs font-mono text-muted-foreground" data-testid={`text-bundle-line-total-${idx}`}>
+                                {formatINR(line.lineTotal ?? 0)}
+                              </span>
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => removeBundleRow(idx)}
+                              data-testid={`button-remove-bundle-component-${idx}`}
+                            >
+                              <Trash2 className="w-4 h-4 text-red-500" />
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Auto-price preview */}
+                {productForm.pricingMode === "auto" && bundleItems.length > 0 && (
+                  <div className="rounded-md bg-background border p-2.5 text-xs space-y-1" data-testid="display-bundle-auto-price">
+                    <div className="flex justify-between font-semibold">
+                      <span>Auto Computed Price (Σ component effective × qty)</span>
+                      <span className="font-mono text-blue-700 dark:text-blue-400" data-testid="text-bundle-auto-price">
+                        {formatINR(bundleAutoPriceClient.total)}
+                      </span>
+                    </div>
+                    {!bundleAutoPriceClient.allHavePrice && (
+                      <div className="text-amber-700 dark:text-amber-400 flex items-start gap-1 mt-1">
+                        <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
+                        Some components have no effective price yet — saved price will fall back to the Selling Price field below.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Cost & landed price block — admin/accountant only, hidden for bundles */}
+            {!isService && !isBundle && canSeeCosts && (
               <div className="rounded-md border p-3 space-y-3 bg-muted/20" data-testid="section-cost-block">
                 <Label className="text-xs uppercase tracking-wide text-muted-foreground">Cost & Landed Price (admin / accountant only)</Label>
                 <div className="grid grid-cols-2 gap-4">
@@ -1521,10 +1804,16 @@ export default function Products() {
                     ))}
                   </SelectContent>
                 </Select>
-                {gstOverridden && (
+                {gstOverridden && !isBundle && (
                   <p className="text-xs text-amber-700 dark:text-amber-400 flex items-start gap-1 mt-1" data-testid="warning-gst-override">
                     <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
                     Non-standard rate for this category (default is {gstDefaultForCategory}%). Make sure this is intentional.
+                  </p>
+                )}
+                {isBundle && (
+                  <p className="text-xs text-muted-foreground flex items-start gap-1 mt-1" data-testid="hint-bundle-gst">
+                    <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                    Bundle is invoiced as one line at this rate. Components' individual GST rates are informational only.
                   </p>
                 )}
               </div>

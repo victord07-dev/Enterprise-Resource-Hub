@@ -1103,19 +1103,30 @@ export async function registerRoutes(
           // ── specs JSON ────────────────────────────────────────────────────────
           const rawSpecs = (row["specs"] ?? "").trim();
           let specs: Record<string, any> | null = null;
-          if (rawSpecs) {
-            try {
-              specs = JSON.parse(rawSpecs);
-              if (typeof specs !== "object" || Array.isArray(specs)) throw new Error("must be an object");
-              const v2 = productSpecsSchema.safeParse(specs);
-              if (!v2.success) {
-                errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_specs", error_message: `specs invalid: ${v2.error.errors[0]?.message}` });
-                continue;
-              }
-            } catch {
-              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_json", error_message: "specs is not valid JSON" });
+          if (rawSpecs && rawSpecs !== "{}") {
+            // Try direct parse first; if it fails, attempt Excel double-quote normalization
+            // ("" → ") which is a common artifact when Google Sheets / Excel saves JSON cells
+            let parsedSpecs: any = null;
+            const specsAttempts = [rawSpecs, rawSpecs.replace(/""/g, '"')];
+            for (const attempt of specsAttempts) {
+              try {
+                const parsed = JSON.parse(attempt);
+                if (typeof parsed === "object" && !Array.isArray(parsed)) {
+                  parsedSpecs = parsed;
+                  break;
+                }
+              } catch { /* try next */ }
+            }
+            if (!parsedSpecs) {
+              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_json", error_message: "specs is not valid JSON (tried both raw and Excel-normalized forms)" });
               continue;
             }
+            const v2 = productSpecsSchema.safeParse(parsedSpecs);
+            if (!v2.success) {
+              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_specs", error_message: `specs invalid: ${v2.error.errors[0]?.message}` });
+              continue;
+            }
+            specs = parsedSpecs;
           }
 
           // ── Booleans, lifecycle, type ─────────────────────────────────────────

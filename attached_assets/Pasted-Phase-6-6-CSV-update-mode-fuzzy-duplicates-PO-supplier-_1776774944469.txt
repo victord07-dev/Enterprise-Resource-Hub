@@ -1,0 +1,41 @@
+Phase 6.6 — CSV update mode, fuzzy duplicates, PO supplier price sync, Task #75 closure, Pricing page fix, Final CSV commit
+Build sections A through D, commit and push after each.
+Section A — CSV re-import UPDATE mode
+A1. Extend POST /api/products/import: existing SKUs now UPDATE, not skip. Dry-run response gets would_update: { row_number, sku, changes: [{ field, old_value, new_value }] }[].
+Updatable fields: distributorPrice, unitPrice, mrp, specs, warrantyPeriod, applicableRegions, almm, dcrCompliant, modelSeries, lifecycleStatus, priceListVersion, packSize, logisticsCost, minMarginPct, targetMarginPct, customerTierPrice, supplierSku.
+Immutable fields (if CSV row differs, emit warning in dry-run, skip THAT FIELD only — don't skip the row): sku, name, brand, category, hsnCode, gstRate.
+When almm or dcrCompliant flips, surface in a dedicated "Flag changes" panel above the general Changes preview in the dry-run UI — regulatory flags need extra visibility.
+A2. Dry-run UI: add a 4th stat card "Would Update" (blue) alongside existing Would Import / Would Skip / Errors. Below stats, collapsible "Changes preview" with compact diff table.
+A3. Commit: apply updates in the same transaction as inserts. Response: add updated: number to ImportCommitResult.
+Section B — Fuzzy duplicate detection
+B1. During dry-run, for NEW-SKU rows, flag possible duplicates against existing products if: (same brandId OR same brand name case-insensitive) AND (same category) AND (normalized name similarity ≥ 85%). Normalization: lowercase, strip punctuation, collapse whitespace; keep semantic tokens like "kw", "ah", "kwh", "w".
+B2. Use Levenshtein ratio or equivalent. Library choice yours.
+B3. Dry-run response: possible_duplicates: { row_number, incoming_sku, incoming_name, existing_sku, existing_name, similarity_pct }[]. UI: yellow warning block above Changes preview. No automatic merge; operator-driven. Commit proceeds normally unless operator aborts.
+Section C — PO supplier price sync + Task #75 closure + Pricing page fix
+C1. Add column supplier_products.lastPriceUpdatedAt TIMESTAMP NULL (additive, non-breaking). Run npm run db:push.
+C2. PO creation form: each line item's "Unit Cost" defaults from supplier_products.supplierPrice for (selected supplier, selected product). Currently pulls from products.costPrice — fix. Fallback if no link exists (defensive, shouldn't happen post-backfill): products.distributorPrice. Field remains editable.
+C3. On PO save (draft OR issue): if entered unit cost differs from current supplier_products.supplierPrice, UPDATE supplier_products.supplierPrice to new value, SET supplier_products.lastPriceUpdatedAt = NOW(), SET the product's needsPricingReview = true, AND write audit entry { action: 'supplier_price_updated', productId, supplierId, oldPrice, newPrice, poId }. Do NOT update products.distributorPrice — that stays as brand's published list price.
+C4. SupplierProductCatalog display (SupplyChain.tsx ~line 374): show "(updated X days ago)" hint next to supplier price when lastPriceUpdatedAt is populated.
+C5. Task #75 closure: Find the sales-order-driven auto-purchase-request generator in server/routes.ts or server/storage.ts. Currently reads unit cost from products.costPrice. Fix to read from supplier_products.supplierPrice for the primary supplier of each product.
+C6. Pricing page fix (Pricing.tsx line 351, supplierPrice = product.costPrice ? ...): fetch primary supplier's supplierPrice instead. Add an endpoint or extend an existing endpoint to return primary-supplier price per product (pick isPrimary = true row, else pick the minimum supplierPrice row). Update the "Supplier Price" column source. The existing product.needsPricingReview flag + ShieldAlert icon on line 374 stays as-is — C3's flag-set behaviour now actually triggers it.
+C7. Add code comment at top of pricing engine module: "Cost source chain: products.distributorPrice → supplier_products.supplierPrice (auto-linked on product create) → po_items.unitCost (defaults from supplier_products, editable; saving updates supplier_products and sets needsPricingReview) → grn_items.unitCost (locks on GRN confirm) → FIFO lot consumption. Supplier price updates affect FUTURE POs/GRNs only; existing lots preserve their locked-in cost. This engine is the consumer and does not change behaviour in Phase 6.6."
+Section D — Final CSV commit
+Before commit, edit Eastman_Catalog_Final_Apr26.csv:
+
+Revert the 4 lithium battery SKUs to the existing pattern: EAS-BAT-EMLIB160, EAS-BAT-EMLIB240, EAS-BAT-EMLIB320, EAS-BAT-EMLIB480. (Preserve the canonical SKU already in DB; do NOT create parallel SKUs.)
+For the 21 BOS-accessory rows with blank distributorPrice, set lifecycleStatus = draft in that column. These will import but stay hidden from sales picker (Phase 6.5 Section F shows them with badges + hard-block on selection) and will hard-block PO per Phase 6.5 Section D until prices arrive.
+
+Then dry-run. Expected: 98 would-import, 80 would-update (v3 SKUs, probably zero-diff or trivial diff), 0 errors, possibly a few fuzzy duplicates to review.
+If dry-run clean → commit.
+Stop gate — end of Phase 6.6, BEFORE Batch 3
+(a) Re-import CSV changing distributorPrice on 2 existing products → dry-run shows "Would Update: 2" with clean diff. Commit → prices update.
+(b) Re-import with a changed name on an existing SKU → warning "name is immutable; field skipped". Other fields still update.
+(c) Re-import flipping almm: true → false on a panel → dry-run shows the flip in the dedicated "Flag changes" panel.
+(d) New-SKU CSV row with ≥85% name similarity to existing product in same brand+category → possible-duplicates yellow block shows match with both SKUs + similarity %.
+(e) Raise a test PO for an Eastman product → line's Unit Cost defaults from supplier_products.supplierPrice (NOT from products.costPrice).
+(f) Edit PO unit cost to a new value, save/issue → supplier_products.supplierPrice updates, lastPriceUpdatedAt set, product's needsPricingReview flips to true, audit row written.
+(g) Pricing page for that product: "Supplier Price" column shows the NEW value (from supplier_products, not the stale products.costPrice). ShieldAlert icon appears next to the product name reflecting needsPricingReview.
+(h) SupplierProductCatalog shows "(updated just now)" hint next to the updated price.
+(i) Trigger a sales-order-driven auto-PR → its line unit costs pull from supplier_products.supplierPrice.
+(j) Regression: Daily Pricing blendedCost for a product with a confirmed GRN lot — value unchanged from pre-Phase-6.6 (record before/after to confirm).
+(k) Final CSV committed → Eastman supplier product catalog count up by 98, 21 BOS drafts not in sales picker (picker shows with badge + blocks selection), spot-check 3 random imports: supplierPrice = distributorPrice, GST/HSN match category defaults.

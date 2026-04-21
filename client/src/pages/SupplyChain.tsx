@@ -23,6 +23,20 @@ interface POLineItem {
   quantity: number;
   unitCost: number;
   totalCost: number;
+  _priceSource?: "supplier" | "distributor" | "fallback" | "manual" | "none";
+  _priceLastUpdated?: string | null;
+}
+
+function formatRelative(ts: string | null | undefined): string {
+  if (!ts) return "";
+  const ms = Date.now() - new Date(ts).getTime();
+  if (ms < 60_000) return "just now";
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return `${days}d ago`;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -125,11 +139,13 @@ function emptyLineItem(): POLineItem {
   return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0 };
 }
 
-function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
+function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected }: {
   items: POLineItem[];
   onChange: (items: POLineItem[]) => void;
   products: Product[];
   supplierProducts: SupplierProduct[];
+  supplierProductsLoading: boolean;
+  supplierSelected: boolean;
 }) {
   const spMap = new Map<string, SupplierProduct>();
   for (const sp of supplierProducts) {
@@ -148,13 +164,24 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
         // Phase 6.6 C2: prefer supplier_products.supplierPrice; fallback to products.distributorPrice (NOT costPrice).
         if (sp) {
           item.unitCost = Number(sp.supplierPrice);
+          item._priceSource = "supplier";
+          item._priceLastUpdated = sp.lastPriceUpdatedAt ? String(sp.lastPriceUpdatedAt) : null;
         } else if (prod.distributorPrice) {
           item.unitCost = Number(prod.distributorPrice);
+          item._priceSource = "distributor";
+          item._priceLastUpdated = null;
         } else {
           item.unitCost = prod.costPrice ? Number(prod.costPrice) : Number(prod.unitPrice);
+          item._priceSource = "fallback";
+          item._priceLastUpdated = null;
         }
         item.totalCost = item.quantity * item.unitCost;
       }
+    }
+
+    if (field === "unitCost") {
+      item._priceSource = "manual";
+      item._priceLastUpdated = null;
     }
 
     if (field === "quantity" || field === "unitCost") {
@@ -192,10 +219,23 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
         {items.map((item, index) => (
           <div key={index} className="grid grid-cols-12 gap-2 items-end">
             <div className="col-span-4">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Product</Label>}
-              <Select value={item.productId} onValueChange={(v) => updateItem(index, "productId", v)}>
+              {index === 0 && (
+                <Label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                  Product
+                  {supplierSelected && supplierProductsLoading && (
+                    <span className="text-amber-600 dark:text-amber-400" data-testid={`text-supplier-prices-loading-${index}`}>
+                      · loading supplier prices…
+                    </span>
+                  )}
+                </Label>
+              )}
+              <Select
+                value={item.productId}
+                onValueChange={(v) => updateItem(index, "productId", v)}
+                disabled={!supplierSelected || supplierProductsLoading}
+              >
                 <SelectTrigger data-testid={`select-po-item-product-${index}`}>
-                  <SelectValue placeholder="Select product" />
+                  <SelectValue placeholder={!supplierSelected ? "Select supplier first" : supplierProductsLoading ? "Loading prices…" : "Select product"} />
                 </SelectTrigger>
                 <SelectContent>
                   {supplierCatalogProducts.length > 0 && (
@@ -237,7 +277,7 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
               />
             </div>
             <div className="col-span-2">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Unit Cost</Label>}
+              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Supplier Price</Label>}
               <Input
                 type="number"
                 min={0}
@@ -246,6 +286,26 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts }: {
                 onChange={(e) => updateItem(index, "unitCost", parseFloat(e.target.value) || 0)}
                 data-testid={`input-po-item-cost-${index}`}
               />
+              {item.productId && item._priceSource && (
+                <div
+                  className={
+                    "mt-1 text-[10px] leading-tight " +
+                    (item._priceSource === "supplier"
+                      ? "text-green-700 dark:text-green-400"
+                      : item._priceSource === "manual"
+                      ? "text-blue-700 dark:text-blue-400"
+                      : "text-amber-700 dark:text-amber-400")
+                  }
+                  data-testid={`text-price-source-${index}`}
+                >
+                  {item._priceSource === "supplier" && (
+                    <>Supplier price{item._priceLastUpdated ? ` · updated ${formatRelative(item._priceLastUpdated)}` : ""}</>
+                  )}
+                  {item._priceSource === "distributor" && <>Distributor price (no supplier-specific price)</>}
+                  {item._priceSource === "fallback" && <>Fallback (no supplier or distributor price)</>}
+                  {item._priceSource === "manual" && <>Manually edited</>}
+                </div>
+              )}
             </div>
             <div className="col-span-1 flex items-center gap-1">
               {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block invisible">Total</Label>}
@@ -619,7 +679,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Ordered</th>
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Received</th>
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Outstanding</th>
-              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
+              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Supplier Price</th>
               <th className="text-right p-2 font-medium text-muted-foreground text-xs">Total</th>
             </tr>
           </thead>
@@ -692,7 +752,7 @@ function PRExpandedItems({ prId }: { prId: string }) {
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Required Qty</th>
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Available Stock</th>
               <th className="text-center p-2 font-medium text-muted-foreground text-xs">Shortfall</th>
-              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Unit Cost</th>
+              <th className="text-right p-2 font-medium text-muted-foreground text-xs">Supplier Price</th>
             </tr>
           </thead>
           <tbody>
@@ -770,7 +830,7 @@ export default function SupplyChain() {
   const { data: allSupplierProducts } = useQuery<SupplierProduct[]>({ queryKey: ["/api/supplier-products"] });
 
   const selectedSupplierId = poForm.supplierId;
-  const { data: supplierCatalog } = useQuery<SupplierProduct[]>({
+  const { data: supplierCatalog, isLoading: supplierCatalogLoading, isFetching: supplierCatalogFetching } = useQuery<SupplierProduct[]>({
     queryKey: ["/api/suppliers", selectedSupplierId, "products"],
     queryFn: () => apiRequest("GET", `/api/suppliers/${selectedSupplierId}/products`).then(r => r.json()),
     enabled: !!selectedSupplierId,
@@ -1719,6 +1779,8 @@ export default function SupplyChain() {
               onChange={setPoLineItems}
               products={allProducts || []}
               supplierProducts={supplierCatalog || []}
+              supplierProductsLoading={!!selectedSupplierId && (supplierCatalogLoading || supplierCatalogFetching)}
+              supplierSelected={!!selectedSupplierId}
             />
           </div>
           <DialogFooter>

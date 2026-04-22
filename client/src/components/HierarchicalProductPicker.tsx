@@ -63,15 +63,10 @@ export function HierarchicalProductPicker({
     if (!selectedType) return false;
     const dbType = selectedType === "bundle" ? "bundle" : selectedType;
     if (p.type !== dbType) return false;
-    // Brand filter: applied to products only. Bundles (Sets) are multi-brand composite
-    // kits — show bundles matching the selected brand OR bundles with no brand set so
-    // that existing unbranded kits remain selectable.
-    if (selectedType === "product" && selectedBrandId) {
+    // Strict brand match for Product and Set (bundle) types.
+    // Service skips the brand step entirely so no brand filter applies.
+    if (selectedType !== "service" && selectedBrandId) {
       if ((p as any).brandId !== selectedBrandId) return false;
-    }
-    if (selectedType === "bundle" && selectedBrandId) {
-      const pBrand = (p as any).brandId as string | null | undefined;
-      if (pBrand && pBrand !== selectedBrandId) return false;
     }
     return true;
   });

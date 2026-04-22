@@ -290,6 +290,15 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       default:             return { text: "",             badgeCls: "" };
     }
   };
+  /** B1: suffix text shown inline after product name for non-active products — replaces the badge. */
+  const lifecycleSuffix = (ls: string | undefined): string => {
+    switch (ls) {
+      case "draft":        return "(Not selectable — draft)";
+      case "discontinued": return "(Not selectable — discontinued)";
+      case "replaced":     return "(Not selectable — replaced)";
+      default:             return "";
+    }
+  };
 
   const updateItem = (index: number, field: string, value: any) => {
     onLineTouched(index);
@@ -450,16 +459,15 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                       const displayPrice = (ep && !ep.noConfirmedPrice) ? Number(ep.effectivePrice) : Number(p.unitPrice);
                       const hasEP = ep && !ep.noConfirmedPrice;
                       const ls = (p as any).lifecycleStatus as string | undefined;
-                      const lc = lifecycleLabel(ls);
+                      const suffix = lifecycleSuffix(ls);
+                      const isInactive = !!suffix;
                       return (
                         <SelectItem key={p.id} value={p.id} data-testid={`option-product-${p.id}`}>
-                          <span className="inline-flex items-center gap-1.5">
-                            {lc.text && (
-                              <Badge variant="outline" className={`text-[9px] px-1 py-0 leading-tight ${lc.badgeCls}`} data-testid={`badge-lifecycle-${p.id}`}>
-                                {lc.text}
-                              </Badge>
+                          <span className="inline-flex items-center gap-1.5 flex-wrap">
+                            <span>{p.name}{!isInactive ? ` — ₹${displayPrice.toLocaleString()}${hasEP ? " ✓" : ""}` : ""}</span>
+                            {isInactive && (
+                              <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-lifecycle-${p.id}`}>{suffix}</span>
                             )}
-                            <span>{p.name} — ₹{displayPrice.toLocaleString()}{hasEP ? " ✓" : ""}</span>
                           </span>
                         </SelectItem>
                       );

@@ -12,7 +12,7 @@ const COLORS = {
   white: [255, 255, 255] as [number, number, number],
 };
 
-function formatCurrency(val: number | string): string {
+function fmt(val: number | string): string {
   return `Rs. ${Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
@@ -21,8 +21,7 @@ function drawRoundedRect(doc: jsPDF, x: number, y: number, w: number, h: number,
 }
 
 /** Phase 7 — bundleItemsMap: bundle product id → list of components (name + qty + unit).
- *  Component GST rates are NOT shown on customer-facing PDFs per CEO directive.
- *  Only the bundle's declared GST rate appears in the totals block. */
+ *  Components' individual GST rates are NOT shown on customer-facing PDFs. */
 export type BundlePdfComponent = { name: string; quantity: number; unit: string; gstRate: number };
 
 export function generateQuotationPDF(
@@ -38,6 +37,7 @@ export function generateQuotationPDF(
   const contentWidth = pageWidth - margin * 2;
   let y = 0;
 
+  // ── Header ──────────────────────────────────────────────────────────────────
   doc.setFillColor(...COLORS.headerBg);
   doc.rect(0, 0, pageWidth, 48, "F");
 
@@ -64,8 +64,13 @@ export function generateQuotationPDF(
 
   y = 56;
 
+  // ── Meta / Customer box ──────────────────────────────────────────────────────
   const hasDelivery = (quotation as any).deliveryMethod === "delivery";
+  const deliveryCost = hasDelivery && (quotation as any).deliveryCost
+    ? Number((quotation as any).deliveryCost)
+    : 0;
   const detailsBoxHeight = hasDelivery ? 36 : 28;
+
   doc.setFillColor(248, 250, 252);
   drawRoundedRect(doc, margin, y, contentWidth, detailsBoxHeight, 2);
 
@@ -138,12 +143,42 @@ export function generateQuotationPDF(
     y += 34;
   }
 
+  // ── Pre-compute all-in display amounts ───────────────────────────────────────
+  // Section A6: stored math is UNCHANGED. This is display-only in the PDF renderer.
+  // displayTotal[i] = lineSubtotal × (1 + gstRate/100) + deliveryCost × (lineSubtotal / ΣlineSubtotals)
+  // displayRate[i]  = displayTotal[i] / qty
+  // A8: after computing all lines, add the rounding delta to the LAST line so Σ ties to grandTotal.
+  const sumAllLinesSubtotal = items.reduce((acc, it) => acc + Number(it.totalPrice), 0);
+
+  const displayAmounts = items.map(item => {
+    const lineSubtotal = Number(item.totalPrice);
+    const gstRate = Number((item as any).gstRate || 0);
+    const qty = Number(item.quantity) || 1;
+    const deliveryAlloc = sumAllLinesSubtotal > 0
+      ? deliveryCost * (lineSubtotal / sumAllLinesSubtotal)
+      : 0;
+    const rawTotal = lineSubtotal * (1 + gstRate / 100) + deliveryAlloc;
+    return { rawTotal, qty };
+  });
+
+  // Rounding delta adjustment on last line (A8).
+  const grandTotal = Number(quotation.totalAmount);
+  const sumRawTotals = displayAmounts.reduce((a, d) => a + d.rawTotal, 0);
+  const roundingDelta = grandTotal - Math.round(sumRawTotals * 100) / 100;
+
+  const displayTotals = displayAmounts.map((d, idx) => {
+    let total = Math.round(d.rawTotal * 100) / 100;
+    if (idx === displayAmounts.length - 1) total = Math.round((total + roundingDelta) * 100) / 100;
+    return { displayTotal: total, displayRate: total / (d.qty || 1) };
+  });
+
+  // ── Table columns ─────────────────────────────────────────────────────────────
   const colX = {
-    no: margin,
+    no:   margin,
     type: margin + 10,
     desc: margin + 30,
-    qty: margin + 115,
-    unit: margin + 130,
+    qty:  margin + 115,
+    rate: margin + 150,
     total: pageWidth - margin,
   };
   const tableHeaderH = 8;
@@ -153,27 +188,29 @@ export function generateQuotationPDF(
   doc.setFontSize(7);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("#", colX.no + 2, y + 5.5);
-  doc.text("Type", colX.type, y + 5.5);
-  doc.text("Description", colX.desc, y + 5.5);
-  doc.text("Qty", colX.qty, y + 5.5, { align: "right" });
-  doc.text("Unit Price (ex-GST)", colX.unit + 15, y + 5.5, { align: "right" });
-  doc.text("Total (ex-GST)", colX.total - 2, y + 5.5, { align: "right" });
+  doc.text("#",           colX.no + 2,    y + 5.5);
+  doc.text("Type",        colX.type,      y + 5.5);
+  doc.text("Description", colX.desc,      y + 5.5);
+  doc.text("Qty",         colX.qty,       y + 5.5, { align: "right" });
+  doc.text("Rate",        colX.rate,      y + 5.5, { align: "right" });
+  doc.text("Amount",      colX.total - 2, y + 5.5, { align: "right" });
 
   y += tableHeaderH;
-
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
 
-  let subtotal = 0;
+  // ── Line items ────────────────────────────────────────────────────────────────
   items.forEach((item, idx) => {
     const prod = products?.find(p => p.id === item.productId);
-    const warranty = prod?.warrantyPeriod && String(prod.warrantyPeriod).trim() ? String(prod.warrantyPeriod).trim() : null;
-    // Phase 7 — bundle sub-lines (one row per component, no pricing, no component GST)
+    const warranty = prod?.warrantyPeriod && String(prod.warrantyPeriod).trim()
+      ? String(prod.warrantyPeriod).trim()
+      : null;
     const isBundle = prod?.type === "bundle";
-    const bundleComps = isBundle && item.productId ? (bundleItemsMap?.[item.productId] ?? []) : [];
-    // sub-lines height: each comp row = 4mm; footnote = 4mm
-    const bundleSubH = isBundle ? (bundleComps.length * 4) + (bundleComps.length > 0 ? 4 : 0) : 0;
+    const bundleComps = isBundle && item.productId
+      ? (bundleItemsMap?.[item.productId] ?? [])
+      : [];
+    // bundle sub-lines: each comp row = 4mm (no footnote needed — A5 removed it)
+    const bundleSubH = isBundle ? (bundleComps.length * 4) : 0;
     const rowH = (warranty ? 12 : 7) + bundleSubH;
 
     const maxPageY = doc.internal.pageSize.getHeight() - 40;
@@ -193,7 +230,6 @@ export function generateQuotationPDF(
     doc.setTextColor(...COLORS.textPrimary);
     doc.text(String(idx + 1), colX.no + 2, y + 5);
 
-    // Type label: Bundle gets its own label in purple-ish
     const typeLabel = isBundle ? "Bundle" : (item.itemType === "service" ? "Service" : "Product");
     const typeR = isBundle ? 109 : (item.itemType === "service" ? 234 : 59);
     const typeG = isBundle ? 40  : (item.itemType === "service" ? 88  : 130);
@@ -205,9 +241,12 @@ export function generateQuotationPDF(
     const descText = doc.splitTextToSize(item.description || "—", 80);
     doc.text(descText[0], colX.desc, y + 5);
     doc.text(String(item.quantity), colX.qty, y + 5, { align: "right" });
-    doc.text(formatCurrency(item.unitPrice), colX.unit + 15, y + 5, { align: "right" });
+
+    // All-in display rate and total (A2, A6)
+    const { displayTotal, displayRate } = displayTotals[idx];
+    doc.text(fmt(displayRate), colX.rate, y + 5, { align: "right" });
     doc.setFont("helvetica", "bold");
-    doc.text(formatCurrency(item.totalPrice), colX.total - 2, y + 5, { align: "right" });
+    doc.text(fmt(displayTotal), colX.total - 2, y + 5, { align: "right" });
     doc.setFont("helvetica", "normal");
 
     if (warranty) {
@@ -218,8 +257,7 @@ export function generateQuotationPDF(
       doc.setTextColor(...COLORS.textPrimary);
     }
 
-    // Phase 7 — bundle component sub-lines: name + qty + unit ONLY (no GST — CEO directive).
-    // A footnote after the last sub-line shows the bundle's own GST rate.
+    // A5: bundle component sub-lines — name + qty + unit ONLY. No prices, no GST, no footnote.
     if (isBundle && bundleComps.length > 0) {
       const baseY = y + (warranty ? 12 : 7);
       doc.setFontSize(6.5);
@@ -229,123 +267,65 @@ export function generateQuotationPDF(
         const totalQty = Number(comp.quantity) * Number(item.quantity || 1);
         doc.text(`> ${comp.name}`, colX.desc + 2, subY);
         doc.text(`${totalQty} ${comp.unit}`, colX.qty, subY, { align: "right" });
-        // No GST rate shown per CEO directive — components' rates are informational only.
       });
-      // Footnote: bundle's own GST rate, rendered italic after the last sub-line.
-      const bundleGstRate = Number((item as any).gstRate || 0);
-      if (bundleComps.length > 0) {
-        const footnoteY = baseY + bundleComps.length * 4 + 2;
-        doc.setFont("helvetica", "italic");
-        doc.setFontSize(6);
-        doc.setTextColor(148, 163, 184);
-        doc.text(`(invoiced as one bundle @ ${bundleGstRate}% GST)`, colX.desc + 2, footnoteY);
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(8);
-      }
       doc.setTextColor(...COLORS.textPrimary);
+      doc.setFontSize(8);
     }
 
-    subtotal += Number(item.totalPrice);
     y += rowH;
   });
 
   y += 4;
 
-  // Compute GST groups: aggregate taxAmount by gstRate across all line items.
-  // taxAmount = 0 for old items without the column — they will produce no GST lines.
-  const gstGroupMap: Record<number, number> = {};
-  items.forEach(item => {
-    const rate = Number((item as any).gstRate || 0);
-    const tax  = Number((item as any).taxAmount || 0);
-    if (rate > 0 && tax > 0) {
-      gstGroupMap[rate] = (gstGroupMap[rate] || 0) + tax;
-    }
-  });
-  const gstLines = Object.entries(gstGroupMap)
-    .map(([rate, tax]) => ({ rate: Number(rate), tax }))
-    .sort((a, b) => a.rate - b.rate);
-
+  // ── Totals block — single "Total" row (A3) ────────────────────────────────────
+  // Discount is applied at the order level; the stored grandTotal already reflects
+  // any discount. We surface discount visually if it was set, for transparency.
   const summaryX = pageWidth - margin - 80;
   const summaryWidth = 80;
   const hasDiscount = quotation.discountType && quotation.discountValue && Number(quotation.discountValue) > 0;
-  const deliveryCost = hasDelivery && (quotation as any).deliveryCost ? Number((quotation as any).deliveryCost) : 0;
-  const hasDeliveryCostLine = deliveryCost > 0;
 
-  let summaryBoxH = 18; // base: subtotal row + divider + net total row
-  if (hasDiscount) summaryBoxH += 7;
-  summaryBoxH += gstLines.length * 7; // one row per GST rate
-  if (hasDeliveryCostLine) summaryBoxH += 7;
-
+  const summaryBoxH = (hasDiscount ? 7 : 0) + 14; // discount row (optional) + total row
   doc.setFillColor(248, 250, 252);
   drawRoundedRect(doc, summaryX, y, summaryWidth, summaryBoxH, 2);
 
   let lineY = y + 6;
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(...COLORS.textSecondary);
-  // Label subtotal as "Subtotal (ex-GST)" whenever there are GST lines to show.
-  const subtotalLabel = gstLines.length > 0 ? "Subtotal (ex-GST)" : "Subtotal";
-  doc.text(subtotalLabel, summaryX + 4, lineY);
-  doc.setTextColor(...COLORS.textPrimary);
-  doc.text(formatCurrency(subtotal), summaryX + summaryWidth - 4, lineY, { align: "right" });
 
   if (hasDiscount) {
-    lineY += 7;
     const discountAmt = quotation.discountType === "percentage"
-      ? subtotal * Number(quotation.discountValue) / 100
+      ? sumAllLinesSubtotal * Number(quotation.discountValue) / 100
       : Number(quotation.discountValue);
     const discountLabel = quotation.discountType === "percentage"
       ? `Discount (${Number(quotation.discountValue)}%)`
       : "Discount";
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
     doc.setTextColor(220, 38, 38);
     doc.text(discountLabel, summaryX + 4, lineY);
-    doc.text(`- ${formatCurrency(discountAmt)}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
-  }
-
-  // GST lines — one per rate, grouped and sorted ascending.
-  for (const { rate, tax } of gstLines) {
+    doc.text(`- ${fmt(discountAmt)}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
     lineY += 7;
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...COLORS.textSecondary);
-    doc.text(`GST @ ${rate}%`, summaryX + 4, lineY);
-    doc.setTextColor(59, 130, 246);
-    doc.text(`+ ${formatCurrency(tax)}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
   }
 
-  if (hasDeliveryCostLine) {
-    lineY += 7;
-    doc.setFontSize(8);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...COLORS.textSecondary);
-    doc.text("Delivery Cost", summaryX + 4, lineY);
-    doc.setTextColor(...COLORS.textPrimary);
-    doc.text(formatCurrency(deliveryCost), summaryX + summaryWidth - 4, lineY, { align: "right" });
-  }
-
-  lineY += 3;
+  // Divider above total
   doc.setDrawColor(...COLORS.tableBorder);
-  doc.line(summaryX + 4, lineY, summaryX + summaryWidth - 4, lineY);
+  doc.line(summaryX + 4, lineY - 2, summaryX + summaryWidth - 4, lineY - 2);
 
-  lineY += 6;
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(...COLORS.textPrimary);
-  doc.text("Net Total (incl. GST)", summaryX + 4, lineY);
-  doc.text(formatCurrency(quotation.totalAmount), summaryX + summaryWidth - 4, lineY, { align: "right" });
+  doc.text("Total", summaryX + 4, lineY + 4);
+  doc.text(fmt(grandTotal), summaryX + summaryWidth - 4, lineY + 4, { align: "right" });
 
-  y += summaryBoxH;
+  y += summaryBoxH + 4;
 
-  // "Prices exclusive of GST" note (per spec fix 2c default)
-  if (gstLines.length > 0) {
-    y += 3;
-    doc.setFontSize(6.5);
-    doc.setFont("helvetica", "italic");
-    doc.setTextColor(148, 163, 184);
-    doc.text("* Prices shown are exclusive of GST. GST will be charged as applicable.", summaryX + 4, y);
-    doc.setFont("helvetica", "normal");
-  }
+  // A4: Prominent centered italic footnote "** All above items Including GST **"
+  y += 5;
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "bolditalic");
+  doc.setTextColor(...COLORS.textPrimary);
+  doc.text("** All above items Including GST **", pageWidth / 2, y, { align: "center" });
+  doc.setFont("helvetica", "normal");
 
+  // ── Notes ─────────────────────────────────────────────────────────────────────
   if (quotation.notes) {
     y += 8;
     doc.setFontSize(7);
@@ -361,6 +341,7 @@ export function generateQuotationPDF(
     y += noteLines.length * 4;
   }
 
+  // ── Terms ──────────────────────────────────────────────────────────────────────
   y += 10;
   const termsY = Math.max(y, doc.internal.pageSize.getHeight() - 35);
   doc.setDrawColor(...COLORS.tableBorder);
@@ -374,11 +355,16 @@ export function generateQuotationPDF(
   doc.setTextColor(148, 163, 184);
   doc.text("1. This quotation is valid for the period mentioned above.", margin, termsY + 10);
   doc.text("2. Prices are subject to change without prior notice after validity period.", margin, termsY + 14);
-  doc.text("3. All unit prices are exclusive of GST. Applicable GST is shown separately in the totals.", margin, termsY + 18);
+  doc.text("3. Rates are inclusive of applicable GST and a proportional share of delivery cost.", margin, termsY + 18);
 
   doc.setFontSize(6);
   doc.setTextColor(148, 163, 184);
-  doc.text("This is a system-generated quotation and does not require a signature.", pageWidth / 2, doc.internal.pageSize.getHeight() - 8, { align: "center" });
+  doc.text(
+    "This is a system-generated quotation and does not require a signature.",
+    pageWidth / 2,
+    doc.internal.pageSize.getHeight() - 8,
+    { align: "center" }
+  );
 
   doc.save(`${quotation.quoteNumber}.pdf`);
 }

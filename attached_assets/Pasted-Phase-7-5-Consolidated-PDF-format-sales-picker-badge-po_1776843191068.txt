@@ -1,0 +1,71 @@
+Phase 7.5 — Consolidated PDF format + sales picker badge polish
+Two fixes. Replaces the hotfix PDF format with the CEO's required Indian-SMB consolidated format. Send as one batch; commit/push each section separately.
+Section A — Consolidated PDF format (replaces hotfix PDF totals block)
+CEO provided three real existing quotations (Hussain Enterprise and IT Traders) as reference. The agreed format: each line item's Rate column shows an ALL-IN price including that line's own GST + a proportional share of delivery cost. No GST breakdown visible to customer. No separate delivery line in totals. Just a footnote "** All above items Including GST **" below the totals.
+A1. Remove from PDF:
+
+"Subtotal (ex-GST)" line
+"GST @ X%" breakdown lines (single or multi-rate)
+"Delivery Cost" line
+"Net Total (incl. GST)" label (rename to just "Total")
+Column headers "(ex-GST)" suffixes on "Unit Price" and "Total"
+Any footer note saying "Prices exclusive of GST"
+The "(invoiced as one bundle @ X% GST)" footnote on bundle lines
+
+A2. New line-level math for display:
+
+For each line item: displayRate = unitPrice × (1 + lineGstRate/100) + (deliveryCost × (lineSubtotal / sumAllLinesSubtotal))
+displayTotal = displayRate × qty
+The delivery allocation proportionally distributes delivery cost across all line items, weighted by each line's ex-GST subtotal share
+For bundle lines, use the bundle's own GST rate (single rate per bundle)
+
+A3. Totals block — single row:
+
+"Total" Rs. X (sum of all displayTotal values, which equals original grand total incl. GST + delivery)
+
+A4. Footnote below totals (prominent, centered, italic):
+
+"** All above items Including GST **"
+
+A5. Bundle line in PDF:
+
+Bundle name + displayRate + displayTotal on main row
+Indented components below: name + qty + unit only (NO GST, NO price)
+No footnote needed under the last component (removed per A1)
+
+A6. Internal math that persists to DB is UNCHANGED. Stored subtotal, taxAmount, deliveryCost, grandTotal remain as today — this is purely display logic in the PDF generator. The Rate/Total columns are computed at PDF render time from existing stored values.
+A7. Edge case — when deliveryCost = 0, the delivery allocation formula becomes zero per line, so displayRate = unitPrice × (1 + gstRate/100) cleanly. No special case needed, but verify.
+A8. Edge case — rounding. All displayRate and displayTotal values render to 2 decimal places. Due to proportional delivery allocation, the sum of all line displayTotals may differ from the stored grandTotal by ±₹1 due to rounding. Adjust: after computing all line totals, if the sum differs from grandTotal, add the rounding delta to the LAST line's displayTotal to make the math tie out exactly. Customer sees a clean total.
+A9. Also remove the "Prices exclusive of GST" footer note from other internal views of quotation PDF preview if it exists.
+Section B — Sales picker badge text refinement
+Phase 6.5 Section F shows inactive products in the picker with a lifecycle badge and hard-blocks selection with a toast. CEO wants the badge text to read differently.
+B1. In the sales line-item product picker, for products with lifecycleStatus in {draft, discontinued, replaced}:
+
+Instead of showing a colored badge with just "DRAFT" / "DISCONTINUED" / "REPLACED"
+Show the product name followed by suffix text in red: "(Not selectable — draft)", "(Not selectable — discontinued)", "(Not selectable — replaced)"
+Use red text (e.g., text-red-600 dark:text-red-400), small font (e.g., text-xs), placed right of the product name within the select item row
+Keep the existing hard-block on selection + toast behavior from Phase 6.5 Section F
+Keep the "Switch to replacement" toast action for replaced products with replacedByProductId
+
+B2. Remove the separate badge element if one was rendered — this suffix text replaces it.
+Stop gate verification (I'll run this after push)
+(a) Fresh quotation: Solar Kit 2KVA bundle, qty 1, unit price ₹40,000, 5% GST, delivery ₹240. Download PDF. Verify:
+
+Line shows single all-in rate: ₹42,240 (= 40,000 × 1.05 + 240)
+Total row: Rs. 42,240.00
+Footnote: "*** All above items Including GST ***"
+NO Subtotal line, NO GST line, NO Delivery line
+Bundle components show name + qty + unit only, no prices, no GST
+
+(b) Fresh multi-line quotation: Solar Panel 300W (5% GST) qty 1 at ₹10,000 + Lithium Battery 100Ah (18% GST) qty 1 at ₹20,000, delivery ₹100. Download PDF. Verify:
+
+Panel line rate = 10,000 × 1.05 + 100 × (10,000/30,000) = 10,500 + 33.33 = ₹10,533.33
+Battery line rate = 20,000 × 1.18 + 100 × (20,000/30,000) = 23,600 + 66.67 = ₹23,666.67
+Total = 10,533.33 + 23,666.67 = ₹34,200.00 (exact — no rounding error)
+Stored grandTotal in DB matches 34,200
+
+(c) Zero-delivery quotation: same multi-line as (b) but delivery = 0. Line rates = 10,500 and 23,600. Total = 34,100.
+(d) Rounding adjustment test: create a quotation with awkward numbers that force a 1-paisa rounding mismatch. Confirm the last line absorbs the delta and totals tie out exactly.
+(e) Regression: open any quotation saved BEFORE Phase 7.5 and re-download PDF. It should render in the new consolidated format (since PDF generation is runtime, not stored). Stored amounts unchanged.
+(f) Sales picker: open New Order line-item picker. Scroll through products. Inactive products display as: "Product Name (Not selectable — draft)" in red suffix text. Try to select one → hard-blocked with toast per Phase 6.5 Section F. Replaced product's toast still offers "Switch to replacement" button.
+Scope discipline: no changes to stored quotation/order math, no changes to tax calculation logic, no changes to line-item save flow, no changes to invoice logic. Display-only in the PDF generator + picker item renderer.

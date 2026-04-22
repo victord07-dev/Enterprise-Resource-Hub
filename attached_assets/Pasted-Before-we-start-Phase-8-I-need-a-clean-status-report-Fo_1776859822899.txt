@@ -1,0 +1,30 @@
+Before we start Phase 8, I need a clean status report. For each item below, tell me exactly one of: Shipped (with commit hash), Partially shipped (and what's missing), or Not started. Do not summarize or group — answer line by line.
+Phase 6.6 — CSV UPDATE + fuzzy dup + PO price sync + Task #75 + Pricing page fix
+6.6.1 — POST /api/products/import supports UPDATE mode for existing SKUs; dry-run response includes would_update: [{ row_number, sku, changes }]
+6.6.2 — Immutable fields (sku, name, brand, category, hsnCode, gstRate) emit warning and skip that field on re-import, not the row
+6.6.3 — ALMM/DCR flips surfaced in dedicated "Flag Changes" panel above general Changes preview
+6.6.4 — Dry-run UI has 4th stat card "Would Update" + collapsible Changes preview diff table
+6.6.5 — Fuzzy duplicate detection on dry-run (same brand + category + ≥85% name similarity) returning possible_duplicates array with yellow UI block
+6.6.6 — Column supplier_products.lastPriceUpdatedAt TIMESTAMP NULL added via db:push
+6.6.7 — PO creation form's "Unit Cost" defaults from supplier_products.supplierPrice for (selected supplier, selected product), NOT from products.costPrice
+6.6.8 — PO save with different unit cost: updates supplier_products.supplierPrice, sets lastPriceUpdatedAt, sets product's needsPricingReview = true, writes audit entry with action='supplier_price_updated'
+6.6.9 — SupplierProductCatalog UI shows "(updated X days ago)" hint next to supplier price
+6.6.10 — Task #75 closure: checkAndCreatePurchaseRequests reads unit_cost from supplier_products.supplierPrice (primary), falling back to costPrice then distributorPrice
+6.6.11 — Pricing.tsx line ~351 "Supplier Price" column reads from supplier_products.supplierPrice (primary link) NOT from product.costPrice
+Phase 6.7 — Final Eastman CSV commit
+6.7.1 — Was Eastman_Catalog_Final_Apr26.csv committed? If yes, on what date/commit?
+6.7.2 — Were the 4 lithium SKUs committed as EAS-BAT-EMLIB160/240/320/480 (correct) or as EAS-BAT-LIB-* (wrong, would create duplicates)?
+6.7.3 — Did the 21 BOS-accessory rows with blank distributorPrice import with lifecycleStatus = draft?
+6.7.4 — Current Eastman product count in catalog? (Expected ~180 after adding 98 new to existing 84)
+Phase 5.5 — Sales floor-price panel + below-floor hard-block
+5.5.1 — Does the quotation/sales-order line-item editor show a reference panel with today's effective price, strict floor price, and computed "max discount"?
+5.5.2 — For products with source = "none" (pre-GRN, no confirmed sheet): does UI show greyed "Catalog price: ₹X (not yet reviewed today)" with NO floor?
+5.5.3 — Does saving a quotation line with unit price below strictFloorPrice hard-block save with a blocking modal listing offending lines?
+5.5.4 — Live validation: does the Unit Price field turn red with inline "Below floor: ₹Y" message when user types below-floor price?
+5.5.5 — Touched-line gating: do pre-existing below-floor lines on old draft quotations stay quiet until touched?
+5.5.6 — Authorization: can sales-role users see effectivePrice + floor in quotation UI, but NOT see supplierPrice / distributorPrice / blendedCost anywhere?
+Other context I need
+A. Which phases/sections above have I (operator) actually walked through an operator stop-gate verification for? Be specific — not "we tested" but "operator ran the stop gate and all items passed."
+B. Any features you shipped that I haven't explicitly briefed? If yes, list them (with commit hashes) so I can account for them.
+C. Earlier in our conversation I said to skip "the CSV one" and "the GRN one" — I want to reconcile this with what I actually authorized. Confirm: Task #76 (pricing engine GRN-absent fallback chain) is the only thing explicitly parked/skipped. Anything else you understood as skipped?
+Do NOT start any new work. Do NOT build Phase 8. Do NOT start Task #76. Just answer this status report accurately so I can plan the remaining work properly.

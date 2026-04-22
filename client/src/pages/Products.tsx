@@ -1635,11 +1635,18 @@ export default function Products() {
                           <div className="col-span-2">
                             <Input
                               type="number"
-                              step="0.01"
-                              min="0.01"
+                              step="1"
+                              min="1"
                               value={row.quantity}
                               placeholder="Qty"
-                              onChange={(e) => updateBundleRow(idx, { quantity: e.target.value })}
+                              onChange={(e) => {
+                                const v = Math.max(1, Math.round(Number(e.target.value) || 1));
+                                updateBundleRow(idx, { quantity: String(v) });
+                              }}
+                              onBlur={(e) => {
+                                const v = Math.max(1, Math.round(Number(e.target.value) || 1));
+                                updateBundleRow(idx, { quantity: String(v) });
+                              }}
                               data-testid={`input-bundle-qty-${idx}`}
                             />
                           </div>

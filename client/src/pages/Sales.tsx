@@ -419,24 +419,33 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             <div className="flex-1 grid grid-cols-2 gap-2">
               <div>
                 <Label className="text-xs text-muted-foreground">Type</Label>
-                <Select value={item.itemType} onValueChange={(v) => updateItem(i, "itemType", v)}>
+                <Select
+                  value={item.itemType}
+                  onValueChange={(v) => updateItem(i, "itemType", v)}
+                  disabled={item.itemType === "bundle"}
+                >
                   <SelectTrigger className="h-8 text-xs" data-testid={`select-item-type-${i}`}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="product"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Product</span></SelectItem>
                     <SelectItem value="service"><span className="flex items-center gap-1"><Wrench className="w-3 h-3" /> Service</span></SelectItem>
+                    {item.itemType === "bundle" && (
+                      <SelectItem value="bundle"><span className="flex items-center gap-1"><Boxes className="w-3 h-3" /> Bundle</span></SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
               </div>
               <div>
-                <Label className="text-xs text-muted-foreground">{item.itemType === "product" ? "Product" : "Service"}</Label>
+                <Label className="text-xs text-muted-foreground">
+                  {item.itemType === "bundle" ? "Bundle" : item.itemType === "product" ? "Product" : "Service"}
+                </Label>
                 <Select value={item.productId} onValueChange={(v) => updateItem(i, "productId", v)}>
                   <SelectTrigger className="h-8 text-xs" data-testid={`select-item-product-${i}`}>
                     <SelectValue placeholder={`Select ${item.itemType}...`} />
                   </SelectTrigger>
                   <SelectContent>
-                    {(item.itemType === "product" ? productItems : serviceItems).map((p) => {
+                    {(item.itemType === "service" ? serviceItems : productItems).map((p) => {
                       const ep = effectivePrices?.[p.id];
                       const displayPrice = (ep && !ep.noConfirmedPrice) ? Number(ep.effectivePrice) : Number(p.unitPrice);
                       const hasEP = ep && !ep.noConfirmedPrice;
@@ -1123,6 +1132,9 @@ export default function Sales() {
             quantity: it.quantity,
             unitPrice: String(it.unitPrice),
             totalPrice: String(it.totalPrice),
+            gstRate: String(it.gstRate || 0),
+            hsnCode: it.hsnCode || null,
+            taxAmount: String(it.taxAmount || 0),
           })),
         });
       }
@@ -1912,9 +1924,9 @@ export default function Sales() {
                                           return (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
-                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
-                                                {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : <Package className="w-3 h-3" />}
-                                                {it.itemType === "service" ? "Service" : "Product"}
+                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : it.itemType === "bundle" ? "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
+                                                {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : it.itemType === "bundle" ? <Boxes className="w-3 h-3" /> : <Package className="w-3 h-3" />}
+                                                {it.itemType === "service" ? "Service" : it.itemType === "bundle" ? "Bundle" : "Product"}
                                               </span>
                                             </td>
                                             <td className="py-1.5">{it.description || "—"}</td>
@@ -2245,9 +2257,9 @@ export default function Sales() {
                                         {expandedQuoteItems.map((it) => (
                                           <tr key={it.id} className="border-t border-muted">
                                             <td className="py-1.5">
-                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
-                                                {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : <Package className="w-3 h-3" />}
-                                                {it.itemType === "service" ? "Service" : "Product"}
+                                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : it.itemType === "bundle" ? "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
+                                                {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : it.itemType === "bundle" ? <Boxes className="w-3 h-3" /> : <Package className="w-3 h-3" />}
+                                                {it.itemType === "service" ? "Service" : it.itemType === "bundle" ? "Bundle" : "Product"}
                                               </span>
                                             </td>
                                             <td className="py-1.5">{it.description || "—"}</td>

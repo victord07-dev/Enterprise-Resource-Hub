@@ -2330,6 +2330,9 @@ export async function registerRoutes(
           quantity: qi.quantity,
           unitPrice: qi.unitPrice,
           totalPrice: qi.totalPrice,
+          hsnCode: (qi as any).hsnCode ?? null,
+          gstRate: (qi as any).gstRate ?? "0",
+          taxAmount: (qi as any).taxAmount ?? "0",
         });
       }
 

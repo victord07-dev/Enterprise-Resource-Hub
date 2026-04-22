@@ -82,6 +82,20 @@ type BundleItemRow = {
   unit: string;
 };
 
+/** Returns true for units where decimal quantities are physically meaningful (by weight/volume/length). */
+function isDecimalUnit(unit: string): boolean {
+  const u = (unit || "pcs").toLowerCase().trim();
+  return ["kg", "ltr", "mtr", "litre", "liter", "meter", "metre"].includes(u);
+}
+/** Returns 1 for integer units, 0.01 for decimal units (for <Input step>). */
+function qtyStep(unit: string): string { return isDecimalUnit(unit) ? "0.01" : "1"; }
+/** Coerce a quantity string to a valid value for the given unit. */
+function coerceQty(raw: string, unit: string): string {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return isDecimalUnit(unit) ? "0.01" : "1";
+  return isDecimalUnit(unit) ? String(parseFloat(Math.max(0.01, n).toFixed(3))) : String(Math.max(1, Math.round(n)));
+}
+
 const emptyProductForm = (): ProductForm => ({
   name: "", sku: "", category: "Solar Panel / PV Module", description: "",
   unitPrice: "", brand: "", brandId: "", unit: "pcs", minStockLevel: "10", type: "product",
@@ -1609,10 +1623,15 @@ export default function Products() {
                               value={row.componentProductId}
                               onValueChange={(v) => {
                                 const comp = productById.get(v);
-                                updateBundleRow(idx, {
-                                  componentProductId: v,
-                                  unit: row.unit || comp?.unit || "pcs",
-                                });
+                                const newUnit = comp?.unit || "pcs";
+                                const currentQty = Number(row.quantity) || 1;
+                                // If switching to an integer unit and current qty has a decimal, round down.
+                                const needsRound = !isDecimalUnit(newUnit) && currentQty !== Math.floor(currentQty);
+                                const newQty = needsRound ? String(Math.floor(currentQty)) : row.quantity;
+                                updateBundleRow(idx, { componentProductId: v, unit: newUnit, quantity: newQty });
+                                if (needsRound) {
+                                  toast({ title: `Qty adjusted to ${newQty} — fractional units not allowed for ${newUnit}` });
+                                }
                               }}
                             >
                               <SelectTrigger data-testid={`select-bundle-component-${idx}`}>
@@ -1635,18 +1654,12 @@ export default function Products() {
                           <div className="col-span-2">
                             <Input
                               type="number"
-                              step="1"
-                              min="1"
+                              step={qtyStep(row.unit)}
+                              min={qtyStep(row.unit)}
                               value={row.quantity}
                               placeholder="Qty"
-                              onChange={(e) => {
-                                const v = Math.max(1, Math.round(Number(e.target.value) || 1));
-                                updateBundleRow(idx, { quantity: String(v) });
-                              }}
-                              onBlur={(e) => {
-                                const v = Math.max(1, Math.round(Number(e.target.value) || 1));
-                                updateBundleRow(idx, { quantity: String(v) });
-                              }}
+                              onChange={(e) => updateBundleRow(idx, { quantity: e.target.value })}
+                              onBlur={(e) => updateBundleRow(idx, { quantity: coerceQty(e.target.value, row.unit) })}
                               data-testid={`input-bundle-qty-${idx}`}
                             />
                           </div>
@@ -1655,6 +1668,15 @@ export default function Products() {
                               value={row.unit}
                               placeholder="Unit"
                               onChange={(e) => updateBundleRow(idx, { unit: e.target.value })}
+                              onBlur={(e) => {
+                                const newUnit = e.target.value || "pcs";
+                                const currentQty = Number(row.quantity) || 1;
+                                if (!isDecimalUnit(newUnit) && currentQty !== Math.floor(currentQty)) {
+                                  const rounded = String(Math.floor(currentQty));
+                                  updateBundleRow(idx, { quantity: rounded });
+                                  toast({ title: `Qty adjusted to ${rounded} — fractional units not allowed for ${newUnit}` });
+                                }
+                              }}
                               data-testid={`input-bundle-unit-${idx}`}
                             />
                           </div>

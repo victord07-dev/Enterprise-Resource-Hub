@@ -1,0 +1,52 @@
+Phase 7 Hotfix — Before stop gate walkthrough
+Three bugs surfaced on CEO review of Phase 7 output. Fix these BEFORE I walk the (a)–(h) stop gate, as two of them are inside the features the stop gate tests.
+Fix 1 — Bundle component qty must be integer when unit is pcs/box/set
+Screenshot shows qty field accepting "4.06" with decimal steppers in the bundle components editor. This is wrong for countable units.
+Client (Products.tsx, bundle components editor):
+
+Qty input's step and parsing depend on the selected component's unit:
+
+If unit in {pcs, box, set}: step="1", enforce integer via onChange (reject non-integer input or round on blur), save as integer.
+If unit in {kg, ltr, mtr}: step="0.01", allow decimals, save as float.
+If unit in {WP, Ah, KWh} (spec units — shouldn't appear as stock units in bundles, but defensive): treat as integer.
+
+
+When user changes the component selection, re-evaluate the step/validation based on the newly selected component's unit. Trim existing decimal if switching from a decimal-allowed unit to an integer-only unit (round DOWN to be safe, and show a toast "Qty adjusted to X — fractional units not allowed for pcs").
+
+Server (shared/schema.ts Zod validator for product_bundle_items):
+
+Reject qty with decimal portion when the resolved component's unit is pcs/box/set. Error message: "Quantity must be whole number for unit '[unit]'."
+
+Fix 2 — Quotation PDF: remove component GST, add bundle GST to totals
+Per CEO lock from Phase 7 scope: components' individual GST rates are informational ONLY, never on customer-facing documents. Only the bundle's declared GST rate appears on the invoice/quotation.
+Client (pdfGenerator.ts or wherever the quotation PDF is generated):
+(a) Bundle line rendering — remove "GST X%" from each component sub-line. Keep name + qty + unit only. After the last component sub-line, add one italic footnote: "(invoiced as one bundle @ {bundleGstRate}% GST)".
+(b) Totals block — add a clear GST line above Delivery Cost:
+Subtotal (ex-GST)       Rs. X
+GST @ 5% on ₹X          Rs. Y         ← new
+Delivery Cost           Rs. Z
+Net Total (incl. GST)   Rs. X+Y+Z
+For multi-line quotations with MIXED GST rates across non-bundle lines (e.g., a 5% panel + an 18% battery both sold as separate line items), group GST by rate:
+Subtotal (ex-GST)       Rs. X
+GST @ 5% on ₹A          Rs. A'
+GST @ 18% on ₹B         Rs. B'
+Delivery Cost           Rs. Z
+Net Total (incl. GST)   Rs. ...
+(c) [Pending CEO confirmation]: line-item "Unit Price" column shows ex-GST or incl-GST? Default to ex-GST with a footer note "Prices exclusive of GST" unless CEO says otherwise.
+Verify on the existing QT-MO9N84PI sample: bundle @ ₹40,000, 5% GST, ₹240 delivery. Correct math:
+
+Subtotal: 40,000.00
+GST @ 5%: 2,000.00
+Delivery: 240.00
+Net: 42,240.00
+
+Current PDF shows Net 42,240 but skips the GST line — math is correct, just missing the line.
+Fix 3 — deferred to Ticket #78 (Type dropdown missing "Set")
+CEO wants "Set" as a Type option in the line-item Type dropdown. This is actually part of a larger hierarchical-picker redesign (Ticket #78). Do NOT touch the Type dropdown in this hotfix. We'll handle it holistically in #78. Acknowledge in the Phase 7 PR description: "Set as a Type dropdown option — scoped into Ticket #78 hierarchical picker."
+Verification after hotfix push
+(a) Open a bundle product in edit mode. In the components editor, select a component with unit=pcs. Qty field steppers go by 1. Typing "4.06" is rejected or rounded to 4 on blur.
+(b) Switch that same component to one with unit=kg (if available). Qty field now accepts 4.06 cleanly, step=0.01.
+(c) Create a fresh quotation with the Solar Kit 2KVA bundle, qty 1, 5% GST, delivery ₹240. Download PDF. Components show name+qty only, no "GST X%". Totals block shows Subtotal, GST @ 5%, Delivery, Net in that order. Math: 40,000 / 2,000 / 240 / 42,240.
+(d) Create a quotation with TWO separate (non-bundle) line items at different GST rates — one at 5%, one at 18%. PDF totals show stacked GST lines by rate.
+(e) Bundle line footnote reads "(invoiced as one bundle @ 5% GST)".
+After (a)–(e) pass, Phase 7 hotfix is done. Then I walk the original Phase 7 stop gate (a)–(h) from the main brief.

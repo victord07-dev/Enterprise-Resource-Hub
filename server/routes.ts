@@ -2863,7 +2863,7 @@ export async function registerRoutes(
   }
 
   // Phase 6.5 C2: statuses that constitute "issuing" the PO to the supplier (block if supplier incomplete)
-  const PO_ISSUED_STATUSES = new Set(["approved", "shipped", "partial", "received"]);
+  const PO_ISSUED_STATUSES = new Set(["issued", "approved", "shipped", "partial", "received"]);
 
   app.post("/api/purchase-orders", authenticateToken, async (req: any, res) => {
     try {

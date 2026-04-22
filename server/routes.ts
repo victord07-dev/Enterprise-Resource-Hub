@@ -349,15 +349,19 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
 }
 
 // ─── FIFO Lot Engine ───────────────────────────────────────────────────────
-// Phase 6.6 C7 — Cost source chain:
-//   products.distributorPrice
-//     → supplier_products.supplierPrice (auto-linked on product create)
-//     → po_items.unitCost (defaults from supplier_products, editable;
-//        saving updates supplier_products and sets needsPricingReview)
-//     → grn_items.unitCost (locks on GRN confirm)
-//     → FIFO lot consumption (this engine).
-// Supplier price updates affect FUTURE POs/GRNs only; existing lots preserve their
-// locked-in landed cost. This engine is the canonical cost source for blendedCost.
+/**
+ * Cost source chain (reference only):
+ * products.distributorPrice → supplier_products.supplierPrice (auto-linked on product create
+ *                              or CSV import via Phase 6.5 backfill)
+ * → po_items.unitCost (defaults from supplier_products.supplierPrice of primary link;
+ *                      editable; saving a PO with a different cost UPDATES supplier_products
+ *                      and sets needsPricingReview)
+ * → grn_items.unitCost (locks on GRN confirm)
+ * → FIFO lot consumption (this engine).
+ *
+ * Supplier price updates affect FUTURE POs/GRNs only. Existing lots preserve locked costs.
+ * Phase 6.6 does not change engine behavior — only upstream plumbing.
+ */
 
 interface FifoLot {
   grnId: string;

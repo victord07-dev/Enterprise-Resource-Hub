@@ -4130,9 +4130,9 @@ export async function registerRoutes(
       }
 
       const orderItems = await storage.getSalesOrderItems(soId);
-      const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+      const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle") && it.productId);
       if (productItems.length === 0) {
-        return res.status(400).json({ message: "Order has no product line items" });
+        return res.status(400).json({ message: "Order has no dispatchable line items" });
       }
 
       const dispatchedSoFar: Record<string, number> = {};

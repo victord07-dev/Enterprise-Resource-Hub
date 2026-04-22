@@ -1,0 +1,23 @@
+Before I authorize Phase 6.6, two quick verifications.
+1. Backfill primary flags. Earlier you reported the backfill created 94 supplier links. I want confirmation that all 94 (or at least the ones with brands assigned) have is_primary = true set. Run this query and show me the result:
+sqlSELECT COUNT(*) AS total_products_with_brand,
+       COUNT(CASE WHEN exists_primary THEN 1 END) AS has_primary,
+       COUNT(CASE WHEN NOT exists_primary THEN 1 END) AS missing_primary
+FROM (
+  SELECT p.id,
+         EXISTS (SELECT 1 FROM supplier_products sp WHERE sp.product_id = p.id AND sp.is_primary = true) AS exists_primary
+  FROM products p
+  WHERE p.brand_id IS NOT NULL AND p.type IN ('product', 'bundle')
+) x;
+If missing_primary > 0: extend the backfill script to promote the first/only existing link to primary when no primary exists, re-run, and confirm the count drops to 0. This needs to be fixed before Phase 6.6 goes out, because Phase 6.6 Task #75 assumes is_primary = true rows are the canonical price source.
+2. Dispatch failure via UI path. The atomic dispatch verification used scripts/test-bundle-dispatch.mjs, which calls the storage layer directly. I want to see one run through the actual UI path to confirm the frontend dispatch flow handles errors correctly (not just the backend transaction). Steps:
+
+Fresh sales order with Solar Kit 6KVA qty 1, confirmed
+Note Solar Panel 500W stock
+Reduce Solar Panel stock to 2 (well below the bundle's 6 required)
+Attempt delivery challan creation via UI
+Show me: (i) the error dialog/message, (ii) delivery_challans list count before/after, (iii) stock_movements query showing zero new rows, (iv) inventory_stock showing Solar Panel still at 2
+Restore Solar Panel stock after
+
+Both verifications together should take ~15 minutes. When they pass, Phase 7 is officially closed and I'll send the Phase 6.6 brief. If anything fails, we handle it before moving on.
+On the Live Tracking redesign you drifted into — that stays parked. Don't touch it or any other task until Phase 6.6 is complete.

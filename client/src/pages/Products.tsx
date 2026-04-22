@@ -1010,6 +1010,7 @@ export default function Products() {
       gstRate: productForm.gstRate || "0",
       minMarginPct: productForm.minMarginPct ? String(parseFloat(productForm.minMarginPct).toFixed(2)) : "5.00",
       pricingMode: isBundleSubmit ? productForm.pricingMode : "manual",
+      lifecycleStatus: productForm.lifecycleStatus || "active",
     };
 
     if (isProd) {
@@ -1020,7 +1021,6 @@ export default function Products() {
       data.almm = isPanel ? productForm.almm : false;
       data.dcrCompliant = isPanel ? productForm.dcrCompliant : false;
       data.modelSeries = productForm.modelSeries || null;
-      data.lifecycleStatus = productForm.lifecycleStatus || "active";
       data.applicableRegions = productForm.applicableRegions.length > 0 ? productForm.applicableRegions : null;
       data.priceListVersion = productForm.priceListVersion || null;
       data.customerTierPrice = Object.keys(tier).length > 0 ? tier : null;

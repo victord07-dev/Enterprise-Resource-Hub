@@ -245,13 +245,17 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
     const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
 
     const hasAdvance = Number(order.advanceAmount || 0) > 0 || Number(order.paidAmount || 0) > 0;
+    const nullCostNames = shortfallItems.filter(i => !i.costPrice).map(i => i.description);
+    const nullCostNote = nullCostNames.length > 0
+      ? ` ⚠ Unit cost missing for: ${nullCostNames.join(", ")} — resolve in supplier catalog before converting to PO.`
+      : "";
     const pr = await storage.createPurchaseRequest({
       requestNumber,
       salesOrderId: order.id,
       supplierId: null,
       status: "pending",
       priority: hasAdvance ? "high" : "medium",
-      notes: `Auto-generated from confirmed order ${order.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.`,
+      notes: `Auto-generated from confirmed order ${order.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.${nullCostNote}`,
       purchaseOrderId: null,
       createdBy: userId,
     });
@@ -5285,6 +5289,14 @@ export async function registerRoutes(
 
       const prItems = await storage.getPurchaseRequestItems(pr.id);
       if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
+
+      const nullCostItems = prItems.filter(item => !item.unitCost || parseFloat(item.unitCost) === 0);
+      if (nullCostItems.length > 0) {
+        const allProducts = await storage.getProducts();
+        const productMap = new Map(allProducts.map((p: any) => [p.id, p]));
+        const names = nullCostItems.map(item => productMap.get(item.productId)?.name || item.description || item.productId).join(", ");
+        return res.status(400).json({ message: `Cannot convert to PO — the following line items have no unit cost: ${names}. Resolve in supplier catalog first.` });
+      }
 
       const year = new Date().getFullYear();
       const allPOs = await storage.getPurchaseOrders();

@@ -360,19 +360,22 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
 
         // Phase 7: bundle selected → load components, then surface a confirm dialog if any
         // component is non-active. Stock-shortage badges render inline in the row panel below.
+        // Defer via rAF so the Select's focus-trap is fully released before triggering state updates.
         if (prod.type === "bundle") {
-          loadBundleComponents(prod.id).then((comps) => {
-            const issues = comps
-              .map((row) => {
-                const comp = products.find(p => p.id === row.componentProductId);
-                const ls = (comp as any)?.lifecycleStatus as string | undefined;
-                if (comp && ls && ls !== "active") return { name: comp.name, status: ls };
-                return null;
-              })
-              .filter(Boolean) as Array<{ name: string; status: string }>;
-            if (issues.length > 0) {
-              setDiscontinuedDialog({ lineIndex: index, bundleName: prod.name, issues });
-            }
+          requestAnimationFrame(() => {
+            loadBundleComponents(prod.id).then((comps) => {
+              const issues = comps
+                .map((row) => {
+                  const comp = products.find(p => p.id === row.componentProductId);
+                  const ls = (comp as any)?.lifecycleStatus as string | undefined;
+                  if (comp && ls && ls !== "active") return { name: comp.name, status: ls };
+                  return null;
+                })
+                .filter(Boolean) as Array<{ name: string; status: string }>;
+              if (issues.length > 0) {
+                setDiscontinuedDialog({ lineIndex: index, bundleName: prod.name, issues });
+              }
+            });
           });
         }
       }

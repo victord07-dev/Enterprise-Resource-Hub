@@ -1,0 +1,95 @@
+Good — Replit AI's DB analysis is solid and the findings are honest. Let me parse what it's telling you, then give you the action plan.
+What the DB confirmed
+Bug A fix is live. PR-2026-0008 has 3 component line items from a test bundle order. The Postgres casting error is resolved (switched to sql.join IN clause). The checkAndCreatePurchaseRequests function now correctly expands bundles into component shortfalls.
+Bug B is technically fixed but not yet UI-verified. The read-only expanded view on sales orders now has a bundle components panel, but Replit AI hasn't visually confirmed it renders correctly — that's why it needs "Build mode" for the screenshot.
+SO-MO9S2TJA is unrecoverable. This is important. Replit AI is telling you: "That order was confirmed BEFORE the fix shipped. The PR generation is a one-shot trigger at confirmation time. It doesn't retroactively run when code changes." Which means my earlier "Option 3 — touch the SO to re-trigger" is off the table. The design doesn't support retroactive re-runs.
+Task #75 gap is real and expected. Unit costs on PR line items currently fall back to products.costPrice (WAC) because supplier_products primary-price links don't exist for the Solar Kit components yet. The code is written correctly — it prefers supplier_products.supplierPrice first — but there's no data to prefer. This is what Phase 6.6 Section C fixes at the data level (via the backfill you already ran for Eastman) and Phase 6.6 Section C2/C3 at the live-PO level. Not a Phase 7 bug.
+Red flag to watch
+Solar Panel 500W has NULL costPrice AND no supplier_products link. That means the PR line item will have unit_cost = NULL or 0. That's a problem downstream — the PR is legally incomplete without unit cost, and any PO generated from it will have zero cost, which then corrupts the GRN lot cost, which corrupts blended cost math.
+Replit AI didn't flag this as urgent, but it should be. Ask about it specifically in your verification.
+What to do now
+Step 1 — Authorize Build mode
+Tell Replit AI:
+
+Go ahead with Build mode. Do both tasks:
+
+Screenshot SO-MO9S2TJA expanded — all 3 components visible, no stuck loading state, each component row shows name + qty + unit + current stock + short/sufficient indicator.
+Create a fresh Solar Kit 6KVA order (qty 1), confirm it, then show:
+
+The resulting purchase_requests row
+Its pr_items: exactly 2 line items (Solar Panel 500W, Solar Inverter 10kW) — MC4 Connector Pair must NOT appear
+The unit_cost values on both items
+The supplier linkage on the PR (which supplier is it going to?)
+
+
+
+Before declaring done, also tell me:
+
+Solar Panel 500W has no costPrice and no supplier_products link. On the new test PR, what unit_cost value is stored? NULL? 0? A fallback? If it's NULL or 0, that's a data integrity problem worth flagging — a PR with unit_cost=0 will corrupt any downstream PO/GRN. Is there a guard that should block PR creation when unit_cost is unresolvable?
+On the PR, what supplier is selected? If none of the components have a supplier_products link, how did the PR generator pick a supplier? Is there a fallback to the product's brand-as-supplier (from Phase 6.5 backfill)?
+
+
+Step 2 — You verify visually when Replit AI comes back
+When Replit AI shows the screenshots + DB query results:
+
+ SO-MO9S2TJA expanded view: 3 components visible, no loading stuck state
+ Fresh bundle order's PR: exactly 2 line items (Panel + Inverter), not 3
+ MC4 Connector Pair correctly excluded from PR (it's in stock)
+ Unit costs on PR are NOT zero or NULL — this is the critical data integrity check
+ Supplier on PR is sensible (either each component's primary supplier, or the brand-auto-linked supplier, or some fallback you can accept)
+
+Step 3 — Handle the Task #75 gap
+Two of the Solar Kit components have no supplier_products link. This is real data, not test data, and it's telling you something:
+The Solar Kit 6KVA components were created manually or imported without going through Phase 6.5 Section A1/A2's auto-link logic — OR Phase 6.5's backfill script didn't reach these products because they have a different brand than Eastman.
+Ask Replit AI:
+
+What brand is assigned to Solar Panel 500W, Solar Inverter 10kW, and MC4 Connector Pair? If they have brandId set, why did the Phase 6.5 backfill not create supplier_products links for them? Should I re-run the backfill script now that these products exist? Or were they created with no brandId at all?
+
+If the products have a brandId and the backfill simply hasn't been re-run since they were added: re-run the backfill script. That's the fix.
+If the products have no brandId: the ⚠ No supplier badge should be showing on them in the Products list. If it is, good — the system is working as designed. If it isn't, Phase 6.5 Section A3 has a bug.
+Step 4 — Kill SO-MO9S2TJA
+Replit AI confirmed SO-MO9S2TJA cannot be retroactively fixed. You need to decide:
+
+If it's a test order: delete it now. It's polluting your data.
+If it's real (unlikely given the name pattern): manually create a PR for it the old-fashioned way, link it in notes, move on.
+
+Almost certainly it's test — I'd kill it.
+Step 5 — After all that
+Only after the Build mode screenshots pass AND you've decided on SO-MO9S2TJA AND Task #75 gap is either re-backfilled or acknowledged as deferred to 6.6:
+Walk the remaining Phase 7 stop-gate items you haven't finished:
+
+(a) Auto pricing mode live-recompute
+(b) Insufficient stock warning on sales line (you've effectively tested this via SO-MO9S2TJA already)
+(c) Discontinued component click-to-confirm
+(d) Atomic dispatch → stock_movements correct
+(e) Atomic dispatch failure with 1 and 2 short components
+(f) Nightly cron drift flag (use scripts/test-bundle-drift.mjs)
+(h) Regression triple
+
+Item (g) was already covered by Phase 7.5's PDF verification, so that's done.
+When all done, Phase 7 closes and you can send the Phase 6.6 brief.
+One thing that makes me cautious
+Replit AI hasn't yet confirmed the atomic dispatch rollback path (Phase 7 stop gate item e). That's the single most critical piece of Phase 7 and it's untested as of this moment. You want to verify it BEFORE closing Phase 7 because if atomic rollback is broken, you'll get partial stock deductions on failed dispatches, which is silent data corruption.
+When you test (e), be meticulous:
+
+Before the failed-dispatch attempt: note stock levels of each component (SQL SELECT on inventory_stock).
+Trigger the dispatch that should fail.
+Confirm error message names all shortages.
+After the failure: query stock levels again. They must be identical to step 1. Not off by even 1.
+Also query stock_movements — zero new rows from the failed attempt.
+
+That's the gold standard for atomic rollback testing.
+Your reply to Replit AI
+Send this:
+
+Authorized for Build mode. Do both screenshots/queries.
+While you're in, also clarify three things:
+
+On the fresh bundle test order, what unit_cost gets stored on the PR line item for Solar Panel 500W (no costPrice, no supplier_products link)? If it's 0 or NULL, is there a guard that should block PR creation? A PR with unit_cost=0 corrupts downstream PO/GRN/pricing. I need to know the behaviour.
+What supplier is selected on the auto-generated PR? With no supplier_products link, how does the generator pick a supplier?
+What brand is assigned to the three Solar Kit components? If they have brandId but no supplier_products link, the Phase 6.5 backfill didn't reach them — I may need to re-run npm run backfill:supplier-links. If they have no brandId, the ⚠ No supplier badge should be showing on them.
+
+Also: SO-MO9S2TJA will be deleted since it's unrecoverable (confirmed before the fix shipped). That's fine.
+After you give me the screenshots + answers to the above, I'll walk the remaining Phase 7 stop-gate items — especially item (e) atomic dispatch failure, which is the critical verification for Phase 7 closure.
+
+Then wait for its response.

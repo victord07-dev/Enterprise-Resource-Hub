@@ -1,0 +1,22 @@
+Authorized for Build mode. Proceed with your 7-step plan with these modifications:
+Step 2 modifications:
+For Solar Panel 500W (has Eastman brand): re-run backfill. Correct.
+For Solar Inverter 10kW (no brand, has Delta link): flag to me BEFORE promoting Delta to primary. Tell me: is this product intentionally brandless, or is it missing a brand? If it's a real product, what brand should it have? I'll decide and tell you, then you promote. Same for MC4 Connector Pair — two links (Havells ₹75, Delta ₹90), flag which one to promote and why. "Cheapest" is a reasonable default but not automatic — confirm with me first.
+Step 5 modifications (unit_cost guard):
+In addition to the PR notes warning, add:
+A ⚠ Unit cost missing badge on PR line items in the Purchase Requests UI
+A hard-block on PR → PO conversion when any line item has NULL unit_cost: "Cannot convert to PO — line item has no unit cost. Resolve in supplier catalog first."
+PR creation itself stays unblocked (warn only) so orders don't get stranded.
+Step 7 additions (Phase 7 stop gate):
+You skipped (a), (b), (c), (d), (g) in your plan. Specifically verify:
+(a) Bundle Auto pricing mode: create or open a bundle with Pricing Mode = Auto; confirm unit price = sum of (component effective price × qty); confirm live recompute when component qty is edited.
+(b) Insufficient-stock warning on sales order line when component is short (already effectively verified via SO-MO9S2TJA).
+(c) Discontinued component click-to-confirm: mark one Solar Kit component as lifecycleStatus=discontinued, attempt to add bundle to a sales order, verify modal fires with Continue/Cancel. Revert after test.
+(d) Atomic dispatch success: note stock levels pre-dispatch; dispatch a bundle with full stock; query stock_movements to confirm exactly 3 rows with referenceType='bundle_dispatch' and correct qty deductions.
+(e) Atomic dispatch FAILURE (the critical one): pre-check stock; understock ONE component; trigger dispatch; verify (i) error names the shortage, (ii) stock_movements has ZERO new rows, (iii) stock levels UNCHANGED from pre-dispatch. Then understock TWO components and verify error names BOTH. This is gold-standard atomic rollback testing.
+(f) Run scripts/test-bundle-drift.mjs — confirm drifted bundle flagged with needsPricingReview=true and audit entry written.
+(g) Already verified via Phase 7.5 PDF item 1 — check off.
+(h) Regression triple: (i) non-branded pre-#74 product on sales order works, (ii) GRN against pre-#74 PO works, (iii) Daily Pricing blendedCost for pre-#74 product with confirmed lot is non-zero.
+Reporting format when done:
+For each of the items above, tell me: PASS / FAIL / BLOCKED-WAITING-ON-CEO (for the supplier primary-promotion decisions).
+Go ahead and run Steps 1, 3, 4, 5, 6 and the Step 7 stop gate. Pause after Step 2 sub-step 1 (re-run backfill for Solar Panel) and flag Solar Inverter + MC4 to me for decision.

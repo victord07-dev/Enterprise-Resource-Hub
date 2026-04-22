@@ -1,0 +1,117 @@
+Ticket #78 — Hierarchical Quotation Picker + gridType Product Attribute
+Replace the current flat product selector in Sales line-item editor (Sales.tsx LineItemsEditor) and Quote line-item editor with a hierarchical picker: Type → Brand → Grid Type → Category (smart) → Product. Also add a new gridType attribute to products to drive the Grid Type filter.
+Standing rule: before declaring any section complete, walk every affected user path in the UI and show screenshots + SQL evidence. Backend test scripts are not sufficient. Operator declares closure.
+Terminology: UI label for type = bundle is "Set" (matches CEO's operational language and reference IT Traders / Hussain Enterprise quotations). Database field stays bundle — do NOT rename the DB column.
+Two phases — ship Phase A today, Phase B this week:
+
+PHASE A — Type + Brand filter (ship today)
+No schema changes. Reuses existing products.type (extended to bundle per Phase 7) and products.brandId. Demo-ready today.
+A1. Hierarchical picker component
+Create a new component (e.g., HierarchicalProductPicker in client/src/components/) that replaces the current flat product selector in the line-item editor. Steps:
+Step 1 — Type: dropdown with three options: Product, Service, Set.
+Step 2 — Brand: dropdown populated from GET /api/brands. SKIPPED if Type = Service.
+Step 3 (final for Phase A) — Product list: filtered by Type + Brand selections. Displays active products and draft/discontinued/replaced products with "(Not selectable — X)" red suffix per Phase 7.5 Section B.
+Every time a new line item is added, picker resets to Step 1. No state persistence across lines (per CEO: "filter will be for each line item").
+When editing an existing line item, the picker does NOT pre-fill hierarchy steps from the current product (per CEO). User re-walks the picker if they want to change product. The existing line's data (price, GST, HSN) stays intact until a new product is selected.
+A2. Visual flow
+Display as a sequential cascading UI inside the line-item editor — each step is a compact dropdown. When user picks Step 1, Step 2 appears below. When user picks Step 2, Step 3 (product list) appears. Keep it vertically compact — this lives inside the existing line-item card, not a modal.
+For Type = Service: Step 2 is hidden; Step 3 shows filtered services directly.
+A3. Product selection behavior (unchanged from current)
+When a product is selected in Step 3:
+
+Existing autofill logic fires: unit price, GST rate, HSN code populate on the line card
+All current Phase 5 tier-price panel, Phase 5.5 FloorPriceRefPanel (if in quotation), Phase 6.5 zero-price hard-block, Phase 6.5 MRP soft-warn, Phase 6.5 subsidy+non-ALMM hard-block, Phase 7.5 lifecycle suffix, and Phase 7 bundle discontinued-component modal — all continue to work exactly as today
+No regression to any existing gating or display logic
+
+A4. Consistency across all line-item editors
+Apply the same picker to:
+
+Quotation dialog line-item editor
+Sales Order dialog line-item editor
+Any other line-item editor that currently uses the flat product selector (e.g., direct order creation flows)
+
+Do NOT touch PO line-item editor for this ticket — that's Supply Chain side, separate scope.
+A5. Phase A stop gate (operator walks)
+(a) Open a fresh quotation → Add Line Item → picker shows Step 1 dropdown with Product / Service / Set options.
+(b) Select "Product" → Step 2 Brand dropdown appears. Selecting a brand reveals Step 3 filtered product list.
+(c) Select "Service" → Step 2 Brand step is hidden. Step 3 shows only services (type='service').
+(d) Select "Set" → Step 2 Brand dropdown appears. Selecting a brand reveals Step 3 with only bundles for that brand.
+(e) Product list in Step 3 shows draft/discontinued/replaced products with "(Not selectable — X)" red suffix per Phase 7.5 B. Clicking them → hard-block toast + Switch-to-replacement for replaced products.
+(f) Selecting an active product → line autofills with price, GST, HSN. FloorPriceRefPanel renders (if product has confirmed pricing). All existing gates work.
+(g) Add a second line item → picker resets to Step 1. Previous line's filter is NOT remembered.
+(h) Edit an existing line in a saved quotation → picker does NOT pre-fill. Existing product's data stays on the line card. Opening the picker again shows Step 1 fresh.
+(i) Selecting a bundle in Step 3 — all Phase 7 bundle behaviors still fire (component stock warnings, discontinued-component click-to-confirm).
+(j) Regression: existing Phase 5 tier-price, Phase 5.5 floor-price panel, Phase 6.5 MRP/subsidy/zero-price gates, Phase 7 bundle behaviors — all still work unchanged.
+After (a)–(j) pass → Phase A ships to production. CEO demo happens on Phase A.
+
+PHASE B — Grid Type + Category filter (ship this week, after Phase A is green)
+Schema changes + data population + picker extension.
+B1. Schema: new gridType column on products
+Add products.gridType TEXT NULL via migration + npm run db:push. Values: off_grid, on_grid, hybrid, others. NULL allowed (legacy/pre-migration rows).
+Also add to product_bundle_items parent bundles: bundles carry their own gridType (same column on products). A Solar Kit 6KVA bundle might be hybrid; a BOS Kit bundle might be others. CEO sets this per bundle.
+B2. Operator-entered, no auto-populate
+Do NOT auto-populate gridType from category. CEO was explicit: operator manually sets gridType on product create/edit. Existing 180+ products will be NULL until populated.
+B3. Product form UI change
+In Products.tsx product edit dialog, add a Grid Type dropdown field with four options: Off-grid / On-grid / Hybrid / Others. Default: empty (= NULL in DB). Required only if operator chooses to set it; NULL is valid.
+Same dropdown on bundle creation flow. Bundles can be any of the four types.
+B4. CSV importer schema update
+Add gridType column to the 28-column CSV importer schema (now 29 columns). Accepted values in CSV: off_grid, on_grid, hybrid, others (case-insensitive, tolerant of spaces and hyphens like "Off Grid" / "off-grid"). Blank cell → NULL.
+Update CSV import template download to include the new column with example values.
+Re-import existing products via CSV UPDATE mode (Phase 6.6) will update gridType on each row. Immutable-field rules NOT applied to gridType — it is updatable on re-import.
+B5. Data population strategy
+Don't auto-populate via migration. Instead:
+
+New products get gridType set by operator at create time
+Existing products get gridType populated via CSV re-import (operator updates their Eastman/Luminous sheets with gridType column filled)
+OR operator manually edits each existing product to add gridType
+
+Operator has flexibility; system doesn't guess.
+B6. Picker extension — Grid Type step
+Extend the hierarchical picker (from Phase A) to add a Grid Type step between Brand and Product list:
+Step 1: Type (Product / Service / Set) — existing
+Step 2: Brand — existing, skipped if Service
+Step 3 (NEW): Grid Type dropdown — 4 options: Off-grid, On-grid, Hybrid, Others. Skipped if Type = Service.
+Step 4 (existing final, now shifted): Product list
+Filter behavior at Step 3:
+
+User selects Off-grid → Step 4 shows only products with gridType = 'off_grid'
+User selects On-grid → shows only gridType = 'on_grid'
+User selects Hybrid → shows only gridType = 'hybrid'
+User selects Others → shows only gridType = 'others' OR gridType IS NULL (covers accessories, generic items, and legacy products not yet populated)
+
+No "Show all" option. User commits to one category.
+B7. Smart Category filter (Step 3.5)
+After Step 3 (Grid Type), compute the filtered product list. If count > 15 products, inject a Category dropdown as Step 3.5. Category options populated from the filtered set (only categories that have products matching the current Type + Brand + Grid Type). Selecting a category further narrows Step 4 product list.
+If count ≤ 15, skip Step 3.5 and show Step 4 directly.
+B8. Phase B stop gate (operator walks)
+(a) Open Products → edit any product → Grid Type dropdown visible with 4 options. Setting and saving works. NULL is also valid.
+(b) Open a bundle product → Grid Type dropdown visible. Set bundle to "Hybrid" and save.
+(c) CSV importer: download template → gridType column present with example values. Upload test CSV with gridType = Off-grid on one row → dry-run shows value parsed correctly. Commit → product has gridType = 'off_grid' in DB.
+(d) CSV UPDATE mode: upload a row for an existing product with gridType = Hybrid → dry-run shows "Would Update" with gridType field in diff. Commit → product's gridType updates.
+(e) Quotation picker: Type = Product, Brand = Eastman → Step 3 Grid Type dropdown appears with 4 options. Select "Off-grid" → Step 4 shows only Eastman off-grid products. Select "Others" → shows Eastman products with gridType=others OR NULL.
+(f) Step 3.5 Category filter: if filtered list has 20 products, Category dropdown appears. If 10 products, it's skipped.
+(g) Type = Service: Brand + Grid Type + Category all skipped. Services listed directly.
+(h) Bundle in picker: Type = Set, Brand = Eastman, Grid Type = Hybrid → bundles that are marked hybrid show. Bundle components' gridType is NOT used for filtering — only the bundle's own gridType.
+(i) Regression: all Phase A stop gate items still pass.
+(j) Regression: all Phase 5.5 / Phase 6.5 / Phase 6.6 / Phase 7 / Phase 7.5 features still work unchanged.
+After (a)–(j) pass → Phase B ships. Ticket #78 closes.
+
+Non-scope for Ticket #78:
+
+PO line-item picker (Supply Chain side): separate concern, do not change
+Changes to product.type enum: already has bundle from Phase 7, do not touch
+Auto-populate of gridType from category: explicitly out of scope per CEO
+Customer-facing gridType display on quotation PDF: not needed; gridType is internal filter only
+Bulk gridType update script: operator handles via CSV re-import or manual edits
+
+
+Execution sequence:
+
+Ship Phase A today. Commit, push, I walk the 10-item Phase A stop gate.
+CEO demo on Phase A. If he wants UX changes, we tweak before Phase B.
+Phase B ships this week: schema + CSV column + product form + picker extension + Category smart filter.
+I walk the 10-item Phase B stop gate.
+Ticket #78 closes.
+
+Do not build Phase B until Phase A passes my stop gate verification. Do not touch Phase 5.5 authorization fix, Phase 8, Tickets #77/#79 — all parked.
+Stop after Phase A ships and report. Await my verification before starting Phase B.

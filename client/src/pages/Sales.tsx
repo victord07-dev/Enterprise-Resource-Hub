@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, Fragment } from "react";
+import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -356,31 +357,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     bundleName: string;
     issues: Array<{ name: string; status: string }>;
   } | null>(null);
-  // Phase 6.5 F1: include draft / discontinued / replaced products in the picker (with a
-  // lifecycle badge), but hard-block selection at the change handler so they cannot end up
-  // on a line. Existing lines on a saved order remain — they were valid at order time.
-  // Phase 7: bundles are quotable too — include them alongside type='product'.
-  const productItems = products.filter(p => p.type === "product" || p.type === "bundle");
-  const serviceItems = products.filter(p => p.type === "service");
   const { toast: lineToast } = useToast();
-
-  const lifecycleLabel = (ls: string | undefined): { text: string; badgeCls: string } => {
-    switch (ls) {
-      case "draft":        return { text: "DRAFT",        badgeCls: "border-slate-400 text-slate-600 dark:text-slate-300" };
-      case "discontinued": return { text: "DISCONTINUED", badgeCls: "border-red-400 text-red-700 dark:text-red-300" };
-      case "replaced":     return { text: "REPLACED",     badgeCls: "border-amber-400 text-amber-700 dark:text-amber-300" };
-      default:             return { text: "",             badgeCls: "" };
-    }
-  };
-  /** B1: suffix text shown inline after product name for non-active products — replaces the badge. */
-  const lifecycleSuffix = (ls: string | undefined): string => {
-    switch (ls) {
-      case "draft":        return "(Not selectable — draft)";
-      case "discontinued": return "(Not selectable — discontinued)";
-      case "replaced":     return "(Not selectable — replaced)";
-      default:             return "";
-    }
-  };
 
   const updateItem = (index: number, field: string, value: any) => {
     onLineTouched(index);
@@ -509,59 +486,17 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       )}
       {items.map((item, i) => (
         <div key={i} className="border rounded-lg p-3 space-y-2 bg-muted/30" data-testid={`line-item-${i}`}>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 grid grid-cols-2 gap-2">
-              <div>
-                <Label className="text-xs text-muted-foreground">Type</Label>
-                <Select
-                  value={item.itemType}
-                  onValueChange={(v) => updateItem(i, "itemType", v)}
-                  disabled={item.itemType === "bundle"}
-                >
-                  <SelectTrigger className="h-8 text-xs" data-testid={`select-item-type-${i}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="product"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Product</span></SelectItem>
-                    <SelectItem value="service"><span className="flex items-center gap-1"><Wrench className="w-3 h-3" /> Service</span></SelectItem>
-                    {item.itemType === "bundle" && (
-                      <SelectItem value="bundle"><span className="flex items-center gap-1"><Boxes className="w-3 h-3" /> Bundle</span></SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label className="text-xs text-muted-foreground">
-                  {item.itemType === "bundle" ? "Bundle" : item.itemType === "product" ? "Product" : "Service"}
-                </Label>
-                <Select value={item.productId} onValueChange={(v) => updateItem(i, "productId", v)}>
-                  <SelectTrigger className="h-8 text-xs" data-testid={`select-item-product-${i}`}>
-                    <SelectValue placeholder={`Select ${item.itemType}...`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(item.itemType === "service" ? serviceItems : productItems).map((p) => {
-                      const ep = effectivePrices?.[p.id];
-                      const displayPrice = (ep && !ep.noConfirmedPrice) ? Number(ep.effectivePrice) : Number(p.unitPrice);
-                      const hasEP = ep && !ep.noConfirmedPrice;
-                      const ls = (p as any).lifecycleStatus as string | undefined;
-                      const suffix = lifecycleSuffix(ls);
-                      const isInactive = !!suffix;
-                      return (
-                        <SelectItem key={p.id} value={p.id} data-testid={`option-product-${p.id}`}>
-                          <span className="inline-flex items-center gap-1.5 flex-wrap">
-                            <span>{p.name}{!isInactive ? ` — ₹${displayPrice.toLocaleString()}${hasEP ? " ✓" : ""}` : ""}</span>
-                            {isInactive && (
-                              <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-lifecycle-${p.id}`}>{suffix}</span>
-                            )}
-                          </span>
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-              </div>
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <HierarchicalProductPicker
+                lineIndex={i}
+                products={products}
+                effectivePrices={effectivePrices}
+                currentProductId={item.productId}
+                onProductSelect={(pid) => updateItem(i, "productId", pid)}
+              />
             </div>
-            <Button type="button" variant="ghost" size="icon" className="shrink-0 mt-4" onClick={() => removeItem(i)} data-testid={`button-remove-item-${i}`}>
+            <Button type="button" variant="ghost" size="icon" className="shrink-0 mt-6" onClick={() => removeItem(i)} data-testid={`button-remove-item-${i}`}>
               <X className="w-4 h-4" />
             </Button>
           </div>

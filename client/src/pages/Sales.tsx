@@ -990,6 +990,10 @@ export default function Sales() {
       setExpandedOrderItems(itemsData);
       setOrderChallansMap(prev => ({ ...prev, [orderId]: Array.isArray(challansData) ? challansData : [] }));
       setOrderLotMarginsMap(prev => ({ ...prev, [orderId]: Array.isArray(lotMarginsData) ? lotMarginsData : [] }));
+      // Phase 7: auto-populate bundle component map for any bundle lines already in this order
+      (Array.isArray(itemsData) ? itemsData : [])
+        .filter((it: any) => it.itemType === "bundle" && it.productId)
+        .forEach((it: any) => loadBundleComponents(it.productId));
       if (isDispatchEligible && results[3]) {
         const summaryData = await results[3].json();
         setOrderDispatchSummaryMap(prev => ({ ...prev, [orderId]: Array.isArray(summaryData.items) ? summaryData.items : [] }));
@@ -1020,6 +1024,10 @@ export default function Sales() {
       setExpandedQuoteItems(items);
       setExpandedQuoteActivities(activities);
       setExpandedQuoteFollowups(followups);
+      // Phase 7: auto-populate bundle component map for any bundle lines in this quote
+      (Array.isArray(items) ? items : [])
+        .filter((it: any) => it.itemType === "bundle" && it.productId)
+        .forEach((it: any) => loadBundleComponents(it.productId));
       setExpandedQuoteId(quoteId);
       setShowQuoteActivityForm(false);
       setShowQuoteFollowupForm(false);
@@ -1929,8 +1937,11 @@ export default function Sales() {
                                         {expandedOrderItems.map((it) => {
                                           const showMarginCol = canSeePricing && ["partial", "dispatched", "delivered", "installed", "completed"].includes(order.status);
                                           const lotMargin = showMarginCol ? orderLotMarginsMap[order.id]?.find(m => m.itemId === it.id) : undefined;
+                                          const bundleComps = it.itemType === "bundle" && it.productId ? bundleComponentsMap[it.productId] : undefined;
+                                          const colSpan = showMarginCol ? 8 : 7;
                                           return (
-                                          <tr key={it.id} className="border-t border-muted">
+                                          <Fragment key={it.id}>
+                                          <tr className="border-t border-muted">
                                             <td className="py-1.5">
                                               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs ${it.itemType === "service" ? "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400" : it.itemType === "bundle" ? "bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400" : "bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400"}`}>
                                                 {it.itemType === "service" ? <Wrench className="w-3 h-3" /> : it.itemType === "bundle" ? <Boxes className="w-3 h-3" /> : <Package className="w-3 h-3" />}
@@ -1957,6 +1968,40 @@ export default function Sales() {
                                               </td>
                                             )}
                                           </tr>
+                                          {it.itemType === "bundle" && it.productId && (
+                                            <tr>
+                                              <td colSpan={colSpan} className="pb-2 pt-0.5 pl-8 pr-2">
+                                                {!bundleComps ? (
+                                                  <div className="text-[11px] text-muted-foreground italic" data-testid={`bundle-loading-ro-${it.id}`}>Loading bundle components…</div>
+                                                ) : bundleComps.length === 0 ? (
+                                                  <div className="text-[11px] text-amber-700 dark:text-amber-300">This bundle has no components configured.</div>
+                                                ) : (
+                                                  <div className="rounded border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 p-2 space-y-1" data-testid={`bundle-components-ro-${it.id}`}>
+                                                    <div className="flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                                                      <Boxes className="w-3 h-3" /> Bundle components × {it.quantity}
+                                                    </div>
+                                                    {bundleComps.map(row => {
+                                                      const compProd = products?.find(p => p.id === row.componentProductId);
+                                                      const compStock = inventoryByProduct.get(row.componentProductId) ?? 0;
+                                                      const needed = Number(row.quantity) * Number(it.quantity);
+                                                      const isShort = compStock < needed;
+                                                      return (
+                                                        <div key={row.componentProductId} className="flex items-center gap-2 text-[11px] pl-3">
+                                                          <span className="text-muted-foreground">{Number(row.quantity)} {row.unit}</span>
+                                                          <span>{compProd?.name || row.componentProductId}</span>
+                                                          {isShort && (
+                                                            <span className="text-red-600 dark:text-red-400 font-medium">(stock: {compStock})</span>
+                                                          )}
+                                                        </div>
+                                                      );
+                                                    })}
+                                                    <div className="text-[10px] text-muted-foreground pl-3 italic">Invoiced as one line at the bundle GST rate.</div>
+                                                  </div>
+                                                )}
+                                              </td>
+                                            </tr>
+                                          )}
+                                          </Fragment>
                                           );
                                         })}
                                       </tbody>

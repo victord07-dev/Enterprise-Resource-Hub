@@ -143,6 +143,8 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
 
   const orderItems = await storage.getSalesOrderItems(order.id);
   const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+  // Phase 7: also handle bundle line items — expand to per-component shortfall checks
+  const bundleLineItems = orderItems.filter(it => it.itemType === "bundle" && it.productId);
   const shortfallItems: Array<{ productId: string; description: string; required: number; available: number; shortfall: number; costPrice: string | null }> = [];
 
   const allStock = await storage.getInventoryStock();
@@ -150,15 +152,29 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
   const prodMap = new Map(allProds.map(p => [p.id, p]));
   const otherReserved = await calculateReservedStockForOtherOrders(orderId, storage);
 
-  // Phase 6.6 C5 (Task #75): pre-fetch primary supplier price per product so auto-PR unit cost
+  // Phase 7: pre-load all bundle component lists so we can collect their product IDs
+  const bundleComponentsCache = new Map<string, Awaited<ReturnType<typeof storage.getBundleItems>>>();
+  for (const bundleLine of bundleLineItems) {
+    const comps = await storage.getBundleItems(bundleLine.productId!);
+    bundleComponentsCache.set(bundleLine.productId!, comps);
+  }
+
+  // Phase 6.6 C5 + Phase 7: pre-fetch primary supplier price per product so auto-PR unit cost
   // pulls from supplier_products instead of products.costPrice (WAC).
-  const productIdsToCheck = productItems.map(it => it.productId).filter(Boolean) as string[];
+  // Collect ALL product IDs needed: product line items + bundle component products.
+  const allProductIdsForPricing = new Set<string>();
+  for (const it of productItems) { if (it.productId) allProductIdsForPricing.add(it.productId); }
+  for (const comps of bundleComponentsCache.values()) {
+    for (const c of comps) allProductIdsForPricing.add(c.componentProductId);
+  }
+  const productIdsToCheck = [...allProductIdsForPricing];
   const primarySupplierPriceMap = new Map<string, string>();
   if (productIdsToCheck.length > 0) {
+    const idList = sql.join(productIdsToCheck.map(id => sql`${id}`), sql`, `);
     const sps = await db.execute(sql`
       SELECT DISTINCT ON (product_id) product_id, supplier_price
       FROM supplier_products
-      WHERE product_id = ANY(${productIdsToCheck}::varchar[])
+      WHERE product_id IN (${idList})
       ORDER BY product_id, is_primary DESC, supplier_price ASC
     `);
     for (const row of sps.rows as { product_id: string; supplier_price: string }[]) {
@@ -184,6 +200,37 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
         // Phase 6.6 C5: prefer supplier_products.supplierPrice, fallback to product.costPrice (WAC) if no link.
         costPrice: primarySupplierPrice ?? prod?.costPrice ?? null,
       });
+    }
+  }
+
+  // Phase 7: check stock for each bundle component scaled by bundle qty; merge duplicates
+  for (const bundleLine of bundleLineItems) {
+    const comps = bundleComponentsCache.get(bundleLine.productId!) ?? [];
+    for (const comp of comps) {
+      const requiredQty = Number(comp.quantity) * bundleLine.quantity;
+      const totalStock = allStock
+        .filter(s => s.productId === comp.componentProductId)
+        .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
+      const reservedByOthers = otherReserved[comp.componentProductId] || 0;
+      const availableStock = Math.max(0, totalStock - reservedByOthers);
+      if (availableStock < requiredQty) {
+        const compProd = prodMap.get(comp.componentProductId);
+        const primarySupplierPrice = primarySupplierPriceMap.get(comp.componentProductId);
+        const existing = shortfallItems.find(s => s.productId === comp.componentProductId);
+        if (existing) {
+          existing.required += requiredQty;
+          existing.shortfall = Math.max(0, existing.required - existing.available);
+        } else {
+          shortfallItems.push({
+            productId: comp.componentProductId,
+            description: compProd?.name || comp.componentProductId,
+            required: requiredQty,
+            available: availableStock,
+            shortfall: requiredQty - availableStock,
+            costPrice: primarySupplierPrice ?? compProd?.costPrice ?? null,
+          });
+        }
+      }
     }
   }
 

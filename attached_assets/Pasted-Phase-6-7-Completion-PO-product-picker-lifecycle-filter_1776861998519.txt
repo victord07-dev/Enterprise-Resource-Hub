@@ -1,0 +1,25 @@
+Phase 6.7 Completion — PO product picker lifecycle filtering
+Check 6 of the Phase 6.7 stop gate revealed a gap: the Supply Chain PO product picker has no lifecycle filtering. Products with lifecycleStatus IN (draft, discontinued, replaced) appear as selectable with no warning, letting procurement accidentally raise fresh POs for retired SKUs. Sales-side already blocks this per Phase 6.5 Section F. Procurement-side needs the same boundary for consistency.
+Scope (narrow — do not expand):
+Fix 1 — PO product picker in Supply Chain
+Locate the product picker in the PO line-items editor in SupplyChain.tsx (wherever product selection happens when adding a line item to a PO). Apply the exact same pattern as the Sales picker per Phase 7.5 Section B:
+
+Draft / discontinued / replaced products remain visible in the dropdown
+Product name is followed by suffix text in red: (Not selectable — draft) / (Not selectable — discontinued) / (Not selectable — replaced)
+Selection hard-blocked with a toast
+For replaced products with replacedByProductId set: toast offers "Switch to replacement" action button. Clicking it selects the replacement product with price/GST/HSN auto-filled — same behavior as sales side
+
+Fix 2 — Consistent behavior in auto-PR generation
+When checkAndCreatePurchaseRequests runs (Phase 6.6 Section C5 codepath) and evaluates bundle component shortages, it should NOT include line items whose component's lifecycleStatus IN (draft, discontinued, replaced). Instead, emit a warning in the PR notes: "Component [name] is [status] — procurement of this SKU was skipped. Consider the replacement." This prevents auto-generated PRs from accidentally ordering retired SKUs.
+Fix 3 — Historical integrity preserved
+Pre-existing PO-2026-0017 (with LIB-160 pending) is NOT affected. Opening an existing PO continues to show its historical line items unchanged. Only NEW POs (or edits to new lines on existing POs) hit the picker block.
+Stop gate (I'll walk):
+(a) In Supply Chain → New PO → add line item → product picker. Search for "LIB-160". It appears with "(Not selectable — replaced)" red suffix. Click it → toast fires with "Switch to EMLIB-160" button. Click Switch → EMLIB-160 selected, price/GST/HSN auto-filled.
+(b) Search for a draft product (one of the 21 BOS accessories). Shows "(Not selectable — draft)" red suffix. Click → toast fires with no Switch button (no replacement). Line doesn't add.
+(c) Search for a discontinued product (if any exists; set one manually as test). Shows "(Not selectable — discontinued)" red suffix. Click → toast. Line doesn't add.
+(d) Pre-existing PO-2026-0017 still opens cleanly. LIB-160 line preserved with historical price ₹15,050 qty 2.
+(e) Create a new sales order with a bundle where one component is marked replaced. Trigger auto-PR generation. Confirm: the PR does NOT include a line item for the replaced component. PR notes mention the skipped component with its replacement suggestion.
+(f) Create a new sales order with a bundle where one component is marked draft. Trigger auto-PR. Same behavior — component skipped, note in PR.
+(g) Regression: existing auto-PR flow for active products still works. Phase 6.6 Section C5 supplier_products.supplierPrice reading still works. No regression.
+Out of scope: changes to how lifecycleStatus is set, changes to the sales picker, changes to any existing PO already in the system. Don't touch the bundle engine, dispatch logic, or audit trail.
+After fix ships, I walk the 7 stop-gate items. Then Phase 6.7 is fully closed.

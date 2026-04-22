@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus } from "lucide-react";
 import { generatePurchaseOrderPDF } from "@/lib/purchase-order-pdf";
@@ -147,10 +148,20 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
   supplierProductsLoading: boolean;
   supplierSelected: boolean;
 }) {
+  const { toast: poToast } = useToast();
   const spMap = new Map<string, SupplierProduct>();
   for (const sp of supplierProducts) {
     spMap.set(sp.productId, sp);
   }
+
+  const lifecycleSuffix = (ls: string | undefined): string => {
+    switch (ls) {
+      case "draft":        return "(Not selectable — draft)";
+      case "discontinued": return "(Not selectable — discontinued)";
+      case "replaced":     return "(Not selectable — replaced)";
+      default:             return "";
+    }
+  };
 
   const updateItem = (index: number, field: string, value: any) => {
     const updated = [...items];
@@ -159,6 +170,32 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
     if (field === "productId" && value) {
       const prod = products.find(p => p.id === value);
       if (prod) {
+        const ls = prod.lifecycleStatus as string | undefined;
+        if (ls && ls !== "active") {
+          const replId: string | null = prod.replacedByProductId || null;
+          const replacement = replId ? products.find(p => p.id === replId) : null;
+          const labelMap: Record<string, string> = { draft: "draft", discontinued: "discontinued", replaced: "replaced" };
+          const label = labelMap[ls] || ls;
+          poToast({
+            title: `Cannot add ${label} product`,
+            description: ls === "replaced" && replacement
+              ? `${prod.name} has been replaced by ${replacement.name}. Use the replacement instead.`
+              : `${prod.name} is marked ${label} and cannot be ordered. Pick an active product.`,
+            variant: "destructive",
+            action: ls === "replaced" && replacement
+              ? (
+                <ToastAction
+                  altText="Switch to replacement"
+                  onClick={() => updateItem(index, "productId", replacement.id)}
+                  data-testid={`button-switch-po-replacement-${index}`}
+                >
+                  Switch to {replacement.name}
+                </ToastAction>
+              )
+              : undefined,
+          });
+          return;
+        }
         item.description = prod.name;
         const sp = spMap.get(value);
         // Phase 6.6 C2: prefer supplier_products.supplierPrice; fallback to products.distributorPrice (NOT costPrice).
@@ -241,17 +278,33 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
                   {supplierCatalogProducts.length > 0 && (
                     <>
                       <div className="px-2 py-1 text-xs text-muted-foreground font-medium">Supplier Catalog</div>
-                      {supplierCatalogProducts.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
-                      ))}
+                      {supplierCatalogProducts.map((p) => {
+                        const suffix = lifecycleSuffix(p.lifecycleStatus);
+                        return (
+                          <SelectItem key={p.id} value={p.id} data-testid={`option-po-product-${p.id}`}>
+                            <span className="inline-flex items-center gap-1.5 flex-wrap">
+                              <span>{p.name} ({p.sku})</span>
+                              {suffix && <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-po-lifecycle-${p.id}`}>{suffix}</span>}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
                     </>
                   )}
                   {otherProducts.length > 0 && (
                     <>
                       <div className="px-2 py-1 text-xs text-muted-foreground font-medium">All Products</div>
-                      {otherProducts.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>{p.name} ({p.sku})</SelectItem>
-                      ))}
+                      {otherProducts.map((p) => {
+                        const suffix = lifecycleSuffix(p.lifecycleStatus);
+                        return (
+                          <SelectItem key={p.id} value={p.id} data-testid={`option-po-product-${p.id}`}>
+                            <span className="inline-flex items-center gap-1.5 flex-wrap">
+                              <span>{p.name} ({p.sku})</span>
+                              {suffix && <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-po-lifecycle-${p.id}`}>{suffix}</span>}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
                     </>
                   )}
                 </SelectContent>

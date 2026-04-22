@@ -182,14 +182,27 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
     }
   }
 
+  // Phase 6.7 Fix 2: track products/components skipped because their lifecycle ≠ 'active'
+  const skippedRetiredItems: Array<{ name: string; status: string; replacedByName?: string }> = [];
+
   for (const item of productItems) {
+    const prod = item.productId ? prodMap.get(item.productId) : null;
+    // Phase 6.7 Fix 2: skip retired SKUs in auto-PR generation
+    if (prod && prod.lifecycleStatus && prod.lifecycleStatus !== "active") {
+      const replacedBy = prod.replacedByProductId ? prodMap.get(prod.replacedByProductId) : null;
+      skippedRetiredItems.push({
+        name: prod.name || item.description || item.productId!,
+        status: prod.lifecycleStatus,
+        replacedByName: replacedBy?.name,
+      });
+      continue;
+    }
     const totalStock = allStock
       .filter(s => s.productId === item.productId)
       .reduce((sum, s) => sum + (s.quantity ?? 0), 0);
     const reservedByOthers = otherReserved[item.productId!] || 0;
     const availableStock = Math.max(0, totalStock - reservedByOthers);
     if (availableStock < item.quantity) {
-      const prod = item.productId ? prodMap.get(item.productId) : null;
       const primarySupplierPrice = item.productId ? primarySupplierPriceMap.get(item.productId) : undefined;
       shortfallItems.push({
         productId: item.productId!,
@@ -207,6 +220,20 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
   for (const bundleLine of bundleLineItems) {
     const comps = bundleComponentsCache.get(bundleLine.productId!) ?? [];
     for (const comp of comps) {
+      const compProd = prodMap.get(comp.componentProductId);
+      // Phase 6.7 Fix 2: skip retired bundle components in auto-PR generation
+      if (compProd && compProd.lifecycleStatus && compProd.lifecycleStatus !== "active") {
+        const replacedBy = compProd.replacedByProductId ? prodMap.get(compProd.replacedByProductId) : null;
+        const alreadySkipped = skippedRetiredItems.some(s => s.name === (compProd.name || comp.componentProductId));
+        if (!alreadySkipped) {
+          skippedRetiredItems.push({
+            name: compProd.name || comp.componentProductId,
+            status: compProd.lifecycleStatus,
+            replacedByName: replacedBy?.name,
+          });
+        }
+        continue;
+      }
       const requiredQty = Number(comp.quantity) * bundleLine.quantity;
       const totalStock = allStock
         .filter(s => s.productId === comp.componentProductId)
@@ -214,7 +241,6 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
       const reservedByOthers = otherReserved[comp.componentProductId] || 0;
       const availableStock = Math.max(0, totalStock - reservedByOthers);
       if (availableStock < requiredQty) {
-        const compProd = prodMap.get(comp.componentProductId);
         const primarySupplierPrice = primarySupplierPriceMap.get(comp.componentProductId);
         const existing = shortfallItems.find(s => s.productId === comp.componentProductId);
         if (existing) {
@@ -234,7 +260,7 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
     }
   }
 
-  if (shortfallItems.length > 0) {
+  if (shortfallItems.length > 0 || skippedRetiredItems.length > 0) {
     const year = new Date().getFullYear();
     const allPRs = await storage.getPurchaseRequests();
     const yearPRs = allPRs.filter(pr => pr.requestNumber.startsWith(`PR-${year}`));
@@ -244,10 +270,19 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
     }, 0);
     const requestNumber = `PR-${year}-${String(maxNum + 1).padStart(4, "0")}`;
 
+    // Only create PR if there are actual shortfall items to procure
+    if (shortfallItems.length === 0) return false;
+
     const hasAdvance = Number(order.advanceAmount || 0) > 0 || Number(order.paidAmount || 0) > 0;
     const nullCostNames = shortfallItems.filter(i => !i.costPrice).map(i => i.description);
     const nullCostNote = nullCostNames.length > 0
       ? ` ⚠ Unit cost missing for: ${nullCostNames.join(", ")} — resolve in supplier catalog before converting to PO.`
+      : "";
+    // Phase 6.7 Fix 2: append skipped retired component notes
+    const skippedNote = skippedRetiredItems.length > 0
+      ? " ⚠ Skipped retired SKU(s): " + skippedRetiredItems.map(s =>
+          `${s.name} is ${s.status}${s.replacedByName ? ` — consider replacement: ${s.replacedByName}` : ""}`
+        ).join("; ") + "."
       : "";
     const pr = await storage.createPurchaseRequest({
       requestNumber,
@@ -255,7 +290,7 @@ async function checkAndCreatePurchaseRequests(orderId: string, userId: string, s
       supplierId: null,
       status: "pending",
       priority: hasAdvance ? "high" : "medium",
-      notes: `Auto-generated from confirmed order ${order.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.${nullCostNote}`,
+      notes: `Auto-generated from confirmed order ${order.orderNumber}. ${shortfallItems.length} product(s) have insufficient stock.${nullCostNote}${skippedNote}`,
       purchaseOrderId: null,
       createdBy: userId,
     });

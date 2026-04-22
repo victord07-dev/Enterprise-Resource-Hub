@@ -1,0 +1,57 @@
+Pasted-Phase-5-5-Authorization-Fix-Cost-Data-Visibility-Bounda_1776861203901.txt
+Phase 5.5 Authorization Fix — Cost Data Visibility Boundary
+Standing rule: before declaring complete, log in as a sales-role user and walk every affected path in the UI. Show screenshots of (a) quotation line with FloorPriceRefPanel visible (b) Network tab payload for effective-prices-today request with cost fields stripped (c) absent "Check Margin" button. Operator declares closure.
+Problem statement:
+Phase 5.5 Section A2 required sales-role users to see effectivePrice + floor prices, but NOT supplierPrice, distributorPrice, blendedCost, costPrice, or any landed-cost/margin data. Current implementation leaks blendedCost via effective-prices-today to all authenticated users. MarginSimPanel + "Check Margin" button are visible to sales roles. CEO-stated authorization boundary is violated.
+Role definitions (existing, per Pricing.tsx line 46):
+
+canManagePricing = admin / sales_manager / accountant
+Non-privileged = sales, kiosk, field_staff, (any other role)
+
+Fix scope:
+1. Server-side field stripping on every endpoint that returns cost data to the client.
+Audit the following endpoints and strip these fields from responses when req.user.role NOT IN (admin, sales_manager, accountant):
+Fields to STRIP for non-privileged users: blendedCost, supplierPrice, distributorPrice, costPrice, logisticsCost, landedCost, avgLandedCost, marginPct, pressureRatio, supplierPriceFromPrimary, avgCostPerLot, any field in a lot breakdown (lots[]), any grn_* cost fields, any WAC/weighted-average-cost fields.
+Fields to KEEP for all authenticated users: effectivePrice, strictFloorPrice, globalFloorPrice, unitPriceFallback, hasConfirmedPricingToday, source, sheetDate, productId, proposedPrice (if status=confirmed only), mrp, warrantyPeriod.
+Endpoints to audit explicitly (minimum):
+
+/api/daily-price-sheets/effective-prices-today
+/api/daily-price-sheets/:id (GET) — used by the Pricing dialog; this should be fully role-gated (deny for non-privileged, not just strip)
+/api/daily-price-sheets?sheetDate=... (listing) — strip for non-privileged
+/api/primary-supplier-prices or whatever Phase 6.6 C6 added for the Pricing page — fully role-gated (deny for non-privileged)
+/api/products and /api/products/:id — check if these return costPrice, distributorPrice, logisticsCost to the client. If yes, strip for non-privileged. unitPrice, mrp, gstRate, hsnCode stay visible to all.
+/api/inventory-stock — should be fine (quantity only), but verify no cost fields leak
+Any /api/reports/* endpoints that might return cost analytics
+
+For each endpoint: either strip fields from the response payload OR return 403 for non-privileged users, whichever fits that endpoint's purpose better. Stripping is correct when the endpoint is legitimately needed by sales (e.g., effective-prices-today). Denying is correct when the endpoint's entire purpose is cost analytics (e.g., the Pricing detail endpoint).
+2. Client-side: hide UI surfaces that expose cost data to non-privileged users.
+
+"Check Margin" button on quotation/sales-order line editor: hide entirely for non-canManagePricing roles
+MarginSimPanel component: unmount entirely for non-canManagePricing roles (don't render + hide — unmount, so it can't be toggled via devtools)
+FloorPriceRefPanel: continues to render for all — it only uses effective + floor + max discount, all of which sales can see
+Any cost columns in reports or tables visible to sales: hide
+Pricing page itself (/pricing route): already route-gated behind canManagePricing in App.tsx — verify nothing regressed, but don't change
+
+3. Defense in depth: test direct-API access as well as UI.
+A sales user with devtools or curl could hit restricted endpoints directly. Server-side guards must enforce — don't rely on client hiding alone. This is why fix #1 matters more than fix #2.
+4. Non-regression for privileged users.
+Admin / sales_manager / accountant users must continue to see every cost field, the Check Margin button, the MarginSimPanel, the full Pricing dialog, and the Pricing page. No degradation for them.
+Verification (what I will walk):
+(i) Log in as a sales user (non-privileged role).
+(ii) Open a quotation. FloorPriceRefPanel renders under unit-price field showing effective + floor + max-discount. No "Check Margin" button anywhere on the line.
+(iii) Open browser DevTools → Network tab → filter to effective-prices-today. Reload. Inspect response payload as JSON. No blendedCost, no supplierPrice, no distributorPrice, no costPrice, no logisticsCost, no marginPct fields.
+(iv) Navigate directly to /pricing URL. Access denied or redirect. (Existing behavior — just confirm nothing regressed.)
+(v) Try curl/Postman as this sales user's token against /api/daily-price-sheets/<some id> — response should be 403 or stripped of cost fields.
+(vi) Log out. Log back in as admin. Everything works as before — Check Margin button visible, MarginSimPanel functional, Pricing dialog shows blendedCost/floors/lots, Pricing page accessible.
+(vii) Regression: quotation save + sales order save + bundle selection + FloorPriceRefPanel below-floor hard-block — all still function for sales user. No accidental breakage.
+Out of scope for this fix:
+
+Masking cost data in database-level queries (separate concern — focus on API surface)
+Role-based audit logs (separate ticket if needed later)
+GST/HSN/MRP visibility (these stay visible to all roles — they're customer-facing commercial data, not cost)
+
+Stop after fix ships and report. Do not touch Phase 5.5 stop gate or Phase 8 work.
+
+
+
+Also: list the exact role values present in the users table today. I want to confirm which roles fall under canManagePricing (admin, sales_manager, accountant) and which are treated as non-privileged. If there's a role I haven't accounted for — a branch manager, regional head, senior sales — flag it so we decide whether it belongs on the privileged list. Don't ship the fix until we've confirmed the full role list.

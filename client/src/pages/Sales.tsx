@@ -187,15 +187,40 @@ function findAlmmHardBlockIndices(
   return blocked;
 }
 
-type EffectivePriceEntry = {
+// Phase 5.5 — Returns details of touched lines whose unit price is below the strict floor price.
+// source="none" lines are exempt (no floor known). Only applies to touched lines (C3).
+function findBelowFloorBlockIndices(
+  items: LineItem[],
+  effectivePrices: Record<string, EffectivePriceEntryRaw> | undefined,
+  touched: Set<number>,
+): Array<{ idx: number; productName: string; unitPrice: number; floorPrice: number }> {
+  if (!effectivePrices) return [];
+  const blocked: Array<{ idx: number; productName: string; unitPrice: number; floorPrice: number }> = [];
+  items.forEach((it, idx) => {
+    if (!touched.has(idx)) return;
+    if (!it.productId) return;
+    const ep = effectivePrices[it.productId];
+    if (!ep || ep.noConfirmedPrice) return; // C4: no floor known
+    const sFloor = ep.strictFloorPrice ? Number(ep.strictFloorPrice) : null;
+    if (sFloor === null || sFloor === 0) return;
+    if (it.unitPrice < sFloor) {
+      blocked.push({ idx, productName: it.description || "Line " + (idx + 1), unitPrice: it.unitPrice, floorPrice: sFloor });
+    }
+  });
+  return blocked;
+}
+
+type EffectivePriceEntryRaw = {
   effectivePrice: string;
   sheetDate: string | null;
   noConfirmedPrice: boolean;
+  source?: "today" | "fallback" | "none";
   hasConfirmedToday: boolean;
   blendedCost: string | null;
   globalFloorPrice: string | null;
   strictFloorPrice: string | null;
 };
+type EffectivePriceEntry = EffectivePriceEntryRaw;
 
 function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry }) {
   const price = item.unitPrice;
@@ -243,6 +268,63 @@ function MarginSimPanel({ item, ep }: { item: LineItem; ep: EffectivePriceEntry 
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Phase 5.5 — Floor price reference panel shown below the Unit Price field.
+// Three cases: "today" (green), "fallback" (amber), "none" (grey/muted).
+function FloorPriceRefPanel({ item, ep, touched }: { item: LineItem; ep: EffectivePriceEntry; touched: boolean }) {
+  const src: "today" | "fallback" | "none" = ep.noConfirmedPrice ? "none" : ep.hasConfirmedToday ? "today" : "fallback";
+  const effectivePrice = Number(ep.effectivePrice);
+  const sFloor = ep.strictFloorPrice ? Number(ep.strictFloorPrice) : null;
+  const price = item.unitPrice;
+
+  const maxDiscount = sFloor !== null && effectivePrice > sFloor ? effectivePrice - sFloor : null;
+  const maxDiscountPct = maxDiscount !== null && effectivePrice > 0 ? (maxDiscount / effectivePrice * 100) : null;
+  const isBelowFloor = touched && sFloor !== null && sFloor > 0 && price < sFloor;
+  const isAboveEffective = effectivePrice > 0 && price > effectivePrice;
+  const shortBy = isBelowFloor && sFloor !== null ? sFloor - price : 0;
+
+  if (src === "none") {
+    return (
+      <div className="mt-1 text-[10px] text-muted-foreground bg-muted/30 rounded px-1.5 py-1" data-testid="floor-panel-none">
+        Catalog price: ₹{effectivePrice.toLocaleString("en-IN")} <span className="italic">(not yet reviewed today)</span>
+      </div>
+    );
+  }
+
+  const containerCls = src === "today"
+    ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"
+    : "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800";
+  const labelCls = src === "today" ? "text-green-700 dark:text-green-400" : "text-amber-700 dark:text-amber-400";
+
+  return (
+    <div className={`mt-1 rounded border px-1.5 py-1 text-[10px] space-y-0.5 ${containerCls}`} data-testid="floor-panel-ref">
+      <div className={`flex items-center gap-2 flex-wrap font-medium ${labelCls}`}>
+        <span>
+          {src === "today" ? "Today's Price:" : `Last approved (${ep.sheetDate}):`}{" "}
+          ₹{effectivePrice.toLocaleString("en-IN")}
+        </span>
+        {sFloor !== null && sFloor > 0 && (
+          <span className="text-muted-foreground font-normal">Floor: ₹{sFloor.toLocaleString("en-IN")}</span>
+        )}
+      </div>
+      {sFloor !== null && sFloor > 0 && (
+        <div>
+          {isBelowFloor ? (
+            <span className="text-red-600 dark:text-red-400 font-semibold">
+              Below floor — short by ₹{Math.round(shortBy).toLocaleString("en-IN")}
+            </span>
+          ) : isAboveEffective ? (
+            <span className="text-muted-foreground">No discount needed</span>
+          ) : maxDiscount !== null && maxDiscountPct !== null ? (
+            <span className={labelCls}>
+              Max discount: ₹{Math.round(maxDiscount).toLocaleString("en-IN")} or {maxDiscountPct.toFixed(1)}%
+            </span>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -584,19 +666,26 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             </div>
             <div>
               <Label className="text-xs text-muted-foreground">Unit Price (₹)</Label>
-              <Input className="h-8 text-xs" type="number" min="0" step="0.01" value={item.unitPrice} onChange={(e) => updateItem(i, "unitPrice", parseFloat(e.target.value) || 0)} data-testid={`input-item-price-${i}`} />
+              {/* Phase 5.5 — red border when below floor price (touched lines only) */}
+              {(() => {
+                const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
+                const sFloor = ep && !ep.noConfirmedPrice && ep.strictFloorPrice ? Number(ep.strictFloorPrice) : null;
+                const isBelowFloor = touchedLineIndices.has(i) && sFloor !== null && sFloor > 0 && item.unitPrice < sFloor;
+                return (
+                  <Input
+                    className={`h-8 text-xs${isBelowFloor ? " border-red-500 focus-visible:ring-red-500" : ""}`}
+                    type="number" min="0" step="0.01"
+                    value={item.unitPrice}
+                    onChange={(e) => updateItem(i, "unitPrice", parseFloat(e.target.value) || 0)}
+                    data-testid={`input-item-price-${i}`}
+                  />
+                );
+              })()}
+              {/* Phase 5.5 — Floor price reference panel */}
               {(() => {
                 const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
                 if (!ep) return null;
-                const src = ep.noConfirmedPrice ? "none" : ep.hasConfirmedToday ? "today" : "fallback";
-                return (
-                  <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                    {src === "today" && <span className="text-[10px] bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 rounded px-1.5 py-0.5">🟢 Confirmed Today</span>}
-                    {src === "fallback" && <span className="text-[10px] bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 rounded px-1.5 py-0.5">🟡 Prev ({ep.sheetDate})</span>}
-                    {src === "none" && <span className="text-[10px] bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 rounded px-1.5 py-0.5">🔴 No Sheet</span>}
-                    {ep.globalFloorPrice && <span className="text-[10px] text-muted-foreground">Floor: ₹{Number(ep.globalFloorPrice).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</span>}
-                  </div>
-                );
+                return <FloorPriceRefPanel item={item} ep={ep} touched={touchedLineIndices.has(i)} />;
               })()}
               {/* Phase 5 — Tier price reference panel (always visible when product has tier pricing) */}
               {(() => {
@@ -2796,17 +2885,33 @@ export default function Sales() {
             />
           </div>
           {(() => {
-            const blocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
+            const almmBlocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
+            const floorBlocked = findBelowFloorBlockIndices(orderItems, effectivePrices, orderTouchedLines);
+            const anySaveBlocked = almmBlocked.length > 0 || floorBlocked.length > 0;
             return (
               <>
-                {blocked.length > 0 && (
+                {almmBlocked.length > 0 && (
                   <div className="mt-2 flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-order-almm-block">
                     <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <span>Cannot save: line{blocked.length > 1 ? "s" : ""} {blocked.map(i => `#${i + 1}`).join(", ")} use a non-ALMM panel under an active subsidy scheme. Pick an ALMM panel or set the subsidy scheme to "None".</span>
+                    <span>Cannot save: line{almmBlocked.length > 1 ? "s" : ""} {almmBlocked.map(i => `#${i + 1}`).join(", ")} use a non-ALMM panel under an active subsidy scheme. Pick an ALMM panel or set the subsidy scheme to "None".</span>
+                  </div>
+                )}
+                {floorBlocked.length > 0 && (
+                  <div className="mt-2 flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-order-floor-block">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <span className="font-semibold">Cannot save: some lines are below floor price.</span>
+                      {floorBlocked.map(b => (
+                        <div key={b.idx}>
+                          • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
+                        </div>
+                      ))}
+                      <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving.</div>
+                    </div>
                   </div>
                 )}
                 <DialogFooter>
-                  <Button data-testid="button-submit-order" disabled={orderMutation.isPending || blocked.length > 0} onClick={() => orderMutation.mutate(orderForm)}>
+                  <Button data-testid="button-submit-order" disabled={orderMutation.isPending || anySaveBlocked} onClick={() => orderMutation.mutate(orderForm)}>
                     {orderMutation.isPending ? "Saving..." : editingOrder ? "Update Order" : "Create Order"}
                   </Button>
                 </DialogFooter>
@@ -2909,10 +3014,34 @@ export default function Sales() {
               inventoryByProduct={inventoryByProduct}
             />
           </div>
+          {/* Phase 5.5 — Below-floor hard-block for quotations */}
+          {(() => {
+            const floorBlocked = findBelowFloorBlockIndices(quoteItems, effectivePrices, quoteTouchedLines);
+            if (floorBlocked.length === 0) return null;
+            return (
+              <div className="flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-quote-floor-block">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <span className="font-semibold">Cannot save: some lines are below floor price.</span>
+                  {floorBlocked.map(b => (
+                    <div key={b.idx}>
+                      • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
+                    </div>
+                  ))}
+                  <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving.</div>
+                </div>
+              </div>
+            );
+          })()}
           <DialogFooter>
-            <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending} onClick={() => quoteMutation.mutate(quoteForm)}>
-              {quoteMutation.isPending ? "Saving..." : editingQuote ? "Update Quotation" : "Create Quotation"}
-            </Button>
+            {(() => {
+              const floorBlocked = findBelowFloorBlockIndices(quoteItems, effectivePrices, quoteTouchedLines);
+              return (
+                <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending || floorBlocked.length > 0} onClick={() => quoteMutation.mutate(quoteForm)}>
+                  {quoteMutation.isPending ? "Saving..." : editingQuote ? "Update Quotation" : "Create Quotation"}
+                </Button>
+              );
+            })()}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,0 +1,28 @@
+Phase 8 — Luminous catalog load + final regression suite
+Pre-work (I do): deactivate or delete remaining seed/test products in the catalog.
+Load order (strict):
+
+Luminous non-bundle products via CSV import
+Eastman Lith Combos as bundle products (via UI — bundles need component linking)
+Luminous SPGS combos as bundle products (via UI)
+
+Final verification suite — every item must pass:
+(a) Spot-check 10 mixed-brand quotations against original brand price lists — all-in totals match (consolidated PDF format per Phase 7.5).
+(b) One full bundle dispatch end-to-end via UI path — stock_movements shows correct per-component deductions with reference field populated.
+(c) Sales picker: inactive products shown with "(Not selectable — X)" red suffix, selection hard-blocked per Phase 6.5 F + Phase 7.5 B.
+(d) Subsidy + non-ALMM panel → quotation save hard-blocked.
+(e) Product with unitPrice = 0 → quotation add hard-blocked.
+(f) Product with distributorPrice = 0 → PO issue hard-blocked.
+(g) Supplier with incomplete details (missing GST/phone/address) → PO issue hard-blocked.
+(h) Regression: sales order with pre-#74 non-branded product works.
+(i) Regression: GRN against pre-#74 PO works.
+(j) Regression: Daily Pricing blendedCost non-zero for pre-#74 product with confirmed lot.
+(k) PO supplier price edit → supplier_products.supplierPrice updates + audit row + needsPricingReview flag + Pricing page supplier-price column shows new value.
+(l) CSV re-import: old SKU → Would Update diff; immutable-field change → warning, field skipped.
+(m) Fuzzy duplicate fires on near-identical name + new SKU.
+(n) Backfill script re-run: idempotent (no new suppliers or links on second run; no primary flags changed).
+(o) Bundle with component that went discontinued after bundle creation → click-to-confirm modal on sales selection.
+(p) Pricing engine GRN-absent fallback: product with only supplier price shows estimated blendedCost in dialog + main table row with ◐ icon.
+(q) Consolidated quotation PDF: single all-in rate per line, no GST/delivery breakdown, "*** All above items Including GST ***" footnote.
+(r) Bundle dispatch failure via UI path (not just test script): error names all shortages, zero stock_movements, stock levels unchanged.
+When (a)–(r) all pass, Ticket #74 closes.

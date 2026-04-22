@@ -1,0 +1,42 @@
+Phase 6.6 — CSV re-import UPDATE mode + fuzzy duplicates + PO unit-cost source + Task #75 closure + Pricing page fix
+Process rule (standing, applies to all future phases): before declaring any section complete, walk through every affected user-facing path in Build mode and show screenshots + SQL evidence. Backend test scripts do not count as verification. Only operator (me) declares phase closure; you may say "implementation complete, ready for your verification" but not "phase closed."
+Four sections. Commit and push after each. Zero changes to Daily Pricing engine, computeFifoLots, GRN confirmation, sales totals math, audit trail, or auth — additions only.
+Section A — CSV re-import UPDATE mode
+A1. Extend POST /api/products/import: existing SKUs now UPDATE instead of skip. Dry-run response adds would_update: { row_number, sku, changes: [{ field, old_value, new_value }] }[].
+Updatable fields: distributorPrice, unitPrice, mrp, specs, warrantyPeriod, applicableRegions, almm, dcrCompliant, modelSeries, lifecycleStatus, priceListVersion, packSize, logisticsCost, minMarginPct, targetMarginPct, customerTierPrice, supplierSku.
+Immutable fields (if CSV row differs, warn in dry-run, skip THAT FIELD only, don't skip the row): sku, name, brand, category, hsnCode, gstRate.
+When almm or dcrCompliant flips, surface in a dedicated "Flag Changes" highlight panel ABOVE the general Changes preview.
+A2. Dry-run UI: 4th stat card "Would Update" (blue). Collapsible "Changes preview" with compact diff table (row_number, SKU, field, old → new).
+A3. Commit mode: apply updates in same transaction as inserts. Response: updated: number added to ImportCommitResult.
+Section B — Fuzzy duplicate detection
+B1. During dry-run, for NEW-SKU rows: flag possible duplicates when (same brandId OR same brand name case-insensitive) AND (same category) AND (normalized name similarity ≥ 85%). Normalize: lowercase, strip punctuation, collapse whitespace; preserve semantic tokens (kw, kwh, ah, w, v).
+B2. Levenshtein ratio or equivalent.
+B3. Response: possible_duplicates: { row_number, incoming_sku, incoming_name, existing_sku, existing_name, similarity_pct }[]. UI: yellow warning block above Changes preview. Operator-driven, no auto-merge.
+Section C — PO supplier price sync + Task #75 closure + Pricing page fix
+C1. Add supplier_products.lastPriceUpdatedAt TIMESTAMP NULL. Run npm run db:push.
+C2. PO creation form: line items' Unit Cost defaults from supplier_products.supplierPrice for (selected supplier, selected product), primary link. Currently pulls from products.costPrice — fix. Fallback if no link: products.distributorPrice. Field remains editable.
+C3. On PO save (draft OR issue): if unit cost differs from current supplier_products.supplierPrice:
+
+UPDATE supplier_products.supplierPrice
+SET lastPriceUpdatedAt = NOW()
+SET product's needsPricingReview = true
+Write audit entry { action: 'supplier_price_updated', productId, supplierId, oldPrice, newPrice, poId, updatedBy }
+Do NOT update products.distributorPrice
+
+C4. SupplierProductCatalog (SupplyChain.tsx ~line 374): "(updated X days ago)" hint next to supplier price when lastPriceUpdatedAt is populated.
+C5. Task #75 closure: checkAndCreatePurchaseRequests in server/routes.ts. Currently reads unit cost from products.costPrice. Fix to prefer supplier_products.supplierPrice of primary link. Fallback products.costPrice. Fallback products.distributorPrice.
+C6. Pricing page fix (Pricing.tsx line 351): currently supplierPrice = product.costPrice ? Number(product.costPrice) : null. Change to fetch primary supplier's price via endpoint/extension. Column displays from supplier_products.supplierPrice. Existing ShieldAlert on line 374 + product.needsPricingReview stay — C3 now actually triggers the flag.
+C7. Code comment at top of pricing engine module documenting the cost chain: distributorPrice → supplier_products.supplierPrice → po_items.unitCost → grn_items.unitCost → FIFO. Supplier price updates affect future POs/GRNs only.
+Section D — Pre-stop-gate integrity check
+D1. Record blendedCost for 3 pre-deploy products with confirmed GRN. Deploy Phase 6.6. Re-verify. Must match exactly. If not, engine was disturbed — roll back.
+Stop gate (operator-walked)
+(a) Re-import CSV changing distributorPrice on 2 existing products → dry-run "Would Update: 2" with diff. Commit → prices update.
+(b) Re-import changing name on existing SKU → immutable warning, field skipped. Other fields update.
+(c) Re-import flipping almm: true → false on a panel → Flag Changes panel populated.
+(d) New-SKU ≥85% similar name in same brand+category → yellow Possible Duplicates block.
+(e) Test PO for Eastman product → Unit Cost defaults from supplier_products.supplierPrice (NOT products.costPrice).
+(f) Edit PO unit cost, save/issue → supplier_products.supplierPrice updates, lastPriceUpdatedAt set, needsPricingReview = true, audit entry written.
+(g) SupplierProductCatalog shows "(updated just now)" hint.
+(h) Pricing page: "Supplier Price" column shows new value from supplier_products. ShieldAlert icon next to product name.
+(i) Sales-order-driven auto-PR for a bundle with shortages → line items' unit_cost pulled from supplier_products.supplierPrice.
+(j) Regression: 3 products' blendedCost unchanged pre/post deploy.

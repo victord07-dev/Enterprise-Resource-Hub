@@ -1,0 +1,53 @@
+Phase 5.5 — Sales floor-price reference panel + below-floor hard-block
+Sales team needs visibility into today's effective price and floor price on quotation/sales-order line items, so they can negotiate discounts confidently without undercutting margin. Below-floor quotes are hard-blocked — no exceptions, no override.
+Process rule (standing): before declaring complete, walk every UI path in Build mode, show screenshots + SQL evidence. Backend tests alone do not count.
+Section A — Server: effective price + floor endpoint
+A1. Extend the existing effective-prices-today endpoint (Pricing.tsx line 66 consumes this) — each product entry now also returns:
+{
+  productId,
+  effectivePrice,          // existing — CEO-confirmed today's price
+  source,                  // existing — "today" | "fallback" | "none"
+  sheetDate,               // existing
+  strictFloorPrice,        // NEW — from today's sheet, null if source=none
+  globalFloorPrice,        // NEW — from today's sheet, null if source=none
+  unitPriceFallback,       // NEW — product.unitPrice, always present
+  hasConfirmedPricingToday // NEW — boolean, true iff source="today" with status=confirmed
+}
+A2. Authorization: this endpoint is already used by sales (Pricing.tsx enabled: canManagePricing gates it only for pricing managers). Confirm the Sales/Quotation line-editor context has access — if not, extend authorization so sales roles can read effectivePrice + floor data (but NOT supplierPrice / blendedCost / distributorPrice; those stay pricing-manager-only).
+Section B — Client: reference panel on quotation/sales-order line items
+B1. In Sales.tsx line-item editor (LineItemsEditor), on each product line, add a compact reference panel below or adjacent to the Unit Price field. Panel displays:
+Case 1: source = "today" and hasConfirmedPricingToday = true (fully priced)
+Today's Price: ₹X,XXX        Floor: ₹Y,YYY
+Max discount available: ₹(X-Y) or Z%
+Styling: green tint if unit price ≥ effective, amber if between floor and effective, red if below floor.
+Case 2: source = "fallback" (older confirmed sheet, no today's sheet yet)
+Last approved: ₹X,XXX (DD MMM)   Floor: ₹Y,YYY
+Max discount: ₹(X-Y) or Z%
+Styling: amber tint — data is not fresh.
+Case 3: source = "none" (no confirmed sheet ever, pre-GRN or never priced)
+Catalog price: ₹X,XXX (not yet reviewed today)
+Styling: grey / muted. NO floor shown. NO max-discount shown. Sales sees unitPrice fallback only.
+B2. "Max discount available" is computed as effectivePrice - strictFloorPrice in both ₹ and % (of effective price). Round ₹ to nearest rupee, % to 1 decimal.
+B3. Panel updates live as sales changes the product selection or the unit price. If they type a unit price above effective price, the "max discount" area shows "No discount needed" in grey. If they type below floor, the field shows red validation state (covered by Section C).
+B4. Apply identical panel to Quotation dialog, Sales Order dialog, and any editable line-item context that today shows the Unit Price field. Mirror consistent behavior across all three.
+Section C — Below-floor hard-block
+C1. On line save (both quotation and sales order): for each product line, if strictFloorPrice is not null AND unitPrice < strictFloorPrice, hard-block save with blocking modal/banner listing every offending line:
+Cannot save: some lines are below floor price.
+  • [Product Name]: ₹X (floor ₹Y — short by ₹Y-X)
+  • [Product Name]: ₹A (floor ₹B — short by ₹B-A)
+Adjust prices at or above floor before saving.
+Save button stays disabled while any below-floor line exists (mirrors Phase 6.5 Section E2 subsidy-block pattern).
+C2. Live validation: as user types a below-floor price in the Unit Price field, the field goes red + inline error message appears ("Below floor: ₹Y") immediately, before save attempt. Save button disables.
+C3. Touched-line gating (consistent with Phase 5 convention): the below-floor block applies only to lines added or edited after Phase 5.5 deploy. Pre-existing draft quotations with old below-floor lines do NOT retroactively block — those lines stay quiet until the sales user touches them.
+C4. Exception — source = "none" case: no floor is known, so no hard-block can apply. Sales is free to quote at any price. UI shows grey catalog-price hint; no validation.
+C5. Exception — bundles: for bundle lines, the floor check uses the bundle product's own effective price + floor (bundles are priced as a single unit per Phase 7 CEO decision). Do NOT recompute from component floors.
+Stop gate (operator-walked)
+(a) Product with confirmed today's price ₹40,000, strictFloor ₹36,000. Quotation line with unit price ₹40,000 → reference panel shows "Today's Price: ₹40,000 Floor: ₹36,000 Max discount: ₹4,000 or 10.0%", green tint.
+(b) Same line, type unit price ₹38,500 → panel tint goes amber, Max discount updates, save works.
+(c) Same line, type unit price ₹35,000 (below floor) → field goes red, inline "Below floor: ₹36,000" message, save button disables. Save attempt shows blocking modal listing this line.
+(d) Product with fallback source (older sheet, not today's): panel shows "Last approved: ₹X (15 Apr) Floor: ₹Y, Max discount: Z", amber tint. Hard-block still applies using the stale floor.
+(e) Pre-GRN product, source = "none": panel shows "Catalog price: ₹X (not yet reviewed today)" in grey. No floor. Sales can quote at any price including zero (covered by existing Phase 6.5 zero-price-block separately). No below-floor block fires.
+(f) Bundle line: panel uses bundle's own effective price + floor (not component-derived). Max discount computed on bundle totals.
+(g) Pre-existing draft quotation (created before deploy) with a below-floor line on an untouched line → saves cleanly. Touching that line (e.g., editing its qty) activates the gate; re-save is then blocked.
+(h) Regression: existing Phase 5 tier-price panel still works alongside this new floor panel. Existing Phase 6.5 E1 MRP soft-warn still fires. Existing Phase 6.5 E2 subsidy+non-ALMM hard-block still fires. All three gates coexist without conflict.
+(i) Authorization: sales user (non-manager role) can see effectivePrice + floor in the quotation UI. Sales user CANNOT see supplier price, distributor price, or blended cost anywhere. (Pricing module itself stays gated behind canManagePricing as today.)

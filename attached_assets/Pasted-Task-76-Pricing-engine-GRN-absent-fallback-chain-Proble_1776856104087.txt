@@ -1,0 +1,61 @@
+Task #76 — Pricing engine GRN-absent fallback chain
+Problem: Daily Pricing simulation shows ₹0 / "—" for margin/profit/floors when no confirmed GRN lots exist. CEO requires GRN for actual inventory valuation (non-negotiable). Sales teams need usable margin previews BEFORE first GRN arrives (pre-orders, in-transit, first-time SKUs).
+Fix: display-only fallback chain. GRN stays authoritative. When absent, estimate from supplier_products.supplierPrice (primary). When that's absent, estimate from products.distributorPrice. NEVER persist estimated blendedCost.
+Server changes
+S1. In daily-price-sheet fetch/create handler (where blendedCost / globalFloorPrice / strictFloorPrice are computed), extend response with:
+
+costSource: "grn_fifo" | "supplier_price" | "distributor_price" | "none"
+costSourceLabel: string (human-readable)
+
+S2. Fallback logic:
+if confirmed GRN lots exist:
+  blendedCost = FIFO blended  (existing logic, unchanged)
+  costSource = "grn_fifo"
+  costSourceLabel = "GRN lots (confirmed)"
+elif supplier_products primary link exists with supplierPrice > 0:
+  logisticsPct = product.logisticsCost > 0 && product.distributorPrice > 0
+                   ? (logisticsCost / distributorPrice)
+                   : 0.02
+  estimatedCost = supplierPrice × (1 + logisticsPct)
+  blendedCost = estimatedCost
+  costSource = "supplier_price"
+  costSourceLabel = "Primary supplier price (estimated)"
+elif product.distributorPrice > 0:
+  estimatedCost = distributorPrice × 1.02
+  blendedCost = estimatedCost
+  costSource = "distributor_price"
+  costSourceLabel = "Brand distributor list (estimated)"
+else:
+  blendedCost = null
+  costSource = "none"
+  costSourceLabel = "No cost data"
+S3. Floors when costSource ≠ grn_fifo:
+
+globalFloor = blendedCost × (1 + (product.minMarginPct ?? 5) / 100)
+strictFloor = globalFloor (they collapse — no per-lot variance without lots)
+
+S4. Do NOT write estimated blendedCost to daily_price_sheets table. Column stays nullable. If currently written from estimate, change to write only when costSource = "grn_fifo", else NULL.
+S5. effective-prices-today endpoint: extend entries with costSource field so main table rows can show source icon.
+S6. Zero changes to computeFifoLots, GRN confirmation, stock_movements, invoice math, audit trail.
+Client changes (Pricing.tsx)
+C1. Main pricing table (line ~348): add small source icon next to blended-cost cell — ● grn_fifo, ◐ supplier_price, ◌ distributor_price, nothing when none. Tooltip shows costSourceLabel.
+C2. Pricing dialog: above Reference Prices panel (line ~547), banner when pricingSheet.costSource !== "grn_fifo":
+
+supplier_price → yellow: "🟡 Cost estimated from primary supplier price. Confirm first GRN for precise floors."
+distributor_price → orange: "🟠 Cost estimated from brand distributor list. Link a supplier and confirm GRN for tighter margins."
+none → red: "🔴 No cost data. Set distributor price or supplier price before pricing."
+
+C3. FIFO Lot Breakdown section (line ~491): when (pricingSheet.lots ?? []).length === 0, replace current "No confirmed GRN lots found" message with: "No confirmed GRN lots yet. Cost below is estimated from [costSourceLabel]. First GRN confirmation will replace this with FIFO lot costs."
+C4. "Avg. Landed Cost" card (line ~551): dynamic border tint — neutral for grn_fifo, yellow for supplier_price, orange for distributor_price, red-dashed for none.
+C5. Simulation block (line ~648): logic unchanged. Add subscript "(est.)" under margin value when costSource ≠ grn_fifo.
+C6. Confirm dialog: when costSource ≠ grn_fifo, add footnote: "Confirming against estimated cost. Re-confirm after first GRN if landed cost differs significantly."
+Stop gate verification
+(a) Product WITH confirmed GRN lots → dialog shows costSource=grn_fifo, no banner, FIFO table populated, floors from actual lots. Main table row shows ● icon.
+(b) Product with NO GRN but supplier_products link (primary) with supplierPrice ₹5000, no logisticsCost → dialog shows yellow banner "Primary supplier price (estimated)", Avg Landed Cost ≈ ₹5100 (2% default logistics), Global Floor = ₹5355 (5% margin), Strict Floor = ₹5355 (collapsed). Simulation fills numbers with "(est.)" subscript. Main table shows ◐.
+(c) Product with NO GRN, NO supplier link, but distributorPrice ₹3000 → orange banner, Avg Landed Cost = ₹3060, floors computed. Main table shows ◌.
+(d) Product with NO GRN, NO supplier, distributorPrice = 0 → red "No cost data" banner, simulation still "—". Main table shows no icon.
+(e) Confirm price sheet for case (b) — confirmation works, footnote visible in dialog, price appears in effective-prices as confirmed, audit entry written.
+(f) After (e), confirm real GRN for same product. Re-open pricing dialog → costSource flips to "grn_fifo", banner disappears, FIFO table populates, floors recompute. Previously-confirmed price stays.
+(g) Regression: 3 existing products with confirmed GRN — record blendedCost/floors/margins pre-deploy, re-verify post-deploy. Must match exactly.
+(h) Regression: stored daily_price_sheets.blendedCost column — existing rows unchanged. New rows for no-GRN products have NULL in that column.
+(i) Regression: git diff on computeFifoLots file — zero changes. GRN confirmation code path — zero changes.

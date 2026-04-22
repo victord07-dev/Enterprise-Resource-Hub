@@ -1,0 +1,27 @@
+C7. Add code comment at top of the pricing engine module:
+/**
+ * Cost source chain (reference only):
+ * products.distributorPrice → supplier_products.supplierPrice (auto-linked on product create
+ *                              or CSV import via Phase 6.5 backfill)
+ * → po_items.unitCost (defaults from supplier_products.supplierPrice of primary link;
+ *                      editable; saving a PO with a different cost UPDATES supplier_products
+ *                      and sets needsPricingReview)
+ * → grn_items.unitCost (locks on GRN confirm)
+ * → FIFO lot consumption (this engine).
+ *
+ * Supplier price updates affect FUTURE POs/GRNs only. Existing lots preserve locked costs.
+ * Phase 6.6 does not change engine behavior — only upstream plumbing.
+ */
+Section D — Pre-stop-gate integrity check
+D1. Before declaring Phase 6.6 done, record blendedCost for 3 pre-deploy products with confirmed GRN lots. Deploy Phase 6.6. Re-open same 3 products' Daily Pricing. blendedCost must match exactly. If not, engine was disturbed — roll back and investigate.
+Stop gate verification (operator-driven, I'll walk these)
+(a) Create test CSV with 2 rows that change distributorPrice on 2 existing Eastman products. Dry-run shows "Would Update: 2" with diff. Commit → products now show new prices.
+(b) Test CSV with one row's name changed on an existing SKU. Dry-run shows immutable-field warning "name is immutable; field skipped". Other fields still update on commit.
+(c) Test CSV flipping almm: true → false on a panel. Dry-run shows flip in the dedicated "Flag Changes" panel above the general preview.
+(d) New-SKU CSV row with ≥85% similarity to existing product in same brand+category. Dry-run shows yellow Possible Duplicates block with match, similarity %, both SKUs side-by-side.
+(e) Raise test PO for an Eastman product. Line's Unit Cost defaults from supplier_products.supplierPrice, NOT from products.costPrice. Note the value.
+(f) Edit PO unit cost to a new value. Save/issue. Go to SupplyChain → Eastman → Product Catalog → that product. supplierPrice now shows new value + "(updated just now)" hint.
+(g) Check audit trail — one supplier_price_updated entry with old/new values + poId.
+(h) Open Pricing page for that product. "Supplier Price" column shows NEW value (from supplier_products). ShieldAlert icon appears next to product name (needsPricingReview now true).
+(i) Create sales order with bundle containing short-stock products. Trigger auto-PR. Confirm generated PR line items' unit_cost comes from supplier_products.supplierPrice (primary) → NOT NULL as long as primary links exist (verified by Phase 7 closure).
+(j) Regression: Daily Pricing blendedCost for the 3 sample products from D1 — unchanged.

@@ -3096,7 +3096,7 @@ export async function registerRoutes(
               `);
               await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${it.productId}`);
               await logAction(req.user.id, "supplier_price_updated", "supply_chain",
-                JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice, newPrice: newCost, poId: req.params.id }));
+                JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice, newPrice: newCost, poId: req.params.id, updatedBy: req.user.id }));
             }
           } else {
             // Create the link if missing (defensive — backfill normally handles this)
@@ -3106,7 +3106,7 @@ export async function registerRoutes(
             `);
             await db.execute(sql`UPDATE products SET needs_pricing_review = true WHERE id = ${it.productId}`);
             await logAction(req.user.id, "supplier_price_updated", "supply_chain",
-              JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice: null, newPrice: newCost, poId: req.params.id }));
+              JSON.stringify({ action: "supplier_price_updated", productId: it.productId, supplierId, oldPrice: null, newPrice: newCost, poId: req.params.id, updatedBy: req.user.id }));
           }
         }
       }

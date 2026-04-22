@@ -63,8 +63,15 @@ export function HierarchicalProductPicker({
     if (!selectedType) return false;
     const dbType = selectedType === "bundle" ? "bundle" : selectedType;
     if (p.type !== dbType) return false;
-    if (selectedType !== "service" && selectedBrandId) {
+    // Brand filter: applied to products only. Bundles (Sets) are multi-brand composite
+    // kits — show bundles matching the selected brand OR bundles with no brand set so
+    // that existing unbranded kits remain selectable.
+    if (selectedType === "product" && selectedBrandId) {
       if ((p as any).brandId !== selectedBrandId) return false;
+    }
+    if (selectedType === "bundle" && selectedBrandId) {
+      const pBrand = (p as any).brandId as string | null | undefined;
+      if (pBrand && pBrand !== selectedBrandId) return false;
     }
     return true;
   });
@@ -137,7 +144,7 @@ export function HierarchicalProductPicker({
             <SelectContent>
               {filteredProducts.length === 0 ? (
                 <div className="px-3 py-3 text-xs text-muted-foreground text-center">
-                  No {productStepLabel.toLowerCase()}s found for this brand
+                  No {productStepLabel.toLowerCase()}s found
                 </div>
               ) : (
                 filteredProducts.map((p) => {

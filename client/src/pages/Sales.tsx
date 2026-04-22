@@ -359,6 +359,16 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   } | null>(null);
   const { toast: lineToast } = useToast();
 
+  /** Badge label + CSS class for component lifecycle status inside bundle panels. */
+  const lifecycleLabel = (ls: string | undefined): { text: string; badgeCls: string } => {
+    switch (ls) {
+      case "draft":        return { text: "DRAFT",        badgeCls: "border-slate-400 text-slate-600 dark:text-slate-300" };
+      case "discontinued": return { text: "DISCONTINUED", badgeCls: "border-red-400 text-red-700 dark:text-red-300" };
+      case "replaced":     return { text: "REPLACED",     badgeCls: "border-amber-400 text-amber-700 dark:text-amber-300" };
+      default:             return { text: "",             badgeCls: "" };
+    }
+  };
+
   const updateItem = (index: number, field: string, value: any) => {
     onLineTouched(index);
     const updated = [...items];

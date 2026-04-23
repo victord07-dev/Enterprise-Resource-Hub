@@ -1100,6 +1100,21 @@ export default function Sales() {
         deliveryAddress: data.deliveryMethod === "delivery" ? data.deliveryAddress || null : null,
         warehouseId: data.warehouseId || null,
       };
+      // Pre-validate: block zero-price product lines BEFORE creating the header record
+      // (prevents orphan empty orders when the items endpoint later returns 422)
+      const validItems = orderItems.filter(it => it.description && it.quantity > 0);
+      const zeroPriceOrderItems = validItems.filter(it => it.productId && (it.unitPrice ?? 0) <= 0);
+      if (zeroPriceOrderItems.length > 0) {
+        const names = zeroPriceOrderItems.map(it => {
+          const prod = products?.find(p => p.id === it.productId);
+          return prod ? `${prod.name} (${prod.sku})` : it.description;
+        });
+        throw new Error(
+          `Cannot save: ${names.join(", ")} ${zeroPriceOrderItems.length === 1 ? "has" : "have"} no unit price set. ` +
+          `Fill the unit price in Products & Services before adding to a sales order.`
+        );
+      }
+
       let orderId: string;
       if (editingOrder) {
         await apiRequest("PATCH", `/api/sales-orders/${editingOrder.id}`, orderData);
@@ -1109,7 +1124,6 @@ export default function Sales() {
         const created = await res.json();
         orderId = created.id;
       }
-      const validItems = orderItems.filter(it => it.description && it.quantity > 0);
       if (validItems.length > 0) {
         await apiRequest("POST", `/api/sales-orders/${orderId}/items`, {
           items: validItems.map(it => ({
@@ -1166,6 +1180,21 @@ export default function Sales() {
         deliveryCost: data.deliveryMethod === "delivery" && data.deliveryCost ? String(data.deliveryCost) : null,
         deliveryAddress: data.deliveryMethod === "delivery" ? data.deliveryAddress || null : null,
       };
+      // Pre-validate: block zero-price product lines BEFORE creating the header record
+      // (prevents orphan empty quotations when the items endpoint later returns 422)
+      const validItems = quoteItems.filter(it => it.description && it.quantity > 0);
+      const zeroPriceQuoteItems = validItems.filter(it => it.productId && (it.unitPrice ?? 0) <= 0);
+      if (zeroPriceQuoteItems.length > 0) {
+        const names = zeroPriceQuoteItems.map(it => {
+          const prod = products?.find(p => p.id === it.productId);
+          return prod ? `${prod.name} (${prod.sku})` : it.description;
+        });
+        throw new Error(
+          `Cannot save: ${names.join(", ")} ${zeroPriceQuoteItems.length === 1 ? "has" : "have"} no unit price set. ` +
+          `Fill the unit price in Products & Services before adding to a quotation.`
+        );
+      }
+
       let quoteId: string;
       if (editingQuote) {
         await apiRequest("PATCH", `/api/quotations/${editingQuote.id}`, quoteData);
@@ -1175,7 +1204,6 @@ export default function Sales() {
         const created = await res.json();
         quoteId = created.id;
       }
-      const validItems = quoteItems.filter(it => it.description && it.quantity > 0);
       if (validItems.length > 0) {
         await apiRequest("POST", `/api/quotations/${quoteId}/items`, {
           items: validItems.map(it => ({

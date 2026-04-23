@@ -35,6 +35,13 @@ const lifecycleSuffix = (ls: string | undefined): string => {
   }
 };
 
+const GRID_TYPE_LABELS: Record<string, string> = {
+  off_grid: "Off-Grid",
+  on_grid:  "On-Grid",
+  hybrid:   "Hybrid",
+  others:   "Others",
+};
+
 export function HierarchicalProductPicker({
   lineIndex,
   products,
@@ -42,33 +49,49 @@ export function HierarchicalProductPicker({
   currentProductId,
   onProductSelect,
 }: Props) {
-  const [selectedType, setSelectedType] = useState<string>("");
-  const [selectedBrandId, setSelectedBrandId] = useState<string>("");
+  const [selectedType, setSelectedType]         = useState<string>("");
+  const [selectedBrandId, setSelectedBrandId]   = useState<string>("");
+  const [selectedGridType, setSelectedGridType] = useState<string>("__any__");  // "__any__" = no filter
 
   const { data: brands = [] } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
 
   const handleTypeChange = (type: string) => {
     setSelectedType(type);
     setSelectedBrandId("");
+    setSelectedGridType("__any__");
   };
 
   const handleBrandChange = (brandId: string) => {
     setSelectedBrandId(brandId);
+    setSelectedGridType("__any__");
   };
 
-  const showBrandStep = !!selectedType && selectedType !== "service";
-  const showProductStep = selectedType === "service" || (showBrandStep && !!selectedBrandId);
+  // Brand step: products / bundles (not services)
+  const showBrandStep    = !!selectedType && selectedType !== "service";
+  // Grid Type step: shown after brand is chosen for products/bundles (not services)
+  const showGridTypeStep = showBrandStep && !!selectedBrandId;
+  // Product list step
+  const showProductStep  = selectedType === "service" || (showBrandStep && !!selectedBrandId);
 
-  const filteredProducts = products.filter((p) => {
+  // Products with that type (and brand for non-service)
+  const typeFilteredProducts = products.filter((p) => {
     if (!selectedType) return false;
-    const dbType = selectedType === "bundle" ? "bundle" : selectedType;
-    if (p.type !== dbType) return false;
-    // Strict brand match for Product and Set (bundle) types.
-    // Service skips the brand step entirely so no brand filter applies.
+    if (p.type !== selectedType) return false;
     if (selectedType !== "service" && selectedBrandId) {
       if ((p as any).brandId !== selectedBrandId) return false;
     }
     return true;
+  });
+
+  // Derive which grid types actually exist for this type+brand combo
+  const availableGridTypes = Array.from(
+    new Set(typeFilteredProducts.map((p) => (p as any).gridType ?? "others"))
+  ).sort();
+
+  // Final product list — apply optional grid type filter (__any__ = no filter)
+  const filteredProducts = typeFilteredProducts.filter((p) => {
+    if (selectedGridType === "__any__") return true;
+    return ((p as any).gridType ?? "others") === selectedGridType;
   });
 
   const productStepLabel =
@@ -76,6 +99,7 @@ export function HierarchicalProductPicker({
 
   return (
     <div className="space-y-2">
+      {/* Step 1: Type */}
       <div>
         <Label className="text-xs text-muted-foreground">Type</Label>
         <Select
@@ -105,6 +129,7 @@ export function HierarchicalProductPicker({
         </Select>
       </div>
 
+      {/* Step 2: Brand (products + bundles only) */}
       {showBrandStep && (
         <div>
           <Label className="text-xs text-muted-foreground">Brand</Label>
@@ -126,6 +151,32 @@ export function HierarchicalProductPicker({
         </div>
       )}
 
+      {/* Step 3: Grid Type filter (products + bundles, after brand chosen) */}
+      {showGridTypeStep && availableGridTypes.length > 1 && (
+        <div>
+          <Label className="text-xs text-muted-foreground">Grid Type <span className="font-normal opacity-60">(optional filter)</span></Label>
+          <Select
+            value={selectedGridType}
+            onValueChange={setSelectedGridType}
+          >
+            <SelectTrigger className="h-8 text-xs" data-testid={`select-item-grid-type-${lineIndex}`}>
+              <SelectValue placeholder="Any grid type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__any__" data-testid={`option-grid-type-any-${lineIndex}`}>
+                Any grid type
+              </SelectItem>
+              {availableGridTypes.map((gt) => (
+                <SelectItem key={gt} value={gt} data-testid={`option-grid-type-${gt}-${lineIndex}`}>
+                  {GRID_TYPE_LABELS[gt] ?? gt}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Step 4: Product / Service / Set list */}
       {showProductStep && (
         <div>
           <Label className="text-xs text-muted-foreground">{productStepLabel}</Label>
@@ -151,6 +202,7 @@ export function HierarchicalProductPicker({
                   const ls = (p as any).lifecycleStatus as string | undefined;
                   const suffix = lifecycleSuffix(ls);
                   const isInactive = !!suffix;
+                  const gt = (p as any).gridType as string | undefined;
                   return (
                     <SelectItem
                       key={p.id}
@@ -164,6 +216,11 @@ export function HierarchicalProductPicker({
                             ? ` — ₹${displayPrice.toLocaleString()}${hasEP ? " ✓" : ""}`
                             : ""}
                         </span>
+                        {gt && gt !== "others" && !isInactive && (
+                          <span className="text-xs text-blue-600 dark:text-blue-400 opacity-70">
+                            [{GRID_TYPE_LABELS[gt] ?? gt}]
+                          </span>
+                        )}
                         {isInactive && (
                           <span
                             className="text-xs text-red-600 dark:text-red-400"

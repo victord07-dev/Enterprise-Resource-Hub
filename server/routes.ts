@@ -1042,13 +1042,13 @@ export async function registerRoutes(
           almm: boolean | null; dcr_compliant: boolean | null; model_series: string | null;
           lifecycle_status: string | null; price_list_version: string | null; pack_size: string | null;
           logistics_cost: string | null; min_margin_pct: string | null; target_margin_pct: string | null;
-          customer_tier_price: any;
+          customer_tier_price: any; grid_type: string | null;
         };
         const existingProductRows = (await db.execute(sql`
           SELECT id, sku, name, brand_id, category, hsn_code, gst_rate,
                  distributor_price, unit_price, mrp, specs, warranty_period, applicable_regions,
                  almm, dcr_compliant, model_series, lifecycle_status, price_list_version, pack_size,
-                 logistics_cost, min_margin_pct, target_margin_pct, customer_tier_price
+                 logistics_cost, min_margin_pct, target_margin_pct, customer_tier_price, grid_type
           FROM products WHERE sku IS NOT NULL
         `)).rows as ExistingProduct[];
         const existingProductBySku = new Map<string, ExistingProduct>(existingProductRows.map(r => [r.sku, r]));
@@ -1075,6 +1075,7 @@ export async function registerRoutes(
           priceListVersion: string | null; productFamily: string | null;
           customerTierPrice: Record<string, number> | null; specs: Record<string, any> | null;
           supplierSku: string | null; supplierIdForAutoLink: string | null;
+          gridType: string;
           warnings: string[];
           // Phase 6.6 A1: UPDATE-mode bookkeeping
           isUpdate: boolean;
@@ -1274,6 +1275,9 @@ export async function registerRoutes(
           // Bug 11: accept "product", "service", "bundle"; anything else defaults to "product"
           const rowType = (row["type"] ?? "").trim().toLowerCase();
           const productType = ["product", "service", "bundle"].includes(rowType) ? rowType : "product";
+          // Ticket #78 Phase B: gridType column — valid values or default 'others'
+          const rawGridType = (row["gridType"] ?? "").trim().toLowerCase();
+          const gridType = ["off_grid", "on_grid", "hybrid", "others"].includes(rawGridType) ? rawGridType : "others";
           const plv = (row["priceListVersion"] ?? "").trim();
           const priceListVersion = plv || priceListVersionGlobal || null;
 
@@ -1336,6 +1340,7 @@ export async function registerRoutes(
             specs,
             supplierSku: (row["supplierSku"] ?? "").trim() || null,
             supplierIdForAutoLink,
+            gridType,
             warnings,
           });
         }
@@ -1359,6 +1364,7 @@ export async function registerRoutes(
           { key: "modelSeries",      rowVal: r => r.modelSeries,      existVal: e => e.model_series },
           { key: "lifecycleStatus",  rowVal: r => r.lifecycleStatus,  existVal: e => e.lifecycle_status },
           { key: "priceListVersion", rowVal: r => r.priceListVersion, existVal: e => e.price_list_version },
+          { key: "gridType",         rowVal: r => r.gridType,         existVal: e => e.grid_type ?? "others" },
           { key: "packSize",         rowVal: r => r.packSize,         existVal: e => e.pack_size },
           { key: "logisticsCost",    rowVal: r => r.logisticsCost,    existVal: e => e.logistics_cost != null ? Number(e.logistics_cost) : null },
           { key: "minMarginPct",     rowVal: r => r.minMarginPct,     existVal: e => e.min_margin_pct != null ? Number(e.min_margin_pct) : null },
@@ -1563,7 +1569,8 @@ export async function registerRoutes(
                   logistics_cost      = ${r.logisticsCost},
                   min_margin_pct      = COALESCE(${r.minMarginPct}, min_margin_pct),
                   target_margin_pct   = ${r.targetMarginPct},
-                  customer_tier_price = ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb
+                  customer_tier_price = ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb,
+                  grid_type           = ${r.gridType}
                 WHERE id = ${r.existingProduct.id}
               `);
               updatedCount++;
@@ -1582,7 +1589,8 @@ export async function registerRoutes(
                 min_stock_level, min_margin_pct, warranty_period, mrp,
                 type, pack_size, almm, dcr_compliant, model_series,
                 lifecycle_status, applicable_regions, price_list_version,
-                product_family, customer_tier_price, specs, needs_pricing_review
+                product_family, customer_tier_price, specs, needs_pricing_review,
+                grid_type
               ) VALUES (
                 ${r.name}, ${sku}, ${brandId}, ${r.category}, ${r.description},
                 ${r.distributorPrice}, ${r.logisticsCost}, ${r.unitPrice},
@@ -1596,7 +1604,8 @@ export async function registerRoutes(
                 ${r.priceListVersion}, ${r.productFamily},
                 ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb,
                 ${r.specs ? JSON.stringify(r.specs) : null}::jsonb,
-                false
+                false,
+                ${r.gridType}
               ) RETURNING id
             `);
 

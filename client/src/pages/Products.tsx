@@ -73,6 +73,8 @@ type ProductForm = {
   specs: SpecsValue;
   // Phase 7 — Bundle / Kit Engine. Only meaningful when type='bundle'.
   pricingMode: "manual" | "auto";
+  // Ticket #78 Phase B — Grid Type
+  gridType: string;
 };
 
 // Phase 7: a single component row inside a bundle. Same component allowed multiple times.
@@ -118,6 +120,7 @@ const emptyProductForm = (): ProductForm => ({
   productFamily: "",
   specs: {},
   pricingMode: "manual",
+  gridType: "others",
 });
 
 const emptyServiceForm = (): ProductForm => ({
@@ -161,6 +164,7 @@ const CSV_TEMPLATE_HEADERS = [
   "mrp","minMarginPct","minStockLevel","unit","packSize","warrantyPeriod",
   "lifecycleStatus","priceListVersion","productFamily","modelSeries",
   "almm","dcrCompliant","applicableRegions",
+  "gridType",
   "customerTierPrice","specs","supplierSku",
 ];
 
@@ -192,6 +196,7 @@ const EXAMPLE_ROW: Record<string, string> = {
   almm: "true",
   dcrCompliant: "true",
   applicableRegions: "Assam, Meghalaya",
+  gridType: "off_grid",
   customerTierPrice: '{"end_user":11000,"business":10000}',
   specs: '{"wattage":"400Wp","efficiency":"20.9%","cellType":"Mono PERC"}',
   supplierSku: "ADN-SP400W",
@@ -812,6 +817,7 @@ export default function Products() {
       productFamily: p.productFamily || "",
       specs: (p.specs as SpecsValue | null) ?? {},
       pricingMode: ((p as any).pricingMode === "auto" ? "auto" : "manual"),
+      gridType: (p as any).gridType || "others",
     });
     // Phase 7: pre-load bundle components for edit
     setBundleItems([]);
@@ -1010,6 +1016,7 @@ export default function Products() {
       minMarginPct: productForm.minMarginPct ? String(parseFloat(productForm.minMarginPct).toFixed(2)) : "5.00",
       pricingMode: isBundleSubmit ? productForm.pricingMode : "manual",
       lifecycleStatus: productForm.lifecycleStatus || "active",
+      gridType: productForm.gridType || "others",
     };
 
     if (isProd) {
@@ -1961,6 +1968,23 @@ export default function Products() {
                       onChange={(e) => setProductForm({ ...productForm, priceListVersion: e.target.value })}
                       placeholder="e.g. Eastman 2026-Q2" />
                   </div>
+                </div>
+
+                {/* Grid Type — Ticket #78 Phase B */}
+                <div className="space-y-2">
+                  <Label>Grid Type</Label>
+                  <Select value={productForm.gridType} onValueChange={(v) => setProductForm({ ...productForm, gridType: v })}>
+                    <SelectTrigger data-testid="select-product-grid-type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off_grid" data-testid="option-grid-type-off_grid">Off-Grid</SelectItem>
+                      <SelectItem value="on_grid" data-testid="option-grid-type-on_grid">On-Grid</SelectItem>
+                      <SelectItem value="hybrid" data-testid="option-grid-type-hybrid">Hybrid</SelectItem>
+                      <SelectItem value="others" data-testid="option-grid-type-others">Others</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">Solar system configuration type. Used for filtering in quotations and orders.</p>
                 </div>
 
                 {/* Applicable regions */}

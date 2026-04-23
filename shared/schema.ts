@@ -85,6 +85,10 @@ export const products = pgTable("products", {
   //   'manual' = unitPrice/distributorPrice are set by user (current behaviour)
   //   'auto'   = unitPrice = Σ (component effective price × qty), recomputed live in UI + nightly cron
   pricingMode: text("pricing_mode").notNull().default("manual"),
+  // Ticket #78 Phase B — Grid Type (solar system categorisation)
+  // Valid values: 'off_grid' | 'on_grid' | 'hybrid' | 'others'
+  // Defaults to 'others' for all existing & new products; operator upgrades via CSV or edit form.
+  gridType: text("grid_type").notNull().default("others"),
 });
 
 /** Roles allowed to view product cost data (distributor price, logistics, landed cost, margins). */

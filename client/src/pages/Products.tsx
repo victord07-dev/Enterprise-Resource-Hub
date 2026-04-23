@@ -1000,7 +1000,6 @@ export default function Products() {
       sku: productForm.sku.trim() || autoSku,
       category: productForm.category,
       description: productForm.description || null,
-      unitPrice: computedBundlePrice ?? (productForm.unitPrice || "0"),
       brand: brandText,
       brandId: productForm.brandId || null,
       unit: productForm.unit,
@@ -1036,6 +1035,23 @@ export default function Products() {
       }
       data.specs = Object.keys(cleanSpecs).length > 0 ? cleanSpecs : null;
     }
+
+    // Only include unitPrice in PATCH when the value actually changed.
+    // This prevents the confirmed-daily-price-sheet guard from blocking non-price edits
+    // (e.g. editing brand, category, description on a priced product).
+    // For new products (POST) always include it. Auto-bundle price always included when recomputed.
+    const resolvedUnitPrice = computedBundlePrice ?? (productForm.unitPrice || "0");
+    if (!editingProduct) {
+      // Creating — always send the price
+      data.unitPrice = resolvedUnitPrice;
+    } else if (computedBundlePrice != null) {
+      // Auto-priced bundle recomputed — always send
+      data.unitPrice = resolvedUnitPrice;
+    } else if (resolvedUnitPrice !== String(editingProduct.unitPrice ?? "")) {
+      // User deliberately changed the price field — send it (server guard will enforce)
+      data.unitPrice = resolvedUnitPrice;
+    }
+    // else: editing non-price fields on an existing product → omit unitPrice entirely
 
     productMutation.mutate({ data, bundleItems });
   };

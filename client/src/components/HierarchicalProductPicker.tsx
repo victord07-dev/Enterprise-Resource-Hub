@@ -54,6 +54,7 @@ export function HierarchicalProductPicker({
   const [selectedBrandId, setSelectedBrandId]   = useState<string>("");
   const [selectedGridType, setSelectedGridType] = useState<string>("__any__");  // "__any__" = no filter
   const [productSearch, setProductSearch]       = useState<string>("");
+  const [productSelectOpen, setProductSelectOpen] = useState<boolean>(false);
 
   const { data: brands = [] } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
 
@@ -62,12 +63,14 @@ export function HierarchicalProductPicker({
     setSelectedBrandId("");
     setSelectedGridType("__any__");
     setProductSearch("");
+    setProductSelectOpen(false);
   };
 
   const handleBrandChange = (brandId: string) => {
     setSelectedBrandId(brandId);
     setSelectedGridType("__any__");
     setProductSearch("");
+    setProductSelectOpen(false);
   };
 
   // Brand step: products / bundles (not services)
@@ -189,14 +192,19 @@ export function HierarchicalProductPicker({
           <Label className="text-xs text-muted-foreground">{productStepLabel}</Label>
           <Input
             value={productSearch}
-            onChange={(e) => setProductSearch(e.target.value)}
+            onChange={(e) => {
+              setProductSearch(e.target.value);
+              if (e.target.value) setProductSelectOpen(true);
+            }}
             placeholder="Search…"
             className="h-8 text-xs"
             data-testid={`input-product-search-${lineIndex}`}
           />
           <Select
             value={currentProductId || ""}
-            onValueChange={onProductSelect}
+            onValueChange={(val) => { onProductSelect(val); setProductSelectOpen(false); }}
+            open={productSelectOpen}
+            onOpenChange={setProductSelectOpen}
           >
             <SelectTrigger className="h-8 text-xs" data-testid={`select-item-product-${lineIndex}`}>
               <SelectValue placeholder={`Select ${productStepLabel.toLowerCase()}…`} />

@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Package, Wrench, Boxes } from "lucide-react";
+import { Package, Wrench, Boxes, ChevronDown } from "lucide-react";
 import type { Product } from "@shared/schema";
 
 type EffectivePriceEntry = {
@@ -52,25 +54,35 @@ export function HierarchicalProductPicker({
 }: Props) {
   const [selectedType, setSelectedType]         = useState<string>("");
   const [selectedBrandId, setSelectedBrandId]   = useState<string>("");
-  const [selectedGridType, setSelectedGridType] = useState<string>("__any__");  // "__any__" = no filter
+  const [selectedGridType, setSelectedGridType] = useState<string>("__any__");
   const [productSearch, setProductSearch]       = useState<string>("");
-  const [productSelectOpen, setProductSelectOpen] = useState<boolean>(false);
+  const [popoverOpen, setPopoverOpen]           = useState<boolean>(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { data: brands = [] } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
+
+  // Auto-focus search input whenever the popover opens
+  useEffect(() => {
+    if (popoverOpen) {
+      setTimeout(() => searchInputRef.current?.focus(), 0);
+    } else {
+      setProductSearch("");
+    }
+  }, [popoverOpen]);
 
   const handleTypeChange = (type: string) => {
     setSelectedType(type);
     setSelectedBrandId("");
     setSelectedGridType("__any__");
     setProductSearch("");
-    setProductSelectOpen(false);
+    setPopoverOpen(false);
   };
 
   const handleBrandChange = (brandId: string) => {
     setSelectedBrandId(brandId);
     setSelectedGridType("__any__");
     setProductSearch("");
-    setProductSelectOpen(false);
+    setPopoverOpen(false);
   };
 
   // Brand step: products / bundles (not services)
@@ -106,6 +118,8 @@ export function HierarchicalProductPicker({
 
   const productStepLabel =
     selectedType === "bundle" ? "Set" : selectedType === "service" ? "Service" : "Product";
+
+  const selectedProduct = products.find((p) => p.id === currentProductId);
 
   return (
     <div className="space-y-2">
@@ -186,52 +200,76 @@ export function HierarchicalProductPicker({
         </div>
       )}
 
-      {/* Step 4: Product / Service / Set list */}
+      {/* Step 4: Product / Service / Set — Popover with search */}
       {showProductStep && (
-        <div className="space-y-1">
+        <div>
           <Label className="text-xs text-muted-foreground">{productStepLabel}</Label>
-          <Input
-            value={productSearch}
-            onChange={(e) => {
-              setProductSearch(e.target.value);
-              if (e.target.value) setProductSelectOpen(true);
-            }}
-            placeholder="Search…"
-            className="h-8 text-xs"
-            data-testid={`input-product-search-${lineIndex}`}
-          />
-          <Select
-            value={currentProductId || ""}
-            onValueChange={(val) => { onProductSelect(val); setProductSelectOpen(false); }}
-            open={productSelectOpen}
-            onOpenChange={setProductSelectOpen}
-          >
-            <SelectTrigger className="h-8 text-xs" data-testid={`select-item-product-${lineIndex}`}>
-              <SelectValue placeholder={`Select ${productStepLabel.toLowerCase()}…`} />
-            </SelectTrigger>
-            <SelectContent>
-              {filteredProducts.length === 0 ? (
-                <div className="px-3 py-3 text-xs text-muted-foreground text-center">
-                  No {productStepLabel.toLowerCase()}s found
-                </div>
-              ) : (
-                filteredProducts.map((p) => {
-                  const ep = effectivePrices?.[p.id];
-                  const displayPrice = ep && !ep.noConfirmedPrice
-                    ? Number(ep.effectivePrice)
-                    : Number((p as any).unitPrice ?? 0);
-                  const hasEP = ep && !ep.noConfirmedPrice;
-                  const ls = (p as any).lifecycleStatus as string | undefined;
-                  const suffix = lifecycleSuffix(ls);
-                  const isInactive = !!suffix;
-                  const gt = (p as any).gridType as string | undefined;
-                  return (
-                    <SelectItem
-                      key={p.id}
-                      value={p.id}
-                      data-testid={`option-product-${p.id}`}
-                    >
-                      <span className="inline-flex items-center gap-1.5 flex-wrap">
+          <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                className="w-full h-8 text-xs justify-between font-normal px-3"
+                data-testid={`select-item-product-${lineIndex}`}
+              >
+                <span className="truncate text-left">
+                  {selectedProduct ? selectedProduct.name : `Select ${productStepLabel.toLowerCase()}…`}
+                </span>
+                <ChevronDown className="ml-2 h-3 w-3 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              className="p-0 w-[var(--radix-popover-trigger-width)] max-w-sm"
+              align="start"
+              onOpenAutoFocus={(e) => e.preventDefault()}
+            >
+              {/* Search input inside the popover — no focus conflict */}
+              <div className="p-2 border-b">
+                <Input
+                  ref={searchInputRef}
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                  placeholder="Search…"
+                  className="h-7 text-xs"
+                  data-testid={`input-product-search-${lineIndex}`}
+                />
+              </div>
+              {/* Scrollable product list */}
+              <div className="max-h-52 overflow-y-auto">
+                {filteredProducts.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-muted-foreground text-center">
+                    No {productStepLabel.toLowerCase()}s found
+                  </div>
+                ) : (
+                  filteredProducts.map((p) => {
+                    const ep = effectivePrices?.[p.id];
+                    const displayPrice = ep && !ep.noConfirmedPrice
+                      ? Number(ep.effectivePrice)
+                      : Number((p as any).unitPrice ?? 0);
+                    const hasEP = ep && !ep.noConfirmedPrice;
+                    const ls = (p as any).lifecycleStatus as string | undefined;
+                    const suffix = lifecycleSuffix(ls);
+                    const isInactive = !!suffix;
+                    const gt = (p as any).gridType as string | undefined;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        disabled={isInactive}
+                        data-testid={`option-product-${p.id}`}
+                        onClick={() => {
+                          if (!isInactive) {
+                            onProductSelect(p.id);
+                            setPopoverOpen(false);
+                          }
+                        }}
+                        className={[
+                          "w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 flex-wrap",
+                          "hover:bg-accent hover:text-accent-foreground",
+                          isInactive ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+                          currentProductId === p.id ? "bg-accent text-accent-foreground" : "",
+                        ].join(" ")}
+                      >
                         <span>
                           {p.name}
                           {!isInactive
@@ -251,13 +289,13 @@ export function HierarchicalProductPicker({
                             {suffix}
                           </span>
                         )}
-                      </span>
-                    </SelectItem>
-                  );
-                })
-              )}
-            </SelectContent>
-          </Select>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       )}
     </div>

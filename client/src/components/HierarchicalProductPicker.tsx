@@ -235,7 +235,10 @@ export function HierarchicalProductPicker({
                 />
               </div>
               {/* Scrollable product list */}
-              <div className="max-h-52 overflow-y-auto">
+              <div
+                className="max-h-52 overflow-y-auto"
+                onWheel={(e) => e.stopPropagation()}
+              >
                 {filteredProducts.length === 0 ? (
                   <div className="px-3 py-3 text-xs text-muted-foreground text-center">
                     No {productStepLabel.toLowerCase()}s found

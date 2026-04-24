@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Package, Wrench, Boxes } from "lucide-react";
 import type { Product } from "@shared/schema";
 
@@ -52,6 +53,7 @@ export function HierarchicalProductPicker({
   const [selectedType, setSelectedType]         = useState<string>("");
   const [selectedBrandId, setSelectedBrandId]   = useState<string>("");
   const [selectedGridType, setSelectedGridType] = useState<string>("__any__");  // "__any__" = no filter
+  const [productSearch, setProductSearch]       = useState<string>("");
 
   const { data: brands = [] } = useQuery<Brand[]>({ queryKey: ["/api/brands"] });
 
@@ -59,11 +61,13 @@ export function HierarchicalProductPicker({
     setSelectedType(type);
     setSelectedBrandId("");
     setSelectedGridType("__any__");
+    setProductSearch("");
   };
 
   const handleBrandChange = (brandId: string) => {
     setSelectedBrandId(brandId);
     setSelectedGridType("__any__");
+    setProductSearch("");
   };
 
   // Brand step: products / bundles (not services)
@@ -88,10 +92,13 @@ export function HierarchicalProductPicker({
     new Set(typeFilteredProducts.map((p) => (p as any).gridType ?? "others"))
   ).sort();
 
-  // Final product list — apply optional grid type filter (__any__ = no filter)
+  // Final product list — apply optional grid type filter then optional name search
   const filteredProducts = typeFilteredProducts.filter((p) => {
-    if (selectedGridType === "__any__") return true;
-    return ((p as any).gridType ?? "others") === selectedGridType;
+    if (selectedGridType !== "__any__" && ((p as any).gridType ?? "others") !== selectedGridType) return false;
+    if (productSearch.trim()) {
+      return p.name.toLowerCase().includes(productSearch.trim().toLowerCase());
+    }
+    return true;
   });
 
   const productStepLabel =
@@ -178,8 +185,15 @@ export function HierarchicalProductPicker({
 
       {/* Step 4: Product / Service / Set list */}
       {showProductStep && (
-        <div>
+        <div className="space-y-1">
           <Label className="text-xs text-muted-foreground">{productStepLabel}</Label>
+          <Input
+            value={productSearch}
+            onChange={(e) => setProductSearch(e.target.value)}
+            placeholder="Search…"
+            className="h-8 text-xs"
+            data-testid={`input-product-search-${lineIndex}`}
+          />
           <Select
             value={currentProductId || ""}
             onValueChange={onProductSelect}

@@ -284,6 +284,7 @@ export const attendanceRecords = pgTable("attendance_records", {
   status: text("status").notNull().default("present"),
   selfieUrl: text("selfie_url"),
   location: text("location"),
+  notes: text("notes"),
 });
 
 export const fieldStaffActivities = pgTable("field_staff_activities", {

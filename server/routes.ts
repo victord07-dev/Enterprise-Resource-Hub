@@ -5526,16 +5526,21 @@ export async function registerRoutes(
         const graceDeadline = 9 * 3600 + 35 * 60; // 9:35:00 AM
         const isLate = totalSeconds > graceDeadline;
 
-        // Check for an approved late arrival request for today — if one exists,
-        // mark as present and note the approval regardless of check-in time.
+        // Check for an approved late arrival request for today (IST date) — if
+        // one exists, override half_day → present and record a structured note.
         let status = isLate ? "half_day" : "present";
-        let lateApprovedNote: string | null = null;
+        let attendanceNotes: string | null = null;
         if (isLate) {
-          const todayStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
-          const approvedLAR = await storage.getApprovedLateArrivalForDate(employeeId, todayStr);
+          const istToday = todayIST(); // YYYY-MM-DD in Asia/Kolkata — no UTC drift
+          const approvedLAR = await storage.getApprovedLateArrivalForDate(employeeId, istToday);
           if (approvedLAR) {
             status = "present";
-            lateApprovedNote = `Late arrival approved (expected ${approvedLAR.expectedArrivalTime}). Reason: ${approvedLAR.reason}`;
+            attendanceNotes = JSON.stringify({
+              lateArrivalApproved: true,
+              approvedRequestId: approvedLAR.id,
+              expectedArrivalTime: approvedLAR.expectedArrivalTime,
+              reason: approvedLAR.reason,
+            });
           }
         }
 
@@ -5550,7 +5555,8 @@ export async function registerRoutes(
           teaIn: null,
           status,
           selfieUrl: selfieUrl || null,
-          location: lateApprovedNote ? `${location || ""} | ${lateApprovedNote}`.trim().replace(/^\| /, "") : (location || null),
+          location: location || null,
+          notes: attendanceNotes,
         });
         const message = isLate && status === "half_day"
           ? "Checked in - Marked as Half Day (Late arrival)"
@@ -6227,6 +6233,22 @@ export async function registerRoutes(
         reviewNote: null,
       });
       await logAction(req.user.id, "create", "late_arrival_requests", JSON.stringify({ id: lar.id, date, expectedArrivalTime }));
+      // Notify HR managers and admins of the new pending request
+      try {
+        const allUsers = await storage.getUsers();
+        const reviewers = allUsers.filter((u: any) => ["admin", "hr_manager"].includes(u.role) && u.isActive !== false);
+        for (const reviewer of reviewers) {
+          await storage.createNotification({
+            userId: reviewer.id,
+            type: "late_arrival_pending",
+            title: "New Late Arrival Request",
+            message: `${linked.name} has requested a late arrival for ${date} (expected ${expectedArrivalTime}). Reason: ${reason.trim()}`,
+            relatedId: lar.id,
+          });
+        }
+      } catch (e) {
+        console.error("Reviewer notification error:", e);
+      }
       res.status(201).json(lar);
     } catch (error) {
       res.status(500).json({ message: "Failed to create late arrival request" });

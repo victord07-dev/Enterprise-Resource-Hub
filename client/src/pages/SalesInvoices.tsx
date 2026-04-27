@@ -997,7 +997,7 @@ function InvoiceDetailPanel({
                 !(inv as any).signedCopyUrl ? (
                   <div className="rounded-md border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                    <p className="text-xs text-amber-800">Upload the signed invoice copy (above) before marking as recorded.</p>
+                    <p className="text-xs text-amber-800">Upload the signed invoice copy (below) before marking as recorded.</p>
                   </div>
                 ) : (
                   <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">

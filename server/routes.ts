@@ -25,6 +25,7 @@ import {
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
   insertBrandSchema, COST_VISIBLE_ROLES, COST_FIELDS_TO_REDACT,
+  insertLateArrivalRequestSchema,
   productSpecsSchema, customerTierPriceSchema, productCategorySchema,
   productCategoryValues, productCategoryDefaults, productLifecycleValues,
   brands as brandsTable, supplierProducts as supplierProductsTable,
@@ -5524,7 +5525,19 @@ export async function registerRoutes(
         const totalSeconds = checkInHour * 3600 + checkInMin * 60 + checkInSec;
         const graceDeadline = 9 * 3600 + 35 * 60; // 9:35:00 AM
         const isLate = totalSeconds > graceDeadline;
-        const status = isLate ? "half_day" : "present";
+
+        // Check for an approved late arrival request for today — if one exists,
+        // mark as present and note the approval regardless of check-in time.
+        let status = isLate ? "half_day" : "present";
+        let lateApprovedNote: string | null = null;
+        if (isLate) {
+          const todayStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
+          const approvedLAR = await storage.getApprovedLateArrivalForDate(employeeId, todayStr);
+          if (approvedLAR) {
+            status = "present";
+            lateApprovedNote = `Late arrival approved (expected ${approvedLAR.expectedArrivalTime}). Reason: ${approvedLAR.reason}`;
+          }
+        }
 
         const created = await storage.createAttendanceRecord({
           employeeId,
@@ -5537,10 +5550,14 @@ export async function registerRoutes(
           teaIn: null,
           status,
           selfieUrl: selfieUrl || null,
-          location: location || null,
+          location: lateApprovedNote ? `${location || ""} | ${lateApprovedNote}`.trim().replace(/^\| /, "") : (location || null),
         });
-        const message = isLate ? "Checked in - Marked as Half Day (Late arrival)" : "Checked in successfully";
-        return res.json({ type: "check_in", message, record: created, isLate });
+        const message = isLate && status === "half_day"
+          ? "Checked in - Marked as Half Day (Late arrival)"
+          : isLate && status === "present"
+          ? "Checked in - Late arrival approved, marked as Present"
+          : "Checked in successfully";
+        return res.json({ type: "check_in", message, record: created, isLate: isLate && status === "half_day" });
       }
 
       if (todayRecord.checkOut) {
@@ -6165,6 +6182,107 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete leave request" });
+    }
+  });
+
+  // ======================== LATE ARRIVAL REQUESTS ========================
+  app.get("/api/late-arrival-requests", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role === "admin" || req.user.role === "hr_manager") {
+        return res.json(await storage.getLateArrivalRequests());
+      }
+      const allEmps = await storage.getEmployees();
+      const linked = allEmps.find(e => e.userId === req.user.id);
+      if (!linked) return res.json([]);
+      res.json(await storage.getLateArrivalRequestsByEmployee(linked.id));
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch late arrival requests" });
+    }
+  });
+
+  app.post("/api/late-arrival-requests", authenticateToken, async (req: any, res) => {
+    try {
+      const { date, expectedArrivalTime, reason } = req.body;
+      if (!date || !expectedArrivalTime || !reason?.trim()) {
+        return res.status(400).json({ message: "date, expectedArrivalTime, and reason are required" });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      if (date < today) {
+        return res.status(400).json({ message: "Date must be today or a future date" });
+      }
+      const allEmps = await storage.getEmployees();
+      const linked = allEmps.find(e => e.userId === req.user.id);
+      if (!linked) return res.status(400).json({ message: "No employee record linked to your account" });
+      // Prevent duplicate pending/approved request for the same date
+      const existing = await storage.getLateArrivalRequestsByEmployee(linked.id);
+      const dup = existing.find(r => r.date === date && (r.status === "pending" || r.status === "approved"));
+      if (dup) return res.status(400).json({ message: "A late arrival request already exists for this date" });
+      const lar = await storage.createLateArrivalRequest({
+        employeeId: linked.id,
+        date,
+        expectedArrivalTime,
+        reason: reason.trim(),
+        status: "pending",
+        reviewedBy: null,
+        reviewNote: null,
+      });
+      await logAction(req.user.id, "create", "late_arrival_requests", JSON.stringify({ id: lar.id, date, expectedArrivalTime }));
+      res.status(201).json(lar);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create late arrival request" });
+    }
+  });
+
+  app.patch("/api/late-arrival-requests/:id/approve", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const existing = await storage.getLateArrivalRequest(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Request not found" });
+      if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be approved" });
+      const lar = await storage.updateLateArrivalRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
+      if (!lar) return res.status(404).json({ message: "Request not found" });
+      await notifyEmployee(lar.employeeId, "late_arrival_approved", "Late Arrival Approved",
+        `Your late arrival request for ${lar.date} (expected ${lar.expectedArrivalTime}) has been approved. Your check-in will be marked as Present.`, lar.id);
+      await logAction(req.user.id, "approve", "late_arrival_requests", JSON.stringify({ id: lar.id, date: lar.date, employeeId: lar.employeeId }));
+      res.json(lar);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to approve request" });
+    }
+  });
+
+  app.patch("/api/late-arrival-requests/:id/reject", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
+      const existing = await storage.getLateArrivalRequest(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Request not found" });
+      if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be rejected" });
+      const { reviewNote } = req.body;
+      if (!reviewNote?.trim()) return res.status(400).json({ message: "reviewNote (rejection reason) is required" });
+      const lar = await storage.updateLateArrivalRequest(req.params.id, { status: "rejected", reviewedBy: req.user.id, reviewNote: reviewNote.trim() });
+      if (!lar) return res.status(404).json({ message: "Request not found" });
+      await notifyEmployee(lar.employeeId, "late_arrival_rejected", "Late Arrival Request Rejected",
+        `Your late arrival request for ${lar.date} was rejected. Reason: ${reviewNote.trim()}`, lar.id);
+      await logAction(req.user.id, "reject", "late_arrival_requests", JSON.stringify({ id: lar.id, date: lar.date, employeeId: lar.employeeId, reviewNote }));
+      res.json(lar);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to reject request" });
+    }
+  });
+
+  app.delete("/api/late-arrival-requests/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const existing = await storage.getLateArrivalRequest(req.params.id);
+      if (!existing) return res.status(404).json({ message: "Request not found" });
+      if (req.user.role !== "admin" && req.user.role !== "hr_manager") {
+        const allEmps = await storage.getEmployees();
+        const linked = allEmps.find(e => e.userId === req.user.id);
+        if (!linked || existing.employeeId !== linked.id) return res.status(403).json({ message: "Forbidden" });
+        if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be withdrawn" });
+      }
+      await storage.deleteLateArrivalRequest(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete request" });
     }
   });
 

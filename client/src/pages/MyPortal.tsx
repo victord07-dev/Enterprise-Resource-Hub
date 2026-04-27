@@ -22,7 +22,8 @@ import EmployeeIdCard from "@/components/EmployeeIdCard";
 import { downloadIdCardPDF } from "@/lib/id-card-pdf";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { Textarea } from "@/components/ui/textarea";
-import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification, LeaveRequest } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification, LeaveRequest, LateArrivalRequest } from "@shared/schema";
+import { AlarmClock } from "lucide-react";
 
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -157,6 +158,40 @@ export default function MyPortal() {
     casual: "border-violet-400 text-violet-600 dark:text-violet-400",
     unpaid: "border-orange-400 text-orange-600 dark:text-orange-400",
   };
+
+  const { data: myLateArrivalRequests = [], isLoading: larLoading } = useQuery<LateArrivalRequest[]>({
+    queryKey: ["/api/late-arrival-requests"],
+    enabled: !!employeeId,
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  const [larDialogOpen, setLarDialogOpen] = useState(false);
+  const [larForm, setLarForm] = useState({ date: today, expectedArrivalTime: "", reason: "" });
+
+  const createLarMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/late-arrival-requests", larForm);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to submit"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/late-arrival-requests"] });
+      toast({ title: "Late arrival request submitted", description: "Your request is pending approval." });
+      setLarDialogOpen(false);
+      setLarForm({ date: today, expectedArrivalTime: "", reason: "" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const withdrawLarMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/late-arrival-requests/${id}`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/late-arrival-requests"] });
+      toast({ title: "Request withdrawn" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
 
   const [resubmitExpense, setResubmitExpense] = useState<TravelExpense | null>(null);
   const [editNotes, setEditNotes] = useState("");
@@ -623,6 +658,78 @@ export default function MyPortal() {
         </Card>
       )}
 
+      {employeeId && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <AlarmClock className="w-4 h-4 text-amber-500" />
+                My Late Arrival Requests
+              </CardTitle>
+              <Button size="sm" onClick={() => { setLarForm({ date: today, expectedArrivalTime: "", reason: "" }); setLarDialogOpen(true); }} data-testid="button-request-late-arrival">
+                Request Late Arrival
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            {larLoading ? (
+              <div className="p-4 space-y-2">
+                {Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+              </div>
+            ) : myLateArrivalRequests.length === 0 ? (
+              <p className="p-6 text-center text-sm text-muted-foreground">No late arrival requests yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Expected Time</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {myLateArrivalRequests.map(lar => (
+                      <tr key={lar.id} className="border-b last:border-0" data-testid={`row-lar-${lar.id}`}>
+                        <td className="p-3">{new Date(lar.date + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</td>
+                        <td className="p-3">{lar.expectedArrivalTime}</td>
+                        <td className="p-3 text-muted-foreground max-w-[180px] truncate">{lar.reason}</td>
+                        <td className="p-3">
+                          {lar.status === "pending" && <Badge variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate">Pending</Badge>}
+                          {lar.status === "approved" && <Badge variant="outline" className="border-emerald-400 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate">Approved</Badge>}
+                          {lar.status === "rejected" && (
+                            <div>
+                              <Badge variant="outline" className="border-red-400 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate">Rejected</Badge>
+                              {lar.reviewNote && <p className="text-xs text-red-500 mt-0.5">{lar.reviewNote}</p>}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          {lar.status === "pending" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-950/20"
+                              data-testid={`button-withdraw-lar-${lar.id}`}
+                              onClick={() => { if (confirm("Withdraw this late arrival request?")) withdrawLarMutation.mutate(lar.id); }}
+                              disabled={withdrawLarMutation.isPending}
+                            >
+                              Withdraw
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {currentUser?.role === "field_staff" && (
         <Card>
           <CardHeader className="pb-3">
@@ -786,6 +893,64 @@ export default function MyPortal() {
               data-testid="button-submit-leave"
             >
               {createLeaveMutation.isPending ? "Submitting..." : "Submit Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={larDialogOpen} onOpenChange={setLarDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Request Late Arrival</DialogTitle>
+            <DialogDescription>
+              Submit a request to be marked as Present even if you check in after 9:35 AM.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Date</Label>
+              <Input
+                type="date"
+                min={today}
+                value={larForm.date}
+                onChange={e => setLarForm({ ...larForm, date: e.target.value })}
+                data-testid="input-lar-date"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Expected Arrival Time</Label>
+              <Input
+                type="time"
+                value={larForm.expectedArrivalTime}
+                onChange={e => setLarForm({ ...larForm, expectedArrivalTime: e.target.value })}
+                data-testid="input-lar-time"
+              />
+              <p className="text-xs text-muted-foreground">Enter the approximate time you expect to arrive.</p>
+            </div>
+            <div className="space-y-2">
+              <Label>Reason <span className="text-red-500">*</span></Label>
+              <Textarea
+                value={larForm.reason}
+                onChange={e => setLarForm({ ...larForm, reason: e.target.value })}
+                placeholder="Briefly describe why you will be arriving late..."
+                rows={3}
+                data-testid="input-lar-reason"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLarDialogOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (!larForm.date) { toast({ title: "Select a date", variant: "destructive" }); return; }
+                if (!larForm.expectedArrivalTime) { toast({ title: "Enter expected arrival time", variant: "destructive" }); return; }
+                if (!larForm.reason.trim()) { toast({ title: "Reason is required", variant: "destructive" }); return; }
+                createLarMutation.mutate();
+              }}
+              disabled={createLarMutation.isPending}
+              data-testid="button-submit-lar"
+            >
+              {createLarMutation.isPending ? "Submitting..." : "Submit Request"}
             </Button>
           </DialogFooter>
         </DialogContent>

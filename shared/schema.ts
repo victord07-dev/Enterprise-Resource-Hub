@@ -609,6 +609,22 @@ export const leaveRequests = pgTable("leave_requests", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const lateArrivalRequests = pgTable("late_arrival_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  date: date("date").notNull(),
+  expectedArrivalTime: text("expected_arrival_time").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("pending"),
+  reviewedBy: varchar("reviewed_by"),
+  reviewNote: text("review_note"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertLateArrivalRequestSchema = createInsertSchema(lateArrivalRequests).omit({ id: true, createdAt: true });
+export type LateArrivalRequest = typeof lateArrivalRequests.$inferSelect;
+export type InsertLateArrivalRequest = z.infer<typeof insertLateArrivalRequestSchema>;
+
 // Sales Invoices (GST-compliant, created from dispatched delivery challans)
 export const salesInvoices = pgTable("sales_invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

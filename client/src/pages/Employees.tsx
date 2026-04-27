@@ -10,14 +10,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp, CalendarOff, Check, X, CreditCard } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp, CalendarOff, Check, X, CreditCard, AlarmClock } from "lucide-react";
 import EmployeeIdCard from "@/components/EmployeeIdCard";
 import { downloadIdCardPDF } from "@/lib/id-card-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest, LateArrivalRequest } from "@shared/schema";
 
 type UserAccount = { id: string; username: string; role: string };
 
@@ -95,6 +95,43 @@ export default function Employees() {
   });
 
   const leaveTypeLabel: Record<string, string> = { annual: "Annual", sick: "Sick", casual: "Casual", unpaid: "Unpaid" };
+
+  // ——— Late Arrival Requests ———
+  const { data: allLateArrivalRequests = [], isLoading: larLoading } = useQuery<LateArrivalRequest[]>({
+    queryKey: ["/api/late-arrival-requests"],
+  });
+  const [larSubTab, setLarSubTab] = useState<"pending" | "history">("pending");
+  const [larEmployeeFilter, setLarEmployeeFilter] = useState("all");
+  const [rejectLarDialogOpen, setRejectLarDialogOpen] = useState(false);
+  const [rejectingLarId, setRejectingLarId] = useState<string | null>(null);
+  const [rejectLarNote, setRejectLarNote] = useState("");
+
+  const approveLarMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("PATCH", `/api/late-arrival-requests/${id}/approve`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/late-arrival-requests"] });
+      toast({ title: "Late arrival approved" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const rejectLarMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/late-arrival-requests/${rejectingLarId}/reject`, { reviewNote: rejectLarNote });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/late-arrival-requests"] });
+      toast({ title: "Late arrival request rejected" });
+      setRejectLarDialogOpen(false);
+      setRejectingLarId(null);
+      setRejectLarNote("");
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
 
   const getLeaveBalance = (empId: string) => {
     const year = new Date().getFullYear();
@@ -401,6 +438,14 @@ export default function Employees() {
             {allLeaveRequests.filter(lr => lr.status === "pending").length > 0 && (
               <span className="ml-1.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold">
                 {allLeaveRequests.filter(lr => lr.status === "pending").length}
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="late_arrivals" data-testid="tab-late-arrivals" className="relative">
+            Late Arrivals
+            {allLateArrivalRequests.filter(r => r.status === "pending").length > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+                {allLateArrivalRequests.filter(r => r.status === "pending").length}
               </span>
             )}
           </TabsTrigger>
@@ -975,7 +1020,163 @@ export default function Employees() {
             </div>
           )}
         </TabsContent>
+
+        <TabsContent value="late_arrivals" className="space-y-4">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex rounded-lg border overflow-hidden">
+              <button
+                className={`px-4 py-1.5 text-sm font-medium transition-colors ${larSubTab === "pending" ? "bg-primary text-primary-foreground" : "hover:bg-muted/50"}`}
+                onClick={() => setLarSubTab("pending")}
+                data-testid="button-lar-pending-tab"
+              >
+                Pending {allLateArrivalRequests.filter(r => r.status === "pending").length > 0 && `(${allLateArrivalRequests.filter(r => r.status === "pending").length})`}
+              </button>
+              <button
+                className={`px-4 py-1.5 text-sm font-medium transition-colors border-l ${larSubTab === "history" ? "bg-primary text-primary-foreground" : "hover:bg-muted/50"}`}
+                onClick={() => setLarSubTab("history")}
+                data-testid="button-lar-history-tab"
+              >
+                History
+              </button>
+            </div>
+            <Select value={larEmployeeFilter} onValueChange={setLarEmployeeFilter}>
+              <SelectTrigger className="w-48" data-testid="select-lar-employee-filter">
+                <SelectValue placeholder="All Employees" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Employees</SelectItem>
+                {employees?.map(emp => (
+                  <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              {larLoading ? (
+                <div className="p-4 space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
+              ) : (() => {
+                const rows = allLateArrivalRequests.filter(r => {
+                  const matchStatus = larSubTab === "pending" ? r.status === "pending" : r.status !== "pending";
+                  const matchEmp = larEmployeeFilter === "all" || r.employeeId === larEmployeeFilter;
+                  return matchStatus && matchEmp;
+                }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                return rows.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+                    <AlarmClock className="w-8 h-8 opacity-30" />
+                    <p className="text-sm">{larSubTab === "pending" ? "No pending late arrival requests" : "No history yet"}</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Expected Time</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                          {larSubTab === "history" && <th className="text-left p-3 font-medium text-muted-foreground">Review Note</th>}
+                          <th className="text-left p-3 font-medium text-muted-foreground">Submitted</th>
+                          {larSubTab === "pending" && <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(lar => {
+                          const emp = employees?.find(e => e.id === lar.employeeId);
+                          return (
+                            <tr key={lar.id} className="border-b last:border-0" data-testid={`row-lar-mgr-${lar.id}`}>
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  <Avatar className="w-7 h-7"><AvatarFallback className="text-xs">{emp?.name?.charAt(0) || "?"}</AvatarFallback></Avatar>
+                                  <span className="font-medium">{emp?.name || "Unknown"}</span>
+                                </div>
+                              </td>
+                              <td className="p-3">{new Date(lar.date + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</td>
+                              <td className="p-3">{lar.expectedArrivalTime}</td>
+                              <td className="p-3 text-muted-foreground text-xs max-w-[160px] truncate">{lar.reason}</td>
+                              <td className="p-3">
+                                {lar.status === "pending" && <Badge variant="outline" className="border-amber-400 text-amber-600 dark:text-amber-400 no-default-hover-elevate no-default-active-elevate">Pending</Badge>}
+                                {lar.status === "approved" && <Badge variant="outline" className="border-emerald-400 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate">Approved</Badge>}
+                                {lar.status === "rejected" && <Badge variant="outline" className="border-red-400 text-red-600 dark:text-red-400 no-default-hover-elevate no-default-active-elevate">Rejected</Badge>}
+                              </td>
+                              {larSubTab === "history" && (
+                                <td className="p-3 text-xs text-muted-foreground max-w-[160px] truncate">{lar.reviewNote || "—"}</td>
+                              )}
+                              <td className="p-3 text-muted-foreground text-xs">{new Date(lar.createdAt).toLocaleDateString("en-IN")}</td>
+                              {larSubTab === "pending" && (
+                                <td className="p-3 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 gap-1"
+                                      data-testid={`button-approve-lar-${lar.id}`}
+                                      onClick={() => { if (confirm(`Approve late arrival for ${emp?.name || "this employee"} on ${lar.date}?`)) approveLarMutation.mutate(lar.id); }}
+                                      disabled={approveLarMutation.isPending}
+                                    >
+                                      <Check className="w-3 h-3" /> Approve
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-red-400 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 gap-1"
+                                      data-testid={`button-reject-lar-${lar.id}`}
+                                      onClick={() => { setRejectingLarId(lar.id); setRejectLarNote(""); setRejectLarDialogOpen(true); }}
+                                    >
+                                      <X className="w-3 h-3" /> Reject
+                                    </Button>
+                                  </div>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      <Dialog open={rejectLarDialogOpen} onOpenChange={setRejectLarDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reject Late Arrival Request</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">Provide a reason. The employee will be notified.</p>
+            <div className="space-y-2">
+              <Label>Rejection Reason</Label>
+              <Textarea
+                value={rejectLarNote}
+                onChange={e => setRejectLarNote(e.target.value)}
+                placeholder="e.g. Insufficient notice, operational needs..."
+                rows={3}
+                data-testid="input-reject-lar-note"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRejectLarDialogOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!rejectLarNote.trim()) { toast({ title: "Reason required", variant: "destructive" }); return; }
+                rejectLarMutation.mutate();
+              }}
+              disabled={rejectLarMutation.isPending}
+              data-testid="button-confirm-reject-lar"
+            >
+              {rejectLarMutation.isPending ? "Rejecting..." : "Reject Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
         <DialogContent className="max-w-sm">

@@ -3,7 +3,7 @@ import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
 import {
   users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
+  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -13,7 +13,7 @@ import {
   type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment, type ProductBundleItem, type InsertProductBundleItem,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
+  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type LateArrivalRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
   type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
   type WhatsappTemplateSyncLog, type InsertWhatsappTemplateSyncLog,
   type WhatsappWebhookJob, type WhatsappWebhookJobDeadLetter,
@@ -306,6 +306,15 @@ export interface IStorage {
   createLeaveRequest(data: Omit<LeaveRequest, "id" | "createdAt">): Promise<LeaveRequest>;
   updateLeaveRequest(id: string, data: Partial<Omit<LeaveRequest, "id" | "createdAt">>): Promise<LeaveRequest | undefined>;
   deleteLeaveRequest(id: string): Promise<boolean>;
+
+  // Late Arrival Requests
+  getLateArrivalRequests(): Promise<LateArrivalRequest[]>;
+  getLateArrivalRequestsByEmployee(employeeId: string): Promise<LateArrivalRequest[]>;
+  getLateArrivalRequest(id: string): Promise<LateArrivalRequest | undefined>;
+  getApprovedLateArrivalForDate(employeeId: string, date: string): Promise<LateArrivalRequest | undefined>;
+  createLateArrivalRequest(data: Omit<LateArrivalRequest, "id" | "createdAt">): Promise<LateArrivalRequest>;
+  updateLateArrivalRequest(id: string, data: Partial<Omit<LateArrivalRequest, "id" | "createdAt">>): Promise<LateArrivalRequest | undefined>;
+  deleteLateArrivalRequest(id: string): Promise<boolean>;
 
   // Supplier Invoices
   getSupplierInvoices(): Promise<SupplierInvoice[]>;
@@ -1405,6 +1414,48 @@ export class DatabaseStorage implements IStorage {
 
   async deleteLeaveRequest(id: string): Promise<boolean> {
     await db.delete(leaveRequests).where(eq(leaveRequests.id, id));
+    return true;
+  }
+
+  // Late Arrival Requests
+  async getLateArrivalRequests(): Promise<LateArrivalRequest[]> {
+    return await db.select().from(lateArrivalRequests).orderBy(desc(lateArrivalRequests.createdAt));
+  }
+
+  async getLateArrivalRequestsByEmployee(employeeId: string): Promise<LateArrivalRequest[]> {
+    return await db.select().from(lateArrivalRequests)
+      .where(eq(lateArrivalRequests.employeeId, employeeId))
+      .orderBy(desc(lateArrivalRequests.createdAt));
+  }
+
+  async getLateArrivalRequest(id: string): Promise<LateArrivalRequest | undefined> {
+    const [r] = await db.select().from(lateArrivalRequests).where(eq(lateArrivalRequests.id, id));
+    return r;
+  }
+
+  async getApprovedLateArrivalForDate(employeeId: string, date: string): Promise<LateArrivalRequest | undefined> {
+    const [r] = await db.select().from(lateArrivalRequests).where(
+      and(
+        eq(lateArrivalRequests.employeeId, employeeId),
+        eq(lateArrivalRequests.date, date),
+        eq(lateArrivalRequests.status, "approved")
+      )
+    );
+    return r;
+  }
+
+  async createLateArrivalRequest(data: Omit<LateArrivalRequest, "id" | "createdAt">): Promise<LateArrivalRequest> {
+    const [created] = await db.insert(lateArrivalRequests).values(data).returning();
+    return created;
+  }
+
+  async updateLateArrivalRequest(id: string, data: Partial<Omit<LateArrivalRequest, "id" | "createdAt">>): Promise<LateArrivalRequest | undefined> {
+    const [updated] = await db.update(lateArrivalRequests).set(data).where(eq(lateArrivalRequests.id, id)).returning();
+    return updated;
+  }
+
+  async deleteLateArrivalRequest(id: string): Promise<boolean> {
+    await db.delete(lateArrivalRequests).where(eq(lateArrivalRequests.id, id));
     return true;
   }
 

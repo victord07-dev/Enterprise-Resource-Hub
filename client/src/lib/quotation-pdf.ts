@@ -22,15 +22,27 @@ const COMPANY = {
 };
 
 const BANKING = [
-  { bank: "HDFC Bank", acNo: "99999365647772", ifsc: "HDFC0002036", type: "Current Account" },
-  { bank: "State Bank of India", acNo: "44833748463",   ifsc: "SBIN0000146",  type: "Current Account" },
+  {
+    bank:   "HDFC Bank",
+    holder: "M/S IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    branch: "Haibargaon, Nagaon",
+    acNo:   "99999365647772",
+    ifsc:   "HDFC0002036",
+  },
+  {
+    bank:   "State Bank of India",
+    holder: "M/S IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    branch: "Nagaon",
+    acNo:   "44833748463",
+    ifsc:   "SBIN0000146",
+  },
 ];
 
 const TERMS = [
-  "All prices are inclusive of applicable GST.",
+  "All prices are inclusive of 5% GST.",
   "100% advance payment required before supply or work commencement. Accepted modes: NEFT / RTGS / UPI / Account Payee Cheque only. Work begins only on fund realisation.",
-  "Materials will be delivered and installed at our cost within Nagaon, Assam limits.",
-  "Delivery outside Nagaon, Assam city limits is charged extra — freight, loading & transportation costs at actuals.",
+  "Materials will be delivered and installed at our cost.",
+  "Delivery is within Nagaon, Assam limits only. Freight, loading & transportation outside city limits are charged extra at actuals.",
   "Site must be ready before scheduled visit. Revisit charges apply if our team cannot proceed due to site unreadiness. Engineers' travel, food & lodging for sites outside Nagaon, Assam are under the buyer's scope.",
   "Warranty on materials is as per respective manufacturer's terms. Warranty is void for misuse, unauthorised modifications, or power fluctuations.",
   "Orders once confirmed and materials procured cannot be cancelled. Cancellation costs will be recovered from the buyer.",
@@ -364,7 +376,7 @@ export function generateQuotationPDF(
   const termLineH  = 3.4; // mm per wrapped line
   const termLines  = TERMS.map(t => doc.splitTextToSize(`${TERMS.indexOf(t) + 1}. ${t}`, contentWidth));
   const termsBlockH = 8 + termLines.reduce((s, ls) => s + ls.length * termLineH + 1.5, 0);
-  const bankBlockH  = 8 + BANKING.length * 16;
+  const bankBlockH  = 8 + 26;
   const sigH        = 18;
   const footerH     = termsBlockH + bankBlockH + sigH + 8; // +8 for gaps
 
@@ -417,7 +429,7 @@ export function generateQuotationPDF(
   BANKING.forEach((bank, bi) => {
     const bx = margin + bi * (bankColW + 8);
     doc.setFillColor(...COLORS.infoBg);
-    drawRoundedRect(doc, bx, y, bankColW, 16, 2);
+    drawRoundedRect(doc, bx, y, bankColW, 22, 2);
 
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
@@ -425,17 +437,22 @@ export function generateQuotationPDF(
     doc.text(bank.bank, bx + 4, y + 5.5);
 
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(7);
+    doc.setFontSize(6.5);
     doc.setTextColor(...COLORS.textSecondary);
-    doc.text("Account No.", bx + 4, y + 9.5);
-    doc.text("IFSC Code",   bx + 4, y + 13);
+    doc.text(bank.holder, bx + 4, y + 9.5);
+
+    doc.setFontSize(7);
+    doc.text("Branch",      bx + 4, y + 13.5);
+    doc.text("Account No.", bx + 4, y + 17);
+    doc.text("IFSC Code",   bx + 4, y + 20.5);
 
     doc.setTextColor(...COLORS.textPrimary);
-    doc.text(bank.acNo, bx + bankColW - 4, y + 9.5,  { align: "right" });
-    doc.text(bank.ifsc, bx + bankColW - 4, y + 13,   { align: "right" });
+    doc.text(bank.branch, bx + bankColW - 4, y + 13.5, { align: "right" });
+    doc.text(bank.acNo,   bx + bankColW - 4, y + 17,   { align: "right" });
+    doc.text(bank.ifsc,   bx + bankColW - 4, y + 20.5, { align: "right" });
   });
 
-  y += 20;
+  y += 26;
 
   // Authorised Signature
   const sigX = pageWidth - margin - 65;

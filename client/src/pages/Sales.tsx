@@ -1709,7 +1709,18 @@ export default function Sales() {
           };
         });
       }));
-      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || [], bundlePdfMap);
+      let logoDataUrl: string | undefined;
+      try {
+        const resp = await fetch(logoPath);
+        const blob = await resp.blob();
+        logoDataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch { /* proceed without logo */ }
+      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || [], bundlePdfMap, logoDataUrl);
       toast({ title: "PDF downloaded", description: q.quoteNumber });
     } catch {
       toast({ title: "Failed to generate PDF", variant: "destructive" });

@@ -14,9 +14,9 @@ import { useCurrentUser } from "@/lib/auth";
 import { useNotificationBell } from "@/lib/notification-context";
 import { useToast } from "@/hooks/use-toast";
 import {
-  User, Briefcase, Building2, Calendar, Wallet, CheckCircle2, XCircle, Clock,
+  User, Briefcase, Building2, Calendar, CalendarCheck, Wallet, CheckCircle2, XCircle, Clock,
   Megaphone, Bus, Train, Bike, Navigation, MapPinned, Pencil, RotateCcw, Bell, CheckCheck,
-  CreditCard, Download
+  CreditCard, Download, CornerDownLeft
 } from "lucide-react";
 import EmployeeIdCard from "@/components/EmployeeIdCard";
 import { downloadIdCardPDF } from "@/lib/id-card-pdf";
@@ -392,6 +392,70 @@ export default function MyPortal() {
                     <p className="text-xs text-muted-foreground">On Leave</p>
                   </div>
                 </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <CalendarCheck className="w-4 h-4 text-emerald-500" />
+                {monthNames[currentMonth]} {currentYear} — Daily Attendance Detail
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {attLoading ? (
+                <div className="p-4 space-y-2">
+                  {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+                </div>
+              ) : thisMonthAttendance.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b">
+                        <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground">In</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-orange-600">Lunch↑</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-orange-600">Lunch↓</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-purple-600">Tea↑</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-purple-600">Tea↓</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-teal-600">Field↑</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground text-teal-600">Field↓</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground">Out</th>
+                        <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...thisMonthAttendance].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(a => {
+                        const ft = (t: Date | string | null | undefined) => t ? new Date(t as string).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "—";
+                        return (
+                          <tr key={a.id} className="border-b last:border-0" data-testid={`row-my-attendance-${a.id}`}>
+                            <td className="p-3 font-medium">{new Date(a.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</td>
+                            <td className="p-3">{ft(a.checkIn)}</td>
+                            <td className="p-3 text-orange-600">{ft(a.lunchOut)}</td>
+                            <td className="p-3 text-orange-600">{ft(a.lunchIn)}</td>
+                            <td className="p-3 text-purple-600">{ft(a.teaOut)}</td>
+                            <td className="p-3 text-purple-600">{ft(a.teaIn)}</td>
+                            <td className="p-3 text-teal-600">{ft(a.fieldVisitOut)}</td>
+                            <td className="p-3 text-teal-600">{ft(a.fieldVisitIn)}</td>
+                            <td className="p-3">{ft(a.checkOut)}</td>
+                            <td className="p-3">
+                              <Badge
+                                variant={a.status === "present" ? "default" : a.status === "half_day" ? "outline" : "secondary"}
+                                className={`no-default-hover-elevate no-default-active-elevate ${a.status === "half_day" ? "border-amber-500 text-amber-600 dark:text-amber-400" : ""}`}
+                                data-testid={`badge-my-att-status-${a.id}`}
+                              >
+                                {a.status === "half_day" ? "Half Day" : a.status === "on_leave" ? "On Leave" : a.status}
+                              </Badge>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="p-6 text-center text-sm text-muted-foreground">No attendance records this month.</p>
               )}
             </CardContent>
           </Card>

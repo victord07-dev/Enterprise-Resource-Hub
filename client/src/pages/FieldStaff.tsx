@@ -12,7 +12,8 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal, Loader2, Info } from "lucide-react";
+import { Bus, Train, Bike, Navigation, MapPinned, Clock, DollarSign, Route, Play, CheckCircle, Banknote, MapPin, Users, Calendar, Eye, XCircle, Timer, Signal, Loader2, Info, Navigation2 } from "lucide-react";
+import { snapToRoads } from "@/lib/osrm";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -56,7 +57,9 @@ export default function FieldStaff() {
 
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [selectedTripRoute, setSelectedTripRoute] = useState<LocationLog[] | null>(null);
+  const [snappedRouteCoords, setSnappedRouteCoords] = useState<[number, number][] | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
+  const [routeSnapping, setRouteSnapping] = useState(false);
   const [selectedFieldEmployee, setSelectedFieldEmployee] = useState<string | null>(null);
   const [routeFilterEmployee, setRouteFilterEmployee] = useState<string>("all");
 
@@ -298,6 +301,7 @@ export default function FieldStaff() {
   const viewTripRoute = useCallback(async (tripId: string) => {
     if (routeLoading) return;
     setRouteLoading(true);
+    setSnappedRouteCoords(null);
     try {
       const res = await fetch(`/api/trips/${tripId}/route`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
@@ -307,11 +311,18 @@ export default function FieldStaff() {
       setSelectedTripRoute(logs);
       if (logs.length === 0) {
         toast({ title: "No GPS data", description: "No GPS points were recorded for this trip. The employee may not have had location access enabled.", variant: "default" });
+      } else if (logs.length >= 2) {
+        // Snap the GPS trace to actual roads via OSRM (falls back to straight-line on error)
+        setRouteLoading(false);
+        setRouteSnapping(true);
+        const snapped = await snapToRoads(logs);
+        setSnappedRouteCoords(snapped);
       }
     } catch {
       toast({ title: "Error", description: "Failed to load route", variant: "destructive" });
     } finally {
       setRouteLoading(false);
+      setRouteSnapping(false);
     }
   }, [toast, routeLoading]);
 
@@ -323,20 +334,29 @@ export default function FieldStaff() {
 
     if (selectedTripRoute && selectedTripRoute.length > 0) {
       const sorted = [...selectedTripRoute].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      const latlngs: L.LatLngExpression[] = sorted.map(l => [Number(l.lat), Number(l.lng)]);
+      // Use road-snapped coords if available, otherwise fall back to raw GPS straight-line
+      const rawLatlngs: L.LatLngExpression[] = sorted.map(l => [Number(l.lat), Number(l.lng)]);
+      const latlngs: L.LatLngExpression[] = snappedRouteCoords ?? rawLatlngs;
 
-      const startMarker = L.marker(latlngs[0] as L.LatLngExpression, { icon: createMarkerIcon('origin') })
+      const startMarker = L.marker(rawLatlngs[0] as L.LatLngExpression, { icon: createMarkerIcon('origin') })
         .addTo(adminMapInstance.current!)
         .bindPopup(`Start: ${new Date(sorted[0].timestamp).toLocaleTimeString()}`);
       adminMarkersRef.current.push(startMarker);
 
       if (latlngs.length > 1) {
-        const endMarker = L.marker(latlngs[latlngs.length - 1] as L.LatLngExpression, { icon: createMarkerIcon('destination') })
+        const endMarker = L.marker(rawLatlngs[rawLatlngs.length - 1] as L.LatLngExpression, { icon: createMarkerIcon('destination') })
           .addTo(adminMapInstance.current!)
           .bindPopup(`End: ${new Date(sorted[sorted.length - 1].timestamp).toLocaleTimeString()}`);
         adminMarkersRef.current.push(endMarker);
 
-        adminPolylineRef.current = L.polyline(latlngs, { color: "#3b82f6", weight: 4, opacity: 0.8 }).addTo(adminMapInstance.current!);
+        // Road-snapped route shown in blue; straight-line fallback in muted grey
+        const isSnapped = !!snappedRouteCoords;
+        adminPolylineRef.current = L.polyline(latlngs, {
+          color: isSnapped ? "#3b82f6" : "#94a3b8",
+          weight: isSnapped ? 4 : 3,
+          opacity: isSnapped ? 0.85 : 0.6,
+          dashArray: isSnapped ? undefined : "6 4",
+        }).addTo(adminMapInstance.current!);
         adminMapInstance.current!.fitBounds(adminPolylineRef.current.getBounds(), { padding: [40, 40] });
       } else {
         adminMapInstance.current!.setView(latlngs[0] as L.LatLngExpression, 14);
@@ -359,7 +379,7 @@ export default function FieldStaff() {
         adminMarkersRef.current.push(marker);
       });
     }
-  }, [locationLogs, selectedTripRoute, getEmployeeName, activeTripsData]);
+  }, [locationLogs, selectedTripRoute, snappedRouteCoords, getEmployeeName, activeTripsData]);
 
 
   useEffect(() => {
@@ -784,13 +804,28 @@ export default function FieldStaff() {
                       <Loader2 className="w-4 h-4 animate-spin" />
                       Loading Route…
                     </span>
-                  ) : selectedTripId ? "Trip Route" : "Live Location Map"}
-                  {selectedTripId && !routeLoading && (
+                  ) : routeSnapping ? (
+                    <span className="flex items-center gap-2">
+                      <Navigation2 className="w-4 h-4 animate-pulse text-blue-500" />
+                      Snapping to roads…
+                    </span>
+                  ) : selectedTripId ? (
+                    <span className="flex items-center gap-2">
+                      Trip Route
+                      {snappedRouteCoords && (
+                        <Badge variant="secondary" className="text-[10px] font-normal px-1.5 py-0 no-default-hover-elevate no-default-active-elevate">
+                          <Navigation2 className="w-3 h-3 mr-1 text-blue-500" />
+                          Road-snapped
+                        </Badge>
+                      )}
+                    </span>
+                  ) : "Live Location Map"}
+                  {selectedTripId && !routeLoading && !routeSnapping && (
                     <Button
                       size="sm"
                       variant="outline"
                       className="ml-auto"
-                      onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); }}
+                      onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); setSnappedRouteCoords(null); }}
                       data-testid="button-clear-route"
                     >
                       Clear Route
@@ -811,7 +846,7 @@ export default function FieldStaff() {
                       <Info className="w-8 h-8 text-muted-foreground mb-2" />
                       <p className="text-sm font-medium text-muted-foreground">No GPS data recorded</p>
                       <p className="text-xs text-muted-foreground mt-1">The employee may not have had location access enabled.</p>
-                      <Button size="sm" variant="outline" className="mt-3" onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); }}>
+                      <Button size="sm" variant="outline" className="mt-3" onClick={() => { setSelectedTripId(null); setSelectedTripRoute(null); setSnappedRouteCoords(null); }}>
                         Back to Live Map
                       </Button>
                     </div>

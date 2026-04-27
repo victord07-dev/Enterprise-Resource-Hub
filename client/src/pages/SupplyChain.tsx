@@ -1081,7 +1081,17 @@ export default function SupplyChain() {
       ...item,
       unitCost: prItemCosts[item.id] ? prItemCosts[item.id] : item.unitCost,
     }));
-    await apiRequest("POST", `/api/purchase-requests/${editingPr.id}/items`, { items: updatedItems });
+    try {
+      const itemsRes = await apiRequest("POST", `/api/purchase-requests/${editingPr.id}/items`, { items: updatedItems });
+      if (!itemsRes.ok) {
+        const err = await itemsRes.json().catch(() => ({}));
+        toast({ title: "Failed to save item costs", description: err.message || "Please try again.", variant: "destructive" });
+        return;
+      }
+    } catch {
+      toast({ title: "Failed to save item costs", description: "Network error — please try again.", variant: "destructive" });
+      return;
+    }
     queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests", editingPr.id, "items"] });
     // Step 2: update PR header + optional approve
     updatePrMutation.mutate({
@@ -1961,6 +1971,11 @@ export default function SupplyChain() {
               {prApproveMode ? "Approve Purchase Request" : "Edit Purchase Request"}{" "}
               {editingPr?.requestNumber}
             </DialogTitle>
+            {prApproveMode && (
+              <p className="text-sm text-muted-foreground pt-1">
+                Select a supplier and confirm all item prices, then click <strong>Approve &amp; Save</strong>.
+              </p>
+            )}
           </DialogHeader>
 
           <div className="space-y-4">

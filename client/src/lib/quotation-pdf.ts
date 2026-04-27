@@ -16,7 +16,8 @@ const COLORS = {
 const COMPANY = {
   name:    "IT Futuristic Industries Pvt. Ltd.",
   gstin:   "18AAICI6408B1ZR",
-  email:   "admin@itfi.co.in",
+  phone:   "+91 80115 35537",
+  email:   "info@itfi.co.in",
   website: "www.itfi.co.in",
   address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
 };
@@ -24,14 +25,14 @@ const COMPANY = {
 const BANKING = [
   {
     bank:   "HDFC Bank",
-    holder: "M/S IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
     branch: "Haibargaon, Nagaon",
     acNo:   "99999365647772",
     ifsc:   "HDFC0002036",
   },
   {
     bank:   "State Bank of India",
-    holder: "M/S IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
     branch: "Nagaon",
     acNo:   "44833748463",
     ifsc:   "SBIN0000146",
@@ -75,124 +76,190 @@ export function generateQuotationPDF(
   const contentWidth = pageWidth - margin * 2;
   let y = 0;
 
-  // ── Header — navy band ────────────────────────────────────────────────────────
+  // ── Header — navy band (40 mm tall) ──────────────────────────────────────────
+  const headerH = 40;
   doc.setFillColor(...COLORS.headerBg);
-  doc.rect(0, 0, pageWidth, 34, "F");
+  doc.rect(0, 0, pageWidth, headerH, "F");
+
+  // Logo — 1.8× original size (104 × 23 mm), vertically centred in header
+  const logoW = 104;
+  const logoH = 23;
+  const logoY = (headerH - logoH) / 2;   // ≈ 8.5 mm
 
   if (logoDataUrl) {
     try {
-      doc.addImage(logoDataUrl, "PNG", margin, 3.5, 58, 13);
+      doc.addImage(logoDataUrl, "PNG", margin, logoY, logoW, logoH);
     } catch {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(13);
       doc.setTextColor(...COLORS.headerText);
-      doc.text(COMPANY.name, margin, 13);
+      doc.text(COMPANY.name, margin, headerH / 2 + 2);
     }
   } else {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
     doc.setTextColor(...COLORS.headerText);
-    doc.text(COMPANY.name, margin, 13);
+    doc.text(COMPANY.name, margin, headerH / 2 + 2);
   }
 
+  // Right column — Company Name, Address, Phone, Email, Website, GSTIN
+  const rx = pageWidth - margin;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(7.5);
+  doc.setTextColor(220, 230, 248);
+  doc.text(COMPANY.name, rx, 8, { align: "right" });
+
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7);
+  doc.setFontSize(5.5);
   doc.setTextColor(180, 190, 210);
-  doc.text(`GSTIN: ${COMPANY.gstin}`, pageWidth - margin, 10, { align: "right" });
-  doc.text(COMPANY.email,   pageWidth - margin, 16, { align: "right" });
-  doc.text(COMPANY.website, pageWidth - margin, 21, { align: "right" });
+  const addrLines = doc.splitTextToSize(COMPANY.address, 82);
+  doc.text(addrLines[0], rx, 12.5, { align: "right" });
+  if (addrLines[1]) doc.text(addrLines[1], rx, 15.5, { align: "right" });
+
+  doc.setFontSize(6.5);
+  const phoneY   = addrLines[1] ? 19.5 : 17.5;
+  doc.text(`Phone: ${COMPANY.phone}`, rx, phoneY,     { align: "right" });
+  doc.text(COMPANY.email,             rx, phoneY + 4, { align: "right" });
+  doc.text(COMPANY.website,           rx, phoneY + 8, { align: "right" });
+  doc.text(`GSTIN: ${COMPANY.gstin}`, rx, phoneY + 12, { align: "right" });
 
   // Blue QUOTATION banner
+  const bannerY = headerH;
   doc.setFillColor(...COLORS.accent);
-  doc.rect(0, 34, pageWidth, 13, "F");
+  doc.rect(0, bannerY, pageWidth, 13, "F");
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.setTextColor(...COLORS.white);
-  doc.text("QUOTATION", pageWidth / 2, 42, { align: "center" });
+  doc.text("QUOTATION", pageWidth / 2, bannerY + 8.5, { align: "center" });
 
   // Address strip
+  const stripY = bannerY + 13;
   doc.setFillColor(241, 245, 249);
-  doc.rect(0, 47, pageWidth, 7, "F");
+  doc.rect(0, stripY, pageWidth, 7, "F");
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6.5);
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text(COMPANY.address, pageWidth / 2, 52, { align: "center" });
+  doc.text(COMPANY.address, pageWidth / 2, stripY + 4.5, { align: "center" });
 
-  y = 60;
+  y = stripY + 7 + 5;   // a little padding after the strip
 
   // ── Meta / Customer box ───────────────────────────────────────────────────────
   const hasDelivery = (quotation as any).deliveryMethod === "delivery";
   const deliveryCost = hasDelivery && (quotation as any).deliveryCost
     ? Number((quotation as any).deliveryCost) : 0;
-  const detailsBoxHeight = hasDelivery ? 36 : 28;
+
+  // Compute customer address lines count for dynamic box height
+  const custAddrLines = customer?.address
+    ? doc.splitTextToSize(customer.address, contentWidth / 2 - 8)
+    : [];
+  const custDetailRows = [
+    customer?.phone,
+    customer?.email,
+    customer?.gstNumber ? `GST: ${customer.gstNumber}` : null,
+  ].filter(Boolean);
+  const customerSectionH = customer
+    ? 7 + 6 + (custDetailRows.length > 0 ? 5 : 0) + (custAddrLines.length > 0 ? custAddrLines.length * 3.5 : 0)
+    : 0;
+  const deliveryRowH = hasDelivery ? 10 : 0;
+  const detailsBoxHeight = Math.max(28, 14 + customerSectionH + deliveryRowH);
 
   doc.setFillColor(...COLORS.infoBg);
   drawRoundedRect(doc, margin, y, contentWidth, detailsBoxHeight, 2);
 
-  doc.setFontSize(7);
+  // 4-column header row — evenly spaced
+  const colStep = contentWidth / 4;
+  const c1 = margin + 4;
+  const c2 = margin + colStep + 4;
+  const c3 = margin + colStep * 2 + 4;
+  const c4 = margin + colStep * 3 + 4;
+
+  doc.setFontSize(6.5);
+  doc.setFont("helvetica", "normal");
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Quote Number",      margin + 4,  y + 6);
-  doc.text("Date",              margin + 50, y + 6);
-  doc.text("Valid Until",       margin + 85, y + 6);
-  doc.text("Expected Delivery", margin + 120, y + 6);
+  doc.text("Quote Number",      c1, y + 6);
+  doc.text("Date",              c2, y + 6);
+  doc.text("Valid Until",       c3, y + 6);
+  doc.text("Expected Delivery", c4, y + 6);
 
   doc.setFontSize(9);
   doc.setTextColor(...COLORS.textPrimary);
   doc.setFont("helvetica", "bold");
-  doc.text(quotation.quoteNumber, margin + 4, y + 12);
+  doc.text(quotation.quoteNumber, c1, y + 12);
   doc.setFont("helvetica", "normal");
-  doc.text(new Date(quotation.createdAt).toLocaleDateString("en-IN"), margin + 50, y + 12);
-  doc.text(quotation.validUntil ? new Date(quotation.validUntil).toLocaleDateString("en-IN") : "—", margin + 85, y + 12);
-  doc.text(quotation.expectedDeliveryDate ? new Date(quotation.expectedDeliveryDate).toLocaleDateString("en-IN") : "—", margin + 120, y + 12);
+  doc.text(new Date(quotation.createdAt).toLocaleDateString("en-IN"), c2, y + 12);
+  doc.text(
+    quotation.validUntil
+      ? new Date(quotation.validUntil).toLocaleDateString("en-IN")
+      : "—",
+    c3, y + 12,
+  );
+  doc.text(
+    quotation.expectedDeliveryDate
+      ? new Date(quotation.expectedDeliveryDate).toLocaleDateString("en-IN")
+      : "—",
+    c4, y + 12,
+  );
 
+  // Divider under header row
+  const divY = y + 14.5;
+  doc.setDrawColor(...COLORS.tableBorder);
+  doc.line(margin + 2, divY, margin + contentWidth - 2, divY);
+
+  // Bill To — two-column layout
   if (customer) {
-    doc.setFontSize(7);
+    const leftX  = margin + 4;
+    const rightX = margin + contentWidth / 2 + 4;
+    let rowY = divY + 5;
+
+    doc.setFontSize(6.5);
+    doc.setFont("helvetica", "normal");
     doc.setTextColor(...COLORS.textSecondary);
-    doc.text("Bill To", margin + 4, y + 19);
+    doc.text("Bill To", leftX, rowY);
+    rowY += 5;
 
     doc.setFontSize(9);
     doc.setTextColor(...COLORS.textPrimary);
     doc.setFont("helvetica", "bold");
-    doc.text(customer.name, margin + 4, y + 24);
+    doc.text(customer.name, leftX, rowY);
     doc.setFont("helvetica", "normal");
+    rowY += 5;
 
-    const custDetails: string[] = [];
-    if (customer.phone) custDetails.push(customer.phone);
-    if (customer.email) custDetails.push(customer.email);
-    if (customer.gstNumber) custDetails.push(`GST: ${customer.gstNumber}`);
-    if (custDetails.length > 0) {
-      doc.setFontSize(7.5);
-      doc.text(custDetails.join("  |  "), margin + 55, y + 24);
-    }
-    if (customer.address) {
-      doc.setFontSize(7.5);
+    if (custDetailRows.length > 0) {
+      doc.setFontSize(7);
       doc.setTextColor(...COLORS.textSecondary);
-      const addressLines = doc.splitTextToSize(customer.address, 120);
-      doc.text(addressLines, pageWidth - margin - 4, y + 19, { align: "right" });
+      doc.text(custDetailRows.join("  |  "), leftX, rowY);
+      rowY += 4.5;
+    }
+
+    if (custAddrLines.length > 0) {
+      doc.setFontSize(7);
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text(custAddrLines, leftX, rowY);
     }
   }
 
   if (hasDelivery) {
-    doc.setFontSize(7);
+    const delivRowY = y + detailsBoxHeight - deliveryRowH + 3;
+    doc.setFontSize(6.5);
+    doc.setFont("helvetica", "normal");
     doc.setTextColor(...COLORS.textSecondary);
-    doc.text("Delivery Method", margin + 4, y + 29);
+    doc.text("Delivery Method:", margin + 4, delivRowY);
     doc.setFontSize(8);
     doc.setTextColor(...COLORS.accent);
     doc.setFont("helvetica", "bold");
-    doc.text("Delivery", margin + 35, y + 29);
+    doc.text("Delivery", margin + 40, delivRowY);
     doc.setFont("helvetica", "normal");
     if ((quotation as any).deliveryAddress) {
-      doc.setFontSize(7);
+      doc.setFontSize(6.5);
       doc.setTextColor(...COLORS.textSecondary);
-      doc.text("Deliver To:", margin + 55, y + 29);
+      doc.text("Deliver To:", margin + 60, delivRowY);
       doc.setTextColor(...COLORS.textPrimary);
-      const addrText = doc.splitTextToSize((quotation as any).deliveryAddress, 80);
-      doc.text(addrText[0] || "", margin + 75, y + 29);
+      const addrText = doc.splitTextToSize((quotation as any).deliveryAddress, 70);
+      doc.text(addrText[0] || "", margin + 80, delivRowY);
     }
-    y += detailsBoxHeight + 6;
-  } else {
-    y += 34;
   }
+
+  y += detailsBoxHeight + 6;
 
   // ── Pre-compute all-in display amounts ────────────────────────────────────────
   const sumAllLinesSubtotal = items.reduce((acc, it) => acc + Number(it.totalPrice), 0);
@@ -249,7 +316,7 @@ export function generateQuotationPDF(
     const prod     = products?.find(p => p.id === item.productId);
     const warranty = prod?.warrantyPeriod && String(prod.warrantyPeriod).trim()
       ? String(prod.warrantyPeriod).trim() : null;
-    const isBundle   = prod?.type === "bundle";
+    const isBundle    = prod?.type === "bundle";
     const bundleComps = isBundle && item.productId
       ? (bundleItemsMap?.[item.productId] ?? []) : [];
     const bundleSubH = isBundle ? (bundleComps.length * 4) : 0;
@@ -298,7 +365,7 @@ export function generateQuotationPDF(
       doc.setFontSize(6.5);
       doc.setTextColor(...COLORS.textSecondary);
       bundleComps.forEach((comp, ci) => {
-        const subY    = baseY + ci * 4 + 2;
+        const subY     = baseY + ci * 4 + 2;
         const totalQty = Number(comp.quantity) * Number(item.quantity || 1);
         doc.text(`> ${comp.name}`, colX.desc + 2, subY);
         doc.text(`${totalQty} ${comp.unit}`, colX.qty, subY, { align: "right" });
@@ -371,14 +438,14 @@ export function generateQuotationPDF(
     y += noteLines.length * 4;
   }
 
-  // ── Terms, Banking & Signature ─────────────────────────────────────────────────
-  // Pre-compute height needed for the footer block
-  const termLineH  = 3.4; // mm per wrapped line
-  const termLines  = TERMS.map(t => doc.splitTextToSize(`${TERMS.indexOf(t) + 1}. ${t}`, contentWidth));
+  // ── Banking, Terms & Signature ────────────────────────────────────────────────
+  // Pre-compute footer height (banking first, then terms, then signature)
+  const termLineH   = 3.4;
+  const termLines   = TERMS.map(t => doc.splitTextToSize(`${TERMS.indexOf(t) + 1}. ${t}`, contentWidth));
   const termsBlockH = 8 + termLines.reduce((s, ls) => s + ls.length * termLineH + 1.5, 0);
   const bankBlockH  = 8 + 26;
   const sigH        = 18;
-  const footerH     = termsBlockH + bankBlockH + sigH + 8; // +8 for gaps
+  const footerH     = bankBlockH + termsBlockH + sigH + 8;
 
   if (pageHeight - y < footerH + 10) {
     doc.addPage();
@@ -387,34 +454,7 @@ export function generateQuotationPDF(
     y += 10;
   }
 
-  // Terms section
-  doc.setDrawColor(...COLORS.tableBorder);
-  doc.line(margin, y, pageWidth - margin, y);
-  y += 5;
-
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text("TERMS & CONDITIONS", margin, y);
-  y += 5;
-
-  doc.setFont("helvetica", "normal");
-  TERMS.forEach((term, idx) => {
-    const wrapped = doc.splitTextToSize(`${idx + 1}. ${term}`, contentWidth);
-    // page break mid-terms
-    if (y + wrapped.length * termLineH > pageHeight - 20) {
-      doc.addPage();
-      y = 20;
-    }
-    doc.setFontSize(6.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text(wrapped, margin, y);
-    y += wrapped.length * termLineH + 1.5;
-  });
-
-  y += 4;
-
-  // Banking section
+  // ── Banking section (above Terms) ────────────────────────────────────────────
   doc.setDrawColor(...COLORS.tableBorder);
   doc.line(margin, y, pageWidth - margin, y);
   y += 5;
@@ -454,17 +494,41 @@ export function generateQuotationPDF(
 
   y += 26;
 
-  // Authorised Signature
-  const sigX = pageWidth - margin - 65;
-  doc.setFontSize(7.5);
-  doc.setFont("helvetica", "normal");
+  // ── Terms section ─────────────────────────────────────────────────────────────
+  y += 4;
+  doc.setDrawColor(...COLORS.tableBorder);
+  doc.line(margin, y, pageWidth - margin, y);
+  y += 5;
+
+  doc.setFontSize(7);
+  doc.setFont("helvetica", "bold");
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("For IT Futuristic Industries Pvt. Ltd.", sigX, y);
-  y += 12;
+  doc.text("TERMS & CONDITIONS", margin, y);
+  y += 5;
+
+  doc.setFont("helvetica", "normal");
+  TERMS.forEach((term, idx) => {
+    const wrapped = doc.splitTextToSize(`${idx + 1}. ${term}`, contentWidth);
+    if (y + wrapped.length * termLineH > pageHeight - 20) {
+      doc.addPage();
+      y = 20;
+    }
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(wrapped, margin, y);
+    y += wrapped.length * termLineH + 1.5;
+  });
+
+  y += 4;
+
+  // ── Authorised Signature ──────────────────────────────────────────────────────
+  const sigX = pageWidth - margin - 65;
+  y += 8;
   doc.setDrawColor(...COLORS.tableBorder);
   doc.line(sigX, y, pageWidth - margin, y);
   y += 4;
   doc.setFontSize(7);
+  doc.setFont("helvetica", "normal");
   doc.setTextColor(...COLORS.textSecondary);
   doc.text("Authorised Signature", pageWidth - margin, y, { align: "right" });
 

@@ -16,6 +16,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
+import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -330,7 +331,7 @@ function FloorPriceRefPanel({ item, ep, touched }: { item: LineItem; ep: Effecti
   );
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct, deliveryCost }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
@@ -349,6 +350,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   bundleComponentsMap: Record<string, BundleItemRow[]>;
   loadBundleComponents: (bundleId: string) => Promise<BundleItemRow[]>;
   inventoryByProduct: Map<string, number>;
+  /** Delivery / logistics cost to include in Grand Total display */
+  deliveryCost?: number;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
   // Phase 7 — discontinued-component confirm dialog (when a bundle has a non-active component)
@@ -481,7 +484,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
   const totalTax = items.reduce((sum, it) => sum + (it.taxAmount || 0), 0);
   const discountAmount = discount ? calculateDiscount(subtotal, discount) : 0;
-  const netTotal = subtotal - discountAmount + totalTax;
+  const netTotal = subtotal - discountAmount + totalTax + (deliveryCost || 0);
 
   return (
     <div className="space-y-3">
@@ -826,6 +829,12 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             <div className="flex justify-between text-sm text-blue-600 dark:text-blue-400">
               <span>Total GST</span>
               <span data-testid="text-total-gst">+ ₹{totalTax.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
+          {(deliveryCost || 0) > 0 && (
+            <div className="flex justify-between text-sm text-orange-600 dark:text-orange-400">
+              <span>Delivery Cost</span>
+              <span data-testid="text-delivery-cost">+ ₹{(deliveryCost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           )}
           <div className="flex justify-between text-sm font-semibold border-t pt-1">
@@ -2855,6 +2864,7 @@ export default function Sales() {
               bundleComponentsMap={bundleComponentsMap}
               loadBundleComponents={loadBundleComponents}
               inventoryByProduct={inventoryByProduct}
+              deliveryCost={orderForm.deliveryMethod === "delivery" && orderForm.deliveryCost ? Number(orderForm.deliveryCost) : 0}
             />
           </div>
           {(() => {
@@ -2985,6 +2995,7 @@ export default function Sales() {
               bundleComponentsMap={bundleComponentsMap}
               loadBundleComponents={loadBundleComponents}
               inventoryByProduct={inventoryByProduct}
+              deliveryCost={quoteForm.deliveryMethod === "delivery" && quoteForm.deliveryCost ? Number(quoteForm.deliveryCost) : 0}
             />
           </div>
           {/* Phase 5.5 — Below-floor hard-block for quotations */}

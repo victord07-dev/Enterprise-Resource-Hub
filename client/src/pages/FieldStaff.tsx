@@ -477,6 +477,10 @@ export default function FieldStaff() {
     ? completedTrips
     : completedTrips.filter(t => t.employeeId === routeFilterEmployee);
 
+  const filteredActiveTrips = routeFilterEmployee === "all"
+    ? (activeTripsData ?? [])
+    : (activeTripsData ?? []).filter(t => t.employeeId === routeFilterEmployee);
+
   const groupedTrips = filteredCompletedTrips.reduce<Record<string, Trip[]>>((acc, trip) => {
     const dateKey = new Date(trip.date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
     if (!acc[dateKey]) acc[dateKey] = [];
@@ -620,53 +624,15 @@ export default function FieldStaff() {
 
         <TabsContent value="tracking" className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-1 space-y-4">
-              {activeTripsCount > 0 && (
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Play className="w-4 h-4 text-emerald-500" />
-                      Active Trips ({activeTripsCount})
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {activeTripsData?.map(trip => {
-                      const dist = tripDistances[trip.id] ?? 0;
-                      return (
-                      <div
-                        key={trip.id}
-                        className={`flex items-center justify-between gap-2 p-2.5 rounded-md border cursor-pointer transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"}`}
-                        onClick={() => viewTripRoute(trip.id)}
-                        data-testid={`active-trip-${trip.id}`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <span className="flex items-center gap-1"><Timer className="w-3 h-3" />{formatDuration(trip.startTime)}</span>
-                              {dist > 0 && <span className="flex items-center gap-1"><Route className="w-3 h-3" />{dist.toFixed(1)} km</span>}
-                            </div>
-                          </div>
-                        </div>
-                        <Button size="sm" variant="ghost" className="shrink-0 text-emerald-600" disabled={routeLoading && selectedTripId === trip.id} data-testid={`button-view-active-trip-${trip.id}`}>
-                          {routeLoading && selectedTripId === trip.id
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <Eye className="w-3.5 h-3.5" />}
-                        </Button>
-                      </div>
-                    );})}
-
-                  </CardContent>
-                </Card>
-              )}
-
+            <div className="lg:col-span-1">
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Route className="w-4 h-4" />
-                    Recorded Routes
-                    <Badge variant="secondary" className="ml-auto no-default-hover-elevate no-default-active-elevate" data-testid="badge-route-count">{filteredCompletedTrips.length}</Badge>
+                    Trip History
+                    <Badge variant="secondary" className="ml-auto no-default-hover-elevate no-default-active-elevate" data-testid="badge-route-count">
+                      {filteredActiveTrips.length + filteredCompletedTrips.length}
+                    </Badge>
                   </CardTitle>
                   <div className="pt-2">
                     <Select value={routeFilterEmployee} onValueChange={setRouteFilterEmployee}>
@@ -682,7 +648,59 @@ export default function FieldStaff() {
                     </Select>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-1 max-h-[400px] overflow-y-auto">
+                <CardContent className="space-y-1 max-h-[500px] overflow-y-auto">
+                  {filteredActiveTrips.length > 0 && (
+                    <div className="space-y-1 mb-2">
+                      <div className="flex items-center gap-2 py-1.5 sticky top-0 bg-card z-10" data-testid="section-live-trips">
+                        <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">Live Now</span>
+                        <div className="flex-1 border-t border-muted" />
+                      </div>
+                      {filteredActiveTrips.map(trip => {
+                        const dist = tripDistances[trip.id] ?? 0;
+                        return (
+                          <div
+                            key={trip.id}
+                            className={`flex items-center justify-between gap-2 p-2.5 rounded-md cursor-pointer border transition-colors ${selectedTripId === trip.id ? "bg-blue-50 dark:bg-blue-950/20 border-blue-300 dark:border-blue-700" : "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"}`}
+                            onClick={() => viewTripRoute(trip.id)}
+                            data-testid={`active-trip-${trip.id}`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <Avatar className="w-7 h-7">
+                                <AvatarFallback className="text-[10px]">{getEmployeeName(trip.employeeId).charAt(0).toUpperCase()}</AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <p className="text-sm font-medium truncate">{getEmployeeName(trip.employeeId)}</p>
+                                  <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 text-emerald-600 border-emerald-400 no-default-hover-elevate no-default-active-elevate">LIVE</Badge>
+                                </div>
+                                <div className="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
+                                  <span className="flex items-center gap-1"><Timer className="w-3 h-3" />{formatDuration(trip.startTime)}</span>
+                                  {dist > 0 && <span className="flex items-center gap-1"><Route className="w-3 h-3" />{dist.toFixed(1)} km</span>}
+                                </div>
+                                <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5" data-testid={`text-live-trip-from-${trip.id}`}>
+                                  <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate">
+                                    {trip.startAddress
+                                      ? trip.startAddress
+                                      : trip.startLat ? `${Number(trip.startLat).toFixed(3)}, ${Number(trip.startLng).toFixed(3)}` : "Unknown origin"}
+                                  </span>
+                                  <span className="shrink-0 mx-0.5">→</span>
+                                  <span className="text-emerald-600 dark:text-emerald-400 italic">In progress…</span>
+                                </div>
+                              </div>
+                            </div>
+                            <Button size="sm" variant="ghost" className="shrink-0 text-emerald-600" disabled={routeLoading && selectedTripId === trip.id} data-testid={`button-view-active-trip-${trip.id}`}>
+                              {routeLoading && selectedTripId === trip.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Eye className="w-3.5 h-3.5" />}
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {sortedDateKeys.length > 0 ? (
                     sortedDateKeys.map(dateKey => (
                       <div key={dateKey} className="space-y-1">
@@ -750,9 +768,9 @@ export default function FieldStaff() {
                         ))}
                       </div>
                     ))
-                  ) : (
-                    <p className="text-sm text-muted-foreground text-center py-6">No recorded trips yet. Trips are started by field staff from their devices.</p>
-                  )}
+                  ) : filteredActiveTrips.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-6">No trips yet. Trips are started by field staff from their devices.</p>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>

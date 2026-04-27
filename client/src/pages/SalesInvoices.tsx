@@ -638,6 +638,9 @@ function InvoiceDetailPanel({
   const [ewayBillDate, setEwayBillDate] = useState("");
   const [extInvoiceNumber, setExtInvoiceNumber] = useState("");
   const [extInvoiceDate, setExtInvoiceDate] = useState("");
+  const [extTotalAmount, setExtTotalAmount] = useState("");
+  const [extGstAmount, setExtGstAmount] = useState("");
+  const [showVarianceModal, setShowVarianceModal] = useState(false);
   const [docsExpanded, setDocsExpanded] = useState(false);
 
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
@@ -660,9 +663,23 @@ function InvoiceDetailPanel({
   };
 
   const markRecordedMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/sales-invoices/${invoiceId}/mark-recorded`, { extInvoiceNumber: extInvoiceNumber || undefined, extInvoiceDate: extInvoiceDate || undefined }),
-    onSuccess: () => { invalidateInv(); toast({ title: "Invoice Recorded", description: "Upload status updated to Recorded." }); },
-    onError: async (e: any) => { let msg = "Failed"; try { const b = await e.response?.json?.(); msg = b?.message ?? msg; } catch {} toast({ title: "Error", description: msg, variant: "destructive" }); },
+    mutationFn: () => apiRequest("POST", `/api/sales-invoices/${invoiceId}/mark-recorded`, {
+      extInvoiceNumber,
+      extInvoiceDate,
+      extTotalAmount,
+      extGstAmount: extGstAmount || undefined,
+    }),
+    onSuccess: () => {
+      invalidateInv();
+      setShowVarianceModal(false);
+      toast({ title: "Invoice Recorded", description: "Upload status updated to Recorded." });
+    },
+    onError: async (e: any) => {
+      setShowVarianceModal(false);
+      let msg = "Failed";
+      try { const b = await e.response?.json?.(); msg = b?.message ?? msg; } catch {}
+      toast({ title: "Error", description: msg, variant: "destructive" });
+    },
   });
 
   const uploadSignedCopyMutation = useMutation({
@@ -693,6 +710,16 @@ function InvoiceDetailPanel({
   const isInterState = inv.isInterState;
   const isB2B = inv.customerType === "B2B";
   const netBalance = Math.max(0, grandTotal - (inv.totalPaid ?? 0) - creditedAmount);
+
+  function handleMarkRecordedClick() {
+    if (!extInvoiceNumber.trim() || !extInvoiceDate || !extTotalAmount) return;
+    const diff = Math.abs(Number(extTotalAmount) - grandTotal);
+    if (diff > 5) {
+      setShowVarianceModal(true);
+    } else {
+      markRecordedMutation.mutate();
+    }
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -957,26 +984,53 @@ function InvoiceDetailPanel({
                     {(inv as any).extInvoiceDate && <span className="text-muted-foreground">({new Date((inv as any).extInvoiceDate).toLocaleDateString("en-IN")})</span>}
                   </div>
                 )}
+                {(inv as any).extTotalAmount && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Ext. Total:</span>
+                    <span className="font-medium">{fmt((inv as any).extTotalAmount)}</span>
+                  </div>
+                )}
               </div>
 
               {/* Mark Recorded (when pending) */}
               {(inv as any).uploadStatus === "pending_upload" && (
-                <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">
-                  <p className="text-xs font-medium text-amber-800">Mark invoice as recorded in your physical books</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Ext. Invoice No. (optional)</Label>
-                      <Input className="h-8 text-xs" data-testid="input-ext-invoice-number" value={extInvoiceNumber} onChange={(e) => setExtInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Ext. Invoice Date</Label>
-                      <Input type="date" className="h-8 text-xs" data-testid="input-ext-invoice-date" value={extInvoiceDate} onChange={(e) => setExtInvoiceDate(e.target.value)} />
-                    </div>
+                !(inv as any).signedCopyUrl ? (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                    <p className="text-xs text-amber-800">Upload the signed invoice copy (below) before marking as recorded.</p>
                   </div>
-                  <Button size="sm" className="w-full" data-testid="button-mark-recorded" disabled={markRecordedMutation.isPending} onClick={() => markRecordedMutation.mutate()}>
-                    <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" />{markRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
-                  </Button>
-                </div>
+                ) : (
+                  <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">
+                    <p className="text-xs font-medium text-amber-800">Mark invoice as recorded in your physical books</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Ext. Invoice No. *</Label>
+                        <Input className="h-8 text-xs" data-testid="input-ext-invoice-number" value={extInvoiceNumber} onChange={(e) => setExtInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Ext. Invoice Date *</Label>
+                        <Input type="date" className="h-8 text-xs" data-testid="input-ext-invoice-date" value={extInvoiceDate} onChange={(e) => setExtInvoiceDate(e.target.value)} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Ext. Total Amount ₹ *</Label>
+                        <Input type="number" className="h-8 text-xs" data-testid="input-ext-total-amount" value={extTotalAmount} onChange={(e) => setExtTotalAmount(e.target.value)} placeholder={fmt(grandTotal)} step="0.01" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Ext. GST Amount ₹ (optional)</Label>
+                        <Input type="number" className="h-8 text-xs" data-testid="input-ext-gst-amount" value={extGstAmount} onChange={(e) => setExtGstAmount(e.target.value)} placeholder={fmt(totalTax)} step="0.01" />
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      className="w-full"
+                      data-testid="button-mark-recorded"
+                      disabled={markRecordedMutation.isPending || !extInvoiceNumber.trim() || !extInvoiceDate || !extTotalAmount}
+                      onClick={handleMarkRecordedClick}
+                    >
+                      <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" />{markRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
+                    </Button>
+                  </div>
+                )
               )}
 
               {/* Signed Copy Upload */}
@@ -1011,6 +1065,12 @@ function InvoiceDetailPanel({
                     </a>
                   )}
                 </div>
+                {grandTotal >= 50000 && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 flex items-start gap-2" data-testid="eway-bill-threshold-advisory">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+                    <p className="text-xs text-amber-800">E-way bill required for consignments exceeding ₹50,000 — capture the bill number and valid-until date.</p>
+                  </div>
+                )}
                 {(inv as any).ewayBillNumber ? (
                   <p className="text-xs text-emerald-600"><Truck className="w-3 h-3 inline mr-1" />E-way Bill: <span className="font-mono font-medium">{(inv as any).ewayBillNumber}</span> {(inv as any).ewayBillDate ? `(${new Date((inv as any).ewayBillDate).toLocaleDateString("en-IN")})` : ""}</p>
                 ) : (
@@ -1057,6 +1117,41 @@ function InvoiceDetailPanel({
           balanceDue={netBalance}
         />
       )}
+
+      {/* Variance confirmation modal */}
+      <Dialog open={showVarianceModal} onOpenChange={setShowVarianceModal}>
+        <DialogContent className="max-w-sm" data-testid="variance-modal">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-500" />
+              Amount Mismatch
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <p className="text-sm text-muted-foreground">The external total differs from the system-calculated total. This may indicate a typo or a rounding adjustment. Continue with this amount?</p>
+            <div className="rounded-md border bg-muted/40 divide-y text-sm">
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted-foreground">External invoice total</span>
+                <span className="font-medium">{fmt(extTotalAmount)}</span>
+              </div>
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted-foreground">System invoice total</span>
+                <span className="font-medium">{fmt(grandTotal)}</span>
+              </div>
+              <div className="flex justify-between px-3 py-2">
+                <span className="text-muted-foreground">Difference</span>
+                <span className="font-semibold text-amber-600">{fmt(Math.abs(Number(extTotalAmount) - grandTotal))}</span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowVarianceModal(false)} data-testid="button-variance-cancel">Cancel</Button>
+            <Button onClick={() => markRecordedMutation.mutate()} disabled={markRecordedMutation.isPending} data-testid="button-variance-continue">
+              {markRecordedMutation.isPending ? "Saving…" : "Continue"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

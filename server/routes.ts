@@ -5355,14 +5355,6 @@ export async function registerRoutes(
       const prItems = await storage.getPurchaseRequestItems(pr.id);
       if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
 
-      const nullCostItems = prItems.filter(item => !item.unitCost || parseFloat(item.unitCost) === 0);
-      if (nullCostItems.length > 0) {
-        const allProducts = await storage.getProducts();
-        const productMap = new Map(allProducts.map((p: any) => [p.id, p]));
-        const names = nullCostItems.map(item => productMap.get(item.productId)?.name || item.description || item.productId).join(", ");
-        return res.status(400).json({ message: `Cannot convert to PO — the following line items have no unit cost: ${names}. Resolve in supplier catalog first.` });
-      }
-
       const year = new Date().getFullYear();
       const allPOs = await storage.getPurchaseOrders();
       const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
@@ -5375,6 +5367,21 @@ export async function registerRoutes(
       const supplierProds = await storage.getSupplierProducts(pr.supplierId);
       const allProducts = await storage.getProducts();
       const productMap = new Map(allProducts.map(p => [p.id, p]));
+
+      // Block only when NO price source at all is available: no PR item cost, no supplier catalog
+      // price, and no product cost price.  If any fallback provides a price, allow conversion.
+      const trulyNoCostItems = prItems.filter(item => {
+        const sp = supplierProds.find((s: any) => s.productId === item.productId);
+        const product = productMap.get(item.productId);
+        const hasItemCost = item.unitCost && parseFloat(item.unitCost) > 0;
+        const hasSupplierCost = sp?.supplierPrice && parseFloat(sp.supplierPrice) > 0;
+        const hasProductCost = product?.costPrice && parseFloat(product.costPrice) > 0;
+        return !hasItemCost && !hasSupplierCost && !hasProductCost;
+      });
+      if (trulyNoCostItems.length > 0) {
+        const names = trulyNoCostItems.map(item => productMap.get(item.productId)?.name || item.description || item.productId).join(", ");
+        return res.status(400).json({ message: `Cannot convert to PO — no price found for: ${names}. Edit the purchase request to set unit costs, or add these products to the supplier's catalog.` });
+      }
 
       let totalAmount = 0;
       const poItemsData = prItems.map(item => {

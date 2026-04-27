@@ -1,0 +1,52 @@
+Replit AI shipped the implementation. Solid execution overall — I see clean schema additions, real PDF generation, proper transaction handling on dispatch with auto-invoice creation. But I want to flag two changes Replit AI made unilaterally before you start the stop gate walk.
+Two unilateral changes worth knowing about
+Change 1 — GRN supplier challan upload moved from BEFORE creation to AFTER creation
+Brief said (Section D1):
+
+"NEW SEQUENCE: Supplier challan upload comes BEFORE GRN creation. The GRN cannot be created until the supplier challan scan is uploaded."
+
+Replit AI shipped:
+
+"the supplier challan URL requirement [moved] to confirm time instead of create time — this is the correct UX flow (create GRN draft → upload challan scan → upload signed copy → confirm)"
+
+Reasoning given: the attachment system needs an entity ID before upload, so chicken-and-egg.
+Honest take: Replit AI's reasoning is technically correct. The attachments table needs entityType + entityId to associate uploads, so requiring the file BEFORE the GRN row exists is awkward. The sequence shipped (create draft → upload challan → upload signed → confirm, with both URLs required at confirm) achieves the same outcome — supplier challan is required, just enforced at confirm-time, not create-time.
+Should you accept this change? Yes, but verify in stop gate:
+
+D1 step (t): "Try to confirm GRN without supplier challan uploaded → blocked"
+D1 step (p): "Try to confirm GRN without our signed copy uploaded → blocked"
+
+Both must hard-block at confirm. If they do, the change is functionally equivalent to your spec. If only one blocks, that's a bug.
+Change 2 — Sales invoice "external" terminology in UI
+Brief said:
+
+"Mark as Recorded — requires invoice_number, invoice_date, total_amount, signed_copy_url all populated"
+
+Replit AI shipped:
+
+"Mark as Recorded button — prompts for optional external invoice number + date"
+
+The brief said invoice_number and invoice_date are required to mark as recorded. Replit AI made them optional in the prompt. That's a meaningful UX shift — accounts team could mark an invoice as "recorded" without ever entering the Tally invoice number, defeating the whole point.
+Verify in stop gate item (m): "Try Mark as Recorded with missing total_amount → blocked with field-level error." Add to it: "Try Mark as Recorded with missing invoice_number → also blocked." If invoice_number is silently optional, push back on Replit AI to make it required.
+What to do now — walk the 25-item stop gate
+Set aside ~60 minutes. Walk every item in order. Don't skip the regression items (x) and (y) — those are where collateral damage hides.
+Setup before starting:
+
+Have at least one approved PO with full supplier payment recorded
+Have at least one approved PO with NO supplier payment (or partial) — for blocking tests
+Have at least one Sales Order with full customer payment + sufficient stock
+Have at least one Sales Order with insufficient stock + unpaid status
+Have a sample PDF and a sample JPEG ready to upload as signed copies
+Open browser DevTools to Network tab — you'll need this for item (h) and (y)
+
+Track each item pass/fail. Format: just an "(a) ✓" or "(a) ✗ — [what failed specifically]" list as you go.
+I'll wait. When you're done, paste the result list back here and I'll tell you what to do with any failures.
+Items that need extra attention
+A few items Replit AI's pattern of past behavior makes me want to flag:
+(a) — Notifications fire to inventory + accountant + admin. Per pre-work, "inventory" maps to warehouse_manager. Verify the notification actually reaches warehouse_manager users, not silently dropped because Replit AI looked for a non-existent inventory role.
+(c) — The blocker tooltip should explain BOTH stock shortage AND payment incomplete. Replit AI sometimes shows only one reason. Tooltip text matters here.
+(g) — Auto-invoice creation on dispatch. Verify the new sales_invoice row has correct linkage to SO + Challan + Quotation IDs. Check via SQL: SELECT id, sales_order_id, delivery_challan_id, quotation_id, upload_status FROM sales_invoices ORDER BY created_at DESC LIMIT 1 after dispatching.
+(j) — E-way bill threshold reminder. Test with total_amount = 49,999 (no reminder) and total_amount = 50,001 (reminder appears).
+(t) — The supplier payment gate. Try creating a GRN on a PO with partial payment. If the gate is computed correctly per Replit AI's earlier analysis (sum supplier_payments where po_id = X), this should hard-block. If it lets you through, the gate isn't enforced.
+(x) — Regression. Specifically test: an existing already-dispatched challan (from before this phase) opens cleanly. Existing Phase 5.5 floor-price panel still renders on quotations. Phase 6.5 hard-blocks (subsidy + non-ALMM, MRP soft-warn, zero-price block) all still fire.
+(y) — Authorization spot checks. Log in as a non-admin role (sales_manager, then warehouse_manager, then field_staff) and try direct API calls. DevTools Network tab → Right-click a request → Copy as cURL → modify and re-run as a different user's token. Tedious but necessary.

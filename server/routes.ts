@@ -5223,6 +5223,23 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid priority" });
       }
 
+      // Guard: approving requires a supplier and non-zero item costs
+      if (updateData.status === "approved") {
+        const existing = await storage.getPurchaseRequest(req.params.id);
+        const effectiveSupplierId = updateData.supplierId !== undefined ? updateData.supplierId : existing?.supplierId;
+        if (!effectiveSupplierId) {
+          return res.status(400).json({ message: "A supplier must be assigned before approving a purchase request." });
+        }
+        const prItems = await storage.getPurchaseRequestItems(req.params.id);
+        const zeroCostItems = prItems.filter(item => !item.unitCost || parseFloat(item.unitCost) === 0);
+        if (zeroCostItems.length > 0) {
+          const allProds = await storage.getProducts();
+          const prodMap = new Map(allProds.map((p: any) => [p.id, p]));
+          const names = zeroCostItems.map(i => prodMap.get(i.productId)?.name || i.description || i.productId).join(", ");
+          return res.status(400).json({ message: `Cannot approve — the following items have no supplier price: ${names}. Enter unit costs before approving.` });
+        }
+      }
+
       const updated = await storage.updatePurchaseRequest(req.params.id, updateData);
       if (!updated) return res.status(404).json({ message: "Purchase request not found" });
       await logAction(req.user.id, "update", "supply_chain", `Updated purchase request ${updated.requestNumber}`);

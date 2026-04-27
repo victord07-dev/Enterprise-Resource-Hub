@@ -869,6 +869,8 @@ export default function SupplyChain() {
   const [prDialogOpen, setPrDialogOpen] = useState(false);
   const [editingPr, setEditingPr] = useState<PurchaseRequest | null>(null);
   const [prForm, setPrForm] = useState({ supplierId: "", priority: "medium", notes: "" });
+  const [prApproveMode, setPrApproveMode] = useState(false);
+  const [prItemCosts, setPrItemCosts] = useState<Record<string, string>>({});
   const [prStatusFilter, setPrStatusFilter] = useState("all");
   const [prPriorityFilter, setPrPriorityFilter] = useState("all");
 
@@ -1061,14 +1063,37 @@ export default function SupplyChain() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
-      toast({ title: "Purchase request updated" });
+      toast({ title: prApproveMode ? "Purchase request approved" : "Purchase request updated" });
       setPrDialogOpen(false);
       setEditingPr(null);
+      setPrApproveMode(false);
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  // Saves updated item unit costs then updates the PR header fields (+ optional status)
+  const savePrWithItems = async (approveStatus?: "approved") => {
+    if (!editingPr || !prDialogItems) return;
+    // Step 1: persist any edited unit costs
+    const updatedItems = prDialogItems.map(item => ({
+      ...item,
+      unitCost: prItemCosts[item.id] ? prItemCosts[item.id] : item.unitCost,
+    }));
+    await apiRequest("POST", `/api/purchase-requests/${editingPr.id}/items`, { items: updatedItems });
+    queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests", editingPr.id, "items"] });
+    // Step 2: update PR header + optional approve
+    updatePrMutation.mutate({
+      id: editingPr.id,
+      data: {
+        supplierId: prForm.supplierId || null,
+        priority: prForm.priority,
+        notes: prForm.notes || null,
+        ...(approveStatus ? { status: approveStatus } : {}),
+      },
+    });
+  };
 
   const deletePrMutation = useMutation({
     mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/purchase-requests/${id}`); },
@@ -1114,10 +1139,29 @@ export default function SupplyChain() {
     enabled: !!editingPr && prDialogOpen,
   });
 
+  const { data: prDialogItems } = useQuery<PurchaseRequestItem[]>({
+    queryKey: ["/api/purchase-requests", editingPr?.id, "items"],
+    queryFn: () => editingPr ? apiRequest("GET", `/api/purchase-requests/${editingPr.id}/items`).then(r => r.json()) : Promise.resolve([]),
+    enabled: !!editingPr && prDialogOpen,
+  });
+
+  // Populate editable unit costs when PR items load (or when PR dialog opens fresh)
+  useEffect(() => {
+    if (prDialogItems && prDialogItems.length > 0) {
+      const costs: Record<string, string> = {};
+      for (const item of prDialogItems) {
+        costs[item.id] = item.unitCost && parseFloat(item.unitCost) > 0 ? String(parseFloat(item.unitCost)) : "";
+      }
+      setPrItemCosts(costs);
+    }
+  }, [prDialogItems?.map(i => i.id).join(",")]);
+
   const selectedMatchingSupplier = matchingSuppliers?.find(ms => ms.supplierId === prForm.supplierId);
 
-  const openEditPr = (pr: PurchaseRequest) => {
+  const openEditPr = (pr: PurchaseRequest, approveMode = false) => {
     setEditingPr(pr);
+    setPrApproveMode(approveMode);
+    setPrItemCosts({});
     setPrForm({
       supplierId: pr.supplierId || "",
       priority: pr.priority,
@@ -1418,8 +1462,9 @@ export default function SupplyChain() {
                                     <Button
                                       size="sm"
                                       variant="outline"
+                                      className="text-emerald-600 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700"
                                       data-testid={`button-approve-pr-${pr.id}`}
-                                      onClick={() => updatePrMutation.mutate({ id: pr.id, data: { status: "approved" } })}
+                                      onClick={() => openEditPr(pr, true)}
                                     >
                                       <Check className="w-4 h-4 mr-1" />
                                       Approve
@@ -1909,12 +1954,25 @@ export default function SupplyChain() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={prDialogOpen} onOpenChange={setPrDialogOpen}>
-        <DialogContent>
+      <Dialog open={prDialogOpen} onOpenChange={(open) => { setPrDialogOpen(open); if (!open) { setEditingPr(null); setPrApproveMode(false); } }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Purchase Request {editingPr?.requestNumber}</DialogTitle>
+            <DialogTitle>
+              {prApproveMode ? "Approve Purchase Request" : "Edit Purchase Request"}{" "}
+              {editingPr?.requestNumber}
+            </DialogTitle>
           </DialogHeader>
+
           <div className="space-y-4">
+            {/* Zero-cost warning banner */}
+            {prDialogItems && prDialogItems.some(item => !prItemCosts[item.id] || parseFloat(prItemCosts[item.id] || "0") <= 0) && (
+              <div className="flex items-start gap-2 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-700 text-amber-800 dark:text-amber-300 text-sm">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>One or more items have no supplier price set. Enter prices below before approving.</span>
+              </div>
+            )}
+
+            {/* Supplier selector */}
             <div className="space-y-2">
               <Label>Assign Supplier</Label>
               {matchingSuppliersLoading ? (
@@ -1982,6 +2040,52 @@ export default function SupplyChain() {
                 </div>
               )}
             </div>
+
+            {/* Editable item unit costs */}
+            {prDialogItems && prDialogItems.length > 0 && (
+              <div className="space-y-2">
+                <Label>Item Unit Costs</Label>
+                <div className="border rounded-md overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
+                        <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Shortfall</th>
+                        <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Unit Cost (₹)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {prDialogItems.map(item => {
+                        const cost = prItemCosts[item.id] || "";
+                        const missing = !cost || parseFloat(cost) <= 0;
+                        return (
+                          <tr key={item.id} className={`border-b last:border-0 ${missing ? "bg-amber-50 dark:bg-amber-950/20" : ""}`}>
+                            <td className="px-3 py-1.5 font-medium">
+                              {item.description}
+                              {missing && <AlertTriangle className="inline w-3 h-3 ml-1 text-amber-500" />}
+                            </td>
+                            <td className="px-3 py-1.5 text-center">{item.shortfallQuantity}</td>
+                            <td className="px-3 py-1.5 text-right">
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                className="h-6 text-xs w-28 ml-auto text-right"
+                                placeholder="0.00"
+                                value={cost}
+                                data-testid={`input-pr-item-cost-${item.id}`}
+                                onChange={(e) => setPrItemCosts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label>Priority</Label>
               <Select value={prForm.priority} onValueChange={(v) => setPrForm({ ...prForm, priority: v })}>
@@ -2005,20 +2109,35 @@ export default function SupplyChain() {
               />
             </div>
           </div>
-          <DialogFooter>
+
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            {prApproveMode && (() => {
+              const hasSupplier = !!prForm.supplierId;
+              const allCostsFilled = !prDialogItems || prDialogItems.every(item => {
+                const c = prItemCosts[item.id];
+                return c && parseFloat(c) > 0;
+              });
+              const canApprove = hasSupplier && allCostsFilled;
+              return (
+                <Button
+                  data-testid="button-approve-submit-pr"
+                  disabled={updatePrMutation.isPending || !canApprove}
+                  title={!hasSupplier ? "Select a supplier first" : !allCostsFilled ? "Enter all item unit costs first" : undefined}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  onClick={() => savePrWithItems("approved")}
+                >
+                  <Check className="w-4 h-4 mr-1" />
+                  {updatePrMutation.isPending ? "Approving..." : "Approve & Save"}
+                </Button>
+              );
+            })()}
             <Button
               data-testid="button-submit-pr"
+              variant={prApproveMode ? "outline" : "default"}
               disabled={updatePrMutation.isPending}
-              onClick={() => editingPr && updatePrMutation.mutate({
-                id: editingPr.id,
-                data: {
-                  supplierId: prForm.supplierId || null,
-                  priority: prForm.priority,
-                  notes: prForm.notes || null,
-                },
-              })}
+              onClick={() => savePrWithItems()}
             >
-              {updatePrMutation.isPending ? "Saving..." : "Update"}
+              {updatePrMutation.isPending ? "Saving..." : "Save Changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

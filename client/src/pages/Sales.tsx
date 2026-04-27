@@ -754,8 +754,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <span className="font-semibold text-green-700 dark:text-green-400" data-testid={`input-item-total-${i}`}>₹{(item.totalPrice + item.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </div>
-          {/* Check Margin button — opens modal dialog when product has pricing data */}
-          {(() => {
+          {/* Check Margin button — hidden (task #82); code preserved for future use */}
+          {false && (() => {
             const ep = item.productId ? effectivePrices?.[item.productId] : undefined;
             if (!ep) return null;
             return (
@@ -843,8 +843,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
           </div>
         </div>
       )}
-      {/* Check Margin Dialog */}
-      {marginDialogIdx !== null && (() => {
+      {/* Check Margin Dialog — hidden (task #82); code preserved for future use */}
+      {false && marginDialogIdx !== null && (() => {
         const dialogItem = items[marginDialogIdx];
         const ep = dialogItem?.productId ? effectivePrices?.[dialogItem.productId] : undefined;
         if (!ep) return null;

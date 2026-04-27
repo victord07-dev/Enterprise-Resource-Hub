@@ -18,7 +18,7 @@ const COMPANY = {
   gstin:   "18AAICI6408B1ZR",
   email:   "admin@itfi.co.in",
   website: "www.itfi.co.in",
-  address: "Dag No: 471, Patta No: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
+  address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
 };
 
 const BANKING = [
@@ -466,7 +466,7 @@ export function generateQuotationPDF(
   y += 4;
   doc.setFontSize(7);
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Authorised Signatory", pageWidth - margin, y, { align: "right" });
+  doc.text("Authorised Signature", pageWidth - margin, y, { align: "right" });
 
   // System note
   doc.setFontSize(6);

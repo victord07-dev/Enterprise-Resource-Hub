@@ -76,28 +76,28 @@ export function generateQuotationPDF(
   const contentWidth = pageWidth - margin * 2;
   let y = 0;
 
-  // ── Header — navy band (40 mm tall) ──────────────────────────────────────────
-  const headerH = 40;
+  // ── Header — navy band (30 mm tall) ──────────────────────────────────────────
+  const headerH = 30;
   doc.setFillColor(...COLORS.headerBg);
   doc.rect(0, 0, pageWidth, headerH, "F");
 
-  // Logo — 1.8× original size (104 × 23 mm), vertically centred in header
-  const logoW = 104;
-  const logoH = 23;
-  const logoY = (headerH - logoH) / 2;   // ≈ 8.5 mm
+  // Logo — 70% of previous size (73 × 16 mm), vertically centred in header
+  const logoW = 73;
+  const logoH = 16;
+  const logoY = (headerH - logoH) / 2;   // = 7 mm
 
   if (logoDataUrl) {
     try {
       doc.addImage(logoDataUrl, "PNG", margin, logoY, logoW, logoH);
     } catch {
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(13);
+      doc.setFontSize(12);
       doc.setTextColor(...COLORS.headerText);
       doc.text(COMPANY.name, margin, headerH / 2 + 2);
     }
   } else {
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
+    doc.setFontSize(12);
     doc.setTextColor(...COLORS.headerText);
     doc.text(COMPANY.name, margin, headerH / 2 + 2);
   }
@@ -105,43 +105,32 @@ export function generateQuotationPDF(
   // Right column — Company Name, Address, Phone, Email, Website, GSTIN
   const rx = pageWidth - margin;
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setTextColor(220, 230, 248);
-  doc.text(COMPANY.name, rx, 8, { align: "right" });
+  doc.text(COMPANY.name, rx, 5.5, { align: "right" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(5.5);
   doc.setTextColor(180, 190, 210);
   const addrLines = doc.splitTextToSize(COMPANY.address, 82);
-  doc.text(addrLines[0], rx, 12.5, { align: "right" });
-  if (addrLines[1]) doc.text(addrLines[1], rx, 15.5, { align: "right" });
+  doc.text(addrLines[0], rx, 9.5, { align: "right" });
 
-  doc.setFontSize(6.5);
-  const phoneY   = addrLines[1] ? 19.5 : 17.5;
-  doc.text(`Phone: ${COMPANY.phone}`, rx, phoneY,     { align: "right" });
-  doc.text(COMPANY.email,             rx, phoneY + 4, { align: "right" });
-  doc.text(COMPANY.website,           rx, phoneY + 8, { align: "right" });
-  doc.text(`GSTIN: ${COMPANY.gstin}`, rx, phoneY + 12, { align: "right" });
+  doc.setFontSize(6);
+  doc.text(`Phone: ${COMPANY.phone}`, rx, 14, { align: "right" });
+  doc.text(COMPANY.email,             rx, 18, { align: "right" });
+  doc.text(COMPANY.website,           rx, 22, { align: "right" });
+  doc.text(`GSTIN: ${COMPANY.gstin}`, rx, 26, { align: "right" });
 
-  // Blue QUOTATION banner
+  // Blue QUOTATION banner — compact (8 mm tall)
   const bannerY = headerH;
   doc.setFillColor(...COLORS.accent);
-  doc.rect(0, bannerY, pageWidth, 13, "F");
+  doc.rect(0, bannerY, pageWidth, 8, "F");
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
+  doc.setFontSize(10);
   doc.setTextColor(...COLORS.white);
-  doc.text("QUOTATION", pageWidth / 2, bannerY + 8.5, { align: "center" });
+  doc.text("QUOTATION", pageWidth / 2, bannerY + 5.5, { align: "center" });
 
-  // Address strip
-  const stripY = bannerY + 13;
-  doc.setFillColor(241, 245, 249);
-  doc.rect(0, stripY, pageWidth, 7, "F");
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6.5);
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text(COMPANY.address, pageWidth / 2, stripY + 4.5, { align: "center" });
-
-  y = stripY + 7 + 5;   // a little padding after the strip
+  y = bannerY + 8 + 5;   // small padding after banner, no address strip
 
   // ── Meta / Customer box ───────────────────────────────────────────────────────
   const hasDelivery = (quotation as any).deliveryMethod === "delivery";

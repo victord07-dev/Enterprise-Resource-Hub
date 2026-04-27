@@ -299,7 +299,7 @@ export default function FieldStaff() {
   const totalExpense = travelCost + LUNCH_MONEY;
 
   const viewTripRoute = useCallback(async (tripId: string) => {
-    if (routeLoading) return;
+    if (routeLoading || routeSnapping) return;
     setRouteLoading(true);
     setSnappedRouteCoords(null);
     try {
@@ -324,7 +324,7 @@ export default function FieldStaff() {
       setRouteLoading(false);
       setRouteSnapping(false);
     }
-  }, [toast, routeLoading]);
+  }, [toast, routeLoading, routeSnapping]);
 
   useEffect(() => {
     if (!adminMapInstance.current) return;
@@ -807,7 +807,7 @@ export default function FieldStaff() {
                   ) : routeSnapping ? (
                     <span className="flex items-center gap-2">
                       <Navigation2 className="w-4 h-4 animate-pulse text-blue-500" />
-                      Snapping to roads…
+                      Snapping route to roads…
                     </span>
                   ) : selectedTripId ? (
                     <span className="flex items-center gap-2">

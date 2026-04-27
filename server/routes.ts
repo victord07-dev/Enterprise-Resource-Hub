@@ -5553,6 +5553,8 @@ export async function registerRoutes(
           lunchIn: null,
           teaOut: null,
           teaIn: null,
+          fieldVisitOut: null,
+          fieldVisitIn: null,
           status,
           selfieUrl: selfieUrl || null,
           location: location || null,
@@ -5594,6 +5596,19 @@ export async function registerRoutes(
         if (todayRecord.teaIn) return res.status(400).json({ message: "Already back from tea" });
         const updated = await storage.updateAttendanceRecord(todayRecord.id, { teaIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
         return res.json({ type: "tea_in", message: "Back from Tea Break", record: updated });
+      }
+
+      if (action === "field_visit_out") {
+        if (todayRecord.fieldVisitOut) return res.status(400).json({ message: "Field visit already started" });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { fieldVisitOut: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
+        return res.json({ type: "field_visit_out", message: "Field Visit Started", record: updated });
+      }
+
+      if (action === "field_visit_in") {
+        if (!todayRecord.fieldVisitOut) return res.status(400).json({ message: "Field visit not started" });
+        if (todayRecord.fieldVisitIn) return res.status(400).json({ message: "Already returned from field visit" });
+        const updated = await storage.updateAttendanceRecord(todayRecord.id, { fieldVisitIn: now, selfieUrl: selfieUrl || todayRecord.selfieUrl, location: location || todayRecord.location });
+        return res.json({ type: "field_visit_in", message: "Returned from Field Visit", record: updated });
       }
 
       if (action === "check_out") {

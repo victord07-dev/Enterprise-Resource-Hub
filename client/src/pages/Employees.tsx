@@ -580,6 +580,8 @@ export default function Employees() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Lunch In</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Tea Out</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Tea In</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Field Out</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Field In</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Check Out</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Break Time</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Location</th>
@@ -588,13 +590,14 @@ export default function Employees() {
                   </thead>
                   <tbody>
                     {attLoading ? (
-                      <tr><td colSpan={11} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={13} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : attendance && attendance.length > 0 ? (
                       attendance.map((a) => {
-                        const formatTime = (t: Date | string | null) => t ? new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
+                        const formatTime = (t: Date | string | null | undefined) => t ? new Date(t as string).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "\u2014";
                         let totalBreakMins = 0;
                         if (a.lunchOut && a.lunchIn) totalBreakMins += Math.round((new Date(a.lunchIn).getTime() - new Date(a.lunchOut).getTime()) / 60000);
                         if (a.teaOut && a.teaIn) totalBreakMins += Math.round((new Date(a.teaIn).getTime() - new Date(a.teaOut).getTime()) / 60000);
+                        if (a.fieldVisitOut && a.fieldVisitIn) totalBreakMins += Math.round((new Date(a.fieldVisitIn).getTime() - new Date(a.fieldVisitOut).getTime()) / 60000);
                         return (
                           <tr key={a.id} className="border-b last:border-0" data-testid={`row-attendance-${a.id}`}>
                             <td className="p-3">
@@ -611,6 +614,8 @@ export default function Employees() {
                             <td className="p-3 text-orange-600">{formatTime(a.lunchIn)}</td>
                             <td className="p-3 text-purple-600">{formatTime(a.teaOut)}</td>
                             <td className="p-3 text-purple-600">{formatTime(a.teaIn)}</td>
+                            <td className="p-3 text-teal-600">{formatTime(a.fieldVisitOut)}</td>
+                            <td className="p-3 text-teal-600">{formatTime(a.fieldVisitIn)}</td>
                             <td className="p-3">{formatTime(a.checkOut)}</td>
                             <td className="p-3">
                               {totalBreakMins > 0 ? (
@@ -634,7 +639,7 @@ export default function Employees() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={13} className="p-8 text-center text-muted-foreground">
                           <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
                           <p>No attendance records yet.</p>
                           <p className="text-xs mt-1">Attendance will appear here when employees use the Kiosk system.</p>

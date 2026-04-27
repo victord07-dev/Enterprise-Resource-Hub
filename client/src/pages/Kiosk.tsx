@@ -3,10 +3,10 @@ import { getCurrentPosition } from "@/lib/geolocation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed, LogOut, MapPin } from "lucide-react";
+import { Camera, QrCode, CheckCircle2, XCircle, Clock, ArrowLeft, Scan, Keyboard, Coffee, UtensilsCrossed, LogOut, MapPin, Building2, CornerDownLeft } from "lucide-react";
 
 type KioskStep = "scan" | "confirm" | "choose_action" | "selfie" | "success" | "error";
-type AttendanceAction = "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in";
+type AttendanceAction = "check_in" | "check_out" | "lunch_out" | "lunch_in" | "tea_out" | "tea_in" | "field_visit_out" | "field_visit_in";
 
 interface EmployeeInfo {
   id: string;
@@ -140,6 +140,9 @@ export default function Kiosk() {
       } else if (attendance.teaOut && !attendance.teaIn) {
         setSelectedAction("tea_in");
         setStep("confirm");
+      } else if (attendance.fieldVisitOut && !attendance.fieldVisitIn) {
+        setSelectedAction("field_visit_in");
+        setStep("confirm");
       } else {
         setStep("choose_action");
       }
@@ -165,6 +168,10 @@ export default function Kiosk() {
 
     if (!att.teaOut && timeInMinutes >= 1020 && timeInMinutes <= 1050) {
       actions.push({ action: "tea_out", label: "Tea Break", icon: Coffee, color: "text-purple-500" });
+    }
+
+    if (!att.fieldVisitOut) {
+      actions.push({ action: "field_visit_out", label: "Field Visit Out", icon: Building2, color: "text-teal-500" });
     }
 
     actions.push({ action: "check_out", label: "Check Out", icon: LogOut, color: "text-blue-500" });
@@ -273,6 +280,8 @@ export default function Kiosk() {
       case "lunch_in": return "Back from Lunch";
       case "tea_out": return "Tea Break";
       case "tea_in": return "Back from Tea";
+      case "field_visit_out": return "Field Visit Out";
+      case "field_visit_in": return "Field Visit In";
     }
   };
 
@@ -388,12 +397,17 @@ export default function Kiosk() {
             <div className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center ${
               selectedAction === "lunch_in" ? "bg-orange-50 dark:bg-orange-950/40"
               : selectedAction === "tea_in" ? "bg-purple-50 dark:bg-purple-950/40"
+              : selectedAction === "field_visit_out" || selectedAction === "field_visit_in" ? "bg-teal-50 dark:bg-teal-950/40"
               : "bg-emerald-50 dark:bg-emerald-950/40"
             }`}>
               {selectedAction === "lunch_in" ? (
                 <UtensilsCrossed className="w-10 h-10 text-orange-500" />
               ) : selectedAction === "tea_in" ? (
                 <Coffee className="w-10 h-10 text-purple-500" />
+              ) : selectedAction === "field_visit_out" ? (
+                <Building2 className="w-10 h-10 text-teal-500" />
+              ) : selectedAction === "field_visit_in" ? (
+                <CornerDownLeft className="w-10 h-10 text-teal-500" />
               ) : (
                 <CheckCircle2 className="w-10 h-10 text-emerald-500" />
               )}
@@ -518,6 +532,8 @@ export default function Kiosk() {
                 ? "bg-orange-50 dark:bg-orange-950/40"
                 : result.type === "tea_out" || result.type === "tea_in"
                 ? "bg-purple-50 dark:bg-purple-950/40"
+                : result.type === "field_visit_out" || result.type === "field_visit_in"
+                ? "bg-teal-50 dark:bg-teal-950/40"
                 : "bg-emerald-50 dark:bg-emerald-950/40"
             }`}>
               {result.type === "already_done" || result.type === "waiting" ? (
@@ -526,6 +542,10 @@ export default function Kiosk() {
                 <UtensilsCrossed className="w-10 h-10 text-orange-500" />
               ) : result.type === "tea_out" || result.type === "tea_in" ? (
                 <Coffee className="w-10 h-10 text-purple-500" />
+              ) : result.type === "field_visit_out" ? (
+                <Building2 className="w-10 h-10 text-teal-500" />
+              ) : result.type === "field_visit_in" ? (
+                <CornerDownLeft className="w-10 h-10 text-teal-500" />
               ) : (
                 <CheckCircle2 className="w-10 h-10 text-emerald-500" />
               )}
@@ -538,6 +558,8 @@ export default function Kiosk() {
                 {result.type === "lunch_in" && "Back from Lunch!"}
                 {result.type === "tea_out" && "Tea Break"}
                 {result.type === "tea_in" && "Back from Tea!"}
+                {result.type === "field_visit_out" && "Field Visit Started"}
+                {result.type === "field_visit_in" && "Field Visit Returned!"}
                 {result.type === "already_done" && "Already Completed"}
                 {result.type === "waiting" && "Please Wait"}
               </h2>
@@ -578,6 +600,16 @@ export default function Kiosk() {
               {result.type === "tea_in" && result.record?.teaIn && (
                 <p className="text-lg font-medium text-purple-600 mt-3" data-testid="text-tea-in-time">
                   Tea In: {new Date(result.record.teaIn).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "field_visit_out" && result.record?.fieldVisitOut && (
+                <p className="text-lg font-medium text-teal-600 mt-3" data-testid="text-field-visit-out-time">
+                  Field Visit Out: {new Date(result.record.fieldVisitOut).toLocaleTimeString("en-IN")}
+                </p>
+              )}
+              {result.type === "field_visit_in" && result.record?.fieldVisitIn && (
+                <p className="text-lg font-medium text-teal-600 mt-3" data-testid="text-field-visit-in-time">
+                  Field Visit In: {new Date(result.record.fieldVisitIn).toLocaleTimeString("en-IN")}
                 </p>
               )}
               {result.record?.location && (

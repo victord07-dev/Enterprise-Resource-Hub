@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -23,6 +23,7 @@ import { downloadIdCardPDF } from "@/lib/id-card-pdf";
 import { getCurrentPosition } from "@/lib/geolocation";
 import { Textarea } from "@/components/ui/textarea";
 import type { Employee, AttendanceRecord, PayrollStatus, TravelExpense, Notification, LeaveRequest, LateArrivalRequest } from "@shared/schema";
+import { todayIST } from "@shared/datetime";
 import { AlarmClock } from "lucide-react";
 
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -163,7 +164,7 @@ export default function MyPortal() {
     queryKey: ["/api/late-arrival-requests"],
     enabled: !!employeeId,
   });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIST(); // IST-safe: no UTC midnight drift for India locale
   const [larDialogOpen, setLarDialogOpen] = useState(false);
   const [larForm, setLarForm] = useState({ date: today, expectedArrivalTime: "", reason: "" });
 

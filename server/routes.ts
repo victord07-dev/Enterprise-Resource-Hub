@@ -6212,8 +6212,8 @@ export async function registerRoutes(
       if (!date || !expectedArrivalTime || !reason?.trim()) {
         return res.status(400).json({ message: "date, expectedArrivalTime, and reason are required" });
       }
-      const today = new Date().toISOString().slice(0, 10);
-      if (date < today) {
+      const istToday = todayIST(); // IST-aware, matches kiosk check-in logic
+      if (date < istToday) {
         return res.status(400).json({ message: "Date must be today or a future date" });
       }
       const allEmps = await storage.getEmployees();

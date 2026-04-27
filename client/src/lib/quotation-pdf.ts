@@ -81,10 +81,10 @@ export function generateQuotationPDF(
   doc.setFillColor(...COLORS.headerBg);
   doc.rect(0, 0, pageWidth, headerH, "F");
 
-  // Logo — 70% of previous size (73 × 16 mm), vertically centred in header
-  const logoW = 73;
-  const logoH = 16;
-  const logoY = (headerH - logoH) / 2;   // = 7 mm
+  // Logo — 73 × 16 mm + 12% = 82 × 18 mm, vertically centred in header
+  const logoW = 82;
+  const logoH = 18;
+  const logoY = (headerH - logoH) / 2;   // = 6 mm
 
   if (logoDataUrl) {
     try {

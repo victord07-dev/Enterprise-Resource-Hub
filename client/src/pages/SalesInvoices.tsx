@@ -17,7 +17,7 @@ import AttachmentsPanel from "@/components/AttachmentsPanel";
 import {
   FileText, Plus, IndianRupee, CheckCircle2, Clock, AlertCircle,
   ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw,
-  MessageCircle, AlertTriangle
+  MessageCircle, AlertTriangle, Upload, ExternalLink, ClipboardCheck, Truck
 } from "lucide-react";
 import type { SalesInvoice, SalesInvoiceItem, CustomerPayment, DeliveryChallan, Customer } from "@shared/schema";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
@@ -30,6 +30,12 @@ function statusBadge(status: string) {
   if (status === "paid") return <Badge className="bg-green-100 text-green-800 border-green-200">Paid</Badge>;
   if (status === "partial_paid") return <Badge className="bg-blue-100 text-blue-800 border-blue-200">Partial Paid</Badge>;
   return <Badge className="bg-orange-100 text-orange-800 border-orange-200">Pending</Badge>;
+}
+
+function uploadStatusBadge(uploadStatus: string | null | undefined) {
+  if (uploadStatus === "recorded") return <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200 text-xs"><ClipboardCheck className="w-2.5 h-2.5 mr-0.5" />Recorded</Badge>;
+  if (uploadStatus === "cancelled") return <Badge className="bg-red-100 text-red-700 border-red-200 text-xs">Cancelled</Badge>;
+  return <Badge className="bg-amber-100 text-amber-700 border-amber-200 text-xs"><Upload className="w-2.5 h-2.5 mr-0.5" />Upload Pending</Badge>;
 }
 
 type InvoiceWithExtras = SalesInvoice & {
@@ -601,6 +607,20 @@ function SalesReturnDialog({
 }
 
 // ─── Invoice Detail Panel ────────────────────────────────────────────────────
+async function uploadInvoiceFile(invoiceId: string, route: string, file: File, extra?: Record<string, string>) {
+  const token = localStorage.getItem("auth_token");
+  const fd = new FormData();
+  fd.append("file", file);
+  if (extra) Object.entries(extra).forEach(([k, v]) => v && fd.append(k, v));
+  const res = await fetch(`/api/sales-invoices/${invoiceId}/${route}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: fd,
+  });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Upload failed"); }
+  return res.json();
+}
+
 function InvoiceDetailPanel({
   invoiceId,
   customers,
@@ -612,6 +632,13 @@ function InvoiceDetailPanel({
   const [payOpen, setPayOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [waOpen, setWaOpen] = useState(false);
+  const [signedCopyFile, setSignedCopyFile] = useState<File | null>(null);
+  const [ewayBillFile, setEwayBillFile] = useState<File | null>(null);
+  const [ewayBillNumber, setEwayBillNumber] = useState("");
+  const [ewayBillDate, setEwayBillDate] = useState("");
+  const [extInvoiceNumber, setExtInvoiceNumber] = useState("");
+  const [extInvoiceDate, setExtInvoiceDate] = useState("");
+  const [docsExpanded, setDocsExpanded] = useState(false);
 
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
     queryKey: ["/api/sales-invoices", invoiceId],
@@ -625,6 +652,32 @@ function InvoiceDetailPanel({
   const { data: creditNotes = [] } = useQuery<any[]>({
     queryKey: ["/api/credit-notes"],
     select: (cns) => cns.filter((cn: any) => cn.invoiceId === invoiceId),
+  });
+
+  const invalidateInv = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices", invoiceId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
+  };
+
+  const markRecordedMutation = useMutation({
+    mutationFn: () => apiRequest("POST", `/api/sales-invoices/${invoiceId}/mark-recorded`, { extInvoiceNumber: extInvoiceNumber || undefined, extInvoiceDate: extInvoiceDate || undefined }),
+    onSuccess: () => { invalidateInv(); toast({ title: "Invoice Recorded", description: "Upload status updated to Recorded." }); },
+    onError: async (e: any) => { let msg = "Failed"; try { const b = await e.response?.json?.(); msg = b?.message ?? msg; } catch {} toast({ title: "Error", description: msg, variant: "destructive" }); },
+  });
+
+  const uploadSignedCopyMutation = useMutation({
+    mutationFn: (file: File) => uploadInvoiceFile(invoiceId, "upload-signed-copy", file),
+    onSuccess: () => { invalidateInv(); setSignedCopyFile(null); toast({ title: "Uploaded", description: "Signed invoice copy saved." }); },
+    onError: (e: any) => toast({ title: "Upload Failed", description: e.message, variant: "destructive" }),
+  });
+
+  const uploadEwayBillMutation = useMutation({
+    mutationFn: (file: File | null) => {
+      if (file) return uploadInvoiceFile(invoiceId, "upload-eway-bill", file, { ewayBillNumber, ewayBillDate });
+      return apiRequest("PATCH", `/api/sales-invoices/${invoiceId}`, { ewayBillNumber: ewayBillNumber || undefined, ewayBillDate: ewayBillDate || undefined }).then(r => r.json());
+    },
+    onSuccess: () => { invalidateInv(); setEwayBillFile(null); setEwayBillNumber(""); setEwayBillDate(""); toast({ title: "E-way Bill Saved", description: "E-way bill details updated." }); },
+    onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
   if (isLoading || !inv) return <div className="p-6 text-muted-foreground text-sm">Loading invoice…</div>;
@@ -872,6 +925,121 @@ function InvoiceDetailPanel({
           <span className="text-muted-foreground">Balance Due</span>
           <span className={`font-semibold ${netBalance > 0 ? "text-orange-600" : "text-green-600"}`}>{fmt(netBalance)}</span>
         </div>
+      </div>
+
+      {/* ── Document Lifecycle ─────────────────────────────────────────────── */}
+      <div>
+        <button
+          className="w-full flex items-center justify-between text-sm font-semibold mb-2 hover:text-primary transition-colors"
+          onClick={() => setDocsExpanded(!docsExpanded)}
+          data-testid="toggle-docs-section"
+        >
+          <span className="flex items-center gap-1.5"><FileText className="w-4 h-4" />Documents &amp; Upload Status</span>
+          <div className="flex items-center gap-2">
+            {uploadStatusBadge((inv as any).uploadStatus)}
+            {docsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </div>
+        </button>
+
+        {docsExpanded && (
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              {/* Current upload status and ext invoice reference */}
+              <div className="flex flex-wrap gap-3 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground">Status:</span>
+                  {uploadStatusBadge((inv as any).uploadStatus)}
+                </div>
+                {(inv as any).extInvoiceNumber && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Ext. Invoice:</span>
+                    <span className="font-mono font-medium">{(inv as any).extInvoiceNumber}</span>
+                    {(inv as any).extInvoiceDate && <span className="text-muted-foreground">({new Date((inv as any).extInvoiceDate).toLocaleDateString("en-IN")})</span>}
+                  </div>
+                )}
+              </div>
+
+              {/* Mark Recorded (when pending) */}
+              {(inv as any).uploadStatus === "pending_upload" && (
+                <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">
+                  <p className="text-xs font-medium text-amber-800">Mark invoice as recorded in your physical books</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. Invoice No. (optional)</Label>
+                      <Input className="h-8 text-xs" data-testid="input-ext-invoice-number" value={extInvoiceNumber} onChange={(e) => setExtInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. Invoice Date</Label>
+                      <Input type="date" className="h-8 text-xs" data-testid="input-ext-invoice-date" value={extInvoiceDate} onChange={(e) => setExtInvoiceDate(e.target.value)} />
+                    </div>
+                  </div>
+                  <Button size="sm" className="w-full" data-testid="button-mark-recorded" disabled={markRecordedMutation.isPending} onClick={() => markRecordedMutation.mutate()}>
+                    <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" />{markRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
+                  </Button>
+                </div>
+              )}
+
+              {/* Signed Copy Upload */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium">Signed Invoice Copy</p>
+                  {(inv as any).signedCopyUrl && (
+                    <a href={(inv as any).signedCopyUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-signed-copy">
+                      <ExternalLink className="w-3 h-3" />View
+                    </a>
+                  )}
+                </div>
+                {!(inv as any).signedCopyUrl ? (
+                  <div className="flex items-center gap-2">
+                    <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-8 text-xs flex-1" data-testid="input-invoice-signed-copy" onChange={(e) => setSignedCopyFile(e.target.files?.[0] ?? null)} />
+                    <Button size="sm" variant="outline" disabled={!signedCopyFile || uploadSignedCopyMutation.isPending} data-testid="button-upload-invoice-signed-copy" onClick={() => signedCopyFile && uploadSignedCopyMutation.mutate(signedCopyFile)}>
+                      <Upload className="w-3.5 h-3.5 mr-1" />{uploadSignedCopyMutation.isPending ? "…" : "Upload"}
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Uploaded {(inv as any).signedCopyUploadedAt ? `on ${new Date((inv as any).signedCopyUploadedAt).toLocaleDateString("en-IN")}` : ""}</p>
+                )}
+              </div>
+
+              {/* E-way Bill */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium">E-way Bill</p>
+                  {(inv as any).ewayBillUrl && (
+                    <a href={(inv as any).ewayBillUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-eway-bill">
+                      <ExternalLink className="w-3 h-3" />View
+                    </a>
+                  )}
+                </div>
+                {(inv as any).ewayBillNumber ? (
+                  <p className="text-xs text-emerald-600"><Truck className="w-3 h-3 inline mr-1" />E-way Bill: <span className="font-mono font-medium">{(inv as any).ewayBillNumber}</span> {(inv as any).ewayBillDate ? `(${new Date((inv as any).ewayBillDate).toLocaleDateString("en-IN")})` : ""}</p>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">E-way Bill No.</Label>
+                        <Input className="h-8 text-xs" data-testid="input-eway-bill-number" value={ewayBillNumber} onChange={(e) => setEwayBillNumber(e.target.value)} placeholder="e.g. 331234567890" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Valid Until</Label>
+                        <Input type="date" className="h-8 text-xs" data-testid="input-eway-bill-date" value={ewayBillDate} onChange={(e) => setEwayBillDate(e.target.value)} />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-8 text-xs flex-1" data-testid="input-eway-bill-file" onChange={(e) => setEwayBillFile(e.target.files?.[0] ?? null)} />
+                      <Button size="sm" variant="outline" disabled={(!ewayBillNumber && !ewayBillFile) || uploadEwayBillMutation.isPending} data-testid="button-save-eway-bill" onClick={() => uploadEwayBillMutation.mutate(ewayBillFile)}>
+                        <Upload className="w-3.5 h-3.5 mr-1" />{uploadEwayBillMutation.isPending ? "…" : "Save"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Attachments */}
+              <AttachmentsPanel entityType="sales_invoices" entityId={invoiceId} />
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {payOpen && (
@@ -1125,6 +1293,7 @@ export default function SalesInvoices() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeView, setActiveView] = useState<"invoices" | "returns">("invoices");
+  const [uploadFilter, setUploadFilter] = useState<"all" | "pending_upload" | "recorded">("all");
 
   const { data: invoices = [], isLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customers = [] } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -1132,13 +1301,12 @@ export default function SalesInvoices() {
 
   const filtered = invoices.filter((inv) => {
     const q = search.toLowerCase();
-    if (!q) return true;
-    const customer = customers.find((c) => c.id === inv.customerId);
-    return (
-      inv.invoiceNumber.toLowerCase().includes(q) ||
-      customer?.name?.toLowerCase().includes(q) ||
-      inv.status.toLowerCase().includes(q)
-    );
+    if (q) {
+      const customer = customers.find((c) => c.id === inv.customerId);
+      if (!(inv.invoiceNumber.toLowerCase().includes(q) || customer?.name?.toLowerCase().includes(q) || inv.status.toLowerCase().includes(q))) return false;
+    }
+    if (uploadFilter !== "all" && (inv as any).uploadStatus !== uploadFilter) return false;
+    return true;
   });
 
   const totalPending = invoices.filter((i) => i.status === "pending").reduce((s, i) => s + Number(i.grandTotal), 0);
@@ -1242,6 +1410,21 @@ export default function SalesInvoices() {
           </div>
         </div>
 
+        {/* Upload Status Filter */}
+        <div className="flex items-center gap-1 px-6 py-2 border-b bg-muted/20">
+          {(["all", "pending_upload", "recorded"] as const).map((f) => (
+            <button
+              key={f}
+              data-testid={`filter-upload-${f}`}
+              onClick={() => setUploadFilter(f)}
+              className={`px-3 py-1 text-xs rounded-full border transition-colors ${uploadFilter === f ? "bg-primary text-primary-foreground border-primary" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"}`}
+            >
+              {f === "all" ? "All" : f === "pending_upload" ? "Upload Pending" : "Recorded"}
+              <span className="ml-1 opacity-60">({invoices.filter(i => f === "all" || (i as any).uploadStatus === f).length})</span>
+            </button>
+          ))}
+        </div>
+
         {/* Summary Cards */}
         <div className="grid grid-cols-3 gap-4 px-6 py-4 border-b bg-muted/30">
           <div className="bg-background rounded-lg border p-3 text-center">
@@ -1290,12 +1473,13 @@ export default function SalesInvoices() {
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-semibold text-sm">{inv.invoiceNumber}</span>
                           {statusBadge(inv.status)}
                           <Badge variant="outline" className="text-xs">
                             {inv.customerType}
                           </Badge>
+                          {uploadStatusBadge((inv as any).uploadStatus)}
                           {creditedAmount > 0 && (
                             <Badge className="text-xs bg-blue-50 text-blue-700 border-blue-200">
                               <RotateCcw className="w-2.5 h-2.5 mr-0.5" />CN

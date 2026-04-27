@@ -1,0 +1,542 @@
+Phase: Document Lifecycle Hardening — Challan, Sales Invoice (upload-only),
+       GRN with Supplier Document Uploads, E-way Bill Capture
+
+CONTEXT
+
+The system currently lets users create challans regardless of stock or
+payment status, lets sales invoices generate without proper sequencing,
+and confirms GRNs without supplier challan proof. This phase adds
+operational discipline that mirrors real ITFI workflow:
+
+- Every physical document follows: generate (where applicable) → download
+  → physical sign → scan back → upload → status advances.
+- Sales invoice tax compliance is handled OUTSIDE the system (by accounts
+  team in Tally / ClearTax). Our system only captures the sales invoice
+  as a reference shell + uploaded signed scan + e-way bill capture.
+- Cross-team coordination via notifications: sales creates draft challan
+  to signal supply/accounts/inventory teams; those teams act on
+  procurement / payment / stock readiness.
+
+This phase covers:
+- Delivery Challan lifecycle (sales-side, with PDF generation)
+- Sales Invoice (auto-created on challan dispatch, upload-only — NO PDF
+  generation by us)
+- GRN lifecycle (purchase-side, with supplier challan upload before GRN
+  creation, and supplier tax invoice optional upload on GRN)
+- E-way Bill capture on sales invoice
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend test scripts alone are not
+  sufficient.
+- Only operator (me) declares phase closure. You may report
+  "implementation complete, ready for verification" but not "phase closed."
+- Mirror existing patterns where applicable. Read the existing code first.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Do NOT touch existing payment recording flows (customer or supplier).
+
+PRE-WORK — READ EXISTING CODE (MANDATORY, BEFORE ANY CODE)
+
+Before writing any code, report findings on:
+
+1. Current Delivery Challan flow: file locations, current statuses, what
+   transitions exist, current PDF download capability if any. Note any
+   stock-availability check that already exists and where.
+2. Current Sales Invoice flow: how is it currently created (manually?
+   auto-created from something?), what statuses exist, what fields are
+   on the table.
+3. Current GRN flow: how is draft GRN created, statuses, what triggers
+   stock addition (FIFO lot creation), what's the link to PO.
+4. Existing file upload mechanism: where are scanned PDFs/images stored
+   (Cloudinary / local disk / S3)? What's the existing upload pattern
+   (e.g., on quotations or POs if any uploads exist)? If no upload
+   pattern exists, propose one (Cloudinary or local with proper file
+   naming) and await my approval before implementing.
+5. Existing notification system: confirm how to send role-based
+   notifications (e.g., notify all users with role=accountant). What
+   are the role values currently in use?
+6. Existing payment status on Sales Order: how is "fully paid" computed
+   today? Is there a is_fully_paid boolean or do we sum payments and
+   compare to SO total? What's the payment_status enum if any?
+7. Existing audit log helper signature.
+8. Existing roles list (admin, accountant, sales_manager, sales,
+   inventory, supply_chain_lead, etc.) — confirm exact role values used
+   in the database.
+
+Report all findings in one message. Await my go-ahead before any
+implementation.
+
+SECTION A — SCHEMA CHANGES
+
+A1. delivery_challans table — add (or update) columns:
+    status (enum: 'draft' | 'awaiting_signature' | 'dispatched' |
+            'cancelled', default 'draft')
+    signed_copy_url (text, nullable)
+    signed_copy_uploaded_by (uuid FK → users, nullable)
+    signed_copy_uploaded_at (timestamp, nullable)
+    ready_for_signature_at (timestamp, nullable)
+    ready_for_signature_by (uuid FK → users, nullable)
+    dispatched_at (timestamp, nullable)
+    dispatched_by (uuid FK → users, nullable)
+    cancelled_at (timestamp, nullable)
+    cancelled_by (uuid FK → users, nullable)
+    cancellation_reason (text, nullable)
+
+A2. sales_invoices table — restructure to be upload-shell, not generator.
+    Drop / deprecate any existing PDF-generation fields if present.
+    Required fields:
+    id (uuid PK)
+    sales_order_id (uuid FK → sales_orders, NOT NULL)
+    delivery_challan_id (uuid FK → delivery_challans, NOT NULL)
+    quotation_id (uuid FK → quotations, NOT NULL)
+    invoice_number (text, nullable — entered by accounts team after
+                    they generate it in Tally / external system)
+    invoice_date (date, nullable — accounts team enters)
+    total_amount (numeric, nullable — accounts team enters; for cross-
+                  reference vs SO/challan total)
+    gst_amount (numeric, nullable)
+    signed_copy_url (text, nullable — uploaded scan of signed Tally
+                     invoice)
+    signed_copy_uploaded_by (uuid FK → users, nullable)
+    signed_copy_uploaded_at (timestamp, nullable)
+    eway_bill_number (text, nullable)
+    eway_bill_date (date, nullable)
+    eway_bill_url (text, nullable — scan/PDF of e-way bill from GST
+                   portal)
+    eway_bill_uploaded_by (uuid FK → users, nullable)
+    eway_bill_uploaded_at (timestamp, nullable)
+    status (enum: 'pending_upload' | 'recorded' | 'cancelled',
+            default 'pending_upload')
+    notes (text, nullable)
+    created_at, updated_at
+
+    "pending_upload" = auto-created on challan dispatch but no scan yet
+    "recorded" = signed copy uploaded + invoice number recorded
+    "cancelled" = invoice voided
+
+A3. grns table — add columns:
+    status (enum: 'draft' | 'confirmed' | 'cancelled', default 'draft')
+    supplier_challan_url (text, NOT NULL after supplier challan upload —
+                          required before GRN row exists, see flow below)
+    supplier_challan_uploaded_by (uuid FK → users)
+    supplier_challan_uploaded_at (timestamp)
+    signed_copy_url (text, nullable — our team's signed GRN scan)
+    signed_copy_uploaded_by (uuid FK → users, nullable)
+    signed_copy_uploaded_at (timestamp, nullable)
+    supplier_invoice_url (text, nullable — supplier tax invoice scan,
+                          optional, can be uploaded any time)
+    supplier_invoice_uploaded_by (uuid FK → users, nullable)
+    supplier_invoice_uploaded_at (timestamp, nullable)
+    supplier_invoice_number (text, nullable — for reference)
+    supplier_invoice_date (date, nullable)
+    confirmed_at (timestamp, nullable)
+    confirmed_by (uuid FK → users, nullable)
+    cancelled_at (timestamp, nullable)
+    cancelled_by (uuid FK → users, nullable)
+    cancellation_reason (text, nullable)
+
+A4. Run db:push.
+
+SECTION B — DELIVERY CHALLAN LIFECYCLE
+
+B1. Create draft challan from a Sales Order (existing flow + additions):
+    - Available to: sales, sales_manager, admin
+    - Status='draft' on creation
+    - On creation: send notification to roles [inventory, accountant,
+      admin] with payload: "Draft Challan #[NUMBER] created for SO
+      #[NUMBER]. Stock + payment review required."
+    - Sales user sees toast: "Draft challan created. Inventory and
+      accounts notified."
+    - Audit log: action='challan_drafted'
+
+B2. Sales Order detail page — add "Documents" panel showing:
+    - Linked challan(s): number, status badge, signed copy uploaded ✓/✗,
+      action buttons per status + role
+    - Linked invoice(s): number (if recorded), status badge, signed copy
+      ✓/✗, e-way bill ✓/✗
+
+B3. Download draft challan PDF:
+    - Available on draft, awaiting_signature, and dispatched statuses
+    - PDF format: 2-copy layout — print produces two copies on the same
+      page or two pages, labeled "OFFICE COPY" and "DRIVER COPY" (or
+      "ACKNOWLEDGMENT COPY")
+    - Each copy includes: customer details, line items, qty, signature
+      line at bottom: "Authorized Signatory: ______________ Date: ______"
+    - DRAFT watermark on PDF when status='draft'
+    - No watermark once status moves beyond draft
+
+B4. Mark Ready for Signature (transition: draft → awaiting_signature):
+    - Available to: accountant, sales_manager, admin, inventory
+    - Hard-blocked unless BOTH:
+      a. Stock is sufficient for ALL line items in the SO/challan
+         (existing 0-stock check — preserve and extend)
+      b. Linked Sales Order is fully paid (sum of customer payments =
+         SO total exactly)
+    - If blocked: show specific reason via tooltip on the disabled
+      button. E.g., "Cannot proceed: short stock on Item X (need 5,
+      available 2)" or "Customer payment incomplete: Outstanding
+      ₹50,000".
+    - On success:
+      * Status → 'awaiting_signature'
+      * ready_for_signature_at, ready_for_signature_by recorded
+      * Notification to sales_manager + admin: "Challan #[NUMBER] ready
+        for printing and signature."
+    - Audit log: action='challan_ready_for_signature'
+
+B5. Upload Signed Copy:
+    - File upload field on challan detail page, available when status
+      = 'awaiting_signature'
+    - Accepts PDF, JPEG, PNG (max 10 MB)
+    - Available to: any user with access to the SO
+    - Stores signed_copy_url, records uploader + timestamp
+    - Multiple uploads allowed (replaces previous; old URL audit-logged)
+    - Audit log: action='challan_signed_copy_uploaded'
+
+B6. Dispatch Challan (transition: awaiting_signature → dispatched):
+    - Available only when status='awaiting_signature' AND
+      signed_copy_url IS NOT NULL
+    - Hard-block button if signed copy missing — tooltip "Upload signed
+      copy before dispatching"
+    - Available to: accountant, sales_manager, admin, inventory
+    - On dispatch:
+      * status='dispatched'
+      * dispatched_at, dispatched_by recorded
+      * Stock movement created (existing logic — preserve)
+      * Inventory deducted (existing logic — preserve)
+      * AUTO-CREATE sales_invoice row:
+        - sales_order_id, delivery_challan_id, quotation_id linked
+        - status='pending_upload'
+        - invoice_number, invoice_date, total_amount, gst_amount left
+          NULL — accounts team fills via Sales Invoice page
+        - All other fields NULL
+      * Notification to accountant + admin: "Challan #[NUMBER]
+        dispatched. Sales Invoice pending upload — record invoice
+        details from Tally."
+      * Notification to sales: "Challan #[NUMBER] dispatched."
+    - Audit log: action='challan_dispatched' + 'sales_invoice_auto_created'
+
+B7. Cancel Challan:
+    - Available on draft and awaiting_signature only
+    - NOT available after dispatch (returns are out of scope)
+    - Required: cancellation_reason
+    - Sets status='cancelled', no stock movement
+    - Audit log: action='challan_cancelled'
+
+SECTION C — SALES INVOICE (UPLOAD-ONLY)
+
+C1. Sales Invoice page (new or extend existing /sales-invoices route):
+    - Lists all sales_invoices, sortable by date / status / SO number
+    - Filter: status (pending_upload / recorded / cancelled)
+    - Each row: invoice number (or "Not yet recorded"), SO ref, customer,
+      total, status badge, action button
+    - Visible to: accountant, sales_manager, admin, sales (read-only for
+      sales)
+
+C2. Sales Invoice detail page:
+    - Header: SO ref, Challan ref, Quotation ref (all clickable to drill)
+    - Customer details (read-only, from SO)
+    - Line items (read-only, from SO snapshot)
+
+    Editable section (accountant, admin only):
+    - Invoice Number (text, required to move to 'recorded')
+    - Invoice Date (date, required, defaults to today)
+    - Total Amount (numeric, required — accounts team confirms what
+      Tally generated)
+    - GST Amount (numeric, optional)
+    - Notes (textarea, optional)
+
+    Signed Copy upload section:
+    - File upload (PDF/JPEG/PNG, max 10 MB)
+    - Shows uploader + timestamp once uploaded
+    - Replace allowed (audit-logged)
+
+    E-way Bill section:
+    - Eway Bill Number (text, optional)
+    - Eway Bill Date (date, optional)
+    - Eway Bill scan upload (PDF/JPEG/PNG, max 10 MB)
+    - Soft reminder banner if total_amount ≥ 50,000 and eway_bill_number
+      is empty: "E-way bill required for invoices ≥ ₹50,000 (inter-state).
+      Generate from GST portal and record EBN here."
+
+    Action buttons:
+    - Save Draft (saves any partial data without status change)
+    - Mark as Recorded (transitions to 'recorded' — requires invoice_number,
+      invoice_date, total_amount, signed_copy_url all populated)
+
+C3. Mark as Recorded transition logic:
+    - Validates required fields: invoice_number, invoice_date,
+      total_amount, signed_copy_url
+    - If e-way bill threshold met (total_amount ≥ 50,000), warn but do
+      not block: "Marking as recorded without e-way bill capture. Are
+      you sure?" with Continue/Cancel
+    - On confirm: status='recorded', notification to admin if useful
+    - Audit log: action='sales_invoice_recorded'
+
+C4. Cancel Sales Invoice:
+    - Available on pending_upload and recorded
+    - Required: cancellation_reason
+    - Status='cancelled'
+    - Audit log: action='sales_invoice_cancelled'
+    - Note: cancelling does NOT reverse the underlying challan dispatch
+      or stock movement. It only marks the invoice record as void.
+      Real-world: cancelled invoice means accounts team made a mistake
+      and Tally was rolled back; create a new sales_invoice record
+      manually if needed (out of scope to auto-create on cancel).
+
+C5. Manual create Sales Invoice:
+    - Provide a "Create New Sales Invoice" button on the list page,
+      available to accountant and admin
+    - Form: select existing SO + challan from dropdowns (must be a
+      dispatched challan), then same fields as detail page
+    - Used for the rare case where auto-create failed or was deleted
+    - Audit log: action='sales_invoice_manually_created'
+
+SECTION D — GRN LIFECYCLE (PURCHASE-SIDE)
+
+D1. NEW SEQUENCE: Supplier challan upload comes BEFORE GRN creation.
+    The GRN cannot be created until the supplier challan scan is
+    uploaded. The flow is:
+
+    Step 1: User on PO detail page sees "Receive Goods" section
+            (visible when PO is approved + has been paid in full to
+            supplier — full supplier payment required, similar to sales
+            full-payment requirement). If supplier payment incomplete,
+            section shows: "Cannot create GRN: full payment to supplier
+            required before goods receipt."
+
+    Step 2: User clicks "Upload Supplier Challan" → file upload modal
+            (PDF / JPEG / PNG, max 10 MB)
+            - Stored temporarily as a pending upload tied to the PO
+            - Audit log: action='supplier_challan_uploaded_for_grn'
+
+    Step 3: After upload, user clicks "Create GRN" button
+            - System creates grns row with status='draft'
+            - supplier_challan_url, supplier_challan_uploaded_by/_at
+              populated from Step 2
+            - User then enters per-line item received quantities (matches
+              or differs from PO; track discrepancy)
+            - Audit log: action='grn_drafted'
+
+D2. Download draft GRN PDF:
+    - Format: itemized goods received, supplier reference, PO reference,
+      date, signature line at bottom
+    - DRAFT watermark when status='draft'
+
+D3. Upload our signed GRN copy:
+    - File upload on GRN detail page, available when status='draft'
+    - PDF/JPEG/PNG, max 10 MB
+    - Stores signed_copy_url + uploader + timestamp
+    - Audit log: action='grn_signed_copy_uploaded'
+
+D4. Confirm GRN (transition: draft → confirmed):
+    - Hard-blocked unless signed_copy_url IS NOT NULL
+    - (supplier_challan_url is already required at GRN creation per D1
+      so it's always present)
+    - Available to: accountant, admin, inventory
+    - On confirm:
+      * status='confirmed'
+      * confirmed_at, confirmed_by recorded
+      * Stock added to inventory (existing logic — preserve)
+      * GRN lots created for FIFO costing (existing logic — preserve)
+      * Notification to admin + accountant: "GRN #[NUMBER] confirmed.
+        Stock updated."
+    - Audit log: action='grn_confirmed'
+
+D5. Upload Supplier Tax Invoice (optional, any time):
+    - File upload field on GRN detail page
+    - Available before or after GRN confirmation
+    - Optional fields: supplier_invoice_number, supplier_invoice_date
+    - Stored in supplier_invoice_url, supplier_invoice_*_by/_at
+    - If GRN confirmed and supplier_invoice_url is null, show banner on
+      GRN: "Supplier tax invoice pending upload."
+    - Audit log: action='grn_supplier_invoice_uploaded'
+
+D6. Cancel GRN:
+    - Available only on draft status (not after confirmation — stock has
+      moved)
+    - Required: cancellation_reason
+    - Status='cancelled', no stock changes
+    - Audit log: action='grn_cancelled'
+
+SECTION E — UI: DOCUMENT STATUS PANELS
+
+E1. Sales Order detail page — "Documents" section showing:
+    - Linked Challan(s): number, status badge, signed copy ✓/✗, action
+      buttons (View / Mark Ready / Upload Signed Copy / Dispatch / Cancel
+      — per status + role)
+    - Linked Sales Invoice(s): number or "—", status badge, signed copy
+      ✓/✗, e-way bill ✓/✗, "Open" button
+
+E2. Purchase Order detail page — "Documents" section showing:
+    - Linked GRN(s): number, status badge, supplier challan ✓ (always),
+      our signed copy ✓/✗, supplier invoice ✓/✗, action buttons (View /
+      Upload Signed Copy / Confirm / Upload Supplier Invoice / Cancel)
+    - "Receive Goods" / "Upload Supplier Challan" / "Create GRN" buttons
+      where appropriate
+
+E3. Notification panel: include all new notification types defined above.
+
+SECTION F — AUTHORIZATION SUMMARY
+
+| Action                              | Allowed Roles                        |
+|-------------------------------------|--------------------------------------|
+| Create draft challan                | sales, sales_manager, admin          |
+| Mark challan ready for signature    | accountant, sales_manager, admin,    |
+|                                     | inventory                            |
+| Upload challan signed copy          | any user with SO access              |
+| Dispatch challan                    | accountant, sales_manager, admin,    |
+|                                     | inventory                            |
+| Cancel challan                      | sales_manager, admin (with reason)   |
+| View Sales Invoice                  | sales (read-only), sales_manager,    |
+|                                     | accountant, admin                    |
+| Edit Sales Invoice fields           | accountant, admin                    |
+| Upload Sales Invoice signed copy    | accountant, admin                    |
+| Upload Eway Bill                    | accountant, admin                    |
+| Mark Sales Invoice as Recorded      | accountant, admin                    |
+| Cancel Sales Invoice                | accountant, admin (with reason)      |
+| Manual Create Sales Invoice         | accountant, admin                    |
+| Upload supplier challan (for GRN)   | accountant, admin, inventory         |
+| Create draft GRN                    | accountant, admin, inventory         |
+| Upload our signed GRN copy          | any user with PO access              |
+| Confirm GRN                         | accountant, admin, inventory         |
+| Upload supplier tax invoice         | accountant, admin                    |
+| Cancel GRN                          | admin only (with reason)             |
+
+Sales role:
+- Can: create draft challan, view documents, view sales invoice
+  (read-only)
+- Cannot: dispatch challan, edit invoice, upload invoice scans,
+  confirm GRN, view PO costs
+
+Defense in depth: client-side hides UI for unauthorized actions; server-
+side enforces 403 on direct API calls.
+
+SECTION G — AUDIT TRAIL
+
+G1. All new action types logged to audit_logs table with module set
+    appropriately (sales for challan/invoice; supply_chain for GRN):
+
+    Sales-side:
+    - challan_drafted
+    - challan_ready_for_signature
+    - challan_signed_copy_uploaded
+    - challan_dispatched
+    - challan_cancelled
+    - sales_invoice_auto_created
+    - sales_invoice_recorded
+    - sales_invoice_signed_copy_uploaded
+    - sales_invoice_eway_bill_uploaded
+    - sales_invoice_cancelled
+    - sales_invoice_manually_created
+
+    Purchase-side:
+    - supplier_challan_uploaded_for_grn
+    - grn_drafted
+    - grn_signed_copy_uploaded
+    - grn_confirmed
+    - grn_supplier_invoice_uploaded
+    - grn_cancelled
+
+G2. Details column should include human-readable context (document
+    number, amount, related entities, reason if cancelled).
+
+SECTION H — STOP GATE (OPERATOR WALKS)
+
+I will walk these. Do not declare passed yourself.
+
+(a) Sales user creates draft challan from an SO with insufficient stock
+    + unpaid customer SO. Status='draft'. Notifications fire to
+    inventory + accountant + admin. Sales user sees confirmation toast.
+
+(b) Download draft challan PDF — DRAFT watermark visible, OFFICE COPY +
+    DRIVER COPY layout, signature lines present, line items correct.
+
+(c) Try to mark challan "Ready for Signature" while stock is short +
+    SO unpaid → button disabled, tooltip explains both blockers.
+
+(d) Procure stock via PO + GRN flow (per Section D). Then record full
+    customer payment on the SO. Now mark ready → succeeds. Status
+    advances to awaiting_signature. Sales_manager + admin notified.
+
+(e) Try dispatch without uploading signed copy → button disabled,
+    tooltip "Upload signed copy before dispatching".
+
+(f) Upload signed copy (PDF). Storage path saved. Dispatch button
+    activates.
+
+(g) Dispatch challan. Status='dispatched'. Stock deducts. AUTO-
+    CREATE sales_invoice row visible in Sales Invoice list with
+    status='pending_upload'. Sales + accountant + admin notified.
+
+(h) Sales role user: try to dispatch via direct API call → 403.
+
+(i) Open auto-created Sales Invoice. Header shows linked SO, Challan,
+    Quotation references (clickable). Editable fields visible to
+    accountant. Sales role sees read-only.
+
+(j) Accountant fills invoice_number "INV-2526-04-00045", invoice_date,
+    total_amount ₹52,000 (above e-way bill threshold). Soft reminder
+    banner appears: "E-way bill required..."
+
+(k) Upload signed Tally invoice scan. Upload e-way bill PDF + capture
+    EBN + EBN date.
+
+(l) Click Mark as Recorded → succeeds, status='recorded'. Audit log
+    entries present.
+
+(m) Try Mark as Recorded with missing total_amount → blocked with
+    field-level error.
+
+(n) Sales invoice list: filter by status='pending_upload' → only
+    pending invoices shown. Filter by 'recorded' → only completed.
+
+(o) Procurement: open approved PO with full supplier payment recorded.
+    "Receive Goods" section appears. Upload supplier challan PDF.
+    Click "Create GRN" → GRN row created with status='draft',
+    supplier_challan_url populated.
+
+(p) Try to confirm GRN without uploading our signed copy → blocked,
+    tooltip "Upload signed GRN copy before confirming".
+
+(q) Upload signed GRN copy. Confirm GRN → succeeds. Stock added.
+    GRN lots created. Admin + accountant notified.
+
+(r) Without supplier tax invoice: GRN confirmed page shows banner
+    "Supplier tax invoice pending upload."
+
+(s) Upload supplier tax invoice with number/date later — succeeds.
+    Banner clears.
+
+(t) Try to create GRN on PO without full supplier payment → "Receive
+    Goods" section disabled with explanation.
+
+(u) Cancel a draft challan with reason. Status='cancelled'. Try to
+    cancel a dispatched challan → not allowed.
+
+(v) Cancel a draft GRN with reason. Status='cancelled'. Try to cancel
+    a confirmed GRN → not allowed.
+
+(w) Audit trail: search for each new action type → entries present
+    with full details.
+
+(x) Regression: existing customer payment recording, supplier payment
+    recording, GRN FIFO lot creation, sales-side payment receipt,
+    Phase 5.5 floor panel, hierarchical picker — all unchanged and
+    working.
+
+(y) Authorization spot checks: log in as sales role → confirm all
+    restricted actions are hidden in UI. Try direct API calls for
+    each restricted action → 403 returned.
+
+OUT OF SCOPE FOR THIS PHASE
+- WhatsApp send action on invoice (separate phase)
+- Manual PR creation form (separate phase)
+- Daily opening/closing balance + petty cash module (separate phase)
+- Performa Invoice upload on PO (separate phase, if still needed)
+- Returns / credit notes
+- E-invoice IRP integration (GST portal API)
+- Email send on document issue
+- Supplier Invoice as a separate Accounts module entity (kept on GRN
+  for now)
+
+Stop after implementation ships and report. I will walk the stop gate.

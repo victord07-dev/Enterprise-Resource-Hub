@@ -476,6 +476,17 @@ export const deliveryChallans = pgTable("delivery_challans", {
   deliveryAddress: text("delivery_address"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Document lifecycle hardening
+  signedCopyUrl: text("signed_copy_url"),
+  signedCopyUploadedBy: varchar("signed_copy_uploaded_by"),
+  signedCopyUploadedAt: timestamp("signed_copy_uploaded_at"),
+  readyForSignatureAt: timestamp("ready_for_signature_at"),
+  readyForSignatureBy: varchar("ready_for_signature_by"),
+  dispatchedAt: timestamp("dispatched_at"),
+  dispatchedBy: varchar("dispatched_by"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by"),
+  cancellationReason: text("cancellation_reason"),
 });
 
 export const deliveryChallanItems = pgTable("delivery_challan_items", {
@@ -530,6 +541,23 @@ export const goodsReceiptNotes = pgTable("goods_receipt_notes", {
   supplierChallanDate: timestamp("supplier_challan_date"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Document lifecycle hardening
+  supplierChallanUrl: text("supplier_challan_url"),
+  supplierChallanUploadedBy: varchar("supplier_challan_uploaded_by"),
+  supplierChallanUploadedAt: timestamp("supplier_challan_uploaded_at"),
+  signedCopyUrl: text("signed_copy_url"),
+  signedCopyUploadedBy: varchar("signed_copy_uploaded_by"),
+  signedCopyUploadedAt: timestamp("signed_copy_uploaded_at"),
+  supplierInvoiceUrl: text("supplier_invoice_url"),
+  supplierInvoiceUploadedBy: varchar("supplier_invoice_uploaded_by"),
+  supplierInvoiceUploadedAt: timestamp("supplier_invoice_uploaded_at"),
+  supplierInvoiceNumber: text("supplier_invoice_number"),
+  supplierInvoiceDate: timestamp("supplier_invoice_date"),
+  confirmedAt: timestamp("confirmed_at"),
+  confirmedBy: varchar("confirmed_by"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by"),
+  cancellationReason: text("cancellation_reason"),
 });
 
 export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
@@ -651,6 +679,24 @@ export const salesInvoices = pgTable("sales_invoices", {
   notes: text("notes"),
   createdBy: varchar("created_by"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  // Document lifecycle hardening — upload-shell fields
+  uploadStatus: text("upload_status").notNull().default("pending_upload"),
+  extInvoiceNumber: text("ext_invoice_number"),
+  extInvoiceDate: timestamp("ext_invoice_date"),
+  extTotalAmount: decimal("ext_total_amount", { precision: 12, scale: 2 }),
+  extGstAmount: decimal("ext_gst_amount", { precision: 12, scale: 2 }),
+  uploadNotes: text("upload_notes"),
+  signedCopyUrl: text("signed_copy_url"),
+  signedCopyUploadedBy: varchar("signed_copy_uploaded_by"),
+  signedCopyUploadedAt: timestamp("signed_copy_uploaded_at"),
+  ewayBillNumber: text("eway_bill_number"),
+  ewayBillDate: timestamp("eway_bill_date"),
+  ewayBillUrl: text("eway_bill_url"),
+  ewayBillUploadedBy: varchar("eway_bill_uploaded_by"),
+  ewayBillUploadedAt: timestamp("eway_bill_uploaded_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by"),
+  cancellationReason: text("cancellation_reason"),
 });
 
 export const salesInvoiceItems = pgTable("sales_invoice_items", {

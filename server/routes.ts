@@ -100,6 +100,18 @@ async function notifyPricingReviewers(title: string, message: string, sheetId: s
   }
 }
 
+async function notifyRoles(roles: string[], type: string, title: string, message: string, relatedId?: string) {
+  try {
+    const allUsers = await storage.getUsers();
+    const targets = allUsers.filter((u: any) => roles.includes(u.role) && u.isActive);
+    for (const u of targets) {
+      await storage.createNotification({ userId: u.id, type, title, message, relatedId });
+    }
+  } catch (e) {
+    console.error("notifyRoles error:", e);
+  }
+}
+
 async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
   const reservedStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
   const allOrders = await storage.getSalesOrders();
@@ -4075,6 +4087,9 @@ export async function registerRoutes(
         createdItems.push(ci);
       }
 
+      await logAction(req.user.id, "challan_drafted", "sales", `Draft Challan ${challan.challanNumber} created`);
+      notifyRoles(["warehouse_manager", "accountant", "admin"], "challan", `Draft Challan ${challan.challanNumber} Created`, `Draft Challan #${challan.challanNumber} created. Stock + payment review required.`, challan.id).catch(() => {});
+
       res.status(201).json({ ...challan, items: createdItems });
     } catch (error) {
       res.status(500).json({ message: "Failed to create delivery challan" });
@@ -4256,6 +4271,9 @@ export async function registerRoutes(
         createdItems.push(ci);
       }
 
+      await logAction(req.user.id, "challan_drafted", "sales", `Draft Challan ${challanNumber} created from SO ${soId}`);
+      notifyRoles(["warehouse_manager", "accountant", "admin"], "challan", `Draft Challan ${challanNumber} Created`, `Draft Challan #${challanNumber} created. Stock + payment review required.`, challan.id).catch(() => {});
+
       res.status(201).json({ ...challan, items: createdItems });
     } catch (error) {
       console.error("create-from-so error:", error);
@@ -4332,11 +4350,150 @@ export async function registerRoutes(
     }
   });
 
+  // ── B4: Mark Ready for Signature (draft → awaiting_signature) ─────────────
+  app.post("/api/delivery-challans/:id/ready-for-signature", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "sales_manager", "admin", "warehouse_manager"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be marked ready for signature" });
+
+      // Gate A: check stock for all items
+      const items = await storage.getDeliveryChallanItems(challan.id);
+      if (challan.sourceType === "warehouse") {
+        const stockShortages: string[] = [];
+        for (const item of items) {
+          const qty = Number(item.qtyToDispatch ?? item.quantity);
+          const stockRes = await db.execute(sql`
+            SELECT quantity FROM inventory_stock
+            WHERE product_id = ${item.productId} AND warehouse_id = ${challan.sourceId}
+            LIMIT 1
+          `);
+          const available = Number((stockRes as any).rows?.[0]?.quantity ?? 0);
+          if (qty > available) {
+            const prod = await storage.getProduct(item.productId);
+            stockShortages.push(`${prod?.name ?? item.productId}: need ${qty}, available ${available}`);
+          }
+        }
+        if (stockShortages.length > 0) {
+          return res.status(400).json({ message: "Insufficient stock", shortages: stockShortages });
+        }
+      }
+
+      // Gate B: SO must be fully paid
+      if (challan.orderId) {
+        const so = await storage.getSalesOrder(challan.orderId);
+        if (so) {
+          const paid = Number((so as any).paidAmount ?? 0);
+          const total = Number((so as any).totalAmount ?? 0);
+          if (paid < total) {
+            return res.status(400).json({
+              message: "Customer payment incomplete",
+              outstanding: total - paid,
+            });
+          }
+        }
+      }
+
+      await db.execute(sql`
+        UPDATE delivery_challans
+        SET status = 'awaiting_signature',
+            ready_for_signature_at = now(),
+            ready_for_signature_by = ${req.user.id}
+        WHERE id = ${challan.id}
+      `);
+
+      await logAction(req.user.id, "challan_ready_for_signature", "sales", `Challan ${challan.challanNumber} marked ready for signature`);
+      notifyRoles(["sales_manager", "admin"], "challan", `Challan ${challan.challanNumber} Ready for Signature`, `Challan #${challan.challanNumber} is ready for printing and signature.`, challan.id).catch(() => {});
+
+      const updated = await storage.getDeliveryChallan(challan.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to mark challan ready for signature" });
+    }
+  });
+
+  // ── B5: Upload Signed Copy ─────────────────────────────────────────────────
+  app.post("/api/delivery-challans/:id/upload-signed-copy", authenticateToken, async (req: any, res) => {
+    try {
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (!["awaiting_signature", "dispatched"].includes(challan.status)) {
+        return res.status(400).json({ message: "Signed copy can only be uploaded when challan is awaiting signature or dispatched" });
+      }
+
+      const { fileUrl } = req.body;
+      if (!fileUrl) return res.status(400).json({ message: "fileUrl is required" });
+
+      const prevUrl = (challan as any).signedCopyUrl;
+      await db.execute(sql`
+        UPDATE delivery_challans
+        SET signed_copy_url = ${fileUrl},
+            signed_copy_uploaded_by = ${req.user.id},
+            signed_copy_uploaded_at = now()
+        WHERE id = ${challan.id}
+      `);
+
+      await logAction(req.user.id, "challan_signed_copy_uploaded", "sales",
+        `Signed copy uploaded for challan ${challan.challanNumber}${prevUrl ? ` (replaced previous)` : ""}`);
+
+      const updated = await storage.getDeliveryChallan(challan.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload signed copy" });
+    }
+  });
+
+  // ── B7: Cancel Challan ─────────────────────────────────────────────────────
+  app.post("/api/delivery-challans/:id/cancel", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["sales_manager", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (!["draft", "awaiting_signature"].includes(challan.status)) {
+        return res.status(400).json({ message: "Only draft or awaiting_signature challans can be cancelled" });
+      }
+
+      const { cancellationReason } = req.body;
+      if (!cancellationReason?.trim()) return res.status(400).json({ message: "Cancellation reason is required" });
+
+      await db.execute(sql`
+        UPDATE delivery_challans
+        SET status = 'cancelled',
+            cancelled_at = now(),
+            cancelled_by = ${req.user.id},
+            cancellation_reason = ${cancellationReason}
+        WHERE id = ${challan.id}
+      `);
+
+      await logAction(req.user.id, "challan_cancelled", "sales",
+        `Challan ${challan.challanNumber} cancelled. Reason: ${cancellationReason}`);
+
+      const updated = await storage.getDeliveryChallan(challan.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to cancel challan" });
+    }
+  });
+
   app.post("/api/delivery-challans/:id/dispatch", authenticateToken, async (req: any, res) => {
     try {
       const challan = await storage.getDeliveryChallan(req.params.id);
       if (!challan) return res.status(404).json({ message: "Challan not found" });
-      if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be dispatched" });
+      if (challan.status !== "awaiting_signature") return res.status(400).json({ message: "Only challans awaiting signature can be dispatched" });
+
+      // Signed copy required before dispatch
+      if (!(challan as any).signedCopyUrl) {
+        return res.status(400).json({ message: "Upload signed copy before dispatching" });
+      }
+
+      // Authorization
+      const allowedRoles = ["accountant", "sales_manager", "admin", "warehouse_manager"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
       const items = await storage.getDeliveryChallanItems(challan.id);
       if (items.length === 0) return res.status(400).json({ message: "Challan has no items" });
@@ -4431,8 +4588,8 @@ export async function registerRoutes(
           SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
         `);
         const lockedChallan = (lockedRes as any).rows?.[0];
-        if (!lockedChallan || (lockedChallan as any).status !== "draft") {
-          throw new Error("Challan is no longer in draft status — concurrent dispatch may have already occurred");
+        if (!lockedChallan || (lockedChallan as any).status !== "awaiting_signature") {
+          throw new Error("Challan is no longer awaiting_signature — concurrent dispatch may have already occurred");
         }
 
         // Phase 7 — pre-check ALL component shortages and report every one,
@@ -4548,7 +4705,11 @@ export async function registerRoutes(
 
         await tx.execute(sql`
           UPDATE delivery_challans
-          SET status = 'dispatched', dispatch_date = now(), dispatch_batch_id = ${batchId}
+          SET status = 'dispatched',
+              dispatch_date = now(),
+              dispatch_batch_id = ${batchId},
+              dispatched_at = now(),
+              dispatched_by = ${req.user.id}
           WHERE id = ${challan.id}
         `);
       });
@@ -4563,7 +4724,85 @@ export async function registerRoutes(
         }
       }
 
-      res.json(updated);
+      await logAction(req.user.id, "challan_dispatched", "sales", `Challan ${challan.challanNumber} dispatched`);
+
+      // Auto-create sales invoice shell (upload_status = 'pending_upload')
+      let autoInvoice: any = null;
+      try {
+        const existingInv = await storage.getSalesInvoiceByChallan(challan.id);
+        if (!existingInv) {
+          // Resolve customer
+          let resolvedCustomerId: string = (challan as any).customerId;
+          if (!resolvedCustomerId && challan.orderId) {
+            const soRes = await db.execute(sql`SELECT customer_id FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1`);
+            resolvedCustomerId = (soRes.rows[0] as any)?.customer_id ?? null;
+          }
+          if (resolvedCustomerId) {
+            const custRes = await db.execute(sql`SELECT * FROM customers WHERE id = ${resolvedCustomerId} LIMIT 1`);
+            const cust = custRes.rows[0] as any;
+            const customerGSTIN = cust?.gst_number || null;
+            const customerType = customerGSTIN ? "B2B" : "B2C";
+            // Build line items for GST totals
+            const challanItemsForInv = await storage.getDeliveryChallanItems(challan.id);
+            let subtotal = 0, totalCgst = 0, totalSgst = 0, totalIgst = 0, totalTax = 0;
+            const lineItems: any[] = [];
+            for (const ci of challanItemsForInv) {
+              const qtyDispatched = Number(ci.qtyDispatched ?? 0);
+              const qty = qtyDispatched > 0 ? qtyDispatched : Number(ci.qtyToDispatch ?? ci.quantity ?? 0);
+              if (qty <= 0) continue;
+              const prodRes = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.productId} LIMIT 1`);
+              const prod = prodRes.rows[0] as any;
+              const unitPrice = Number(ci.unitPrice ?? prod?.unit_price ?? 0);
+              const hsnCode = prod?.hsn_code ?? null;
+              const gstRate = Number(prod?.gst_rate ?? 0);
+              const isInterState = req.body?.isInterState ?? false;
+              const taxableAmt = qty * unitPrice;
+              const tax = taxableAmt * gstRate / 100;
+              const cgst = isInterState ? 0 : tax / 2;
+              const sgst = isInterState ? 0 : tax / 2;
+              const igst = isInterState ? tax : 0;
+              subtotal += taxableAmt;
+              totalCgst += cgst; totalSgst += sgst; totalIgst += igst; totalTax += tax;
+              lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
+            }
+            const invoiceNumber = await storage.generateSalesInvoiceNumber();
+            autoInvoice = await storage.createSalesInvoice({
+              invoiceNumber,
+              invoiceDate: new Date(),
+              customerId: resolvedCustomerId,
+              soId: challan.orderId ?? null,
+              challanId: challan.id,
+              customerType,
+              customerGSTIN,
+              isInterState: req.body?.isInterState ?? false,
+              subtotal: String(subtotal),
+              totalCgst: String(totalCgst),
+              totalSgst: String(totalSgst),
+              totalIgst: String(totalIgst),
+              totalTax: String(totalTax),
+              grandTotal: String(subtotal + totalTax),
+              creditedAmount: "0",
+              status: "pending",
+              dueDate: null,
+              notes: null,
+              createdBy: req.user.id,
+              uploadStatus: "pending_upload",
+            } as any);
+            for (const li of lineItems) {
+              await storage.createSalesInvoiceItem({ invoiceId: autoInvoice.id, productId: li.productId, description: li.description, qty: String(li.qty), unitPrice: String(li.unitPrice), hsnCode: li.hsnCode, gstRate: String(li.gstRate), taxableAmount: String(li.taxableAmount), cgst: String(li.cgst), sgst: String(li.sgst), igst: String(li.igst), taxAmount: String(li.taxAmount), totalAmount: String(li.totalAmount) });
+            }
+            await logAction(req.user.id, "sales_invoice_auto_created", "sales", `Invoice ${invoiceNumber} auto-created from dispatch of ${challan.challanNumber}`);
+          }
+        }
+      } catch (invErr) {
+        console.error("Auto-invoice creation failed (non-fatal):", invErr);
+      }
+
+      // Notify roles
+      notifyRoles(["accountant", "admin"], "challan", `Challan ${challan.challanNumber} Dispatched`, `Challan #${challan.challanNumber} dispatched. Sales Invoice pending upload — record invoice details from Tally.`, challan.id).catch(() => {});
+      notifyRoles(["sales_manager"], "challan", `Challan ${challan.challanNumber} Dispatched`, `Challan #${challan.challanNumber} has been dispatched.`, challan.id).catch(() => {});
+
+      res.json({ ...updated, autoInvoiceId: autoInvoice?.id ?? null });
     } catch (error: any) {
       console.error("dispatch error:", error);
       const msg = error?.message || "Failed to dispatch challan";
@@ -4702,10 +4941,26 @@ export async function registerRoutes(
 
   app.post("/api/grns", authenticateToken, async (req: any, res) => {
     try {
+      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
       const po = await storage.getPurchaseOrder(req.body.purchaseOrderId);
       if (!po) return res.status(400).json({ message: "Purchase order not found" });
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
       if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
+
+      // D1: Supplier payment gate — full payment to supplier required
+      const supplierPayments = await storage.getSupplierPaymentsByPO(po.id);
+      const totalPaid = supplierPayments.reduce((sum: number, p: any) => sum + Number(p.amount), 0);
+      const poTotal = Number(po.totalAmount ?? 0);
+      if (poTotal > 0 && totalPaid < poTotal) {
+        return res.status(400).json({
+          message: "Cannot create GRN: full payment to supplier required before goods receipt",
+          totalPaid,
+          poTotal,
+          outstanding: poTotal - totalPaid,
+        });
+      }
 
       const poGrns = await storage.getGRNsByPO(req.body.purchaseOrderId);
       const draftGrn = poGrns.find((g: any) => g.status === "draft");
@@ -4733,7 +4988,7 @@ export async function registerRoutes(
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
 
       const created = await storage.createGRN(parsed.data as any);
-      await logAction(req.user.id, "create", "grn", `Created GRN ${grnNumber}`);
+      await logAction(req.user.id, "grn_drafted", "supply_chain", `Created GRN ${grnNumber} for PO ${po.poNumber}`);
       res.status(201).json(created);
     } catch (error) {
       console.error("Create GRN error:", error);
@@ -4834,9 +5089,21 @@ export async function registerRoutes(
 
   app.post("/api/grns/:id/confirm", authenticateToken, async (req: any, res) => {
     try {
+      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
       const grn = await storage.getGRN(req.params.id);
       if (!grn) return res.status(404).json({ message: "GRN not found" });
       if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be confirmed" });
+
+      // D1: Supplier challan scan required before confirmation
+      if (!(grn as any).supplierChallanUrl) {
+        return res.status(400).json({ message: "Upload supplier challan scan before confirming" });
+      }
+      // D4: Signed copy must be uploaded before confirmation
+      if (!(grn as any).signedCopyUrl) {
+        return res.status(400).json({ message: "Upload signed GRN copy before confirming" });
+      }
 
       const items = await storage.getGRNItems(grn.id);
       if (items.length === 0) return res.status(400).json({ message: "GRN has no items to confirm" });
@@ -4923,7 +5190,11 @@ export async function registerRoutes(
           }
         }
 
-        await tx.execute(sql`UPDATE goods_receipt_notes SET status = 'confirmed' WHERE id = ${grn.id}`);
+        await tx.execute(sql`
+          UPDATE goods_receipt_notes
+          SET status = 'confirmed', confirmed_at = now(), confirmed_by = ${req.user.id}
+          WHERE id = ${grn.id}
+        `);
       });
 
       const poForStatus = await storage.getPurchaseOrder(grn.purchaseOrderId);
@@ -4968,7 +5239,8 @@ export async function registerRoutes(
         }
       }
 
-      await logAction(req.user.id, "confirm", "grn", `Confirmed GRN ${grn.grnNumber}`);
+      await logAction(req.user.id, "grn_confirmed", "supply_chain", `GRN ${grn.grnNumber} confirmed. Stock updated.`);
+      notifyRoles(["admin", "accountant"], "grn", `GRN ${grn.grnNumber} Confirmed`, `GRN #${grn.grnNumber} confirmed. Stock updated.`, grn.id).catch(() => {});
 
       // Auto-create daily price sheets for products received in this GRN
       try {
@@ -5031,6 +5303,127 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Confirm GRN error:", error);
       res.status(500).json({ message: "Failed to confirm GRN" });
+    }
+  });
+
+  // ── D1: Upload Supplier Challan Scan ─────────────────────────────────────────
+  app.post("/api/grns/:id/upload-supplier-challan", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled GRN" });
+
+      const { fileUrl } = req.body;
+      if (!fileUrl) return res.status(400).json({ message: "fileUrl is required" });
+
+      await db.execute(sql`
+        UPDATE goods_receipt_notes
+        SET supplier_challan_url = ${fileUrl},
+            supplier_challan_uploaded_by = ${req.user.id},
+            supplier_challan_uploaded_at = now()
+        WHERE id = ${grn.id}
+      `);
+
+      await logAction(req.user.id, "grn_supplier_challan_uploaded", "supply_chain",
+        `Supplier challan scan uploaded for GRN ${grn.grnNumber}`);
+
+      const updated = await storage.getGRN(grn.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload supplier challan" });
+    }
+  });
+
+  // ── D3: Upload Signed GRN Copy ─────────────────────────────────────────────
+  app.post("/api/grns/:id/upload-signed-copy", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled GRN" });
+
+      const { fileUrl } = req.body;
+      if (!fileUrl) return res.status(400).json({ message: "fileUrl is required" });
+
+      const prevUrl = (grn as any).signedCopyUrl;
+      await db.execute(sql`
+        UPDATE goods_receipt_notes
+        SET signed_copy_url = ${fileUrl},
+            signed_copy_uploaded_by = ${req.user.id},
+            signed_copy_uploaded_at = now()
+        WHERE id = ${grn.id}
+      `);
+
+      await logAction(req.user.id, "grn_signed_copy_uploaded", "supply_chain",
+        `Signed copy uploaded for GRN ${grn.grnNumber}${prevUrl ? " (replaced)" : ""}`);
+
+      const updated = await storage.getGRN(grn.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload signed GRN copy" });
+    }
+  });
+
+  // ── D5: Upload Supplier Tax Invoice ───────────────────────────────────────
+  app.post("/api/grns/:id/upload-supplier-invoice", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled GRN" });
+
+      const { fileUrl, supplierInvoiceNumber, supplierInvoiceDate } = req.body;
+      if (!fileUrl && !supplierInvoiceNumber) return res.status(400).json({ message: "fileUrl or supplierInvoiceNumber is required" });
+
+      await db.execute(sql`
+        UPDATE goods_receipt_notes
+        SET supplier_invoice_url = COALESCE(${fileUrl ?? null}, supplier_invoice_url),
+            supplier_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}, supplier_invoice_number),
+            supplier_invoice_date = COALESCE(${supplierInvoiceDate ? new Date(supplierInvoiceDate) : null}, supplier_invoice_date),
+            supplier_invoice_uploaded_by = ${req.user.id},
+            supplier_invoice_uploaded_at = now()
+        WHERE id = ${grn.id}
+      `);
+
+      await logAction(req.user.id, "grn_supplier_invoice_uploaded", "supply_chain",
+        `Supplier invoice uploaded for GRN ${grn.grnNumber}. Ref: ${supplierInvoiceNumber ?? "n/a"}`);
+
+      const updated = await storage.getGRN(grn.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload supplier invoice" });
+    }
+  });
+
+  // ── D6: Cancel GRN ────────────────────────────────────────────────────────
+  app.post("/api/grns/:id/cancel", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin") return res.status(403).json({ message: "Only admins can cancel GRNs" });
+
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be cancelled" });
+
+      const { cancellationReason } = req.body;
+      if (!cancellationReason?.trim()) return res.status(400).json({ message: "Cancellation reason is required" });
+
+      await db.execute(sql`
+        UPDATE goods_receipt_notes
+        SET status = 'cancelled',
+            cancelled_at = now(),
+            cancelled_by = ${req.user.id},
+            cancellation_reason = ${cancellationReason}
+        WHERE id = ${grn.id}
+      `);
+
+      await logAction(req.user.id, "grn_cancelled", "supply_chain",
+        `GRN ${grn.grnNumber} cancelled. Reason: ${cancellationReason}`);
+
+      const updated = await storage.getGRN(grn.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to cancel GRN" });
     }
   });
 
@@ -7188,6 +7581,213 @@ export async function registerRoutes(
       res.json(updated);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to update invoice" });
+    }
+  });
+
+  // ── C2/C3: Mark Sales Invoice as Recorded ─────────────────────────────────
+  app.post("/api/sales-invoices/:id/mark-recorded", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      if ((inv as any).uploadStatus === "recorded") return res.status(400).json({ message: "Invoice already recorded" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot record a cancelled invoice" });
+
+      // Required fields validation
+      const { extInvoiceNumber, extInvoiceDate, extTotalAmount } = req.body;
+      if (!extInvoiceNumber?.trim()) return res.status(400).json({ message: "Invoice number (from Tally) is required" });
+      if (!extInvoiceDate) return res.status(400).json({ message: "Invoice date is required" });
+      if (!extTotalAmount) return res.status(400).json({ message: "Total amount is required" });
+      if (!(inv as any).signedCopyUrl) return res.status(400).json({ message: "Upload signed copy before marking as recorded" });
+
+      // Eway bill threshold warning (total >= 50000) is handled client-side; server does NOT block
+      await db.execute(sql`
+        UPDATE sales_invoices
+        SET upload_status = 'recorded',
+            ext_invoice_number = ${extInvoiceNumber},
+            ext_invoice_date = ${new Date(extInvoiceDate)},
+            ext_total_amount = ${String(extTotalAmount)},
+            ext_gst_amount = ${req.body.extGstAmount ? String(req.body.extGstAmount) : null},
+            upload_notes = ${req.body.uploadNotes ?? null}
+        WHERE id = ${inv.id}
+      `);
+
+      await logAction(req.user.id, "sales_invoice_recorded", "sales",
+        `Invoice ${inv.invoiceNumber} marked as recorded. Ext#: ${extInvoiceNumber}, Amount: ${extTotalAmount}`);
+
+      const updated = await storage.getSalesInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to mark invoice as recorded" });
+    }
+  });
+
+  // ── C2: Upload Sales Invoice Signed Copy ──────────────────────────────────
+  app.post("/api/sales-invoices/:id/upload-signed-copy", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
+
+      const { fileUrl } = req.body;
+      if (!fileUrl) return res.status(400).json({ message: "fileUrl is required" });
+
+      const prevUrl = (inv as any).signedCopyUrl;
+      await db.execute(sql`
+        UPDATE sales_invoices
+        SET signed_copy_url = ${fileUrl},
+            signed_copy_uploaded_by = ${req.user.id},
+            signed_copy_uploaded_at = now()
+        WHERE id = ${inv.id}
+      `);
+
+      await logAction(req.user.id, "sales_invoice_signed_copy_uploaded", "sales",
+        `Signed copy uploaded for invoice ${inv.invoiceNumber}${prevUrl ? " (replaced)" : ""}`);
+
+      const updated = await storage.getSalesInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload signed copy" });
+    }
+  });
+
+  // ── C2: Upload E-way Bill ─────────────────────────────────────────────────
+  app.post("/api/sales-invoices/:id/upload-eway-bill", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
+
+      const { fileUrl, ewayBillNumber, ewayBillDate } = req.body;
+      if (!fileUrl && !ewayBillNumber) return res.status(400).json({ message: "fileUrl or ewayBillNumber is required" });
+
+      await db.execute(sql`
+        UPDATE sales_invoices
+        SET eway_bill_url = COALESCE(${fileUrl ?? null}, eway_bill_url),
+            eway_bill_number = COALESCE(${ewayBillNumber ?? null}, eway_bill_number),
+            eway_bill_date = COALESCE(${ewayBillDate ? new Date(ewayBillDate) : null}, eway_bill_date),
+            eway_bill_uploaded_by = ${req.user.id},
+            eway_bill_uploaded_at = now()
+        WHERE id = ${inv.id}
+      `);
+
+      await logAction(req.user.id, "sales_invoice_eway_bill_uploaded", "sales",
+        `E-way bill recorded for invoice ${inv.invoiceNumber}. EBN: ${ewayBillNumber ?? "n/a"}`);
+
+      const updated = await storage.getSalesInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload e-way bill" });
+    }
+  });
+
+  // ── C4: Cancel Sales Invoice ──────────────────────────────────────────────
+  app.post("/api/sales-invoices/:id/cancel", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const inv = await storage.getSalesInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Invoice already cancelled" });
+
+      const { cancellationReason } = req.body;
+      if (!cancellationReason?.trim()) return res.status(400).json({ message: "Cancellation reason is required" });
+
+      await db.execute(sql`
+        UPDATE sales_invoices
+        SET upload_status = 'cancelled',
+            cancelled_at = now(),
+            cancelled_by = ${req.user.id},
+            cancellation_reason = ${cancellationReason}
+        WHERE id = ${inv.id}
+      `);
+
+      await logAction(req.user.id, "sales_invoice_cancelled", "sales",
+        `Invoice ${inv.invoiceNumber} cancelled. Reason: ${cancellationReason}`);
+
+      const updated = await storage.getSalesInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to cancel invoice" });
+    }
+  });
+
+  // ── C5: Manual Create Sales Invoice ──────────────────────────────────────
+  app.post("/api/sales-invoices/manual", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const { challanId, soId } = req.body;
+      if (!challanId) return res.status(400).json({ message: "challanId is required" });
+
+      // Must be a dispatched challan
+      const challanRes = await db.execute(sql`SELECT * FROM delivery_challans WHERE id = ${challanId} LIMIT 1`);
+      const challanRow = challanRes.rows[0] as any;
+      if (!challanRow) return res.status(404).json({ message: "Challan not found" });
+      if (challanRow.status !== "dispatched") return res.status(400).json({ message: "Challan must be dispatched to create invoice" });
+
+      // Resolve customer
+      let resolvedCustomerId = challanRow.customer_id;
+      if (!resolvedCustomerId && challanRow.order_id) {
+        const soRes = await db.execute(sql`SELECT customer_id FROM sales_orders WHERE id = ${challanRow.order_id} LIMIT 1`);
+        resolvedCustomerId = (soRes.rows[0] as any)?.customer_id ?? null;
+      }
+      if (!resolvedCustomerId) return res.status(422).json({ message: "Could not determine customer for this challan" });
+
+      const custRes = await db.execute(sql`SELECT * FROM customers WHERE id = ${resolvedCustomerId} LIMIT 1`);
+      const cust = custRes.rows[0] as any;
+      const customerGSTIN = cust?.gst_number || null;
+      const customerType = customerGSTIN ? "B2B" : "B2C";
+      const isInterState = req.body.isInterState ?? false;
+
+      const challanItemsRes = await db.execute(sql`SELECT * FROM delivery_challan_items WHERE challan_id = ${challanId}`);
+      const challanItems = challanItemsRes.rows as any[];
+      let subtotal = 0, totalCgst = 0, totalSgst = 0, totalIgst = 0, totalTax = 0;
+      const lineItems: any[] = [];
+      for (const ci of challanItems) {
+        const qty = Number(ci.qty_dispatched ?? 0) > 0 ? Number(ci.qty_dispatched) : Number(ci.qty_to_dispatch ?? ci.quantity ?? 0);
+        if (qty <= 0) continue;
+        const prodRes = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
+        const prod = prodRes.rows[0] as any;
+        const unitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
+        const gstRate = Number(prod?.gst_rate ?? 0);
+        const taxableAmt = qty * unitPrice;
+        const tax = taxableAmt * gstRate / 100;
+        subtotal += taxableAmt;
+        totalCgst += isInterState ? 0 : tax / 2;
+        totalSgst += isInterState ? 0 : tax / 2;
+        totalIgst += isInterState ? tax : 0;
+        totalTax += tax;
+        lineItems.push({ productId: ci.product_id, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode: prod?.hsn_code ?? null, gstRate, taxableAmount: taxableAmt, cgst: isInterState ? 0 : tax / 2, sgst: isInterState ? 0 : tax / 2, igst: isInterState ? tax : 0, taxAmount: tax, totalAmount: taxableAmt + tax });
+      }
+
+      const invoiceNumber = await storage.generateSalesInvoiceNumber();
+      const invoice = await storage.createSalesInvoice({
+        invoiceNumber, invoiceDate: new Date(), customerId: resolvedCustomerId,
+        soId: soId ?? challanRow.order_id ?? null, challanId,
+        customerType, customerGSTIN, isInterState,
+        subtotal: String(subtotal), totalCgst: String(totalCgst), totalSgst: String(totalSgst),
+        totalIgst: String(totalIgst), totalTax: String(totalTax), grandTotal: String(subtotal + totalTax),
+        creditedAmount: "0", status: "pending", dueDate: null, notes: req.body.notes ?? null,
+        createdBy: req.user.id, uploadStatus: "pending_upload",
+      } as any);
+      for (const li of lineItems) {
+        await storage.createSalesInvoiceItem({ invoiceId: invoice.id, productId: li.productId, description: li.description, qty: String(li.qty), unitPrice: String(li.unitPrice), hsnCode: li.hsnCode, gstRate: String(li.gstRate), taxableAmount: String(li.taxableAmount), cgst: String(li.cgst), sgst: String(li.sgst), igst: String(li.igst), taxAmount: String(li.taxAmount), totalAmount: String(li.totalAmount) });
+      }
+      await logAction(req.user.id, "sales_invoice_manually_created", "sales", `Invoice ${invoiceNumber} manually created for challan ${challanRow.challan_number}`);
+      res.status(201).json(invoice);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to create sales invoice" });
     }
   });
 

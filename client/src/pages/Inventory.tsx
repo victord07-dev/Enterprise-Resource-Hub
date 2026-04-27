@@ -10,21 +10,53 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
+import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem, Customer } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
+import { generateChallanPDF } from "@/lib/challan-pdf";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
 
+// ── Helper: upload a file to /api/attachments and return the fileUrl ──────────
+async function uploadFileToStorage(
+  file: File,
+  entityType: string,
+  entityId: string,
+  documentType: string,
+): Promise<string> {
+  const token = localStorage.getItem("token");
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("entityType", entityType);
+  formData.append("entityId", entityId);
+  formData.append("documentType", documentType);
+  formData.append("module", "inventory");
+  const res = await fetch("/api/attachments", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    const d = await res.json();
+    throw new Error(d.message || "Upload failed");
+  }
+  const data = await res.json();
+  return data.fileUrl as string;
+}
+
 export default function Inventory() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [location, navigate] = useLocation();
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const { data: warehouses, isLoading: warehousesLoading } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
+  const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -219,6 +251,22 @@ export default function Inventory() {
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
   const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
+  // Challan lifecycle dialog state
+  const [challanSignedCopyDialog, setChallanSignedCopyDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
+  const [challanCancelDialog, setChallanCancelDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
+  const [challanSignedCopyFile, setChallanSignedCopyFile] = useState<File | null>(null);
+  const [challanCancelReason, setChallanCancelReason] = useState("");
+  const [grnSignedCopyDialog, setGrnSignedCopyDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
+  const [grnSupplierInvoiceDialog, setGrnSupplierInvoiceDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
+  const [grnCancelDialog, setGrnCancelDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
+  const [grnSignedCopyFile, setGrnSignedCopyFile] = useState<File | null>(null);
+  const [grnSupplierInvoiceFile, setGrnSupplierInvoiceFile] = useState<File | null>(null);
+  const [grnSupplierInvoiceNumber, setGrnSupplierInvoiceNumber] = useState("");
+  const [grnSupplierInvoiceDate, setGrnSupplierInvoiceDate] = useState("");
+  const [grnCancelReason, setGrnCancelReason] = useState("");
+  const [grnChallanFile, setGrnChallanFile] = useState<File | null>(null);
+  const [grnChallanFileUrl, setGrnChallanFileUrl] = useState<string>("");
+
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
   const eligibleSalesOrders = (salesOrders ?? []).filter(o => CHALLAN_ELIGIBLE_STATUSES.includes(o.status));
@@ -356,6 +404,50 @@ export default function Inventory() {
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
+  });
+
+  const readyForSignatureMutation = useMutation({
+    mutationFn: async (challanId: string) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/ready-for-signature`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      toast({ title: "Challan marked ready for signature" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const uploadChallanSignedCopyMutation = useMutation({
+    mutationFn: async ({ challanId, file }: { challanId: string; file: File }) => {
+      const fileUrl = await uploadFileToStorage(file, "delivery_challan", challanId, "signed_copy");
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/upload-signed-copy`, { fileUrl });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      setChallanSignedCopyDialog(null);
+      setChallanSignedCopyFile(null);
+      toast({ title: "Signed copy uploaded" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const cancelChallanMutation = useMutation({
+    mutationFn: async ({ challanId, reason }: { challanId: string; reason: string }) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/cancel`, { cancellationReason: reason });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      setChallanCancelDialog(null);
+      setChallanCancelReason("");
+      toast({ title: "Challan cancelled" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const updateChallanItemQtyMutation = useMutation({
@@ -540,6 +632,74 @@ export default function Inventory() {
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
+  });
+
+  const uploadGrnSupplierChallanMutation = useMutation({
+    mutationFn: async ({ grnId, file }: { grnId: string; file: File }) => {
+      const fileUrl = await uploadFileToStorage(file, "grn", grnId, "supplier_challan");
+      const res = await apiRequest("POST", `/api/grns/${grnId}/upload-supplier-challan`, { fileUrl });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      toast({ title: "Supplier challan uploaded" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const uploadGrnSignedCopyMutation = useMutation({
+    mutationFn: async ({ grnId, file }: { grnId: string; file: File }) => {
+      const fileUrl = await uploadFileToStorage(file, "grn", grnId, "signed_copy");
+      const res = await apiRequest("POST", `/api/grns/${grnId}/upload-signed-copy`, { fileUrl });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      setGrnSignedCopyDialog(null);
+      setGrnSignedCopyFile(null);
+      toast({ title: "GRN signed copy uploaded" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const uploadGrnSupplierInvoiceMutation = useMutation({
+    mutationFn: async ({ grnId, file, invoiceNumber, invoiceDate }: { grnId: string; file: File | null; invoiceNumber: string; invoiceDate: string }) => {
+      let fileUrl: string | undefined;
+      if (file) fileUrl = await uploadFileToStorage(file, "grn", grnId, "supplier_invoice");
+      const res = await apiRequest("POST", `/api/grns/${grnId}/upload-supplier-invoice`, {
+        fileUrl,
+        supplierInvoiceNumber: invoiceNumber || undefined,
+        supplierInvoiceDate: invoiceDate || undefined,
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      setGrnSupplierInvoiceDialog(null);
+      setGrnSupplierInvoiceFile(null);
+      setGrnSupplierInvoiceNumber("");
+      setGrnSupplierInvoiceDate("");
+      toast({ title: "Supplier invoice uploaded" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  const cancelGrnMutation = useMutation({
+    mutationFn: async ({ grnId, reason }: { grnId: string; reason: string }) => {
+      const res = await apiRequest("POST", `/api/grns/${grnId}/cancel`, { cancellationReason: reason });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      setGrnCancelDialog(null);
+      setGrnCancelReason("");
+      toast({ title: "GRN cancelled" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
   const isService = productForm.type === "service";
@@ -1279,6 +1439,9 @@ export default function Inventory() {
                                 {challan.status === "draft" && (
                                   <Badge variant="outline" className="bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">Draft</Badge>
                                 )}
+                                {challan.status === "awaiting_signature" && (
+                                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Awaiting Signature</Badge>
+                                )}
                                 {challan.status === "dispatched" && (
                                   <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800">Dispatched</Badge>
                                 )}
@@ -1295,11 +1458,54 @@ export default function Inventory() {
                               <td className="p-3 text-muted-foreground">{challan.driverName || "—"}</td>
                               <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.createdAt ? new Date(challan.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
                               <td className="p-3 text-right">
-                                <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                                  {/* PDF download — always available */}
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    data-testid={`button-pdf-challan-${challan.id}`}
+                                    title="Download PDF"
+                                    onClick={async () => {
+                                      const items = challanItemsMap[challan.id] || [];
+                                      const customer = customers?.find(c => c.id === challan.customerId);
+                                      generateChallanPDF(challan, items, customer, products ?? []);
+                                    }}
+                                  >
+                                    <Download className="w-3 h-3" />
+                                  </Button>
+
+                                  {/* Draft → Ready for Signature */}
                                   {challan.status === "draft" && (
                                     <Button
                                       size="sm"
                                       variant="outline"
+                                      data-testid={`button-ready-sig-challan-${challan.id}`}
+                                      disabled={readyForSignatureMutation.isPending}
+                                      onClick={() => readyForSignatureMutation.mutate(challan.id)}
+                                    >
+                                      <PenLine className="w-3 h-3 mr-1" /> Ready
+                                    </Button>
+                                  )}
+
+                                  {/* Awaiting Signature → Upload Signed Copy */}
+                                  {challan.status === "awaiting_signature" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-upload-signed-challan-${challan.id}`}
+                                      onClick={() => setChallanSignedCopyDialog({ open: true, challanId: challan.id, challanNumber: challan.challanNumber })}
+                                    >
+                                      <Upload className="w-3 h-3 mr-1" />
+                                      {(challan as any).signedCopyUrl ? "Replace" : "Upload"}
+                                    </Button>
+                                  )}
+
+                                  {/* Awaiting Signature + signed copy → Dispatch */}
+                                  {challan.status === "awaiting_signature" && (challan as any).signedCopyUrl && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-blue-400 text-blue-600 dark:text-blue-400"
                                       data-testid={`button-dispatch-challan-${challan.id}`}
                                       disabled={dispatchChallanMutation.isPending}
                                       onClick={() => { if (confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) dispatchChallanMutation.mutate(challan.id); }}
@@ -1307,6 +1513,8 @@ export default function Inventory() {
                                       <Send className="w-3 h-3 mr-1" /> Dispatch
                                     </Button>
                                   )}
+
+                                  {/* Dispatched → Mark Delivered */}
                                   {challan.status === "dispatched" && (
                                     <Button
                                       size="sm"
@@ -1315,7 +1523,20 @@ export default function Inventory() {
                                       disabled={deliverChallanMutation.isPending}
                                       onClick={() => deliverChallanMutation.mutate(challan.id)}
                                     >
-                                      <CheckCircle className="w-3 h-3 mr-1" /> Mark Delivered
+                                      <CheckCircle className="w-3 h-3 mr-1" /> Delivered
+                                    </Button>
+                                  )}
+
+                                  {/* Cancel — admin only, draft or awaiting_signature */}
+                                  {isAdmin && ["draft", "awaiting_signature"].includes(challan.status) && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="text-red-600 hover:text-red-700"
+                                      data-testid={`button-cancel-challan-${challan.id}`}
+                                      onClick={() => { setChallanCancelReason(""); setChallanCancelDialog({ open: true, challanId: challan.id, challanNumber: challan.challanNumber }); }}
+                                    >
+                                      <XCircle className="w-3 h-3" />
                                     </Button>
                                   )}
                                 </div>
@@ -1438,6 +1659,7 @@ export default function Inventory() {
                   <SelectItem value="all">All Statuses</SelectItem>
                   <SelectItem value="draft">Draft</SelectItem>
                   <SelectItem value="confirmed">Confirmed</SelectItem>
+                  <SelectItem value="cancelled">Cancelled</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1510,33 +1732,83 @@ export default function Inventory() {
                                 {grn.status === "confirmed" && (
                                   <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
                                 )}
+                                {grn.status === "cancelled" && (
+                                  <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800">Cancelled</Badge>
+                                )}
                               </td>
                               <td className="p-3 text-muted-foreground whitespace-nowrap">{grn.receivedDate ? new Date(grn.receivedDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
                               <td className="p-3 text-right text-muted-foreground">{grn.deliveryCost ? `₹${Number(grn.deliveryCost).toLocaleString("en-IN")}` : "—"}</td>
                               <td className="p-3 text-right font-medium" data-testid={`text-grn-total-${grn.id}`}>₹{Number(grn.totalAmount).toLocaleString("en-IN")}</td>
                               <td className="p-3 text-right">
-                                <div className="flex items-center justify-end gap-1">
+                                <div className="flex items-center justify-end gap-1 flex-wrap">
                                   {grn.status === "draft" && (
                                     <>
+                                      {/* D1: Upload Supplier Challan */}
+                                      <label
+                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).supplierChallanUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
+                                        title={`Supplier Challan: ${(grn as any).supplierChallanUrl ? "Uploaded ✓" : "Required"}`}
+                                        data-testid={`button-upload-supp-challan-grn-${grn.id}`}
+                                      >
+                                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
+                                          onChange={async (e) => {
+                                            const f = e.target.files?.[0];
+                                            if (f) uploadGrnSupplierChallanMutation.mutate({ grnId: grn.id, file: f });
+                                          }}
+                                        />
+                                        {(grn as any).supplierChallanUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
+                                        {(grn as any).supplierChallanUrl ? "SC ✓" : "SC"}
+                                      </label>
+                                      {/* D4: Upload Signed GRN Copy */}
+                                      <label
+                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).signedCopyUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
+                                        title={`Signed GRN: ${(grn as any).signedCopyUrl ? "Uploaded ✓" : "Required"}`}
+                                        data-testid={`button-upload-signed-grn-${grn.id}`}
+                                      >
+                                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
+                                          onChange={async (e) => {
+                                            const f = e.target.files?.[0];
+                                            if (f) uploadGrnSignedCopyMutation.mutate({ grnId: grn.id, file: f });
+                                          }}
+                                        />
+                                        {(grn as any).signedCopyUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
+                                        {(grn as any).signedCopyUrl ? "Sgn ✓" : "Sgn"}
+                                      </label>
+                                      {/* Confirm — requires both supplier challan + signed copy */}
                                       <Button
                                         size="sm"
                                         variant="outline"
                                         data-testid={`button-confirm-grn-${grn.id}`}
-                                        disabled={confirmGrnMutation.isPending}
+                                        disabled={confirmGrnMutation.isPending || !(grn as any).supplierChallanUrl || !(grn as any).signedCopyUrl}
+                                        title={!(grn as any).supplierChallanUrl ? "Upload supplier challan scan first" : !(grn as any).signedCopyUrl ? "Upload signed GRN copy first" : "Confirm GRN"}
                                         onClick={() => { if (confirm("Confirm this GRN? Stock will be added to the warehouse.")) confirmGrnMutation.mutate(grn.id); }}
                                       >
                                         <CheckCircle className="w-3 h-3 mr-1" /> Confirm
                                       </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        data-testid={`button-delete-grn-${grn.id}`}
-                                        disabled={deleteGrnMutation.isPending}
-                                        onClick={() => { if (confirm("Delete this draft GRN?")) deleteGrnMutation.mutate(grn.id); }}
-                                      >
-                                        <Trash2 className="w-3 h-3" />
-                                      </Button>
+                                      {/* Cancel — admin only */}
+                                      {isAdmin && (
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="text-red-600 hover:text-red-700"
+                                          data-testid={`button-cancel-grn-${grn.id}`}
+                                          onClick={() => { setGrnCancelReason(""); setGrnCancelDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
+                                        >
+                                          <XCircle className="w-3 h-3" />
+                                        </Button>
+                                      )}
                                     </>
+                                  )}
+                                  {/* Confirmed: upload supplier invoice */}
+                                  {grn.status === "confirmed" && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      data-testid={`button-upload-supp-inv-grn-${grn.id}`}
+                                      onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
+                                    >
+                                      <Receipt className="w-3 h-3 mr-1" />
+                                      {(grn as any).supplierInvoiceUrl ? "Re-upload Invoice" : "Supplier Invoice"}
+                                    </Button>
                                   )}
                                 </div>
                               </td>
@@ -2155,6 +2427,173 @@ export default function Inventory() {
             <p className="text-sm text-muted-foreground">Notes / Reason:</p>
             <p className="text-sm font-medium rounded bg-muted p-3">{refDetailModal.notes || "No notes provided"}</p>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Challan: Upload Signed Copy ─────────────────────────────────── */}
+      <Dialog open={!!challanSignedCopyDialog?.open} onOpenChange={(o) => { if (!o) { setChallanSignedCopyDialog(null); setChallanSignedCopyFile(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upload Signed Challan Copy</DialogTitle>
+            <DialogDescription>{challanSignedCopyDialog?.challanNumber} — Upload the physically-signed delivery challan</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label>Signed Copy (PDF / JPG / PNG, max 10 MB)</Label>
+            <Input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png"
+              data-testid="input-challan-signed-copy-file"
+              onChange={(e) => setChallanSignedCopyFile(e.target.files?.[0] ?? null)}
+            />
+            {challanSignedCopyFile && (
+              <p className="text-xs text-muted-foreground">{challanSignedCopyFile.name} ({(challanSignedCopyFile.size / 1024).toFixed(1)} KB)</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setChallanSignedCopyDialog(null); setChallanSignedCopyFile(null); }}>Cancel</Button>
+            <Button
+              data-testid="button-submit-challan-signed-copy"
+              disabled={!challanSignedCopyFile || uploadChallanSignedCopyMutation.isPending}
+              onClick={() => { if (challanSignedCopyDialog && challanSignedCopyFile) uploadChallanSignedCopyMutation.mutate({ challanId: challanSignedCopyDialog.challanId, file: challanSignedCopyFile }); }}
+            >
+              {uploadChallanSignedCopyMutation.isPending ? "Uploading..." : "Upload"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Challan: Cancel ─────────────────────────────────────────────── */}
+      <Dialog open={!!challanCancelDialog?.open} onOpenChange={(o) => { if (!o) { setChallanCancelDialog(null); setChallanCancelReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel Challan</DialogTitle>
+            <DialogDescription>{challanCancelDialog?.challanNumber} — This action cannot be undone</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="challan-cancel-reason">Cancellation Reason <span className="text-red-500">*</span></Label>
+            <Textarea
+              id="challan-cancel-reason"
+              data-testid="input-challan-cancel-reason"
+              value={challanCancelReason}
+              onChange={(e) => setChallanCancelReason(e.target.value)}
+              placeholder="Reason for cancellation..."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setChallanCancelDialog(null); setChallanCancelReason(""); }}>Back</Button>
+            <Button
+              variant="destructive"
+              data-testid="button-confirm-cancel-challan"
+              disabled={!challanCancelReason.trim() || cancelChallanMutation.isPending}
+              onClick={() => { if (challanCancelDialog) cancelChallanMutation.mutate({ challanId: challanCancelDialog.challanId, reason: challanCancelReason }); }}
+            >
+              {cancelChallanMutation.isPending ? "Cancelling..." : "Cancel Challan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── GRN: Upload Signed Copy ─────────────────────────────────────── */}
+      <Dialog open={!!grnSignedCopyDialog?.open} onOpenChange={(o) => { if (!o) { setGrnSignedCopyDialog(null); setGrnSignedCopyFile(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upload Signed GRN Copy</DialogTitle>
+            <DialogDescription>{grnSignedCopyDialog?.grnNumber} — Upload the physically-signed goods receipt note</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label>Signed Copy (PDF / JPG / PNG, max 10 MB)</Label>
+            <Input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png"
+              data-testid="input-grn-signed-copy-file"
+              onChange={(e) => setGrnSignedCopyFile(e.target.files?.[0] ?? null)}
+            />
+            {grnSignedCopyFile && (
+              <p className="text-xs text-muted-foreground">{grnSignedCopyFile.name} ({(grnSignedCopyFile.size / 1024).toFixed(1)} KB)</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setGrnSignedCopyDialog(null); setGrnSignedCopyFile(null); }}>Cancel</Button>
+            <Button
+              data-testid="button-submit-grn-signed-copy"
+              disabled={!grnSignedCopyFile || uploadGrnSignedCopyMutation.isPending}
+              onClick={() => { if (grnSignedCopyDialog && grnSignedCopyFile) uploadGrnSignedCopyMutation.mutate({ grnId: grnSignedCopyDialog.grnId, file: grnSignedCopyFile }); }}
+            >
+              {uploadGrnSignedCopyMutation.isPending ? "Uploading..." : "Upload"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── GRN: Upload Supplier Invoice ────────────────────────────────── */}
+      <Dialog open={!!grnSupplierInvoiceDialog?.open} onOpenChange={(o) => { if (!o) { setGrnSupplierInvoiceDialog(null); setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Upload Supplier Tax Invoice</DialogTitle>
+            <DialogDescription>{grnSupplierInvoiceDialog?.grnNumber} — Attach the supplier GST invoice</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="supp-inv-number">Invoice Number</Label>
+                <Input id="supp-inv-number" data-testid="input-supplier-invoice-number" value={grnSupplierInvoiceNumber} onChange={(e) => setGrnSupplierInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="supp-inv-date">Invoice Date</Label>
+                <Input id="supp-inv-date" type="date" data-testid="input-supplier-invoice-date" value={grnSupplierInvoiceDate} onChange={(e) => setGrnSupplierInvoiceDate(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label>Invoice File (PDF / JPG / PNG, max 10 MB)</Label>
+              <Input type="file" accept=".pdf,.jpg,.jpeg,.png" data-testid="input-supplier-invoice-file" onChange={(e) => setGrnSupplierInvoiceFile(e.target.files?.[0] ?? null)} />
+              {grnSupplierInvoiceFile && (
+                <p className="text-xs text-muted-foreground">{grnSupplierInvoiceFile.name} ({(grnSupplierInvoiceFile.size / 1024).toFixed(1)} KB)</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setGrnSupplierInvoiceDialog(null); setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); }}>Cancel</Button>
+            <Button
+              data-testid="button-submit-supplier-invoice"
+              disabled={(!grnSupplierInvoiceFile && !grnSupplierInvoiceNumber) || uploadGrnSupplierInvoiceMutation.isPending}
+              onClick={() => { if (grnSupplierInvoiceDialog) uploadGrnSupplierInvoiceMutation.mutate({ grnId: grnSupplierInvoiceDialog.grnId, file: grnSupplierInvoiceFile, invoiceNumber: grnSupplierInvoiceNumber, invoiceDate: grnSupplierInvoiceDate }); }}
+            >
+              {uploadGrnSupplierInvoiceMutation.isPending ? "Uploading..." : "Save Invoice"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── GRN: Cancel ─────────────────────────────────────────────────── */}
+      <Dialog open={!!grnCancelDialog?.open} onOpenChange={(o) => { if (!o) { setGrnCancelDialog(null); setGrnCancelReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel GRN</DialogTitle>
+            <DialogDescription>{grnCancelDialog?.grnNumber} — This action cannot be undone</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="grn-cancel-reason">Cancellation Reason <span className="text-red-500">*</span></Label>
+            <Textarea
+              id="grn-cancel-reason"
+              data-testid="input-grn-cancel-reason"
+              value={grnCancelReason}
+              onChange={(e) => setGrnCancelReason(e.target.value)}
+              placeholder="Reason for cancellation..."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setGrnCancelDialog(null); setGrnCancelReason(""); }}>Back</Button>
+            <Button
+              variant="destructive"
+              data-testid="button-confirm-cancel-grn"
+              disabled={!grnCancelReason.trim() || cancelGrnMutation.isPending}
+              onClick={() => { if (grnCancelDialog) cancelGrnMutation.mutate({ grnId: grnCancelDialog.grnId, reason: grnCancelReason }); }}
+            >
+              {cancelGrnMutation.isPending ? "Cancelling..." : "Cancel GRN"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

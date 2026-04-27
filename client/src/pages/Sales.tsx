@@ -14,7 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
 import {
@@ -2264,6 +2264,28 @@ export default function Sales() {
                                               {challan.deliveryDate && <span>Delivered: {new Date(challan.deliveryDate).toLocaleDateString()}</span>}
                                               {challan.vehicleNumber && <span>Vehicle: {challan.vehicleNumber}</span>}
                                               {challan.driverName && <span>Driver: {challan.driverName}</span>}
+                                            </div>
+                                            {/* Document status row */}
+                                            <div className="flex items-center gap-3 pt-1 border-t">
+                                              <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+                                                <FileText className="w-3 h-3" />PDF available in Inventory
+                                              </span>
+                                              {(challan as any).signedCopyUrl ? (
+                                                <a
+                                                  href={(challan as any).signedCopyUrl}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="text-[10px] text-emerald-600 hover:underline flex items-center gap-0.5"
+                                                  data-testid={`link-challan-signed-${challan.id}`}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                >
+                                                  <CheckCircle2 className="w-3 h-3" />Signed Copy
+                                                </a>
+                                              ) : challan.status !== "cancelled" && (
+                                                <span className="text-[10px] text-amber-600 flex items-center gap-0.5">
+                                                  <Upload className="w-3 h-3" />Signed copy pending
+                                                </span>
+                                              )}
                                             </div>
                                           </div>
                                         ))}

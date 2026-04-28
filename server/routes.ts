@@ -2880,7 +2880,15 @@ export async function registerRoutes(
   app.get("/api/purchase-orders", authenticateToken, async (_req, res) => {
     try {
       const data = await storage.getPurchaseOrders();
-      res.json(data);
+      // Enrich each PO with supplier paid total so the frontend can gate "Create GRN"
+      const enriched = await Promise.all(data.map(async (po: any) => {
+        try {
+          const payments = await storage.getSupplierPaymentsByPO(po.id);
+          const supplierPaidAmount = payments.reduce((s: number, p: any) => s + Number(p.amount ?? 0), 0);
+          return { ...po, supplierPaidAmount };
+        } catch { return { ...po, supplierPaidAmount: 0 }; }
+      }));
+      res.json(enriched);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch purchase orders" });
     }
@@ -4031,6 +4039,10 @@ export async function registerRoutes(
 
   app.post("/api/delivery-challans", authenticateToken, async (req: any, res) => {
     try {
+      const createDcRolesD = ["admin", "sales_manager", "warehouse_manager"];
+      if (!createDcRolesD.includes(req.user.role)) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
       const { items, ...challanData } = req.body;
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ message: "At least one item is required" });
@@ -4177,6 +4189,12 @@ export async function registerRoutes(
 
   app.post("/api/delivery-challans/create-from-so/:soId", authenticateToken, async (req: any, res) => {
     try {
+      // Only sales, warehouse, and admin staff may create delivery challans
+      const createDcRoles = ["admin", "sales_manager", "warehouse_manager"];
+      if (!createDcRoles.includes(req.user.role)) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
+
       const { soId } = req.params;
       const order = await storage.getSalesOrder(soId);
       if (!order) return res.status(404).json({ message: "Sales order not found" });
@@ -4491,8 +4509,8 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Upload signed copy before dispatching" });
       }
 
-      // Authorization
-      const allowedRoles = ["accountant", "sales_manager", "admin", "warehouse_manager"];
+      // Authorization — only warehouse ops + accountant + admin may physically dispatch
+      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
       const items = await storage.getDeliveryChallanItems(challan.id);
@@ -4882,6 +4900,23 @@ export async function registerRoutes(
       if (!po) return res.status(404).json({ message: "Purchase order not found" });
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
       if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
+
+      // Gate (t): Supplier must be fully paid before receiving goods
+      const supplierPayments = await db.execute(sql`
+        SELECT COALESCE(SUM(amount), 0) as paid_amount
+        FROM supplier_payments
+        WHERE purchase_order_id = ${poId}
+      `);
+      const paidAmount = Number((supplierPayments as any).rows?.[0]?.paid_amount ?? 0);
+      const totalAmount = Number(po.totalAmount ?? 0);
+      if (totalAmount > 0 && paidAmount < totalAmount) {
+        return res.status(400).json({
+          message: "Full supplier payment required before receiving goods",
+          paidAmount,
+          totalAmount,
+          outstanding: totalAmount - paidAmount,
+        });
+      }
 
       const existingGrns = await storage.getGRNsByPO(poId);
       const draftGrn = existingGrns.find((g: any) => g.status === "draft");

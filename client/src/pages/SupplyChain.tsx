@@ -1602,26 +1602,34 @@ export default function SupplyChain() {
                               <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
                               <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center justify-end gap-1">
-                                  {(po.status === "approved" || po.status === "shipped" || po.status === "partial") && po.deliveryType !== "direct_delivery" && (
-                                    <Button
-                                      size="sm"
-                                      variant="link"
-                                      className="text-xs text-emerald-600 dark:text-emerald-400 mr-1 p-0 h-auto"
-                                      data-testid={`button-create-grn-${po.id}`}
-                                      disabled={creatingGrnPoId === po.id}
-                                      onClick={() => {
-                                        if (warehouses && warehouses.length === 1) {
-                                          createGrnFromPoMutation.mutate({ poId: po.id, warehouseId: warehouses[0].id });
-                                        } else {
-                                          setGrnWarehouseDialogPoId(po.id);
-                                          setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
-                                        }
-                                      }}
-                                    >
-                                      <PackagePlus className="w-3 h-3 mr-1" />
-                                      {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}
-                                    </Button>
-                                  )}
+                                  {(po.status === "approved" || po.status === "shipped" || po.status === "partial") && po.deliveryType !== "direct_delivery" && (() => {
+                                    const supplierPaid = Number((po as any).supplierPaidAmount ?? 0);
+                                    const poTotal = Number(po.totalAmount ?? 0);
+                                    const paymentComplete = poTotal === 0 || supplierPaid >= poTotal;
+                                    return (
+                                      <span title={!paymentComplete ? `Full supplier payment required (paid ₹${supplierPaid.toLocaleString()} of ₹${poTotal.toLocaleString()})` : undefined}>
+                                        <Button
+                                          size="sm"
+                                          variant="link"
+                                          className={`text-xs mr-1 p-0 h-auto ${paymentComplete ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground opacity-50 cursor-not-allowed"}`}
+                                          data-testid={`button-create-grn-${po.id}`}
+                                          disabled={creatingGrnPoId === po.id || !paymentComplete}
+                                          onClick={() => {
+                                            if (!paymentComplete) return;
+                                            if (warehouses && warehouses.length === 1) {
+                                              createGrnFromPoMutation.mutate({ poId: po.id, warehouseId: warehouses[0].id });
+                                            } else {
+                                              setGrnWarehouseDialogPoId(po.id);
+                                              setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
+                                            }
+                                          }}
+                                        >
+                                          <PackagePlus className="w-3 h-3 mr-1" />
+                                          {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}
+                                        </Button>
+                                      </span>
+                                    );
+                                  })()}
                                   {(po.status === "approved" || po.status === "shipped") && po.deliveryType === "direct_delivery" && (
                                     <Button
                                       size="sm"

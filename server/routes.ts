@@ -37,6 +37,7 @@ const CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD = (() => {
   const v = Number.isFinite(parsed) ? parsed : 0.2;
   return Math.min(Math.max(v, 0), 1);
 })();
+import { generatePOPdfBuffer } from "./po-pdf";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus, getWebhookUrl } from "./whatsapp";
@@ -3181,6 +3182,41 @@ export async function registerRoutes(
       res.status(500).json({ message: "Failed to save PO items" });
     }
   });
+
+  // ── PO PDF Download ──────────────────────────────────────────────────────────
+  app.get("/api/purchase-orders/:id/pdf",
+    authenticateToken,
+    requireRole("admin", "accountant", "sales_manager", "warehouse_manager"),
+    async (req: any, res) => {
+      try {
+        const po = await storage.getPurchaseOrder(req.params.id);
+        if (!po) return res.status(404).json({ message: "Purchase order not found" });
+
+        const [items, suppliers, allProducts] = await Promise.all([
+          storage.getPurchaseOrderItems(req.params.id),
+          storage.getSuppliers(),
+          storage.getProducts(),
+        ]);
+
+        const supplier = suppliers.find((s: any) => s.id === po.supplierId);
+
+        const pdfBuffer = generatePOPdfBuffer(po as any, items as any, supplier as any, allProducts as any);
+
+        await logAction(req.user.id, "po_pdf_downloaded", "supply_chain",
+          JSON.stringify({ poId: po.id, poNumber: po.poNumber, downloadedBy: req.user.id }));
+
+        res.set({
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="${po.poNumber}.pdf"`,
+          "Content-Length": pdfBuffer.length,
+        });
+        res.send(pdfBuffer);
+      } catch (error: any) {
+        console.error("PO PDF generation error:", error);
+        res.status(500).json({ message: "Failed to generate PDF" });
+      }
+    }
+  );
 
   // ======================== SUPPLIER PRODUCTS ========================
   app.get("/api/supplier-products", authenticateToken, async (_req, res) => {

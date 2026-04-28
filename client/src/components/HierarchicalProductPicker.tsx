@@ -27,6 +27,8 @@ interface Props {
   effectivePrices?: Record<string, EffectivePriceEntry>;
   currentProductId: string;
   onProductSelect: (productId: string) => void;
+  /** When true, price is hidden next to product names (use in procurement context) */
+  hidePrice?: boolean;
 }
 
 const lifecycleSuffix = (ls: string | undefined): string => {
@@ -51,6 +53,7 @@ export function HierarchicalProductPicker({
   effectivePrices,
   currentProductId,
   onProductSelect,
+  hidePrice = false,
 }: Props) {
   const [selectedType, setSelectedType]         = useState<string>("");
   const [selectedBrandId, setSelectedBrandId]   = useState<string>("");
@@ -275,7 +278,7 @@ export function HierarchicalProductPicker({
                       >
                         <span>
                           {p.name}
-                          {!isInactive
+                          {!isInactive && !hidePrice
                             ? ` — ₹${displayPrice.toLocaleString()}${hasEP ? " ✓" : ""}`
                             : ""}
                         </span>

@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus } from "lucide-react";
-import { generatePurchaseOrderPDF } from "@/lib/purchase-order-pdf";
+import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
@@ -247,128 +247,105 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <Label className="text-sm font-medium">Line Items</Label>
-        <Button type="button" size="sm" variant="outline" onClick={addItem} data-testid="button-add-po-line-item">
-          <Plus className="w-3 h-3 mr-1" /> Add Item
-        </Button>
+        <div className="flex items-center gap-2">
+          {supplierSelected && supplierProductsLoading && (
+            <span className="text-xs text-amber-600 dark:text-amber-400" data-testid="text-supplier-prices-loading">
+              Loading supplier prices…
+            </span>
+          )}
+          <Button type="button" size="sm" variant="outline" onClick={addItem} data-testid="button-add-po-line-item">
+            <Plus className="w-3 h-3 mr-1" /> Add Item
+          </Button>
+        </div>
       </div>
 
       <div className="space-y-2">
         {items.map((item, index) => (
-          <div key={index} className="grid grid-cols-12 gap-2 items-end">
-            <div className="col-span-4">
-              {index === 0 && (
-                <Label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
-                  Product
-                  {supplierSelected && supplierProductsLoading && (
-                    <span className="text-amber-600 dark:text-amber-400" data-testid={`text-supplier-prices-loading-${index}`}>
-                      · loading supplier prices…
-                    </span>
-                  )}
-                </Label>
-              )}
-              <Select
-                value={item.productId}
-                onValueChange={(v) => updateItem(index, "productId", v)}
-                disabled={!supplierSelected || supplierProductsLoading}
+          <div key={index} className="border rounded-lg p-3 space-y-2 bg-muted/30" data-testid={`po-line-item-${index}`}>
+            {/* Row 1: Hierarchical picker + delete */}
+            <div className="flex items-start gap-2">
+              <div className="flex-1">
+                <HierarchicalProductPicker
+                  lineIndex={index}
+                  products={products}
+                  hidePrice={true}
+                  currentProductId={item.productId}
+                  onProductSelect={(pid) => updateItem(index, "productId", pid)}
+                />
+              </div>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="shrink-0 mt-6"
+                onClick={() => removeItem(index)}
+                data-testid={`button-remove-po-item-${index}`}
               >
-                <SelectTrigger data-testid={`select-po-item-product-${index}`}>
-                  <SelectValue placeholder={!supplierSelected ? "Select supplier first" : supplierProductsLoading ? "Loading prices…" : "Select product"} />
-                </SelectTrigger>
-                <SelectContent>
-                  {supplierCatalogProducts.length > 0 && (
-                    <>
-                      <div className="px-2 py-1 text-xs text-muted-foreground font-medium">Supplier Catalog</div>
-                      {supplierCatalogProducts.map((p) => {
-                        const suffix = lifecycleSuffix(p.lifecycleStatus);
-                        return (
-                          <SelectItem key={p.id} value={p.id} data-testid={`option-po-product-${p.id}`}>
-                            <span className="inline-flex items-center gap-1.5 flex-wrap">
-                              <span>{p.name} ({p.sku})</span>
-                              {suffix && <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-po-lifecycle-${p.id}`}>{suffix}</span>}
-                            </span>
-                          </SelectItem>
-                        );
-                      })}
-                    </>
-                  )}
-                  {otherProducts.length > 0 && (
-                    <>
-                      <div className="px-2 py-1 text-xs text-muted-foreground font-medium">All Products</div>
-                      {otherProducts.map((p) => {
-                        const suffix = lifecycleSuffix(p.lifecycleStatus);
-                        return (
-                          <SelectItem key={p.id} value={p.id} data-testid={`option-po-product-${p.id}`}>
-                            <span className="inline-flex items-center gap-1.5 flex-wrap">
-                              <span>{p.name} ({p.sku})</span>
-                              {suffix && <span className="text-xs text-red-600 dark:text-red-400" data-testid={`text-po-lifecycle-${p.id}`}>{suffix}</span>}
-                            </span>
-                          </SelectItem>
-                        );
-                      })}
-                    </>
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="col-span-3">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Description</Label>}
-              <Input
-                value={item.description}
-                onChange={(e) => updateItem(index, "description", e.target.value)}
-                placeholder="Description"
-                data-testid={`input-po-item-desc-${index}`}
-              />
-            </div>
-            <div className="col-span-1">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Qty</Label>}
-              <Input
-                type="number"
-                min={1}
-                value={item.quantity}
-                onChange={(e) => updateItem(index, "quantity", parseInt(e.target.value) || 1)}
-                data-testid={`input-po-item-qty-${index}`}
-              />
-            </div>
-            <div className="col-span-2">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block">Supplier Price</Label>}
-              <Input
-                type="number"
-                min={0}
-                step="0.01"
-                value={item.unitCost}
-                onChange={(e) => updateItem(index, "unitCost", parseFloat(e.target.value) || 0)}
-                data-testid={`input-po-item-cost-${index}`}
-              />
-              {item.productId && item._priceSource && (
-                <div
-                  className={
-                    "mt-1 text-[10px] leading-tight " +
-                    (item._priceSource === "supplier"
-                      ? "text-green-700 dark:text-green-400"
-                      : item._priceSource === "manual"
-                      ? "text-blue-700 dark:text-blue-400"
-                      : "text-amber-700 dark:text-amber-400")
-                  }
-                  data-testid={`text-price-source-${index}`}
-                >
-                  {item._priceSource === "supplier" && (
-                    <>Supplier price{item._priceLastUpdated ? ` · updated ${formatRelative(item._priceLastUpdated)}` : ""}</>
-                  )}
-                  {item._priceSource === "distributor" && <>Distributor price (no supplier-specific price)</>}
-                  {item._priceSource === "fallback" && <>Fallback (no supplier or distributor price)</>}
-                  {item._priceSource === "manual" && <>Manually edited</>}
-                </div>
-              )}
-            </div>
-            <div className="col-span-1 flex items-center gap-1">
-              {index === 0 && <Label className="text-xs text-muted-foreground mb-1 block invisible">Total</Label>}
-              <span className="text-sm font-medium whitespace-nowrap" data-testid={`text-po-item-total-${index}`}>
-                {item.totalCost.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
-              </span>
-              <Button type="button" size="icon" variant="ghost" onClick={() => removeItem(index)} data-testid={`button-remove-po-item-${index}`}>
                 <X className="w-3 h-3" />
               </Button>
             </div>
+
+            {/* Row 2: Description | Qty | Supplier Price | Total */}
+            <div className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-5">
+                <Label className="text-xs text-muted-foreground mb-1 block">Description</Label>
+                <Input
+                  value={item.description}
+                  onChange={(e) => updateItem(index, "description", e.target.value)}
+                  placeholder="Description"
+                  data-testid={`input-po-item-desc-${index}`}
+                />
+              </div>
+              <div className="col-span-2">
+                <Label className="text-xs text-muted-foreground mb-1 block">Qty</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={item.quantity}
+                  onChange={(e) => updateItem(index, "quantity", parseInt(e.target.value) || 1)}
+                  data-testid={`input-po-item-qty-${index}`}
+                />
+              </div>
+              <div className="col-span-3">
+                <Label className="text-xs text-muted-foreground mb-1 block">Supplier Price (₹)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={item.unitCost}
+                  onChange={(e) => updateItem(index, "unitCost", parseFloat(e.target.value) || 0)}
+                  data-testid={`input-po-item-cost-${index}`}
+                />
+              </div>
+              <div className="col-span-2 text-right">
+                <Label className="text-xs text-muted-foreground mb-1 block">Line Total</Label>
+                <span className="text-sm font-semibold" data-testid={`text-po-item-total-${index}`}>
+                  ₹{item.totalCost.toLocaleString("en-IN", { minimumFractionDigits: 0 })}
+                </span>
+              </div>
+            </div>
+
+            {/* Price source hint */}
+            {item.productId && item._priceSource && (
+              <div
+                className={
+                  "text-[10px] leading-tight " +
+                  (item._priceSource === "supplier"
+                    ? "text-green-700 dark:text-green-400"
+                    : item._priceSource === "manual"
+                    ? "text-blue-700 dark:text-blue-400"
+                    : "text-amber-700 dark:text-amber-400")
+                }
+                data-testid={`text-price-source-${index}`}
+              >
+                {item._priceSource === "supplier" && (
+                  <>Supplier price{item._priceLastUpdated ? ` · updated ${formatRelative(item._priceLastUpdated)}` : ""}</>
+                )}
+                {item._priceSource === "distributor" && <>Distributor price (no supplier-specific price)</>}
+                {item._priceSource === "fallback" && <>Fallback (no supplier or distributor price)</>}
+                {item._priceSource === "manual" && <>Manually edited</>}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1045,11 +1022,17 @@ export default function SupplyChain() {
   const downloadPoPdf = async (po: PurchaseOrder) => {
     setDownloadingPoId(po.id);
     try {
-      const itemsRes = await apiRequest("GET", `/api/purchase-orders/${po.id}/items`);
-      if (!itemsRes.ok) throw new Error("Failed to fetch PO items");
-      const items = await itemsRes.json();
-      const supplier = suppliers?.find(s => s.id === po.supplierId);
-      generatePurchaseOrderPDF(po, items, supplier);
+      const res = await apiRequest("GET", `/api/purchase-orders/${po.id}/pdf`);
+      if (!res.ok) throw new Error("Failed to generate PDF");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${po.poNumber}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     } catch (err) {
       toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to generate PDF", variant: "destructive" });
     } finally {

@@ -1,0 +1,95 @@
+Step 1 — Walk the full 25-item stop gate
+The 8-item mini gate only verified the T93 bugfix (the Mark as Recorded form). The original phase covers a lot more — challan lifecycle, GRN flow, supplier challan upload, dispatch flow, auto-invoice creation, authorization checks, etc. None of that has been verified yet.
+The 25-item gate is in the original brief I gave you, Section H, items (a) through (y). Walk all of them now. Roughly 60 minutes. This is non-negotiable — skipping it is exactly how integration bugs reach production.
+Step 2 — Only after all 25 pass, close Phase 1 and send Phase 2
+If all 25 pass cleanly:
+
+Send Replit AI: "Full 25-item stop gate passed. Phase 1 (Document Lifecycle Hardening) closed."
+Then send Phase 2 brief (PO Polish — hierarchical picker + PO PDF).
+
+If anything fails:
+
+Send focused failure list to Replit AI
+Re-walk failed items + adjacent regression after fix
+Then close Phase 1, then Phase 2
+
+The 25-item gate — copy this checklist
+Here it is again, with priority order. Do them in sequence, marking ✓ or ✗ as you go.
+SETUP (5 min):
+
+Have an SO with insufficient stock + unpaid customer
+Have an SO with sufficient stock + full customer payment
+Have an approved PO with full supplier payment recorded
+Have an approved PO with NO supplier payment (or partial)
+Sample PDF and JPEG ready for upload tests
+Browser DevTools open (Network tab) — needed for items (h) and (y)
+
+
+(a) Sales draft challan creation
+Sales user creates draft challan from SO with insufficient stock + unpaid customer. Status='draft'. Notifications fire to warehouse_manager + accountant + admin (verify in Notification bell of those users). Sales user sees confirmation toast.
+(b) Draft challan PDF
+Download draft challan PDF. Verify: DRAFT watermark, OFFICE COPY + DRIVER COPY layout, signature lines present, line items correct.
+(c) Mark Ready blocked when stock short + unpaid
+Try to mark "Ready for Signature" → button disabled. Tooltip explains BOTH blockers (stock + payment).
+(d) Mark Ready succeeds after stock + payment fixed
+Procure stock via PO + GRN (per items below). Record full customer payment. Now mark ready → succeeds. Status = awaiting_signature. Sales_manager + admin notified.
+(e) Dispatch blocked without signed copy
+Try dispatch without uploading signed copy → button disabled. Tooltip says "Upload signed copy before dispatching".
+(f) Upload signed copy
+Upload signed copy (PDF). Storage path saved. Dispatch button activates.
+(g) Dispatch + auto-create invoice
+Dispatch challan. Status='dispatched'. Stock deducts. Auto-created sales_invoice row visible in Sales Invoice list with status=pending_upload. Sales + accountant + admin notified.
+Verify via SQL or UI: new invoice has correct sales_order_id, delivery_challan_id, quotation_id linkage.
+(h) Authorization — direct API call as sales role
+Log in as a sales role user. Try to dispatch via direct API call (DevTools Network tab → copy as cURL → modify token). Response: 403.
+(i) Auto-invoice opens with linkage
+Open auto-created Sales Invoice. Header shows linked SO, Challan, Quotation references (clickable). Editable fields visible to accountant. Sales role sees read-only.
+(j) Accountant fills invoice + e-way bill
+Accountant fills ext_invoice_number, ext_invoice_date, ext_total_amount = ₹52,000 (above e-way bill threshold). Soft reminder banner appears: "E-way bill required..."
+(k) Upload signed Tally scan + e-way bill
+Upload signed Tally invoice scan. Upload e-way bill PDF + capture EBN + EBN date.
+(l) Mark as Recorded
+Click Mark as Recorded → succeeds, status=recorded. Audit log entries present.
+(m) Mark as Recorded blocked without total_amount
+Try Mark as Recorded with missing ext_total_amount → field-level error.
+(n) Filter by upload_status
+Sales invoice list: filter by status='pending_upload' → only pending invoices shown. Filter by 'recorded' → only completed.
+(o) Procurement: supplier challan upload + GRN creation
+Open approved PO with full supplier payment. "Receive Goods" section appears. Upload supplier challan PDF. Click "Create GRN" → GRN row created with status='draft', supplier_challan_url populated.
+(p) Confirm GRN blocked without our signed copy
+Try confirm GRN without uploading our signed copy → blocked. Tooltip "Upload signed GRN copy before confirming".
+(q) Confirm GRN succeeds
+Upload signed GRN copy. Confirm GRN → succeeds. Stock added. GRN lots created. Admin + accountant notified.
+(r) Pending supplier invoice banner
+Without supplier tax invoice: GRN confirmed page shows banner "Supplier tax invoice pending upload."
+(s) Upload supplier tax invoice later
+Upload supplier tax invoice with number/date. Banner clears.
+(t) Create GRN blocked without full supplier payment
+Try to create GRN on PO without full supplier payment → "Receive Goods" section disabled OR shows explanation.
+(u) Cancel draft challan
+Cancel a draft challan with reason. Status='cancelled'. Try to cancel a dispatched challan → not allowed.
+(v) Cancel draft GRN
+Cancel a draft GRN with reason. Status='cancelled'. Try to cancel a confirmed GRN → not allowed.
+(w) Audit trail entries
+Check audit trail page. Search for action types: challan_drafted, challan_dispatched, sales_invoice_auto_created, sales_invoice_recorded, grn_drafted, grn_confirmed, grn_supplier_invoice_uploaded. All present with full details.
+(x) Regression — existing features still work
+Walk these:
+
+Existing already-dispatched challans (from before this phase) open cleanly
+Phase 5.5 floor-price panel still renders on quotations
+Phase 6.5 hard-blocks still fire (subsidy + non-ALMM, MRP soft-warn, zero-price block)
+Bundle dispatch still atomic
+Hierarchical picker (Ticket #78) still works
+Customer payment recording still works
+Supplier payment recording still works
+
+(y) Authorization spot checks across roles
+Log in as each non-admin role and verify:
+
+sales_manager: can create draft challan, cannot dispatch via API (403)
+warehouse_manager: can mark ready, dispatch, confirm GRN
+accountant: can edit invoices, mark recorded, see all
+field_staff: can view, cannot do restricted actions
+kiosk: redirected to /kiosk, no access
+
+For each restricted action, try direct API call → 403.

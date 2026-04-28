@@ -1,0 +1,289 @@
+Phase 2: Purchase Order Polish — Hierarchical Picker + PO PDF Download
+
+CONTEXT
+
+Phase 1 (Document Lifecycle Hardening) is closed and verified. Two
+operational gaps remain in the buying flow:
+
+1. PO and PR line item forms still use a flat product selector, while
+   Sales/Quotation forms use the 4-step HierarchicalProductPicker
+   (built in Ticket #78 Phase A + B). Procurement should have parity
+   with sales for product selection.
+
+2. POs cannot be downloaded as a formal PDF document. Procurement
+   currently sends POs to suppliers informally (WhatsApp, email
+   description). A proper PDF with ITFI letterhead, GST breakdown,
+   and signatory block is needed.
+
+This phase reuses existing components and patterns — no new
+architecture. Estimated 3-5 days of work.
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend test scripts alone are not
+  sufficient.
+- Only operator (me) declares phase closure. You may report
+  "implementation complete, ready for verification" but not "phase
+  closed."
+- REUSE existing HierarchicalProductPicker component — do NOT rebuild.
+- REUSE existing quotation PDF generator pattern (Phase 7.5
+  consolidated format) — adapt for PO, do NOT reinvent.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Do NOT touch sales-side picker behavior or quotation PDF generator.
+- Do NOT touch any document lifecycle work from Phase 1.
+
+PRE-WORK — READ EXISTING CODE (MANDATORY, BEFORE ANY CODE)
+
+Before writing any code, report findings on:
+
+1. HierarchicalProductPicker component:
+   - Exact file path and component signature
+   - Where it's currently used (Sales.tsx Quotation dialog, Sales Order
+     dialog, anywhere else?)
+   - Confirm component is reusable as-is, OR identify any prop changes
+     needed for PO context
+   - How does it interact with the line item form: what does it call
+     when a product is selected? Does the parent component handle
+     unit cost auto-fill, or does the picker?
+
+2. PO line item form current state:
+   - Exact file location in SupplyChain.tsx where PO line items are
+     added/edited (or wherever PO create/edit dialog lives)
+   - Current flat product selector code — what component is it?
+   - How does unit cost get populated today on product selection?
+     Confirm Phase 6.6 supplier_products.supplierPrice default still
+     works — read that code path.
+   - How does GST rate get populated? HSN code?
+
+3. PR line item form current state:
+   - Same questions for PR creation form (manual + auto-PR contexts)
+   - If auto-PR generation populates line items in code (no UI),
+     note that — picker only applies to manual PR form
+
+4. Quotation PDF generator:
+   - Exact file path and function name
+   - Library used (jsPDF / pdfmake / other)
+   - Layout structure: header, table, totals, footer
+   - How is multi-rate GST currently handled (5% rows + 18% rows
+     separated)?
+   - Where does company letterhead data come from (hardcoded ITFI?
+     config table? company master?)
+   - Where does signatory data come from?
+
+5. PO data model:
+   - Confirm purchase_orders table has: number, date, expected
+     delivery date, supplier_id, total_amount, payment status,
+     line items via FK
+   - Confirm po_items has: product_id, qty, unit_cost, gst_rate, hsn,
+     line total, discount (if any), uom (unit of measure)
+   - Identify any fields needed for PDF that don't exist yet — flag
+     before adding
+
+6. Existing PO PDF capability:
+   - Is there ANY existing PO PDF generation code? (per pre-work
+     of Phase 1, purchase-order-pdf.ts was mentioned — read it,
+     report what's there)
+   - If exists: what does it generate today, and what's missing?
+   - If empty stub: confirm we need to build from scratch
+
+Report all findings in one message. Await my go-ahead before any
+implementation.
+
+SECTION A — HIERARCHICAL PICKER ON PO LINE ITEMS
+
+A1. PO line item form (in SupplyChain.tsx):
+    - Replace existing flat product selector with HierarchicalProductPicker
+    - Same UX as Sales side:
+      Step 1 (Type): Product / Service / Set
+      Step 2 (Brand): skipped if Service
+      Step 3 (Grid Type): smart-shown if brand has products spanning
+                          multiple grid types (existing behavior)
+      Step 4 (Product list): final selection
+    - Same lifecycle suffix logic: draft / discontinued / replaced
+      shown with red "(Not selectable — X)" suffix, hard-blocked,
+      replaced products offer Switch-to-replacement
+    - Picker resets per new line, no pre-fill on edit (matches Sales
+      Phase A behavior)
+
+A2. On product selection in PO line:
+    - Existing Phase 6.6 logic preserved: unit cost defaults from
+      supplier_products.supplierPrice for the selected supplier (NOT
+      from products.costPrice)
+    - GST rate auto-fills from product
+    - HSN code auto-fills
+    - UoM auto-fills (if existed before)
+    - All existing post-selection behavior preserved exactly — do not
+      modify
+
+A3. Manual PR creation form: same picker integration
+    - Apply HierarchicalProductPicker to manual PR creation form
+    - Same picker behavior as PO
+
+A4. Auto-PR generation (no UI involvement) — leave alone:
+    - When PR is auto-generated from sales order shortage, no picker
+      involved (server-side line item creation)
+    - This phase only affects manual PR form's UI
+
+SECTION B — PO PDF DOWNLOAD
+
+B1. PO PDF generator endpoint:
+    - GET /api/purchase-orders/:id/pdf
+    - Returns a PDF document
+    - Available to: accountant, sales_manager, admin, warehouse_manager
+      (any role with PO read access)
+    - Use the same PDF library as quotation PDF (jsPDF or whatever
+      Phase 7.5 used)
+
+B2. PDF format (mirror quotation Phase 7.5 styling, adapted for PO):
+
+    Header section:
+    - ITFI letterhead at top: company name, address, GSTIN, phone,
+      email, logo if available
+    - Pull from same source as quotation PDF (config / hardcoded /
+      whatever exists today)
+
+    Title:
+    - Bold "PURCHASE ORDER"
+    - PO number, PO date, expected delivery date
+
+    Supplier section (TO):
+    - "TO:" / "Supplier:"
+    - Supplier name, address, GSTIN, contact
+
+    Ship-to section (DELIVER TO):
+    - ITFI's warehouse address (default — ship-to override is out of
+      scope for this phase)
+    - Mark explicitly: "Ship to address: [warehouse details]"
+
+    Line items table:
+    | Sr | Item Description       | HSN  | Qty | UoM | Unit Rate | Disc | Taxable Amt | GST% | GST Amt | Total |
+
+    Multi-rate GST handling:
+    - If PO has lines with different GST rates (e.g., 5% panels and
+      18% inverters mixed), show per-rate breakdown at bottom:
+      "Total Taxable @ 5%: ₹X    GST @ 5%: ₹Y"
+      "Total Taxable @ 18%: ₹A   GST @ 18%: ₹B"
+    - Followed by grand total row.
+
+    Totals section:
+    - Subtotal (taxable amount)
+    - Total GST (sum across rates)
+    - Freight / additional charges (if any field exists on PO)
+    - Grand Total
+
+    Terms & Conditions:
+    - Configurable text section at the bottom
+    - For now: hardcoded standard T&C text. Make it a const/variable
+      so operator can customize later.
+    - Suggested default: "Payment terms as agreed. Goods to be
+      delivered to specified address. Quality and quantity must
+      match this PO."
+
+    Signature block:
+    - "For ITFI Group" or "For [Company Name]"
+    - Authorized signatory name + designation
+    - Pull from same source as quotation PDF
+
+    Watermark:
+    - DRAFT watermark across the page if PO status='draft' or
+      'pending_approval' (whatever the pre-approval statuses are
+      called in your schema)
+    - No watermark when PO is approved or beyond
+
+B3. Download button placement:
+    - Add "Download PDF" button on PO detail page (in SupplyChain.tsx
+      or wherever PO detail is rendered)
+    - Available on draft, approved, and any post-approval status
+    - Visible to: accountant, sales_manager, admin, warehouse_manager
+    - Sales role: NOT visible. Direct API call → 403.
+
+SECTION C — STOP GATE (OPERATOR WALKS — DO NOT DECLARE PASSED YOURSELF)
+
+(a) Open PO create/edit form. Picker shows as 4-step hierarchical
+    selector identical to Sales picker. Type → Brand → (Grid Type
+    if applicable) → Product.
+
+(b) Select Type=Product → Brand=Eastman → product list shows only
+    Eastman products. Select an active Eastman product. Unit cost
+    auto-fills from supplier_products.supplierPrice (verify via SQL:
+    SELECT supplier_price FROM supplier_products WHERE supplier_id=X
+    AND product_id=Y).
+
+(c) GST rate and HSN code auto-fill correctly on product selection.
+
+(d) Select Type=Set → Brand=Trina Solar Ltd → bundles for that brand
+    appear (e.g., Solar Kit 2KVA). Pick it. Verify line is added
+    correctly with bundle's own GST + HSN.
+
+(e) Picker shows replaced product (e.g., EAS-BAT-LIB-160) with red
+    "(Not selectable — replaced)" suffix. Click → toast offers Switch
+    to EMLIB-160. Click Switch → new product loaded with EMLIB's
+    price/GST/HSN.
+
+(f) PO line item form: add a 2nd line. Picker resets to Step 1 blank
+    (no remembering of previous line's selection).
+
+(g) Edit existing PO. Open picker on existing line. Picker is blank
+    Step 1 (no pre-fill, per Phase A behavior).
+
+(h) Manual PR creation form: same picker behavior verified (steps a-g
+    above on PR form).
+
+(i) Auto-PR (created from SO shortage): line items still populate
+    correctly with no picker involvement (since this is server-side).
+
+(j) Open approved PO. Click Download PDF.
+
+(k) PDF downloads. Open it. Verify all the following:
+    - ITFI letterhead at top (matches quotation PDF letterhead)
+    - "PURCHASE ORDER" title prominent
+    - PO number, date, expected delivery date all correct
+    - Supplier section: name, address, GSTIN correct
+    - Ship-to address correct
+    - Line items table: all line items present, qty/rate/GST/totals
+      match PO in system
+    - Multi-rate GST breakdown if PO has mixed rates (verify both
+      breakdown rows appear)
+    - Subtotal + total GST + grand total all match PO total exactly
+    - T&C text visible at bottom
+    - Signatory block has "For [Company Name]" + signatory name +
+      designation
+    - NO DRAFT watermark (PO is approved)
+
+(l) Open draft PO (or pre-approval status). Download PDF. Verify
+    DRAFT watermark visible across the page. Other content same as
+    approved PO.
+
+(m) Sales role user: try to download PO PDF via direct API call
+    (DevTools Network tab) → 403.
+
+(n) Multi-rate GST PO: create a PO with mixed line items (e.g., one
+    panel @ 5% GST, one inverter @ 18% GST). Download PDF. Verify
+    per-rate breakdown shows both rows correctly with correct
+    taxable amounts and GST amounts per rate.
+
+(o) Bundle in PO (if you support bundles in PO line items): bundle
+    appears in PDF as a single line with bundle's own GST/total.
+    Components NOT shown separately in PDF (informational only on
+    UI, not on PO PDF — confirm this is the intended behavior).
+
+(p) Regression: existing Sales picker still works (Phase A + B).
+    Quotation PDF still generates correctly with no changes. Phase 1
+    document lifecycle (challan/invoice/GRN) all still work as
+    verified.
+
+(q) Audit log entry on PDF download: action='po_pdf_downloaded',
+    module='supply_chain' — useful for tracking who pulled formal PDFs
+    when. (Optional but worth adding.)
+
+OUT OF SCOPE FOR THIS PHASE
+- Drop-ship ship-to override
+- PO email sending (just download for now; user emails manually)
+- Multi-currency POs
+- Performa Invoice upload (separate phase if still needed)
+- Editing the standard T&C text via UI (hardcoded for now)
+- Adding new fields to po_items table
+- Modifying existing PO approval workflow
+
+Stop after implementation ships and ping me. I will walk the 17-item
+stop gate.

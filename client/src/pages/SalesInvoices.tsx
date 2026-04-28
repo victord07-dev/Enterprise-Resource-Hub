@@ -608,7 +608,7 @@ function SalesReturnDialog({
 
 // ─── Invoice Detail Panel ────────────────────────────────────────────────────
 async function uploadInvoiceFile(invoiceId: string, route: string, file: File, extra?: Record<string, string>) {
-  const token = localStorage.getItem("auth_token");
+  const token = localStorage.getItem("token");
   const fd = new FormData();
   fd.append("file", file);
   if (extra) Object.entries(extra).forEach(([k, v]) => v && fd.append(k, v));
@@ -646,7 +646,7 @@ function InvoiceDetailPanel({
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
     queryKey: ["/api/sales-invoices", invoiceId],
     queryFn: () => fetch(`/api/sales-invoices/${invoiceId}`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("auth_token")}` },
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: !!invoiceId,
   });

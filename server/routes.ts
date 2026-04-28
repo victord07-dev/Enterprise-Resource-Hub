@@ -7625,7 +7625,14 @@ export async function registerRoutes(
   });
 
   // ── C2: Upload Sales Invoice Signed Copy ──────────────────────────────────
-  app.post("/api/sales-invoices/:id/upload-signed-copy", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-invoices/:id/upload-signed-copy", authenticateToken, (req: any, res: any, next: any) => {
+    const invUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: (_r, f, cb) => { if (["application/pdf","image/jpeg","image/jpg","image/png"].includes(f.mimetype)) cb(null, true); else cb(new Error("Only PDF, JPG, PNG allowed")); } });
+    invUpload.single("file")(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) return res.status(400).json({ message: err.code === "LIMIT_FILE_SIZE" ? "File must be ≤ 10 MB" : err.message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next();
+    });
+  }, async (req: any, res) => {
     try {
       const allowedRoles = ["accountant", "admin"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
@@ -7634,8 +7641,16 @@ export async function registerRoutes(
       if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
       if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
 
-      const { fileUrl } = req.body;
-      if (!fileUrl) return res.status(400).json({ message: "fileUrl is required" });
+      let fileUrl: string | null = req.body?.fileUrl ?? null;
+      if (req.file) {
+        const os = new ObjectStorageService();
+        const uploadURL = await os.getObjectEntityUploadURL();
+        const objectPath = os.normalizeObjectEntityPath(uploadURL);
+        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
+        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
+        fileUrl = objectPath;
+      }
+      if (!fileUrl) return res.status(400).json({ message: "File or fileUrl is required" });
 
       const prevUrl = (inv as any).signedCopyUrl;
       await db.execute(sql`
@@ -7657,7 +7672,14 @@ export async function registerRoutes(
   });
 
   // ── C2: Upload E-way Bill ─────────────────────────────────────────────────
-  app.post("/api/sales-invoices/:id/upload-eway-bill", authenticateToken, async (req: any, res) => {
+  app.post("/api/sales-invoices/:id/upload-eway-bill", authenticateToken, (req: any, res: any, next: any) => {
+    const ewayUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: (_r, f, cb) => { if (["application/pdf","image/jpeg","image/jpg","image/png"].includes(f.mimetype)) cb(null, true); else cb(new Error("Only PDF, JPG, PNG allowed")); } });
+    ewayUpload.single("file")(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) return res.status(400).json({ message: err.code === "LIMIT_FILE_SIZE" ? "File must be ≤ 10 MB" : err.message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next();
+    });
+  }, async (req: any, res) => {
     try {
       const allowedRoles = ["accountant", "admin"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
@@ -7666,13 +7688,24 @@ export async function registerRoutes(
       if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
       if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
 
-      const { fileUrl, ewayBillNumber, ewayBillDate } = req.body;
-      if (!fileUrl && !ewayBillNumber) return res.status(400).json({ message: "fileUrl or ewayBillNumber is required" });
+      let fileUrl: string | null = req.body?.fileUrl ?? null;
+      const ewayBillNumber: string | null = req.body?.ewayBillNumber ?? null;
+      const ewayBillDate: string | null = req.body?.ewayBillDate ?? null;
+
+      if (req.file) {
+        const os = new ObjectStorageService();
+        const uploadURL = await os.getObjectEntityUploadURL();
+        const objectPath = os.normalizeObjectEntityPath(uploadURL);
+        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
+        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
+        fileUrl = objectPath;
+      }
+      if (!fileUrl && !ewayBillNumber) return res.status(400).json({ message: "File or ewayBillNumber is required" });
 
       await db.execute(sql`
         UPDATE sales_invoices
-        SET eway_bill_url = COALESCE(${fileUrl ?? null}, eway_bill_url),
-            eway_bill_number = COALESCE(${ewayBillNumber ?? null}, eway_bill_number),
+        SET eway_bill_url = COALESCE(${fileUrl}, eway_bill_url),
+            eway_bill_number = COALESCE(${ewayBillNumber}, eway_bill_number),
             eway_bill_date = COALESCE(${ewayBillDate ? new Date(ewayBillDate) : null}, eway_bill_date),
             eway_bill_uploaded_by = ${req.user.id},
             eway_bill_uploaded_at = now()

@@ -1646,7 +1646,7 @@ export default function SupplyChain() {
                                       <CheckCircle className="w-3 h-3 mr-1" /> Approve Cancel
                                     </Button>
                                   )}
-                                  {["approved", "shipped", "partial", "received", "cancellation_requested"].includes(po.status) && (
+                                  {["pending", "approved", "shipped", "partial", "received", "cancellation_requested", "cancelled"].includes(po.status) && (
                                     <Button size="icon" variant="ghost" data-testid={`button-download-po-${po.id}`} onClick={() => downloadPoPdf(po)} title="Download PDF" disabled={downloadingPoId === po.id}>
                                       <Download className={`w-4 h-4 ${downloadingPoId === po.id ? "animate-pulse" : ""}`} />
                                     </Button>

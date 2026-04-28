@@ -1,0 +1,92 @@
+Replit AI shipped Phase 2 cleanly. Let me give you the stop gate to walk before declaring closure.
+What was delivered
+
+HierarchicalProductPicker now in PO line items (with hidePrice flag)
+Server-side PO PDF generation with full letterhead, HSN, per-line GST, multi-rate breakdown
+DRAFT and CANCELLED watermarks
+Role-based 403 enforcement
+Audit log on PDF download
+
+The 17-item stop gate
+Walk these in order. ~40 minutes. Mark each ✓ or ✗ as you go.
+SETUP (5 min):
+
+Have a pending (draft) PO and an approved PO ready
+Have a cancelled PO ready (cancel any draft if needed)
+Have a multi-rate PO if possible (mixed GST rates: e.g., 5% panel + 18% inverter)
+Browser DevTools open (Network tab) for items (m) and (p)
+Sample non-admin user account ready (sales role) for authorization tests
+
+
+PICKER TESTS (Section A)
+(a) PO line item form — picker structure
+Open PO create/edit dialog. Add a line item. Verify: 4-step hierarchical picker visible. Type → Brand → (Grid Type if applicable) → Product. Same UX as Sales side.
+(b) Product selection auto-fill
+Select Type=Product → Brand=Eastman → pick an active product. Verify:
+
+Description auto-filled
+Unit cost auto-filled from supplier_products.supplierPrice (verify via SQL: SELECT supplier_price FROM supplier_products WHERE supplier_id=X AND product_id=Y)
+Line total computed correctly
+
+(c) Hide price confirmation
+Open picker again. In the product list at Step 4, verify NO price is shown next to product names. If you see selling prices, that's a fail.
+(d) Set/Bundle selection
+Select Type=Set → Brand=Trina Solar Ltd → bundles appear. Pick Solar Kit 2KVA (or any bundle). Line added correctly with bundle's GST/HSN.
+(e) Lifecycle suffix on replaced product
+Pick replaced product (e.g., EAS-BAT-LIB-160). Shows "(Not selectable — replaced)" red suffix. Click → toast offers Switch to EMLIB-160. Click Switch → EMLIB product loaded.
+(f) Picker resets per new line
+Add a 2nd line item. Picker resets to Step 1 (no remembering of previous line's selection).
+(g) Edit existing PO no pre-fill
+Open existing PO. Open picker on existing line. Picker is blank Step 1.
+(h) Auto-PR still works
+Create a sales order with insufficient stock. Auto-PR generates. Line items populate correctly server-side (no picker involvement). Open the auto-PR — items present with correct products.
+
+PDF TESTS (Section B)
+(i) Approved PO PDF download
+Open an approved PO. Click "Download PDF". PDF downloads. Open it. Verify:
+
+ITFI letterhead at top: company name, GSTIN, address, phone, email, website
+"PURCHASE ORDER" title prominent
+PO number, date, expected delivery date all correct
+Supplier section: name, address, GSTIN
+Ship-to address present (ITFI warehouse)
+Line items table with all columns: Sr | Description | HSN | Qty | UoM | Unit Rate | (Disc) | Taxable Amt | GST% | GST Amt | Total
+Subtotal, total GST, grand total all match PO total in system
+T&C text visible at bottom
+Signatory block: "For ITFI Group" + signatory name + designation
+NO DRAFT or CANCELLED watermark
+
+(j) Multi-rate GST breakdown
+Open a PO with mixed line items (e.g., one panel @ 5% GST + one inverter @ 18% GST). Download PDF. Verify per-rate breakdown rows appear at totals section:
+
+"Total Taxable @ 5%: ₹X | GST @ 5%: ₹Y"
+"Total Taxable @ 18%: ₹A | GST @ 18%: ₹B"
+Followed by grand total
+
+(k) Draft/Pending PO watermark
+Open a draft (status='pending') PO. Download PDF. Verify DRAFT watermark visible diagonally across the page.
+(l) Cancelled PO watermark
+Open a cancelled PO. Download PDF. Verify CANCELLED watermark visible in red, prominent.
+(m) Authorization — sales role 403
+Log in as a sales role user. Try to download PO PDF. Either:
+
+Button is hidden → ✓
+Button visible but click → 403 → ✓
+Or via DevTools: copy the API request as cURL, modify token to sales user → 403 returned
+
+If sales user can download PO PDF, that's a fail.
+(n) Audit log entry on download
+After downloading a PO PDF, check Audit Trail page. Verify entry: action='po_pdf_downloaded', module='supply_chain', userId of who downloaded, PO number in details.
+
+REGRESSION TESTS
+(o) Sales picker still works
+Open a fresh quotation. Add line item. Picker appears (with prices visible — Sales side, NOT hidden). Select product. Auto-fill works. Quotation saves correctly.
+(p) Quotation PDF still works
+Generate a quotation PDF. Download. Format unchanged from Phase 7.5 (consolidated all-in pricing, no changes from Phase 2).
+(q) Phase 1 features still work
+Quick spot checks:
+
+Draft challan creation still works
+Sales invoice auto-creation on dispatch still works
+GRN supplier challan upload still works
+Phase 5.5 floor-price panel still renders on quotations

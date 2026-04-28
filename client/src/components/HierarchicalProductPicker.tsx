@@ -114,7 +114,8 @@ export function HierarchicalProductPicker({
   const filteredProducts = typeFilteredProducts.filter((p) => {
     if (selectedGridType !== "__any__" && ((p as any).gridType ?? "others") !== selectedGridType) return false;
     if (productSearch.trim()) {
-      return p.name.toLowerCase().includes(productSearch.trim().toLowerCase());
+      const q = productSearch.trim().toLowerCase();
+      return p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q);
     }
     return true;
   });

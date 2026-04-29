@@ -1,0 +1,528 @@
+Phase 3: Operational Refinements
+
+CONTEXT
+
+ITFI's operational workflow has surfaced specific gaps that need
+addressing. CEO has reviewed the current system and wants:
+
+1. Manual stock adjustment to be removed from UI access (kept in code
+   for future re-enablement).
+2. Delivery challan workflow tightened: mandatory vehicle/driver
+   fields + CEO-issued Delivery Order before dispatch can occur.
+3. GRN simplified: drop file-upload gates, replace with manual data
+   entry (supplier challan number text field). Generic file upload
+   stays but moves to expanded view, options stripped to "Others"
+   only. Add GRN PDF download.
+4. Sales Returns to be hidden from UI for all users.
+5. Sales Invoices page redesigned for clarity and responsiveness.
+
+This phase is operational polish, not new functional capability. No
+schema migrations expected to be heavy; mostly additive fields.
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend tests alone are insufficient.
+- Only operator (me) declares phase closure. You may report
+  "implementation complete, ready for verification" but not "phase
+  closed."
+- Mirror existing patterns where applicable. Read existing code first.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Do NOT touch Phase 1 or Phase 2 work unless explicitly required.
+- Do NOT touch supplier payment ledger, customer payment receipt,
+  pricing engine, FIFO logic, stock movement code (except where Phase 3
+  Section B mandates).
+
+PRE-WORK — READ EXISTING CODE (MANDATORY)
+
+Before writing any code, report findings on:
+
+1. Manual stock adjustment UI:
+   - Where is it currently rendered? (Inventory > Stock Movements tab,
+     per operator)
+   - What component / file? What roles can access it today?
+   - What backend endpoint does it hit?
+   - Is it used by any other module or only triggered by user click?
+
+2. Delivery challan creation form (current state):
+   - File location of the "Create Dispatch Challan" dialog
+   - Current field set: confirm Vehicle No. and Driver are optional
+     today, no Owner / Driver Phone / Real Challan No. fields exist
+   - Status enum on delivery_challans (Phase 1 added: draft,
+     awaiting_signature, dispatched, cancelled). Confirm current values.
+   - "Mark Ready for Signature" + "Dispatch" current logic
+
+3. GRN form (current state):
+   - File location of GRN creation form and expanded view
+   - Phase 1 added supplier_challan_url + signed_copy_url + supplier_invoice_url
+     columns. Confirm what's currently mandatory at GRN creation and at
+     confirmation.
+   - Where is the generic file upload (the dropdown with challan/invoice/
+     others)? In the expanded view or the front column? What table stores
+     these uploads — attachments table?
+   - Existing GRN PDF generation: was it built in Phase 1 (per spec) or
+     missing today?
+
+4. Sales Returns UI:
+   - File location of Sales Returns tab in /sales-invoices
+   - Component name to be hidden
+
+5. Sales Invoices page (current state):
+   - File location: client/src/pages/SalesInvoices.tsx (per uploaded
+     code)
+   - Read the full structure: list pane, filter tabs, status summary
+     cards, detail panel
+   - Current responsive behavior (or lack thereof)
+   - Existing badges and styling
+
+6. Notifications system:
+   - Confirm Phase 1 notification helper signature still applies
+   - For CEO Delivery Order flow: notification needs to deep-link to
+     specific challan in Inventory tab. Confirm that's possible with
+     current routing setup.
+
+7. Roles in use:
+   - Confirm: admin, sales_manager, warehouse_manager, accountant,
+     sales, field_staff, kiosk, hr_manager
+   - Confirm: "CEO" maps to admin role (no separate CEO role)
+
+Report all findings in one message. Await my go-ahead before any
+implementation.
+
+SECTION A — HIDE MANUAL STOCK ADJUSTMENT (UI ONLY)
+
+A1. Locate manual stock adjustment in Inventory > Stock Movements tab.
+    Hide entirely from UI for ALL user roles including admin.
+
+A2. Keep:
+    - Backend endpoint intact
+    - Database tables and columns intact
+    - Component code intact (just don't render)
+
+A3. Easiest implementation: gate the rendering with `false &&` or wrap
+    in a feature-flag boolean (e.g., `const SHOW_STOCK_ADJUSTMENT =
+    false;`) so it can be turned back on later without searching.
+
+A4. No audit log changes needed — it's just UI hiding.
+
+SECTION B — DELIVERY CHALLAN WORKFLOW EXTENSION
+
+B1. Schema additions to delivery_challans table:
+    physical_challan_number (text, NOT NULL after migration —
+                             required field at "Mark Ready" time)
+    vehicle_number (text, NOT NULL)
+    vehicle_owner_name (text, NOT NULL)
+    driver_name (text, NOT NULL)
+    driver_phone (text, NOT NULL — Indian 10-digit mobile)
+    do_issued_at (timestamp, nullable)
+    do_issued_by (uuid FK → users, nullable)
+
+B2. Status enum update:
+    Existing: 'draft' | 'awaiting_signature' | 'dispatched' | 'cancelled'
+    New: 'draft' | 'ready' | 'do_issued' | 'dispatched' | 'cancelled'
+
+    Migration:
+    - Existing rows with status='awaiting_signature' → migrate to 'ready'
+    - Existing rows with status='dispatched' → stay as 'dispatched'
+    - Other statuses unchanged
+
+    Note: 'awaiting_signature' name is replaced by 'ready' — clearer
+    operational meaning. The signed-copy-upload step from Phase 1 is
+    being replaced by the new field-entry + DO-issuance workflow.
+
+B3. Run db:push. Migration must preserve existing dispatched challans.
+
+B4. Form fields at "Create Dispatch Challan" dialog:
+    Current fields (keep): items list, source warehouse, notes
+    Now ALL required (asterisk, no "(optional)" label):
+    - Real Challan No. — text (the printed paper challan reference)
+    - Vehicle No. — text
+    - Vehicle Owner Name — text
+    - Driver Name — text
+    - Driver Phone — text, with Indian mobile validation:
+      regex /^(\+91)?[6-9]\d{9}$/ — accept "9876543210" or "+919876543210"
+      Reject if not valid
+
+    Submit button on form is disabled until all 5 new fields filled
+    AND validation passes.
+
+B5. Mark Ready transition (draft → ready):
+    - Available to: warehouse_manager, sales_manager, admin
+    - Hard-blocked unless ALL THREE:
+      a. Stock is sufficient for ALL line items (existing Phase 1 check)
+      b. Linked Sales Order is fully paid (existing Phase 1 check)
+      c. All 5 mandatory fields filled with valid values
+    - On success:
+      * Status → 'ready'
+      * Existing ready_for_signature_at, ready_for_signature_by recorded
+        (rename if needed; or keep field names, mappings same)
+      * Notification fires to admin (CEO) ONLY:
+        "Challan #[NUMBER] ready for delivery order. Vehicle: [vehicle_no],
+         Driver: [driver_name]"
+        Notification deep-links to /inventory route with challan tab
+        + auto-opened challan detail (URL parameter or similar pattern)
+      * Audit log: action='challan_ready'
+
+    REMOVE from Phase 1: signed_copy_url upload requirement at this
+    transition. Operator no longer uploads anything at this step.
+
+B6. Issue Delivery Order transition (ready → do_issued):
+    - Available to: admin ONLY (CEO)
+    - Visible button on challan detail in Inventory > Challan tab:
+      "Issue Delivery Order" (or "Approve Dispatch" — pick one term,
+      use consistently)
+    - Click button → confirmation modal: "Issue Delivery Order for
+      Challan #[NUMBER]? Vehicle: [vehicle_no], Driver: [driver_name]
+      ([driver_phone])"
+    - On confirm:
+      * Status → 'do_issued'
+      * do_issued_at, do_issued_by recorded
+      * Notification fires to warehouse_manager + sales_manager:
+        "Delivery Order issued for Challan #[NUMBER]. Proceed with
+         dispatch."
+        Deep-links to /inventory > Challan tab > this challan
+      * Audit log: action='delivery_order_issued'
+
+B7. Dispatch transition (do_issued → dispatched):
+    - Available to: warehouse_manager, sales_manager, admin
+    - Hard-blocked if status != 'do_issued'
+    - REMOVE Phase 1 signed_copy_url requirement at dispatch
+    - On dispatch:
+      * Status → 'dispatched'
+      * dispatched_at, dispatched_by recorded
+      * Stock movement created (existing logic — preserve)
+      * Inventory deducted (existing logic — preserve)
+      * AUTO-CREATE sales_invoice row (existing Phase 1 logic — preserve)
+      * Notification to accountant + admin: "Challan #[NUMBER] dispatched"
+      * Audit log: action='challan_dispatched' + 'sales_invoice_auto_created'
+
+B8. Cancel Challan:
+    - Available on draft, ready, do_issued (NOT after dispatch)
+    - Required: cancellation_reason
+    - Available to: sales_manager, admin
+    - Audit log: action='challan_cancelled'
+
+B9. Document Status Panel (Sales Order detail page → Documents section):
+    For each linked challan, display NEW info:
+    - Status badge (Draft / Ready / DO Issued / Dispatched / Cancelled)
+    - Real Challan No. (if filled)
+    - Vehicle No., Driver name + phone (compact display)
+    - "View" / "Issue DO" / "Cancel" buttons per status + role
+
+B10. Notification deep-linking:
+    When CEO clicks notification in bell, URL navigates to:
+    /inventory?tab=challans&challanId=[ID]
+    Inventory page reads URL params on mount, switches to challans tab,
+    auto-opens that challan's detail panel.
+
+    Same pattern for warehouse notification: deep-links to challan tab
+    with that specific challan focused.
+
+SECTION C — GRN SIMPLIFICATION + PDF DOWNLOAD
+
+C1. Schema changes to goods_receipt_notes:
+    Add: supplier_challan_number (text, NOT NULL — the supplier's
+                                  paper challan reference number)
+
+    Keep but make NULLABLE (no longer required):
+    - supplier_challan_url (was NOT NULL after upload in Phase 1)
+    - signed_copy_url (was required at confirmation in Phase 1)
+    - supplier_invoice_url (was already optional)
+
+    The url fields stay in schema for any existing data + future use,
+    just not enforced at workflow gates.
+
+C2. Run db:push. Migration must preserve existing GRNs.
+
+C3. GRN creation flow:
+    - Replace Phase 1's "Upload Supplier Challan first → Create GRN"
+      flow
+    - New flow: User on PO detail clicks "Receive Goods" / "Create GRN"
+      directly. Form opens with:
+      * Supplier Challan No. — required text input (the paper reference)
+      * Per-line item received quantities
+      * Optional notes
+    - On submit: GRN row created with status='draft',
+      supplier_challan_number stored, supplier_challan_url left NULL
+    - Audit log: action='grn_drafted'
+
+    Supplier payment full-payment gate from Phase 1: PRESERVE this
+    check. GRN cannot be created if PO not fully paid to supplier.
+
+C4. GRN confirm flow (draft → confirmed):
+    - REMOVE signed_copy_url upload requirement
+    - REMOVE supplier_challan_url presence requirement
+    - Available to: warehouse_manager, accountant, admin
+    - Required: line items received quantities filled (existing logic)
+    - On confirm:
+      * Status → 'confirmed'
+      * confirmed_at, confirmed_by recorded
+      * Stock added to inventory (existing logic — preserve)
+      * GRN lots created for FIFO costing (existing logic — preserve)
+      * Notification to admin + accountant: "GRN #[NUMBER] confirmed.
+        Stock updated."
+    - Audit log: action='grn_confirmed'
+
+C5. GRN expanded view — generic file upload section:
+    - Move existing generic file upload from front column to expanded
+      view (it's currently in the front column per operator)
+    - Strip dropdown options from {challan, invoice, others} to ONLY
+      "Others" (or rename label to "Additional Documents")
+    - Existing supplier challan + signed GRN buttons (Phase 1) remain
+      visible in expanded view as separate explicit upload controls,
+      but their requirement gates are now removed (per C3, C4)
+    - Functionally: uploads still work and store in attachments table,
+      but no workflow gate depends on them
+
+C6. Add GRN PDF download (was spec'd in Phase 1 but apparently not
+    shipped):
+    - Server-side endpoint: GET /api/grns/:id/pdf
+    - Returns PDF document with:
+      - ITFI letterhead (same as PO PDF — reuse company const)
+      - Title: "GOODS RECEIPT NOTE"
+      - GRN number, date, status
+      - Supplier info: name, address, GSTIN
+      - PO reference: PO number, PO date
+      - Supplier Challan No. (the new field)
+      - Line items table: item description, HSN, ordered qty,
+        received qty, discrepancy (if any)
+      - Signature line at bottom: "Authorized Signatory: ___________"
+      - DRAFT watermark when status='draft'
+      - CANCELLED watermark when status='cancelled' (if you have
+        cancelled status — confirm; if not skip)
+    - Available to: warehouse_manager, accountant, admin
+    - "Download PDF" button on GRN detail/expanded view
+    - Audit log: action='grn_pdf_downloaded'
+
+SECTION D — HIDE SALES RETURNS
+
+D1. In SalesInvoices.tsx:
+    - Hide the "Sales Returns" tab from the top navigation
+    - All user roles affected (including admin)
+    - Use feature flag pattern: const SHOW_SALES_RETURNS = false;
+      so it can be re-enabled later
+
+D2. Keep:
+    - sales_returns table and columns
+    - Backend endpoints
+    - Component code intact
+
+D3. If user navigates directly to /sales-invoices?tab=returns or
+    similar deep link, redirect to /sales-invoices?tab=invoices
+
+SECTION E — SALES INVOICES PAGE REDESIGN
+
+E1. Layout — responsive:
+    - Desktop ≥1280px: side-by-side list (left ~40%) + detail panel
+      (right ~60%)
+    - Tablet 768-1279px: side-by-side, list shrinks to ~35%, detail
+      panel scrolls horizontally if needed for line items
+    - Mobile <768px: list full-width; clicking an invoice opens detail
+      as a full-screen overlay/modal with back button
+
+E2. Drop the three status summary cards (Pending/Partial/Paid totals).
+    Filter tabs at top already serve this purpose. Remove for cleaner
+    one-look view.
+
+E3. List view (left side):
+    - Cleaner one-row-per-invoice layout (no two-line stacking)
+    - Columns visible: Invoice # | Customer Name | Date | Amount |
+      Payment Status badge | Upload Status badge
+    - Compact display, ~60-70px row height
+    - Active row highlighted with left-border accent (matching theme
+      color)
+
+E4. Status badges — both ALWAYS visible:
+    Payment status (existing):
+    - Pending → amber background, prominent
+    - Partial → blue background, prominent
+    - Paid → grey/muted background
+
+    Upload status (existing):
+    - Pending Upload → amber background, prominent
+    - Recorded → grey/muted background
+    - Cancelled → red background
+
+E5. Detail panel (right side) — restructured into clear sections:
+
+    Header section:
+    - Invoice # (large, bold, ~24px)
+    - Invoice date (subtitle)
+    - Two status badges (payment + upload) — top-right corner
+
+    Customer section (compact card):
+    - Customer name (bold, ~18px)
+    - Phone number with +91 prefix
+    - GSTIN (if B2B)
+    - Intra-state vs Inter-state supply note
+
+    Line items section:
+    - Table header: Description | HSN | Qty | Rate | Taxable | GST% | Tax Amt | Total
+    - Smart tax columns: show only relevant ones based on customer state
+      * Intra-state: CGST + SGST columns
+      * Inter-state: IGST column only
+      Don't show all three always.
+    - Description column wraps gracefully on narrow widths
+    - All other columns are narrow + numeric, right-aligned
+
+    Totals block (prominent):
+    - Subtotal (regular size)
+    - Total Tax (regular size)
+    - Grand Total (large, bold, ~28px) — most prominent number on the page
+
+    Document Status section:
+    - Two rows:
+      "Signed Invoice Copy: ✓ Uploaded [View link]" or "✗ Not uploaded yet"
+      "E-way Bill: ✓ EBN-12345 [View link]" or "✗ Not entered"
+        (if total_amount ≥ 50,000) OR "Not required" (if < 50,000)
+    - Mark as Recorded form (existing T93) — collapsed by default,
+      expand on click. Form behavior unchanged.
+
+    External Reference section (if status='recorded'):
+    - Show ext_invoice_number, ext_invoice_date, ext_total_amount,
+      ext_gst_amount in compact display
+
+    Action buttons at bottom:
+    - "Download Invoice" (downloads the uploaded signed copy if
+      available, otherwise greyed out)
+    - "Download E-way Bill" (downloads uploaded EBN PDF if available,
+      otherwise greyed out)
+    - Both buttons require the file to be uploaded; if not uploaded,
+      button is disabled with tooltip "Not uploaded yet"
+
+E6. Visual polish:
+    - Consistent typography hierarchy: 24px (invoice #), 18px (section
+      headers + customer name + grand total), 14px (body), 12px
+      (meta/labels)
+    - Increased whitespace between sections (16-20px gaps)
+    - Section dividers: subtle horizontal lines or background tint shifts
+    - Reduce border noise — use white/grey card backgrounds instead of
+      visible borders where possible
+    - Color palette stays consistent with rest of app — no new theme
+      colors
+
+E7. No new functional capability — this section is layout/styling only.
+    All existing behaviors preserved:
+    - Filter tabs still filter by upload status
+    - Search still works
+    - Mark as Recorded form still works (T93 unchanged)
+    - Existing E-way bill threshold reminder still works
+
+SECTION F — STOP GATE (OPERATOR WALKS)
+
+F1. Stock adjustment hidden:
+    (a) Inventory > Stock Movements tab → no manual stock adjustment
+        UI visible
+    (b) Try as admin user → still hidden
+    (c) Backend endpoint still works if called directly (verify via
+        SQL or curl)
+
+F2. Challan workflow extension:
+    (d) Create dispatch challan: form has 5 new mandatory fields
+        with red asterisks; submit button disabled until all filled
+    (e) Try save with invalid driver phone (e.g., "abc123") → blocked
+        with "Enter a valid Indian mobile number"
+    (f) Save valid challan → status='draft'. Verify all 5 fields
+        stored in DB.
+    (g) Try Mark Ready while stock short → blocked
+    (h) Try Mark Ready while customer SO unpaid → blocked
+    (i) Stock + payment OK → click Mark Ready → status='ready'
+        Notification fires to admin (CEO).
+    (j) Login as admin. Notification visible in bell. Click → deep-link
+        navigates to /inventory > Challan tab > that challan's detail
+        opened.
+    (k) "Issue Delivery Order" button visible to admin only. As
+        warehouse_manager: button NOT visible. As sales_manager: button
+        NOT visible. Direct API call as non-admin: 403.
+    (l) Click "Issue Delivery Order" → confirmation modal. Confirm.
+        Status='do_issued'. Notification fires to warehouse_manager +
+        sales_manager.
+    (m) Login as warehouse_manager. Notification → deep-link to
+        challan. Click "Dispatch" → status='dispatched'. Stock deducts.
+        Auto-create sales_invoice (Phase 1 behavior preserved).
+    (n) Try Dispatch on a non-do_issued challan → blocked.
+    (o) Cancel a draft challan → succeeds. Cancel a dispatched one →
+        not allowed.
+    (p) Existing dispatched challans (created before Phase 3) still
+        open cleanly (regression).
+
+F3. GRN simplification:
+    (q) Open approved PO with full supplier payment. Click Create GRN.
+        Form has supplier_challan_number text field as required. No
+        file upload required.
+    (r) Submit GRN with supplier_challan_number filled, line items
+        received quantities entered. GRN created with status='draft'.
+    (s) Try confirm GRN → succeeds without any file upload required.
+        Stock added.
+    (t) Expanded view of GRN: generic file upload section visible. Try
+        upload — works. Dropdown options: only "Others" (or "Additional
+        Documents") visible.
+    (u) Phase 1 supplier challan upload + signed GRN upload buttons
+        still present in expanded view — but no longer required for
+        workflow gates.
+    (v) Click "Download PDF" on GRN. PDF downloads. Verify: ITFI
+        letterhead, GRN number, supplier details, supplier challan no.
+        visible, line items with ordered/received/discrepancy, signature
+        line, DRAFT watermark on draft GRN.
+    (w) Try as sales role: 403 on PDF download.
+
+F4. Sales Returns hidden:
+    (x) Open /sales-invoices → no "Sales Returns" tab visible. Same
+        for all roles tested (admin, sales_manager, accountant).
+    (y) Try direct URL /sales-invoices?tab=returns → redirected to
+        invoices tab.
+
+F5. Sales Invoices redesign:
+    (z) Desktop view: list + detail side-by-side. Active row has left-
+        border accent.
+    (aa) Tablet view (resize browser to ~900px): same layout, list
+         shrinks proportionally.
+    (bb) Mobile view (resize to ~400px): list is full-width. Click
+         an invoice → full-screen overlay/modal opens with detail.
+         Back button returns to list.
+    (cc) Three status summary cards are GONE. Filter tabs at top still
+         work.
+    (dd) List rows: Invoice # | Customer | Date | Amount | Payment
+         badge | Upload badge — single row per invoice, ~60-70px tall.
+    (ee) Both status badges visible. "Recorded" → grey. "Pending Upload"
+         → amber. "Paid" → grey. "Pending" payment → amber.
+    (ff) Detail panel: Invoice number large, customer block compact,
+         line items show only relevant tax columns (CGST/SGST for
+         intra-state; IGST for inter-state, NOT all three).
+    (gg) Grand Total prominent (~28px, bold).
+    (hh) Document Status section: Signed Copy + E-way Bill rows visible
+         with checkmarks/x's. View links work when files uploaded.
+    (ii) "Download Invoice" + "Download E-way Bill" buttons at bottom.
+         Disabled when files not uploaded; tooltip explains.
+    (jj) Click "Download Invoice" with file uploaded → opens scan in
+         new tab.
+    (kk) Mark as Recorded form (T93) still works. Variance modal still
+         fires within ₹5 tolerance.
+    (ll) E-way bill threshold advisory (≥₹50,000) still works.
+    (mm) Filter tabs (All / Upload Pending / Recorded) still work.
+
+F6. Regression:
+    (nn) Phase 1 challan with old status 'awaiting_signature' migrated
+         cleanly to 'ready' status.
+    (oo) Phase 1 + Phase 2 features unchanged: hierarchical picker on
+         PO works, PO PDF downloads, supplier payment ledger, customer
+         payment receipt, FIFO lot creation, daily price sheets.
+    (pp) Pricing engine, floor-price panel, MRP soft-warn, subsidy
+         hard-block, zero-price block — all still functional on
+         quotations.
+    (qq) Bundle dispatch atomic, hierarchical picker on Sales — still
+         work.
+
+OUT OF SCOPE FOR THIS PHASE
+
+- WhatsApp send for sales invoice (deferred per CEO)
+- Performa Invoice upload (no longer required per CEO)
+- Manual PR creation form (not needed; direct PO creation works)
+- Re-enabling sales returns (hidden, not removed)
+- Re-enabling stock adjustment UI (hidden, not removed)
+- Email-sending for any document
+- New financial reports (AR/AP/daily balance) — that's the next phase
+- Multi-company / forking work
+- Pharma / Construction modules
+
+Stop after implementation ships and ping me. I will walk the F1-F6
+stop gate (~50 items, ~50 min).

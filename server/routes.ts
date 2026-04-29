@@ -38,6 +38,7 @@ const CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD = (() => {
   return Math.min(Math.max(v, 0), 1);
 })();
 import { generatePOPdfBuffer } from "./po-pdf";
+import { generateGrnPdf } from "./grn-pdf";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus, getWebhookUrl } from "./whatsapp";
@@ -4002,7 +4003,7 @@ export async function registerRoutes(
   });
 
 
-  app.post("/api/stock-movements", authenticateToken, async (req: any, res) => {
+  app.post("/api/stock-movements", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
       const parsed = insertStockMovementSchema.safeParse({
         ...req.body,
@@ -4407,12 +4408,12 @@ export async function registerRoutes(
   // ── B4: Mark Ready for Signature (draft → awaiting_signature) ─────────────
   app.post("/api/delivery-challans/:id/ready-for-signature", authenticateToken, async (req: any, res) => {
     try {
-      const allowedRoles = ["accountant", "sales_manager", "admin", "warehouse_manager"];
+      const allowedRoles = ["warehouse_manager", "sales_manager", "admin"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
       const challan = await storage.getDeliveryChallan(req.params.id);
       if (!challan) return res.status(404).json({ message: "Challan not found" });
-      if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be marked ready for signature" });
+      if (challan.status !== "draft") return res.status(400).json({ message: "Only draft challans can be marked ready" });
 
       // Gate A: check stock for all items
       const items = await storage.getDeliveryChallanItems(challan.id);
@@ -4453,14 +4454,14 @@ export async function registerRoutes(
 
       await db.execute(sql`
         UPDATE delivery_challans
-        SET status = 'awaiting_signature',
+        SET status = 'ready',
             ready_for_signature_at = now(),
             ready_for_signature_by = ${req.user.id}
         WHERE id = ${challan.id}
       `);
 
-      await logAction(req.user.id, "challan_ready_for_signature", "sales", `Challan ${challan.challanNumber} marked ready for signature`);
-      notifyRoles(["sales_manager", "admin"], "challan", `Challan ${challan.challanNumber} Ready for Signature`, `Challan #${challan.challanNumber} is ready for printing and signature.`, challan.id).catch(() => {});
+      await logAction(req.user.id, "challan_ready", "sales", `Challan ${challan.challanNumber} marked ready for delivery order`);
+      notifyRoles(["admin"], "challan", `Challan ${challan.challanNumber} Ready for Delivery Order`, `Challan #${challan.challanNumber} is ready. Vehicle: ${(challan as any).vehicleNumber ?? "TBD"}, Driver: ${(challan as any).driverName ?? "TBD"}`, challan.id).catch(() => {});
 
       const updated = await storage.getDeliveryChallan(challan.id);
       res.json(updated);
@@ -4474,8 +4475,8 @@ export async function registerRoutes(
     try {
       const challan = await storage.getDeliveryChallan(req.params.id);
       if (!challan) return res.status(404).json({ message: "Challan not found" });
-      if (!["awaiting_signature", "dispatched"].includes(challan.status)) {
-        return res.status(400).json({ message: "Signed copy can only be uploaded when challan is awaiting signature or dispatched" });
+      if (!["ready", "do_issued", "dispatched"].includes(challan.status)) {
+        return res.status(400).json({ message: "Signed copy can only be uploaded when challan is ready, do_issued, or dispatched" });
       }
 
       const { fileUrl } = req.body;
@@ -4500,7 +4501,34 @@ export async function registerRoutes(
     }
   });
 
-  // ── B7: Cancel Challan ─────────────────────────────────────────────────────
+  // ── B6: Issue Delivery Order (ready → do_issued, admin only) ──────────────
+  app.post("/api/delivery-challans/:id/issue-delivery-order", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin") return res.status(403).json({ message: "Only admin can issue delivery orders" });
+
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      if (challan.status !== "ready") return res.status(400).json({ message: "Only ready challans can have a delivery order issued" });
+
+      await db.execute(sql`
+        UPDATE delivery_challans
+        SET status = 'do_issued',
+            do_issued_at = now(),
+            do_issued_by = ${req.user.id}
+        WHERE id = ${challan.id}
+      `);
+
+      await logAction(req.user.id, "delivery_order_issued", "sales", `Delivery order issued for challan ${challan.challanNumber}`);
+      notifyRoles(["warehouse_manager", "sales_manager"], "challan", `Delivery Order Issued — Challan ${challan.challanNumber}`, `Delivery Order issued for Challan #${challan.challanNumber}. Proceed with dispatch.`, challan.id).catch(() => {});
+
+      const updated = await storage.getDeliveryChallan(challan.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to issue delivery order" });
+    }
+  });
+
+  // ── B8: Cancel Challan ─────────────────────────────────────────────────────
   app.post("/api/delivery-challans/:id/cancel", authenticateToken, async (req: any, res) => {
     try {
       const allowedRoles = ["sales_manager", "admin"];
@@ -4508,8 +4536,8 @@ export async function registerRoutes(
 
       const challan = await storage.getDeliveryChallan(req.params.id);
       if (!challan) return res.status(404).json({ message: "Challan not found" });
-      if (!["draft", "awaiting_signature"].includes(challan.status)) {
-        return res.status(400).json({ message: "Only draft or awaiting_signature challans can be cancelled" });
+      if (!["draft", "ready", "do_issued"].includes(challan.status)) {
+        return res.status(400).json({ message: "Only draft, ready, or do_issued challans can be cancelled" });
       }
 
       const { cancellationReason } = req.body;
@@ -4538,15 +4566,10 @@ export async function registerRoutes(
     try {
       const challan = await storage.getDeliveryChallan(req.params.id);
       if (!challan) return res.status(404).json({ message: "Challan not found" });
-      if (challan.status !== "awaiting_signature") return res.status(400).json({ message: "Only challans awaiting signature can be dispatched" });
+      if (challan.status !== "do_issued") return res.status(400).json({ message: "Challan must have a delivery order issued before dispatch" });
 
-      // Signed copy required before dispatch
-      if (!(challan as any).signedCopyUrl) {
-        return res.status(400).json({ message: "Upload signed copy before dispatching" });
-      }
-
-      // Authorization — only warehouse ops + accountant + admin may physically dispatch
-      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
+      // Authorization — warehouse ops + sales_manager + admin may physically dispatch
+      const allowedRoles = ["sales_manager", "admin", "warehouse_manager"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
       const items = await storage.getDeliveryChallanItems(challan.id);
@@ -4642,8 +4665,8 @@ export async function registerRoutes(
           SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
         `);
         const lockedChallan = (lockedRes as any).rows?.[0];
-        if (!lockedChallan || (lockedChallan as any).status !== "awaiting_signature") {
-          throw new Error("Challan is no longer awaiting_signature — concurrent dispatch may have already occurred");
+        if (!lockedChallan || (lockedChallan as any).status !== "do_issued") {
+          throw new Error("Challan is no longer do_issued — concurrent dispatch may have already occurred");
         }
 
         // Phase 7 — pre-check ALL component shortages and report every one,
@@ -4976,6 +4999,9 @@ export async function registerRoutes(
       const warehouseId = req.body?.warehouseId;
       if (!warehouseId) return res.status(400).json({ message: "warehouseId is required to create a GRN" });
 
+      const supplierChallanNumber = req.body?.supplierChallanNumber?.trim() || null;
+      if (!supplierChallanNumber) return res.status(400).json({ message: "Supplier challan number is required to create a GRN" });
+
       const grn = await storage.createGRN({
         grnNumber,
         purchaseOrderId: poId,
@@ -4984,8 +5010,9 @@ export async function registerRoutes(
         deliveryCost: null,
         totalAmount: String(itemTotal),
         receivedDate: new Date(),
-        notes: null,
+        notes: req.body?.notes || null,
         createdBy: req.user.id,
+        supplierChallanNumber,
       } as any);
 
       if (productItems.length > 0) {
@@ -5167,14 +5194,7 @@ export async function registerRoutes(
       if (!grn) return res.status(404).json({ message: "GRN not found" });
       if (grn.status !== "draft") return res.status(400).json({ message: "Only draft GRNs can be confirmed" });
 
-      // D1: Supplier challan scan required before confirmation
-      if (!(grn as any).supplierChallanUrl) {
-        return res.status(400).json({ message: "Upload supplier challan scan before confirming" });
-      }
-      // D4: Signed copy must be uploaded before confirmation
-      if (!(grn as any).signedCopyUrl) {
-        return res.status(400).json({ message: "Upload signed GRN copy before confirming" });
-      }
+      // Phase 3 C4: removed supplier_challan_url and signed_copy_url gates — not required for confirmation
 
       const items = await storage.getGRNItems(grn.id);
       if (items.length === 0) return res.status(400).json({ message: "GRN has no items to confirm" });
@@ -5374,6 +5394,69 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Confirm GRN error:", error);
       res.status(500).json({ message: "Failed to confirm GRN" });
+    }
+  });
+
+  // ── C6: GRN PDF Download ─────────────────────────────────────────────────────
+  app.get("/api/grns/:id/pdf", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["warehouse_manager", "accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+
+      const [po, items, warehouses] = await Promise.all([
+        storage.getPurchaseOrder(grn.purchaseOrderId),
+        storage.getGRNItems(grn.id),
+        storage.getWarehouses(),
+      ]);
+
+      const supplier = po ? await storage.getSupplier(po.supplierId) : null;
+      const warehouse = warehouses.find((w: any) => w.id === grn.warehouseId);
+      const products = await storage.getProducts();
+      const productMap = new Map(products.map((p: any) => [p.id, p]));
+
+      const pdfData = {
+        grnNumber: grn.grnNumber,
+        status: grn.status,
+        receivedDate: grn.receivedDate,
+        supplierChallanNumber: grn.supplierChallanNumber,
+        supplierChallanDate: grn.supplierChallanDate,
+        notes: grn.notes,
+        confirmedAt: (grn as any).confirmedAt,
+        deliveryCost: grn.deliveryCost,
+        totalAmount: grn.totalAmount,
+        poNumber: po?.poNumber,
+        poDate: po?.createdAt,
+        supplierName: supplier?.name,
+        supplierAddress: supplier?.address,
+        supplierGstin: supplier?.gstin,
+        warehouseName: warehouse?.name,
+        items: items.map((it: any) => {
+          const prod = productMap.get(it.productId);
+          return {
+            productId: it.productId,
+            description: it.description,
+            productName: prod?.name,
+            hsnCode: prod?.hsnCode,
+            orderedQuantity: it.orderedQuantity,
+            receivedQuantity: it.receivedQuantity,
+            buyingPrice: it.buyingPrice,
+            totalCost: it.totalCost,
+          };
+        }),
+      };
+
+      const buffer = generateGrnPdf(pdfData);
+      await logAction(req.user.id, "grn_pdf_downloaded", "supply_chain", `Downloaded PDF for GRN ${grn.grnNumber}`);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${grn.grnNumber}.pdf"`);
+      res.send(buffer);
+    } catch (err: any) {
+      console.error("GRN PDF error:", err);
+      res.status(500).json({ message: err.message || "Failed to generate PDF" });
     }
   });
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import {
-  FileText, Plus, IndianRupee, CheckCircle2, Clock, AlertCircle,
+  FileText, Plus, CheckCircle2, AlertCircle,
   ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw,
   MessageCircle, AlertTriangle, Upload, ExternalLink, ClipboardCheck, Truck
 } from "lucide-react";
@@ -722,57 +722,65 @@ function InvoiceDetailPanel({
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
+    <div className="p-5 space-y-5">
+      {/* ── Header ───────────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-foreground">{inv.invoiceNumber}</h2>
+          <h2 className="text-2xl font-bold text-foreground font-mono tracking-tight">{inv.invoiceNumber}</h2>
           <p className="text-sm text-muted-foreground mt-0.5">
             {new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
             {inv.dueDate && ` · Due ${new Date(inv.dueDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {statusBadge(inv.status)}
-          {isB2B ? (
-            <Badge variant="outline" className="gap-1"><Building2 className="w-3 h-3" />B2B</Badge>
-          ) : (
-            <Badge variant="outline" className="gap-1"><User className="w-3 h-3" />B2C</Badge>
-          )}
-          {customer?.phone && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20"
-              onClick={() => setWaOpen(true)}
-              data-testid={`button-wa-invoice-${inv.id}`}
-              title="Send WhatsApp template"
-            >
-              <MessageCircle className="w-4 h-4 mr-1" /> WhatsApp
-            </Button>
-          )}
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            {statusBadge(inv.status)}
+            {uploadStatusBadge((inv as any).uploadStatus)}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {isB2B ? (
+              <Badge variant="outline" className="text-xs gap-1"><Building2 className="w-3 h-3" />B2B</Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs gap-1"><User className="w-3 h-3" />B2C</Badge>
+            )}
+            {customer?.phone && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20"
+                onClick={() => setWaOpen(true)}
+                data-testid={`button-wa-invoice-${inv.id}`}
+                title="Send WhatsApp template"
+              >
+                <MessageCircle className="w-3.5 h-3.5 mr-1" /> WA
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Customer Info */}
-      <Card>
-        <CardContent className="p-4 space-y-1">
-          <p className="font-medium">{customer?.name ?? "—"}</p>
-          {customer?.address && <p className="text-sm text-muted-foreground">{customer.address}</p>}
-          {customer?.phone && <p className="text-sm text-muted-foreground">{customer.phone}</p>}
-          {isB2B && inv.customerGSTIN && (
-            <p className="text-sm font-mono text-blue-600">GSTIN: {inv.customerGSTIN}</p>
-          )}
-          <p className="text-xs text-muted-foreground mt-1">
-            {isInterState ? "Inter-State Supply (IGST)" : "Intra-State Supply (CGST + SGST)"}
-          </p>
-        </CardContent>
-      </Card>
+      <Separator />
 
-      {/* Line Items */}
+      {/* ── Customer ─────────────────────────────────────────────────────── */}
+      <div className="rounded-lg bg-muted/30 border px-4 py-3 space-y-1.5">
+        <p className="text-lg font-semibold text-foreground">{customer?.name ?? "—"}</p>
+        {customer?.phone && (
+          <p className="text-sm text-muted-foreground">
+            +91 {customer.phone.replace(/^\+?91/, "").replace(/\D/g, "").slice(-10)}
+          </p>
+        )}
+        {isB2B && inv.customerGSTIN && (
+          <p className="text-sm font-mono text-blue-600">GSTIN: {inv.customerGSTIN}</p>
+        )}
+        <p className="text-xs text-muted-foreground">
+          {isInterState ? "⟶ Inter-State Supply (IGST)" : "⟶ Intra-State Supply (CGST + SGST)"}
+        </p>
+      </div>
+
+      {/* ── Line Items ───────────────────────────────────────────────────── */}
       <div>
-        <h3 className="text-sm font-semibold mb-2">Line Items</h3>
-        <div className="rounded-lg border overflow-hidden">
+        <h3 className="text-sm font-semibold mb-2 text-foreground">Line Items</h3>
+        <div className="rounded-lg border overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/50">
@@ -796,21 +804,21 @@ function InvoiceDetailPanel({
             <TableBody>
               {(inv.items ?? []).map((item, idx) => (
                 <TableRow key={item.id ?? idx} data-testid={`row-invoice-item-${idx}`}>
-                  <TableCell className="text-sm">{item.description}</TableCell>
+                  <TableCell className="text-xs max-w-[140px] whitespace-normal">{item.description}</TableCell>
                   <TableCell className="text-xs text-right font-mono">{item.hsnCode ?? "—"}</TableCell>
-                  <TableCell className="text-sm text-right">{Number(item.qty)}</TableCell>
-                  <TableCell className="text-sm text-right">{fmt(item.unitPrice)}</TableCell>
-                  <TableCell className="text-sm text-right">{fmt(item.taxableAmount)}</TableCell>
-                  <TableCell className="text-sm text-right">{Number(item.gstRate)}%</TableCell>
+                  <TableCell className="text-xs text-right">{Number(item.qty)}</TableCell>
+                  <TableCell className="text-xs text-right">{fmt(item.unitPrice)}</TableCell>
+                  <TableCell className="text-xs text-right">{fmt(item.taxableAmount)}</TableCell>
+                  <TableCell className="text-xs text-right">{Number(item.gstRate)}%</TableCell>
                   {isInterState ? (
-                    <TableCell className="text-sm text-right">{fmt(item.igst)}</TableCell>
+                    <TableCell className="text-xs text-right">{fmt(item.igst)}</TableCell>
                   ) : (
                     <>
-                      <TableCell className="text-sm text-right">{fmt(item.cgst)}</TableCell>
-                      <TableCell className="text-sm text-right">{fmt(item.sgst)}</TableCell>
+                      <TableCell className="text-xs text-right">{fmt(item.cgst)}</TableCell>
+                      <TableCell className="text-xs text-right">{fmt(item.sgst)}</TableCell>
                     </>
                   )}
-                  <TableCell className="text-sm text-right font-medium">{fmt(item.totalAmount)}</TableCell>
+                  <TableCell className="text-xs text-right font-medium">{fmt(item.totalAmount)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -818,42 +826,39 @@ function InvoiceDetailPanel({
         </div>
       </div>
 
-      {/* GST Summary */}
-      <Card className="bg-muted/30">
-        <CardContent className="p-4 space-y-2">
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Subtotal</span>
-            <span>{fmt(subtotal)}</span>
+      {/* ── Totals Block ─────────────────────────────────────────────────── */}
+      <div className="rounded-lg bg-muted/20 border px-4 py-3 space-y-2">
+        <div className="flex justify-between text-sm text-muted-foreground">
+          <span>Subtotal</span>
+          <span className="text-foreground">{fmt(subtotal)}</span>
+        </div>
+        {isInterState ? (
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>IGST</span>
+            <span className="text-foreground">{fmt(totalIgst)}</span>
           </div>
-          <Separator />
-          {isInterState ? (
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">IGST</span>
-              <span>{fmt(totalIgst)}</span>
+        ) : (
+          <>
+            <div className="flex justify-between text-sm text-muted-foreground">
+              <span>CGST</span>
+              <span className="text-foreground">{fmt(totalCgst)}</span>
             </div>
-          ) : (
-            <>
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">CGST</span>
-                <span>{fmt(totalCgst)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">SGST</span>
-                <span>{fmt(totalSgst)}</span>
-              </div>
-            </>
-          )}
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Total Tax</span>
-            <span>{fmt(totalTax)}</span>
-          </div>
-          <Separator />
-          <div className="flex justify-between font-bold text-base">
-            <span>Grand Total</span>
-            <span className="text-primary">{fmt(grandTotal)}</span>
-          </div>
-        </CardContent>
-      </Card>
+            <div className="flex justify-between text-sm text-muted-foreground">
+              <span>SGST</span>
+              <span className="text-foreground">{fmt(totalSgst)}</span>
+            </div>
+          </>
+        )}
+        <div className="flex justify-between text-sm text-muted-foreground">
+          <span>Total Tax</span>
+          <span className="text-foreground">{fmt(totalTax)}</span>
+        </div>
+        <Separator className="my-1" />
+        <div className="flex justify-between items-baseline">
+          <span className="text-base font-semibold">Grand Total</span>
+          <span className="text-2xl font-bold text-primary">{fmt(grandTotal)}</span>
+        </div>
+      </div>
 
       {/* Credit Notes section */}
       {creditNotes.length > 0 && (
@@ -954,151 +959,188 @@ function InvoiceDetailPanel({
         </div>
       </div>
 
-      {/* ── Document Lifecycle ─────────────────────────────────────────────── */}
-      <div>
-        <button
-          className="w-full flex items-center justify-between text-sm font-semibold mb-2 hover:text-primary transition-colors"
-          onClick={() => setDocsExpanded(!docsExpanded)}
-          data-testid="toggle-docs-section"
-        >
-          <span className="flex items-center gap-1.5"><FileText className="w-4 h-4" />Documents &amp; Upload Status</span>
-          <div className="flex items-center gap-2">
-            {uploadStatusBadge((inv as any).uploadStatus)}
-            {docsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </div>
-        </button>
+      {/* ── Document Status ───────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-foreground">Document Status</h3>
 
-        {docsExpanded && (
-          <Card>
-            <CardContent className="p-4 space-y-4">
-              {/* Current upload status and ext invoice reference */}
-              <div className="flex flex-wrap gap-3 text-xs">
+        {/* Signed Invoice Copy row */}
+        <div className="rounded-lg border bg-muted/10 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
+              <span className="text-sm text-muted-foreground">Signed Invoice Copy</span>
+            </div>
+            {(inv as any).signedCopyUrl ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-600 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />Uploaded
+                  {(inv as any).signedCopyUploadedAt && ` · ${new Date((inv as any).signedCopyUploadedAt).toLocaleDateString("en-IN")}`}
+                </span>
+                <a href={(inv as any).signedCopyUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-signed-copy">
+                  <ExternalLink className="w-3 h-3" />View
+                </a>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-500" />Not uploaded yet
+                </span>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-muted-foreground">Status:</span>
-                  {uploadStatusBadge((inv as any).uploadStatus)}
+                  <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-7 text-xs w-28" data-testid="input-invoice-signed-copy" onChange={(e) => setSignedCopyFile(e.target.files?.[0] ?? null)} />
+                  <Button size="sm" variant="outline" className="h-7 text-xs" disabled={!signedCopyFile || uploadSignedCopyMutation.isPending} data-testid="button-upload-invoice-signed-copy" onClick={() => signedCopyFile && uploadSignedCopyMutation.mutate(signedCopyFile)}>
+                    <Upload className="w-3 h-3 mr-1" />{uploadSignedCopyMutation.isPending ? "…" : "Upload"}
+                  </Button>
                 </div>
-                {(inv as any).extInvoiceNumber && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-muted-foreground">Ext. Invoice:</span>
-                    <span className="font-mono font-medium">{(inv as any).extInvoiceNumber}</span>
-                    {(inv as any).extInvoiceDate && <span className="text-muted-foreground">({new Date((inv as any).extInvoiceDate).toLocaleDateString("en-IN")})</span>}
-                  </div>
-                )}
-                {(inv as any).extTotalAmount && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-muted-foreground">Ext. Total:</span>
-                    <span className="font-medium">{fmt((inv as any).extTotalAmount)}</span>
-                  </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* E-way Bill row */}
+        <div className="rounded-lg border bg-muted/10 px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Truck className="w-4 h-4 text-muted-foreground shrink-0" />
+              <span className="text-sm text-muted-foreground">E-way Bill</span>
+            </div>
+            {(inv as any).ewayBillNumber ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-600 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span className="font-mono font-medium">{(inv as any).ewayBillNumber}</span>
+                  {(inv as any).ewayBillDate && ` · ${new Date((inv as any).ewayBillDate).toLocaleDateString("en-IN")}`}
+                </span>
+                {(inv as any).ewayBillUrl && (
+                  <a href={(inv as any).ewayBillUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-eway-bill">
+                    <ExternalLink className="w-3 h-3" />View
+                  </a>
                 )}
               </div>
+            ) : grandTotal < 50000 ? (
+              <span className="text-xs text-muted-foreground">Not required</span>
+            ) : (
+              <span className="text-xs text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" />Not entered</span>
+            )}
+          </div>
 
-              {/* Mark Recorded (when pending) */}
-              {(inv as any).uploadStatus === "pending_upload" && (
-                !(inv as any).signedCopyUrl ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                    <p className="text-xs text-amber-800">Upload the signed invoice copy (below) before marking as recorded.</p>
-                  </div>
-                ) : (
-                  <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">
-                    <p className="text-xs font-medium text-amber-800">Mark invoice as recorded in your physical books</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs">Ext. Invoice No. *</Label>
-                        <Input className="h-8 text-xs" data-testid="input-ext-invoice-number" value={extInvoiceNumber} onChange={(e) => setExtInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Ext. Invoice Date *</Label>
-                        <Input type="date" className="h-8 text-xs" data-testid="input-ext-invoice-date" value={extInvoiceDate} onChange={(e) => setExtInvoiceDate(e.target.value)} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Ext. Total Amount ₹ *</Label>
-                        <Input type="number" className="h-8 text-xs" data-testid="input-ext-total-amount" value={extTotalAmount} onChange={(e) => setExtTotalAmount(e.target.value)} placeholder={fmt(grandTotal)} step="0.01" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Ext. GST Amount ₹ (optional)</Label>
-                        <Input type="number" className="h-8 text-xs" data-testid="input-ext-gst-amount" value={extGstAmount} onChange={(e) => setExtGstAmount(e.target.value)} placeholder={fmt(totalTax)} step="0.01" />
-                      </div>
+          {/* E-way bill entry form when ≥ ₹50k and not yet entered */}
+          {!(inv as any).ewayBillNumber && grandTotal >= 50000 && (
+            <div className="space-y-2 pt-1">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">E-way Bill No.</Label>
+                  <Input className="h-7 text-xs" data-testid="input-eway-bill-number" value={ewayBillNumber} onChange={(e) => setEwayBillNumber(e.target.value)} placeholder="e.g. 331234567890" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Valid Until</Label>
+                  <Input type="date" className="h-7 text-xs" data-testid="input-eway-bill-date" value={ewayBillDate} onChange={(e) => setEwayBillDate(e.target.value)} />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-7 text-xs flex-1" data-testid="input-eway-bill-file" onChange={(e) => setEwayBillFile(e.target.files?.[0] ?? null)} />
+                <Button size="sm" variant="outline" className="h-7 text-xs" disabled={(!ewayBillNumber && !ewayBillFile) || uploadEwayBillMutation.isPending} data-testid="button-save-eway-bill" onClick={() => uploadEwayBillMutation.mutate(ewayBillFile)}>
+                  <Upload className="w-3 h-3 mr-1" />{uploadEwayBillMutation.isPending ? "…" : "Save"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Mark as Recorded (collapsible) ───────────────────────────────── */}
+      {(inv as any).uploadStatus !== "recorded" && (
+        <div>
+          <button
+            className="w-full flex items-center justify-between text-sm font-semibold hover:text-primary transition-colors py-1"
+            onClick={() => setDocsExpanded(!docsExpanded)}
+            data-testid="toggle-docs-section"
+          >
+            <span className="flex items-center gap-1.5"><ClipboardCheck className="w-4 h-4" />Mark as Recorded</span>
+            {docsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+          {docsExpanded && (
+            <div className="mt-2">
+              {!(inv as any).signedCopyUrl ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-amber-800">Upload the signed invoice copy (above) before marking as recorded.</p>
+                </div>
+              ) : (
+                <div className="border rounded-md p-3 space-y-3 bg-amber-50 border-amber-200">
+                  <p className="text-xs font-medium text-amber-800">Enter external book details to mark as recorded</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. Invoice No. *</Label>
+                      <Input className="h-8 text-xs" data-testid="input-ext-invoice-number" value={extInvoiceNumber} onChange={(e) => setExtInvoiceNumber(e.target.value)} placeholder="e.g. INV/2024/001" />
                     </div>
-                    <Button
-                      size="sm"
-                      className="w-full"
-                      data-testid="button-mark-recorded"
-                      disabled={markRecordedMutation.isPending || !extInvoiceNumber.trim() || !extInvoiceDate || !extTotalAmount}
-                      onClick={handleMarkRecordedClick}
-                    >
-                      <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" />{markRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
-                    </Button>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. Invoice Date *</Label>
+                      <Input type="date" className="h-8 text-xs" data-testid="input-ext-invoice-date" value={extInvoiceDate} onChange={(e) => setExtInvoiceDate(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. Total Amount ₹ *</Label>
+                      <Input type="number" className="h-8 text-xs" data-testid="input-ext-total-amount" value={extTotalAmount} onChange={(e) => setExtTotalAmount(e.target.value)} placeholder={fmt(grandTotal)} step="0.01" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Ext. GST Amount ₹ (opt.)</Label>
+                      <Input type="number" className="h-8 text-xs" data-testid="input-ext-gst-amount" value={extGstAmount} onChange={(e) => setExtGstAmount(e.target.value)} placeholder={fmt(totalTax)} step="0.01" />
+                    </div>
                   </div>
-                )
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    data-testid="button-mark-recorded"
+                    disabled={markRecordedMutation.isPending || !extInvoiceNumber.trim() || !extInvoiceDate || !extTotalAmount}
+                    onClick={handleMarkRecordedClick}
+                  >
+                    <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" />{markRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
+                  </Button>
+                </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
 
-              {/* Signed Copy Upload */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium">Signed Invoice Copy</p>
-                  {(inv as any).signedCopyUrl && (
-                    <a href={(inv as any).signedCopyUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-signed-copy">
-                      <ExternalLink className="w-3 h-3" />View
-                    </a>
-                  )}
-                </div>
-                {!(inv as any).signedCopyUrl ? (
-                  <div className="flex items-center gap-2">
-                    <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-8 text-xs flex-1" data-testid="input-invoice-signed-copy" onChange={(e) => setSignedCopyFile(e.target.files?.[0] ?? null)} />
-                    <Button size="sm" variant="outline" disabled={!signedCopyFile || uploadSignedCopyMutation.isPending} data-testid="button-upload-invoice-signed-copy" onClick={() => signedCopyFile && uploadSignedCopyMutation.mutate(signedCopyFile)}>
-                      <Upload className="w-3.5 h-3.5 mr-1" />{uploadSignedCopyMutation.isPending ? "…" : "Upload"}
-                    </Button>
-                  </div>
-                ) : (
-                  <p className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Uploaded {(inv as any).signedCopyUploadedAt ? `on ${new Date((inv as any).signedCopyUploadedAt).toLocaleDateString("en-IN")}` : ""}</p>
-                )}
-              </div>
+      {/* ── External Reference (if recorded) ─────────────────────────────── */}
+      {(inv as any).uploadStatus === "recorded" && (inv as any).extInvoiceNumber && (
+        <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 space-y-1">
+          <p className="text-xs font-semibold text-emerald-800">External Book Reference</p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-emerald-700">
+            <div><span className="text-muted-foreground">Ext. Invoice:</span> <span className="font-mono font-medium">{(inv as any).extInvoiceNumber}</span></div>
+            {(inv as any).extInvoiceDate && <div><span className="text-muted-foreground">Date:</span> {new Date((inv as any).extInvoiceDate).toLocaleDateString("en-IN")}</div>}
+            {(inv as any).extTotalAmount && <div><span className="text-muted-foreground">Ext. Total:</span> {fmt((inv as any).extTotalAmount)}</div>}
+            {(inv as any).extGstAmount && <div><span className="text-muted-foreground">Ext. GST:</span> {fmt((inv as any).extGstAmount)}</div>}
+          </div>
+        </div>
+      )}
 
-              {/* E-way Bill */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-medium">E-way Bill</p>
-                  {(inv as any).ewayBillUrl && (
-                    <a href={(inv as any).ewayBillUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1" data-testid="link-eway-bill">
-                      <ExternalLink className="w-3 h-3" />View
-                    </a>
-                  )}
-                </div>
-                {grandTotal >= 50000 && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 flex items-start gap-2" data-testid="eway-bill-threshold-advisory">
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
-                    <p className="text-xs text-amber-800">E-way bill required for consignments exceeding ₹50,000 — capture the bill number and valid-until date.</p>
-                  </div>
-                )}
-                {(inv as any).ewayBillNumber ? (
-                  <p className="text-xs text-emerald-600"><Truck className="w-3 h-3 inline mr-1" />E-way Bill: <span className="font-mono font-medium">{(inv as any).ewayBillNumber}</span> {(inv as any).ewayBillDate ? `(${new Date((inv as any).ewayBillDate).toLocaleDateString("en-IN")})` : ""}</p>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs">E-way Bill No.</Label>
-                        <Input className="h-8 text-xs" data-testid="input-eway-bill-number" value={ewayBillNumber} onChange={(e) => setEwayBillNumber(e.target.value)} placeholder="e.g. 331234567890" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Valid Until</Label>
-                        <Input type="date" className="h-8 text-xs" data-testid="input-eway-bill-date" value={ewayBillDate} onChange={(e) => setEwayBillDate(e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Input type="file" accept=".pdf,.jpg,.jpeg,.png" className="h-8 text-xs flex-1" data-testid="input-eway-bill-file" onChange={(e) => setEwayBillFile(e.target.files?.[0] ?? null)} />
-                      <Button size="sm" variant="outline" disabled={(!ewayBillNumber && !ewayBillFile) || uploadEwayBillMutation.isPending} data-testid="button-save-eway-bill" onClick={() => uploadEwayBillMutation.mutate(ewayBillFile)}>
-                        <Upload className="w-3.5 h-3.5 mr-1" />{uploadEwayBillMutation.isPending ? "…" : "Save"}
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
+      {/* ── Attachments ───────────────────────────────────────────────────── */}
+      <AttachmentsPanel entityType="sales_invoices" entityId={invoiceId} />
 
-              {/* Attachments */}
-              <AttachmentsPanel entityType="sales_invoices" entityId={invoiceId} />
-            </CardContent>
-          </Card>
+      {/* ── Action Buttons ────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 pt-1">
+        {(inv as any).signedCopyUrl ? (
+          <a href={(inv as any).signedCopyUrl} target="_blank" rel="noreferrer" download className="flex-1">
+            <Button variant="outline" size="sm" className="w-full gap-1.5" data-testid="button-download-signed-copy">
+              <FileText className="w-3.5 h-3.5" />Download Invoice Copy
+            </Button>
+          </a>
+        ) : (
+          <Button variant="outline" size="sm" className="flex-1 gap-1.5 opacity-50 cursor-not-allowed" disabled title="Not uploaded yet" data-testid="button-download-signed-copy-disabled">
+            <FileText className="w-3.5 h-3.5" />Download Invoice Copy
+          </Button>
+        )}
+        {(inv as any).ewayBillUrl ? (
+          <a href={(inv as any).ewayBillUrl} target="_blank" rel="noreferrer" download className="flex-1">
+            <Button variant="outline" size="sm" className="w-full gap-1.5" data-testid="button-download-eway-bill">
+              <Truck className="w-3.5 h-3.5" />Download E-way Bill
+            </Button>
+          </a>
+        ) : (
+          <Button variant="outline" size="sm" className="flex-1 gap-1.5 opacity-50 cursor-not-allowed" disabled title="Not uploaded yet" data-testid="button-download-eway-bill-disabled">
+            <Truck className="w-3.5 h-3.5" />Download E-way Bill
+          </Button>
         )}
       </div>
 
@@ -1383,12 +1425,26 @@ type SalesReturnSummary = {
 };
 
 // ─── Main Page ───────────────────────────────────────────────────────────────
+const SHOW_SALES_RETURNS = false; // Phase 3: hidden from UI; keep to re-enable later
+
 export default function SalesInvoices() {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [activeView, setActiveView] = useState<"invoices" | "returns">("invoices");
   const [uploadFilter, setUploadFilter] = useState<"all" | "pending_upload" | "recorded">("all");
+
+  // Phase 3 D3: redirect ?tab=returns to invoices tab
+  useEffect(() => {
+    if (!SHOW_SALES_RETURNS) {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("tab") === "returns") {
+        window.history.replaceState({}, "", "/sales-invoices");
+        setActiveView("invoices");
+      }
+    }
+  }, []);
 
   const { data: invoices = [], isLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customers = [] } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -1404,10 +1460,6 @@ export default function SalesInvoices() {
     return true;
   });
 
-  const totalPending = invoices.filter((i) => i.status === "pending").reduce((s, i) => s + Number(i.grandTotal), 0);
-  const totalPartial = invoices.filter((i) => i.status === "partial_paid").reduce((s, i) => s + Number(i.grandTotal), 0);
-  const totalPaid = invoices.filter((i) => i.status === "paid").reduce((s, i) => s + Number(i.grandTotal), 0);
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Page-level tab bar */}
@@ -1419,19 +1471,21 @@ export default function SalesInvoices() {
         >
           <FileText className="w-4 h-4 inline mr-1.5 -mt-0.5" />Invoices
         </button>
-        <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === "returns" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-          onClick={() => setActiveView("returns")}
-          data-testid="tab-returns"
-        >
-          <RotateCcw className="w-4 h-4 inline mr-1.5 -mt-0.5" />Sales Returns
-          {allReturns.length > 0 && (
-            <span className="ml-1.5 bg-muted text-muted-foreground text-xs rounded-full px-1.5 py-0.5">{allReturns.length}</span>
-          )}
-        </button>
+        {SHOW_SALES_RETURNS && (
+          <button
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeView === "returns" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+            onClick={() => setActiveView("returns")}
+            data-testid="tab-returns"
+          >
+            <RotateCcw className="w-4 h-4 inline mr-1.5 -mt-0.5" />Sales Returns
+            {allReturns.length > 0 && (
+              <span className="ml-1.5 bg-muted text-muted-foreground text-xs rounded-full px-1.5 py-0.5">{allReturns.length}</span>
+            )}
+          </button>
+        )}
       </div>
 
-      {activeView === "returns" ? (
+      {(SHOW_SALES_RETURNS && activeView === "returns") ? (
         /* ── Sales Returns view ────────────────────────── */
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="px-6 py-4 border-b bg-muted/30 flex items-center justify-between">
@@ -1480,72 +1534,47 @@ export default function SalesInvoices() {
       ) : (
       /* ── Invoices two-pane view ─────────────────────── */
       <div className="flex flex-1 overflow-hidden">
-      {/* List pane */}
-      <div className="flex flex-col flex-1 min-w-0 border-r">
+      {/* ── List pane (40% desktop, full-width mobile) ── */}
+      <div className={`flex flex-col border-r bg-background ${mobileDetailOpen ? "hidden md:flex" : "flex"} md:w-[40%] lg:w-[38%] xl:w-[36%] w-full flex-shrink-0`}>
         {/* Header */}
-        <div className="px-6 py-4 border-b bg-background flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <FileText className="w-5 h-5 text-primary" />
-            <h1 className="text-xl font-bold">Sales Invoices</h1>
+        <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <FileText className="w-4 h-4 text-primary shrink-0" />
+            <h1 className="text-base font-bold truncate">Sales Invoices</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <div className="relative">
-              <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input
-                placeholder="Search invoices…"
+                placeholder="Search…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-8 h-9 w-52"
+                className="pl-8 h-8 w-36 text-sm"
                 data-testid="input-search-invoices"
               />
             </div>
-            <Button onClick={() => setCreateOpen(true)} data-testid="button-create-invoice-open">
-              <Plus className="w-4 h-4 mr-1" /> New Invoice
+            <Button size="sm" onClick={() => setCreateOpen(true)} data-testid="button-create-invoice-open">
+              <Plus className="w-3.5 h-3.5 mr-1" /> New
             </Button>
           </div>
         </div>
 
         {/* Upload Status Filter */}
-        <div className="flex items-center gap-1 px-6 py-2 border-b bg-muted/20">
+        <div className="flex items-center gap-1 px-4 py-2 border-b bg-muted/20">
           {(["all", "pending_upload", "recorded"] as const).map((f) => (
             <button
               key={f}
               data-testid={`filter-upload-${f}`}
               onClick={() => setUploadFilter(f)}
-              className={`px-3 py-1 text-xs rounded-full border transition-colors ${uploadFilter === f ? "bg-primary text-primary-foreground border-primary" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"}`}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${uploadFilter === f ? "bg-primary text-primary-foreground border-primary" : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted"}`}
             >
-              {f === "all" ? "All" : f === "pending_upload" ? "Upload Pending" : "Recorded"}
+              {f === "all" ? "All" : f === "pending_upload" ? "Pending" : "Recorded"}
               <span className="ml-1 opacity-60">({invoices.filter(i => f === "all" || (i as any).uploadStatus === f).length})</span>
             </button>
           ))}
         </div>
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-3 gap-4 px-6 py-4 border-b bg-muted/30">
-          <div className="bg-background rounded-lg border p-3 text-center">
-            <div className="flex items-center justify-center gap-1 text-orange-500 mb-1">
-              <Clock className="w-4 h-4" /> <span className="text-xs font-medium">Pending</span>
-            </div>
-            <p className="text-lg font-bold">{fmt(totalPending)}</p>
-            <p className="text-xs text-muted-foreground">{invoices.filter((i) => i.status === "pending").length} invoices</p>
-          </div>
-          <div className="bg-background rounded-lg border p-3 text-center">
-            <div className="flex items-center justify-center gap-1 text-blue-500 mb-1">
-              <AlertCircle className="w-4 h-4" /> <span className="text-xs font-medium">Partial</span>
-            </div>
-            <p className="text-lg font-bold">{fmt(totalPartial)}</p>
-            <p className="text-xs text-muted-foreground">{invoices.filter((i) => i.status === "partial_paid").length} invoices</p>
-          </div>
-          <div className="bg-background rounded-lg border p-3 text-center">
-            <div className="flex items-center justify-center gap-1 text-green-500 mb-1">
-              <CheckCircle2 className="w-4 h-4" /> <span className="text-xs font-medium">Paid</span>
-            </div>
-            <p className="text-lg font-bold">{fmt(totalPaid)}</p>
-            <p className="text-xs text-muted-foreground">{invoices.filter((i) => i.status === "paid").length} invoices</p>
-          </div>
-        </div>
-
-        {/* Invoice List */}
+        {/* Invoice List — compact rows */}
         <ScrollArea className="flex-1">
           {isLoading ? (
             <div className="p-8 text-center text-muted-foreground text-sm">Loading invoices…</div>
@@ -1558,38 +1587,35 @@ export default function SalesInvoices() {
               {filtered.map((inv) => {
                 const customer = customers.find((c) => c.id === inv.customerId);
                 const isSelected = selectedId === inv.id;
-                const creditedAmount = Number(inv.creditedAmount ?? 0);
                 return (
                   <button
                     key={inv.id}
-                    className={`w-full text-left px-6 py-4 hover:bg-muted/50 transition-colors ${isSelected ? "bg-primary/5 border-l-2 border-primary" : ""}`}
-                    onClick={() => setSelectedId(isSelected ? null : inv.id)}
+                    className={`w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors border-l-2 ${isSelected ? "bg-primary/5 border-l-primary" : "border-l-transparent"}`}
+                    style={{ minHeight: "64px" }}
+                    onClick={() => {
+                      setSelectedId(isSelected ? null : inv.id);
+                      if (!isSelected) setMobileDetailOpen(true);
+                    }}
                     data-testid={`row-invoice-${inv.id}`}
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-sm">{inv.invoiceNumber}</span>
-                          {statusBadge(inv.status)}
-                          <Badge variant="outline" className="text-xs">
-                            {inv.customerType}
-                          </Badge>
-                          {uploadStatusBadge((inv as any).uploadStatus)}
-                          {creditedAmount > 0 && (
-                            <Badge className="text-xs bg-blue-50 text-blue-700 border-blue-200">
-                              <RotateCcw className="w-2.5 h-2.5 mr-0.5" />CN
-                            </Badge>
-                          )}
+                    <div className="flex items-center justify-between gap-2">
+                      {/* Left: invoice number + customer */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-semibold text-sm font-mono truncate">{inv.invoiceNumber}</span>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-0.5 truncate">{customer?.name ?? "—"}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">{customer?.name ?? "—"}</p>
+                        <p className="text-xs text-muted-foreground/70 mt-0.5">
                           {new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
-                          {inv.dueDate && ` · Due ${new Date(inv.dueDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}`}
                         </p>
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className="font-bold text-base">{fmt(inv.grandTotal)}</p>
-                        <p className="text-xs text-muted-foreground">incl. GST</p>
+                      {/* Right: amount + badges */}
+                      <div className="text-right shrink-0 space-y-1">
+                        <p className="font-bold text-sm">{fmt(inv.grandTotal)}</p>
+                        <div className="flex items-center gap-1 justify-end">
+                          {statusBadge(inv.status)}
+                          {uploadStatusBadge((inv as any).uploadStatus)}
+                        </div>
                       </div>
                     </div>
                   </button>
@@ -1600,17 +1626,28 @@ export default function SalesInvoices() {
         </ScrollArea>
       </div>
 
-      {/* Detail pane */}
-      <div className="w-[560px] flex-shrink-0 overflow-hidden flex flex-col bg-background">
+      {/* ── Detail pane (60% desktop, full-screen overlay mobile) ── */}
+      <div className={`
+        flex-1 overflow-hidden flex flex-col bg-background
+        ${mobileDetailOpen ? "fixed inset-0 z-50 md:static md:z-auto" : "hidden md:flex"}
+      `}>
         {selectedId ? (
-          <ScrollArea className="flex-1">
-            <InvoiceDetailPanel invoiceId={selectedId} customers={customers} />
-          </ScrollArea>
+          <>
+            {/* Mobile back button */}
+            <div className="md:hidden flex items-center gap-2 px-4 py-2 border-b bg-background shrink-0">
+              <Button variant="ghost" size="sm" onClick={() => { setMobileDetailOpen(false); }} className="gap-1 text-xs">
+                ← Back to list
+              </Button>
+            </div>
+            <ScrollArea className="flex-1">
+              <InvoiceDetailPanel invoiceId={selectedId} customers={customers} />
+            </ScrollArea>
+          </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-muted-foreground">
             <FileText className="w-12 h-12 mb-3 opacity-20" />
             <p className="text-sm">Select an invoice to view details</p>
-            <p className="text-xs mt-1">including GST breakdown, payment history, and returns</p>
+            <p className="text-xs mt-1">GST breakdown, payment history, documents</p>
           </div>
         )}
       </div>

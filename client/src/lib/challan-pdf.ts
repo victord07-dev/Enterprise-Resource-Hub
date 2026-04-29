@@ -299,7 +299,7 @@ export function generateChallanPDF(
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageHeight = doc.internal.pageSize.getHeight();
   const halfH      = pageHeight / 2 - 2;
-  const isDraft    = challan.status === "draft" || challan.status === "awaiting_signature";
+  const isDraft    = ["draft", "ready", "do_issued"].includes(challan.status);
 
   // TOP COPY: OFFICE COPY
   drawOneCopy(doc, challan, items, customer, products, "OFFICE COPY", 2, halfH, isDraft, logoDataUrl);

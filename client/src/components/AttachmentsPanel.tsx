@@ -12,6 +12,7 @@ interface AttachmentsPanelProps {
   entityType: "grn" | "supplier_invoice" | "sales_return" | "expense" | "sales_invoices";
   entityId: string;
   module?: "inventory" | "accounts" | "sales";
+  onlyOther?: boolean;
 }
 
 const DOC_TYPE_LABELS: Record<string, { label: string; variant: string }> = {
@@ -81,7 +82,7 @@ async function downloadAttachment(attachmentId: string, fileName: string): Promi
   URL.revokeObjectURL(url);
 }
 
-export default function AttachmentsPanel({ entityType, entityId, module: mod = "inventory" }: AttachmentsPanelProps) {
+export default function AttachmentsPanel({ entityType, entityId, module: mod = "inventory", onlyOther = false }: AttachmentsPanelProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -182,16 +183,18 @@ export default function AttachmentsPanel({ entityType, entityId, module: mod = "
           Attachments {attachments && attachments.length > 0 && `(${attachments.length})`}
         </h4>
         <div className="flex items-center gap-2">
-          <select
-            value={docType}
-            onChange={e => setDocType(e.target.value as "challan" | "invoice" | "other")}
-            className="text-xs border rounded px-2 py-1 bg-background text-foreground h-7"
-            data-testid="select-attachment-doc-type"
-          >
-            <option value="challan">Challan</option>
-            <option value="invoice">Invoice</option>
-            <option value="other">Other</option>
-          </select>
+          {!onlyOther && (
+            <select
+              value={docType}
+              onChange={e => setDocType(e.target.value as "challan" | "invoice" | "other")}
+              className="text-xs border rounded px-2 py-1 bg-background text-foreground h-7"
+              data-testid="select-attachment-doc-type"
+            >
+              <option value="challan">Challan</option>
+              <option value="invoice">Invoice</option>
+              <option value="other">Other</option>
+            </select>
+          )}
           <Button
             type="button"
             size="sm"

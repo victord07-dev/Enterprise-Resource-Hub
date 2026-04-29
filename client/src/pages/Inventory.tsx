@@ -66,6 +66,7 @@ export default function Inventory() {
   const [editingWarehouse, setEditingWarehouse] = useState<WarehouseType | null>(null);
   const [warehouseForm, setWarehouseForm] = useState({ name: "", location: "", capacity: "" });
 
+  const SHOW_STOCK_ADJUSTMENT = false; // Phase 3: hidden from UI; keep to re-enable later
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
   const [activeTab, setActiveTab] = useState("products");
@@ -241,7 +242,7 @@ export default function Inventory() {
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
 
   const [challanDialogOpen, setChallanDialogOpen] = useState(false);
-  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
   const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
   const [challanStockAvailability, setChallanStockAvailability] = useState<Record<string, InventoryStock[]>>({});
   const [challanFilterStatus, setChallanFilterStatus] = useState("all");
@@ -318,7 +319,7 @@ export default function Inventory() {
   }, [challanItemsMap]);
 
   const openCreateChallan = () => {
-    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
     setChallanItems([]);
     setChallanStockAvailability({});
     setChallanDialogOpen(true);
@@ -419,6 +420,19 @@ export default function Inventory() {
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
+  const issueDeliveryOrderMutation = useMutation({
+    mutationFn: async (challanId: string) => {
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/issue-delivery-order`);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      toast({ title: "Delivery Order issued successfully" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
   const uploadChallanSignedCopyMutation = useMutation({
     mutationFn: async ({ challanId, file }: { challanId: string; file: File }) => {
       const fileUrl = await uploadFileToStorage(file, "delivery_challan", challanId, "signed_copy");
@@ -494,14 +508,19 @@ export default function Inventory() {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get("tab");
     const highlightGrn = params.get("highlightGrn");
-    if (tab || highlightGrn) {
+    const challanId = params.get("challanId");
+    if (tab || highlightGrn || challanId) {
       urlParamsHandled.current = true;
       if (tab) setActiveTab(tab);
       if (highlightGrn) {
         setHighlightedGrnId(highlightGrn);
         setExpandedGrnIds(prev => { const next = new Set(prev); next.add(highlightGrn); return next; });
-        navigate("/inventory", { replace: true });
       }
+      if (challanId) {
+        setHighlightedChallanId(challanId);
+        setExpandedChallanIds(prev => { const next = new Set(prev); next.add(challanId); return next; });
+      }
+      navigate("/inventory", { replace: true });
     }
   }, [location]);
 
@@ -1189,10 +1208,12 @@ export default function Inventory() {
                 <Input type="date" className="w-[140px]" value={movementFilterDateTo} onChange={(e) => setMovementFilterDateTo(e.target.value)} data-testid="input-filter-date-to" />
               </div>
             </div>
-            <Button data-testid="button-manual-adjustment" onClick={() => setAdjustmentDialogOpen(true)}>
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Manual Adjustment
-            </Button>
+            {SHOW_STOCK_ADJUSTMENT && (
+              <Button data-testid="button-manual-adjustment" onClick={() => setAdjustmentDialogOpen(true)}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Manual Adjustment
+              </Button>
+            )}
           </div>
 
           {movementFilterProduct !== "all" && runningBalance && (
@@ -1439,8 +1460,11 @@ export default function Inventory() {
                                 {challan.status === "draft" && (
                                   <Badge variant="outline" className="bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700">Draft</Badge>
                                 )}
-                                {challan.status === "awaiting_signature" && (
-                                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Awaiting Signature</Badge>
+                                {challan.status === "ready" && (
+                                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Ready</Badge>
+                                )}
+                                {challan.status === "do_issued" && (
+                                  <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/30 dark:text-purple-400 dark:border-purple-800">DO Issued</Badge>
                                 )}
                                 {challan.status === "dispatched" && (
                                   <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800">Dispatched</Badge>
@@ -1487,8 +1511,27 @@ export default function Inventory() {
                                     </Button>
                                   )}
 
-                                  {/* Awaiting Signature → Upload Signed Copy */}
-                                  {challan.status === "awaiting_signature" && (
+                                  {/* Ready → Issue Delivery Order (admin only) */}
+                                  {challan.status === "ready" && isAdmin && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="border-purple-400 text-purple-600 dark:text-purple-400"
+                                      data-testid={`button-issue-do-challan-${challan.id}`}
+                                      onClick={() => {
+                                        const c = challan as any;
+                                        if (confirm(`Issue Delivery Order for Challan #${challan.challanNumber}?\nVehicle: ${c.vehicleNumber || "—"}, Driver: ${c.driverName || "—"} (${c.driverPhone || "—"})`)) {
+                                          issueDeliveryOrderMutation.mutate(challan.id);
+                                        }
+                                      }}
+                                      disabled={issueDeliveryOrderMutation.isPending}
+                                    >
+                                      <CheckCircle className="w-3 h-3 mr-1" /> Issue DO
+                                    </Button>
+                                  )}
+
+                                  {/* Ready / DO Issued → Upload Signed Copy */}
+                                  {["ready", "do_issued"].includes(challan.status) && (
                                     <Button
                                       size="sm"
                                       variant="outline"
@@ -1500,8 +1543,8 @@ export default function Inventory() {
                                     </Button>
                                   )}
 
-                                  {/* Awaiting Signature + signed copy → Dispatch */}
-                                  {challan.status === "awaiting_signature" && (challan as any).signedCopyUrl && (
+                                  {/* DO Issued → Dispatch */}
+                                  {challan.status === "do_issued" && (
                                     <Button
                                       size="sm"
                                       variant="outline"
@@ -1527,8 +1570,8 @@ export default function Inventory() {
                                     </Button>
                                   )}
 
-                                  {/* Cancel — admin only, draft or awaiting_signature */}
-                                  {isAdmin && ["draft", "awaiting_signature"].includes(challan.status) && (
+                                  {/* Cancel — sales_manager or admin, draft/ready/do_issued only */}
+                                  {["admin", "sales_manager"].includes(user?.role ?? "") && ["draft", "ready", "do_issued"].includes(challan.status) && (
                                     <Button
                                       size="sm"
                                       variant="ghost"
@@ -1553,6 +1596,34 @@ export default function Inventory() {
                                           <span className="text-xs font-medium text-blue-700 dark:text-blue-300">Delivery Address:</span>
                                           <p className="text-xs text-blue-600 dark:text-blue-400 mt-0.5">{(challan as any).deliveryAddress}</p>
                                         </div>
+                                      </div>
+                                    )}
+                                    {((challan as any).vehicleOwnerName || (challan as any).driverPhone || (challan as any).physicalChallanNumber) && (
+                                      <div className="mb-3 grid grid-cols-3 gap-3 p-2 bg-muted/50 rounded-md text-xs">
+                                        {(challan as any).vehicleOwnerName && (
+                                          <div data-testid={`text-challan-vehicle-owner-${challan.id}`}>
+                                            <span className="block text-muted-foreground font-medium">Vehicle Owner</span>
+                                            <span>{(challan as any).vehicleOwnerName}</span>
+                                          </div>
+                                        )}
+                                        {(challan as any).driverPhone && (
+                                          <div data-testid={`text-challan-driver-phone-${challan.id}`}>
+                                            <span className="block text-muted-foreground font-medium">Driver Phone</span>
+                                            <span>{(challan as any).driverPhone}</span>
+                                          </div>
+                                        )}
+                                        {(challan as any).physicalChallanNumber && (
+                                          <div data-testid={`text-challan-physical-number-${challan.id}`}>
+                                            <span className="block text-muted-foreground font-medium">Transporter Challan #</span>
+                                            <span>{(challan as any).physicalChallanNumber}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                    {(challan as any).doIssuedAt && (
+                                      <div className="mb-3 flex items-center gap-2 text-xs text-purple-700 dark:text-purple-400 p-2 bg-purple-50 dark:bg-purple-950/20 rounded-md" data-testid={`text-challan-do-issued-${challan.id}`}>
+                                        <CheckCircle className="w-3 h-3 flex-shrink-0" />
+                                        <span>Delivery Order issued {new Date((challan as any).doIssuedAt).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                                       </div>
                                     )}
                                     <p className="text-xs font-medium text-muted-foreground mb-2">Line Items</p>
@@ -1743,43 +1814,12 @@ export default function Inventory() {
                                 <div className="flex items-center justify-end gap-1 flex-wrap">
                                   {grn.status === "draft" && (
                                     <>
-                                      {/* D1: Upload Supplier Challan */}
-                                      <label
-                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).supplierChallanUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
-                                        title={`Supplier Challan: ${(grn as any).supplierChallanUrl ? "Uploaded ✓" : "Required"}`}
-                                        data-testid={`button-upload-supp-challan-grn-${grn.id}`}
-                                      >
-                                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
-                                          onChange={async (e) => {
-                                            const f = e.target.files?.[0];
-                                            if (f) uploadGrnSupplierChallanMutation.mutate({ grnId: grn.id, file: f });
-                                          }}
-                                        />
-                                        {(grn as any).supplierChallanUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
-                                        {(grn as any).supplierChallanUrl ? "SC ✓" : "SC"}
-                                      </label>
-                                      {/* D4: Upload Signed GRN Copy */}
-                                      <label
-                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).signedCopyUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
-                                        title={`Signed GRN: ${(grn as any).signedCopyUrl ? "Uploaded ✓" : "Required"}`}
-                                        data-testid={`button-upload-signed-grn-${grn.id}`}
-                                      >
-                                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
-                                          onChange={async (e) => {
-                                            const f = e.target.files?.[0];
-                                            if (f) uploadGrnSignedCopyMutation.mutate({ grnId: grn.id, file: f });
-                                          }}
-                                        />
-                                        {(grn as any).signedCopyUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
-                                        {(grn as any).signedCopyUrl ? "Sgn ✓" : "Sgn"}
-                                      </label>
-                                      {/* Confirm — requires both supplier challan + signed copy */}
+                                      {/* Confirm — no upload gates required (Phase 3 C4) */}
                                       <Button
                                         size="sm"
                                         variant="outline"
                                         data-testid={`button-confirm-grn-${grn.id}`}
-                                        disabled={confirmGrnMutation.isPending || !(grn as any).supplierChallanUrl || !(grn as any).signedCopyUrl}
-                                        title={!(grn as any).supplierChallanUrl ? "Upload supplier challan scan first" : !(grn as any).signedCopyUrl ? "Upload signed GRN copy first" : "Confirm GRN"}
+                                        disabled={confirmGrnMutation.isPending}
                                         onClick={() => { if (confirm("Confirm this GRN? Stock will be added to the warehouse.")) confirmGrnMutation.mutate(grn.id); }}
                                       >
                                         <CheckCircle className="w-3 h-3 mr-1" /> Confirm
@@ -1860,8 +1900,61 @@ export default function Inventory() {
                                       )}
                                       {grn.notes && <p className="text-xs text-muted-foreground mt-2">Notes: {grn.notes}</p>}
                                     </div>
-                                    <div className="border-t pt-3">
-                                      <AttachmentsPanel entityType="grn" entityId={grn.id} module="inventory" />
+                                    {/* Optional document uploads — no workflow gate */}
+                                    <div className="border-t pt-3 space-y-3">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="text-xs font-medium text-muted-foreground">Documents:</span>
+                                        {/* Supplier Challan Scan — optional */}
+                                        <label
+                                          className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).supplierChallanUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
+                                          data-testid={`button-upload-supp-challan-grn-${grn.id}`}
+                                          title="Supplier Challan Scan (optional)"
+                                        >
+                                          <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
+                                            onChange={async (e) => {
+                                              const f = e.target.files?.[0];
+                                              if (f) uploadGrnSupplierChallanMutation.mutate({ grnId: grn.id, file: f });
+                                            }}
+                                          />
+                                          {(grn as any).supplierChallanUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
+                                          {(grn as any).supplierChallanUrl ? "Supp. Challan ✓" : "Supp. Challan"}
+                                        </label>
+                                        {/* Signed GRN Copy — optional */}
+                                        <label
+                                          className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border cursor-pointer transition-colors ${(grn as any).signedCopyUrl ? "border-green-500 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-input bg-background hover:bg-accent"}`}
+                                          data-testid={`button-upload-signed-grn-${grn.id}`}
+                                          title="Signed GRN Copy (optional)"
+                                        >
+                                          <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden"
+                                            onChange={async (e) => {
+                                              const f = e.target.files?.[0];
+                                              if (f) uploadGrnSignedCopyMutation.mutate({ grnId: grn.id, file: f });
+                                            }}
+                                          />
+                                          {(grn as any).signedCopyUrl ? <ClipboardCheck className="w-3 h-3" /> : <Upload className="w-3 h-3" />}
+                                          {(grn as any).signedCopyUrl ? "Signed Copy ✓" : "Signed Copy"}
+                                        </label>
+                                        {/* PDF Download */}
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="h-7 text-xs"
+                                          data-testid={`button-pdf-grn-${grn.id}`}
+                                          onClick={async () => {
+                                            const token = localStorage.getItem("token");
+                                            const res = await fetch(`/api/grns/${grn.id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
+                                            if (!res.ok) { toast({ title: "Failed to download PDF", variant: "destructive" }); return; }
+                                            const blob = await res.blob();
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement("a");
+                                            a.href = url; a.download = `${grn.grnNumber}.pdf`; a.click();
+                                            URL.revokeObjectURL(url);
+                                          }}
+                                        >
+                                          <Download className="w-3 h-3 mr-1" /> PDF
+                                        </Button>
+                                      </div>
+                                      <AttachmentsPanel entityType="grn" entityId={grn.id} module="inventory" onlyOther />
                                     </div>
                                   </div>
                                 </td>
@@ -1948,7 +2041,7 @@ export default function Inventory() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="grnSupplierChallanNumber">Supplier Challan No. (optional)</Label>
+                <Label htmlFor="grnSupplierChallanNumber">Supplier Challan No. <span className="text-red-500">*</span></Label>
                 <Input
                   id="grnSupplierChallanNumber"
                   data-testid="input-grn-supplier-challan-number"
@@ -2065,7 +2158,7 @@ export default function Inventory() {
             <Button variant="outline" onClick={() => setGrnDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-grn"
-              disabled={!grnForm.purchaseOrderId || !grnForm.warehouseId || grnLineItems.length === 0 || grnMutation.isPending}
+              disabled={!grnForm.purchaseOrderId || !grnForm.warehouseId || !grnForm.supplierChallanNumber.trim() || grnLineItems.length === 0 || grnMutation.isPending}
               onClick={() => grnMutation.mutate({ ...grnForm, lineItems: grnLineItems })}
             >
               {grnMutation.isPending ? "Creating..." : "Create GRN"}
@@ -2135,12 +2228,26 @@ export default function Inventory() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Vehicle Number</Label>
-                <Input data-testid="input-challan-vehicle" placeholder="e.g. KA-01-AB-1234" value={challanForm.vehicleNumber} onChange={(e) => setChallanForm({ ...challanForm, vehicleNumber: e.target.value })} />
+                <Input data-testid="input-challan-vehicle" placeholder="e.g. AS-01-AB-1234" value={challanForm.vehicleNumber} onChange={(e) => setChallanForm({ ...challanForm, vehicleNumber: e.target.value })} />
               </div>
+              <div className="space-y-2">
+                <Label>Vehicle Owner Name</Label>
+                <Input data-testid="input-challan-vehicle-owner" placeholder="Owner name" value={challanForm.vehicleOwnerName} onChange={(e) => setChallanForm({ ...challanForm, vehicleOwnerName: e.target.value })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Driver Name</Label>
                 <Input data-testid="input-challan-driver" placeholder="Driver name" value={challanForm.driverName} onChange={(e) => setChallanForm({ ...challanForm, driverName: e.target.value })} />
               </div>
+              <div className="space-y-2">
+                <Label>Driver Phone</Label>
+                <Input data-testid="input-challan-driver-phone" placeholder="e.g. 98XXXXXXXX" value={challanForm.driverPhone} onChange={(e) => setChallanForm({ ...challanForm, driverPhone: e.target.value })} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Physical Challan Number <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Input data-testid="input-challan-physical-number" placeholder="Transporter's own challan no." value={challanForm.physicalChallanNumber} onChange={(e) => setChallanForm({ ...challanForm, physicalChallanNumber: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label>Notes</Label>
@@ -2213,6 +2320,9 @@ export default function Inventory() {
                   sourceId: challanForm.sourceId,
                   vehicleNumber: challanForm.vehicleNumber || null,
                   driverName: challanForm.driverName || null,
+                  physicalChallanNumber: challanForm.physicalChallanNumber || null,
+                  vehicleOwnerName: challanForm.vehicleOwnerName || null,
+                  driverPhone: challanForm.driverPhone || null,
                   notes: challanForm.notes || null,
                   items: challanItems.filter(it => it.quantity > 0).map(it => ({
                     productId: it.productId,
@@ -2343,7 +2453,7 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
+      {SHOW_STOCK_ADJUSTMENT && <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Manual Stock Adjustment</DialogTitle>
@@ -2415,7 +2525,7 @@ export default function Inventory() {
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+      </Dialog>}
 
       <Dialog open={refDetailModal.open} onOpenChange={(open) => setRefDetailModal(prev => ({ ...prev, open }))}>
         <DialogContent>

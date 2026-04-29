@@ -131,6 +131,8 @@ function StatusBadge({ status }: { status: string }) {
     procurement: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
     ready_to_ship: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-400",
     partial: "bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400",
+    ready: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
+    do_issued: "bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400",
     dispatched: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
     shipped: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-400",
     delivered: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400",
@@ -2254,6 +2256,9 @@ export default function Sales() {
                                           <div key={challan.id} className="border rounded-md p-3 space-y-2 bg-background" data-testid={`challan-${challan.id}`}>
                                             <div className="flex items-center gap-2 flex-wrap">
                                               <span className="text-xs font-medium" data-testid={`text-challan-number-${challan.id}`}>{challan.challanNumber}</span>
+                                              {(challan as any).physicalChallanNumber && (
+                                                <span className="text-[10px] text-muted-foreground">({(challan as any).physicalChallanNumber})</span>
+                                              )}
                                               <StatusBadge status={challan.status} />
                                               <span className="text-xs text-muted-foreground">
                                                 {challan.sourceType === "warehouse" ? "Warehouse" : "Supplier"}: {getSourceName(challan.sourceType, challan.sourceId)}
@@ -2263,14 +2268,55 @@ export default function Sales() {
                                               {challan.dispatchDate && <span>Dispatched: {new Date(challan.dispatchDate).toLocaleDateString()}</span>}
                                               {challan.deliveryDate && <span>Delivered: {new Date(challan.deliveryDate).toLocaleDateString()}</span>}
                                               {challan.vehicleNumber && <span>Vehicle: {challan.vehicleNumber}</span>}
+                                              {(challan as any).vehicleOwnerName && <span>Owner: {(challan as any).vehicleOwnerName}</span>}
                                               {challan.driverName && <span>Driver: {challan.driverName}</span>}
+                                              {(challan as any).driverPhone && <span>Ph: {(challan as any).driverPhone}</span>}
                                             </div>
-                                            {/* Document status row */}
-                                            <div className="flex items-center gap-3 pt-1 border-t">
-                                              <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-                                                <FileText className="w-3 h-3" />PDF available in Inventory
-                                              </span>
-                                              {(challan as any).signedCopyUrl ? (
+                                            {/* B9 Action row */}
+                                            <div className="flex items-center gap-2 pt-1 border-t flex-wrap">
+                                              <button
+                                                className="text-[10px] text-blue-600 hover:underline flex items-center gap-0.5"
+                                                data-testid={`link-view-challan-${challan.id}`}
+                                                onClick={(e) => { e.stopPropagation(); navigate(`/inventory?tab=challans&challanId=${challan.id}`); }}
+                                              >
+                                                <ExternalLink className="w-3 h-3" />View
+                                              </button>
+                                              {challan.status === "ready" && currentUser?.role === "admin" && (
+                                                <button
+                                                  className="text-[10px] text-purple-600 hover:underline flex items-center gap-0.5"
+                                                  data-testid={`button-issue-do-sales-${challan.id}`}
+                                                  onClick={async (e) => {
+                                                    e.stopPropagation();
+                                                    if (!confirm(`Issue Delivery Order for Challan #${challan.challanNumber}?`)) return;
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/issue-delivery-order`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" } });
+                                                    if (res.ok) {
+                                                      const updated = await res.json();
+                                                      setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
+                                                    }
+                                                  }}
+                                                >
+                                                  <CheckCircle2 className="w-3 h-3" />Issue DO
+                                                </button>
+                                              )}
+                                              {["draft", "ready", "do_issued"].includes(challan.status) && ["admin", "sales_manager"].includes(currentUser?.role ?? "") && (
+                                                <button
+                                                  className="text-[10px] text-red-500 hover:underline flex items-center gap-0.5"
+                                                  data-testid={`button-cancel-sales-challan-${challan.id}`}
+                                                  onClick={async (e) => {
+                                                    e.stopPropagation();
+                                                    const reason = window.prompt(`Cancel Challan #${challan.challanNumber}?\nEnter reason:`);
+                                                    if (!reason?.trim()) return;
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" }, body: JSON.stringify({ cancellationReason: reason }) });
+                                                    if (res.ok) {
+                                                      const updated = await res.json();
+                                                      setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
+                                                    }
+                                                  }}
+                                                >
+                                                  <XCircle className="w-3 h-3" />Cancel
+                                                </button>
+                                              )}
+                                              {(challan as any).signedCopyUrl && (
                                                 <a
                                                   href={(challan as any).signedCopyUrl}
                                                   target="_blank"
@@ -2281,10 +2327,6 @@ export default function Sales() {
                                                 >
                                                   <CheckCircle2 className="w-3 h-3" />Signed Copy
                                                 </a>
-                                              ) : challan.status !== "cancelled" && (
-                                                <span className="text-[10px] text-amber-600 flex items-center gap-0.5">
-                                                  <Upload className="w-3 h-3" />Signed copy pending
-                                                </span>
                                               )}
                                             </div>
                                           </div>

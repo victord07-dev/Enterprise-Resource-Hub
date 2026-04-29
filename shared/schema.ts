@@ -487,6 +487,12 @@ export const deliveryChallans = pgTable("delivery_challans", {
   cancelledAt: timestamp("cancelled_at"),
   cancelledBy: varchar("cancelled_by"),
   cancellationReason: text("cancellation_reason"),
+  // Phase 3 Section B — new fields
+  physicalChallanNumber: text("physical_challan_number"),
+  vehicleOwnerName: text("vehicle_owner_name"),
+  driverPhone: text("driver_phone"),
+  doIssuedAt: timestamp("do_issued_at"),
+  doIssuedBy: varchar("do_issued_by"),
 });
 
 export const deliveryChallanItems = pgTable("delivery_challan_items", {

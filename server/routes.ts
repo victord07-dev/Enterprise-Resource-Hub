@@ -4272,7 +4272,14 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All items have already been dispatched" });
       }
 
-      const { vehicleNumber, driverName, notes, deliveryAddress } = req.body;
+      const { physicalChallanNumber, vehicleNumber, vehicleOwnerName, driverName, driverPhone, notes, deliveryAddress } = req.body;
+      if (!physicalChallanNumber?.trim() || !vehicleNumber?.trim() || !vehicleOwnerName?.trim() || !driverName?.trim() || !driverPhone?.trim()) {
+        return res.status(400).json({ message: "All transport fields are required: Real Challan No., Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone" });
+      }
+      const indianMobileRe = /^(\+91)?[6-9]\d{9}$/;
+      if (!indianMobileRe.test(driverPhone.trim())) {
+        return res.status(400).json({ message: "Driver Phone must be a valid Indian mobile number" });
+      }
       const sourceType = "warehouse";
       let sourceId: string;
       if (order.warehouseId) {
@@ -4299,8 +4306,11 @@ export async function registerRoutes(
         sourceType,
         sourceId,
         status: "draft",
-        vehicleNumber: vehicleNumber || null,
-        driverName: driverName || null,
+        physicalChallanNumber: physicalChallanNumber.trim(),
+        vehicleNumber: vehicleNumber.trim(),
+        vehicleOwnerName: vehicleOwnerName.trim(),
+        driverName: driverName.trim(),
+        driverPhone: driverPhone.trim(),
         notes: notes || null,
         deliveryAddress: challanAddr,
         dispatchBatchId: null,

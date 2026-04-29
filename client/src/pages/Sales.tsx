@@ -1013,8 +1013,17 @@ export default function Sales() {
   const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
   const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
   const [dispatchSummary, setDispatchSummary] = useState<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }[]>([]);
-  const [dispatchForm, setDispatchForm] = useState({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+  const [dispatchForm, setDispatchForm] = useState({ sourceType: "warehouse", sourceId: "", physicalChallanNumber: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "" });
+  const [dispatchPhoneError, setDispatchPhoneError] = useState("");
   const [dispatchSummaryLoading, setDispatchSummaryLoading] = useState(false);
+
+  const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
+  const dispatchFormValid =
+    dispatchForm.physicalChallanNumber.trim() &&
+    dispatchForm.vehicleNumber.trim() &&
+    dispatchForm.vehicleOwnerName.trim() &&
+    dispatchForm.driverName.trim() &&
+    INDIAN_MOBILE_RE.test(dispatchForm.driverPhone.trim());
 
   const toggleOrderExpand = useCallback(async (orderId: string) => {
     if (expandedOrderId === orderId) {
@@ -1626,7 +1635,8 @@ export default function Sales() {
 
   const openDispatchDialog = async (orderId: string) => {
     setDispatchOrderId(orderId);
-    setDispatchForm({ sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", notes: "" });
+    setDispatchForm({ sourceType: "warehouse", sourceId: "", physicalChallanNumber: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "" });
+    setDispatchPhoneError("");
     setDispatchSummary([]);
     setDispatchDialogOpen(true);
     setDispatchSummaryLoading(true);
@@ -3196,16 +3206,85 @@ export default function Sales() {
             <div className="rounded-md bg-muted/50 border px-3 py-2 text-xs text-muted-foreground">
               Source warehouse is automatically derived from the sales order's assigned warehouse.
             </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="dispatchChallanNo">
+                Real Challan No. <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="dispatchChallanNo"
+                data-testid="input-dispatch-challan-number"
+                value={dispatchForm.physicalChallanNumber}
+                onChange={e => setDispatchForm({ ...dispatchForm, physicalChallanNumber: e.target.value })}
+                placeholder="Supplier / physical challan number"
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="dispatchVehicle">Vehicle No. (optional)</Label>
-                <Input id="dispatchVehicle" data-testid="input-dispatch-vehicle" value={dispatchForm.vehicleNumber} onChange={e => setDispatchForm({ ...dispatchForm, vehicleNumber: e.target.value })} placeholder="e.g. MH12AB1234" />
+                <Label htmlFor="dispatchVehicle">
+                  Vehicle No. <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchVehicle"
+                  data-testid="input-dispatch-vehicle"
+                  value={dispatchForm.vehicleNumber}
+                  onChange={e => setDispatchForm({ ...dispatchForm, vehicleNumber: e.target.value })}
+                  placeholder="e.g. AS01AB1234"
+                />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="dispatchDriver">Driver (optional)</Label>
-                <Input id="dispatchDriver" data-testid="input-dispatch-driver" value={dispatchForm.driverName} onChange={e => setDispatchForm({ ...dispatchForm, driverName: e.target.value })} placeholder="Driver name" />
+                <Label htmlFor="dispatchVehicleOwner">
+                  Vehicle Owner Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchVehicleOwner"
+                  data-testid="input-dispatch-vehicle-owner"
+                  value={dispatchForm.vehicleOwnerName}
+                  onChange={e => setDispatchForm({ ...dispatchForm, vehicleOwnerName: e.target.value })}
+                  placeholder="Owner's full name"
+                />
               </div>
             </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label htmlFor="dispatchDriver">
+                  Driver Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchDriver"
+                  data-testid="input-dispatch-driver"
+                  value={dispatchForm.driverName}
+                  onChange={e => setDispatchForm({ ...dispatchForm, driverName: e.target.value })}
+                  placeholder="Driver's full name"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="dispatchDriverPhone">
+                  Driver Phone <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchDriverPhone"
+                  data-testid="input-dispatch-driver-phone"
+                  value={dispatchForm.driverPhone}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setDispatchForm({ ...dispatchForm, driverPhone: val });
+                    if (val && !INDIAN_MOBILE_RE.test(val.trim())) {
+                      setDispatchPhoneError("Enter a valid Indian mobile number");
+                    } else {
+                      setDispatchPhoneError("");
+                    }
+                  }}
+                  placeholder="e.g. 9876543210"
+                />
+                {dispatchPhoneError && (
+                  <p className="text-xs text-red-500 mt-0.5">{dispatchPhoneError}</p>
+                )}
+              </div>
+            </div>
+
             <div className="space-y-1">
               <Label htmlFor="dispatchNotes">Notes (optional)</Label>
               <Input id="dispatchNotes" data-testid="input-dispatch-notes" value={dispatchForm.notes} onChange={e => setDispatchForm({ ...dispatchForm, notes: e.target.value })} placeholder="Any special instructions" />
@@ -3215,7 +3294,7 @@ export default function Sales() {
             <Button variant="outline" onClick={() => setDispatchDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-dispatch-challan"
-              disabled={createFromSOMutation.isPending || dispatchSummary.every(i => i.qtyRemaining === 0)}
+              disabled={createFromSOMutation.isPending || dispatchSummary.every(i => i.qtyRemaining === 0) || !dispatchFormValid}
               onClick={() => {
                 if (!dispatchOrderId) return;
                 createFromSOMutation.mutate({ orderId: dispatchOrderId, data: dispatchForm });

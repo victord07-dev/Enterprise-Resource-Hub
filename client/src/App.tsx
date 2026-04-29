@@ -74,6 +74,14 @@ function NotificationBell({ open, onOpenChange }: NotificationBellProps) {
       onOpenChange(false);
       window.history.pushState({}, "", `/pricing?sheet=${n.relatedId}`);
       window.dispatchEvent(new PopStateEvent("popstate"));
+    } else if (n.type === "challan" && n.relatedId) {
+      onOpenChange(false);
+      window.history.pushState({}, "", `/inventory?tab=challans&challanId=${n.relatedId}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } else if (n.type === "grn" && n.relatedId) {
+      onOpenChange(false);
+      window.history.pushState({}, "", `/inventory?tab=grn&highlightGrn=${n.relatedId}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
     }
   };
 

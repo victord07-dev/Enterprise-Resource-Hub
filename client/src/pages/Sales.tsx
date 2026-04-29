@@ -14,7 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, XCircle, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
 import {

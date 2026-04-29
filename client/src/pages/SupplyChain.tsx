@@ -983,16 +983,17 @@ export default function SupplyChain() {
 
   const [grnWarehouseDialogPoId, setGrnWarehouseDialogPoId] = useState<string | null>(null);
   const [grnSelectedWarehouseId, setGrnSelectedWarehouseId] = useState<string>("");
+  const [grnSupplierChallan, setGrnSupplierChallan] = useState<string>("");
   const [creatingGrnPoId, setCreatingGrnPoId] = useState<string | null>(null);
 
   const createGrnFromPoMutation = useMutation({
-    mutationFn: async ({ poId, warehouseId }: { poId: string; warehouseId: string }) => {
+    mutationFn: async ({ poId, warehouseId, supplierChallanNumber }: { poId: string; warehouseId: string; supplierChallanNumber: string }) => {
       setCreatingGrnPoId(poId);
       const token = localStorage.getItem("token");
       const res = await fetch(`/api/grns/create-from-po/${poId}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ warehouseId }),
+        body: JSON.stringify({ warehouseId, supplierChallanNumber }),
       });
       const data = await res.json();
       return { status: res.status, data };
@@ -1620,12 +1621,9 @@ export default function SupplyChain() {
                                           disabled={creatingGrnPoId === po.id || !paymentComplete}
                                           onClick={() => {
                                             if (!paymentComplete) return;
-                                            if (warehouses && warehouses.length === 1) {
-                                              createGrnFromPoMutation.mutate({ poId: po.id, warehouseId: warehouses[0].id });
-                                            } else {
-                                              setGrnWarehouseDialogPoId(po.id);
-                                              setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
-                                            }
+                                            setGrnWarehouseDialogPoId(po.id);
+                                            setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
+                                            setGrnSupplierChallan("");
                                           }}
                                         >
                                           <PackagePlus className="w-3 h-3 mr-1" />
@@ -2290,15 +2288,27 @@ export default function SupplyChain() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!grnWarehouseDialogPoId} onOpenChange={(open) => { if (!open) setGrnWarehouseDialogPoId(null); }}>
+      <Dialog open={!!grnWarehouseDialogPoId} onOpenChange={(open) => { if (!open) { setGrnWarehouseDialogPoId(null); setGrnSupplierChallan(""); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Select Receiving Warehouse</DialogTitle>
+            <DialogTitle>Create Draft GRN</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <p className="text-sm text-muted-foreground">Choose which warehouse will receive the goods for this purchase order.</p>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">Enter the supplier challan number and select the receiving warehouse.</p>
             <div className="space-y-2">
-              <Label>Warehouse</Label>
+              <Label htmlFor="input-grn-supplier-challan">
+                Supplier Challan No. <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="input-grn-supplier-challan"
+                data-testid="input-grn-supplier-challan"
+                value={grnSupplierChallan}
+                onChange={e => setGrnSupplierChallan(e.target.value)}
+                placeholder="e.g. SC-2026-001"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Warehouse <span className="text-red-500">*</span></Label>
               <Select value={grnSelectedWarehouseId} onValueChange={setGrnSelectedWarehouseId}>
                 <SelectTrigger data-testid="select-grn-warehouse">
                   <SelectValue placeholder="Select warehouse..." />
@@ -2312,13 +2322,13 @@ export default function SupplyChain() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setGrnWarehouseDialogPoId(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setGrnWarehouseDialogPoId(null); setGrnSupplierChallan(""); }}>Cancel</Button>
             <Button
               data-testid="button-confirm-grn-warehouse"
-              disabled={!grnSelectedWarehouseId || createGrnFromPoMutation.isPending}
+              disabled={!grnSelectedWarehouseId || !grnSupplierChallan.trim() || createGrnFromPoMutation.isPending}
               onClick={() => {
-                if (grnWarehouseDialogPoId && grnSelectedWarehouseId)
-                  createGrnFromPoMutation.mutate({ poId: grnWarehouseDialogPoId, warehouseId: grnSelectedWarehouseId });
+                if (grnWarehouseDialogPoId && grnSelectedWarehouseId && grnSupplierChallan.trim())
+                  createGrnFromPoMutation.mutate({ poId: grnWarehouseDialogPoId, warehouseId: grnSelectedWarehouseId, supplierChallanNumber: grnSupplierChallan.trim() });
               }}
             >
               {createGrnFromPoMutation.isPending ? "Creating..." : "Create Draft GRN"}

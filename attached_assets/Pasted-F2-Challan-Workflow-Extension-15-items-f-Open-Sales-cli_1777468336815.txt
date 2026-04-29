@@ -1,0 +1,16 @@
+F2 — Challan Workflow Extension (15 items)
+(f) Open Sales → click any SO → "Create Dispatch Challan" → form has 5 NEW required fields with red asterisks: Real Challan No., Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone. None say "(optional)". ✓ / ✗
+(g) Submit button disabled when ANY of the 5 fields empty. ✓ / ✗
+(h) Type Driver Phone = "abc123" → field-level error "Enter a valid Indian mobile number". Submit blocked. ✓ / ✗
+(i) Type Driver Phone = "9876543210" → accepted. Type Driver Phone = "+919876543210" → accepted. Type Driver Phone = "5876543210" (starts with 5 not 6-9) → rejected. ✓ / ✗
+(j) Submit valid challan → status = draft. SQL check: SELECT status, physical_challan_number, vehicle_number, vehicle_owner_name, driver_name, driver_phone FROM delivery_challans ORDER BY created_at DESC LIMIT 1 — all 5 fields populated. ✓ / ✗
+(k) As warehouse_manager, click "Mark Ready" on draft challan WITH stock short → blocked, tooltip shows stock shortage. ✓ / ✗
+(l) Same with stock OK but customer SO unpaid → blocked, tooltip shows payment incomplete. ✓ / ✗
+(m) Both fixed → click "Mark Ready" → status changes to ready. Notification fires to admin (CEO). Verify admin's notification bell shows new entry. ✓ / ✗
+(n) Login as admin → click notification → URL deep-links to /inventory?tab=challans&challanId=... → Inventory page opens, Challans tab active, that challan's detail expanded. ✓ / ✗
+(o) "Issue Delivery Order" button visible to admin. Login as warehouse_manager → button NOT visible. Login as sales_manager → button NOT visible. ✓ / ✗
+(p) Direct API call to /api/delivery-challans/:id/issue-delivery-order as warehouse_manager → 403. As admin → 200. ✓ / ✗
+(q) Admin clicks "Issue Delivery Order" → confirmation modal shows challan details → confirm → status becomes do_issued. Notification fires to warehouse_manager + sales_manager. ✓ / ✗
+(r) Login as warehouse_manager → notification visible → click → deep-link works → "Dispatch" button now active. Click → status becomes dispatched. Stock deducts. Sales invoice auto-created (Phase 1 behavior preserved). ✓ / ✗
+(s) Try to dispatch a ready-status challan (skipping DO step) → blocked. Status must be do_issued. ✓ / ✗
+(t) Cancel a draft challan with reason → succeeds. Cancel a dispatched challan → not allowed. ✓ / ✗

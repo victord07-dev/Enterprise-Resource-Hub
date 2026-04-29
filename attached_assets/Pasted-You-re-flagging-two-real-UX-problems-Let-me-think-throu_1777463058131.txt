@@ -1,0 +1,148 @@
+You're flagging two real UX problems. Let me think through each.
+Problem 1 — "Unit Price" labeling is confusing on PR
+You're right. In a PR/PO context, the field is asking for what you'll pay the supplier (a cost), not what you'll sell at (a price). Calling it "Unit Price" creates ambiguity:
+
+On a quotation/SO: "Unit Price" = customer-facing selling price ✓ correct
+On a PR/PO: "Unit Price" = supplier-facing buying price ✗ confusing
+
+Better labeling on PR/PO: "Supplier Price" or "Unit Cost" or "Supplier Unit Cost"
+This is a clear UX bug. Worth fixing.
+Problem 2 — Re-entering supplier price when it's already in the catalog
+This is the bigger issue. Let me trace the actual flow:
+What happens today (per Phase 6.6 work):
+
+When user selects a product in PO line item, system queries supplier_products table for supplierPrice of that product for the selected supplier
+If found: auto-fills the line item's unit cost
+If not found: falls back to distributor price, then product default
+
+What you're seeing in the screenshot (PR approval dialog):
+
+Field shows "0.00" — meaning the auto-fill didn't happen, OR PR doesn't use the same auto-fill logic as PO
+User has to manually type the supplier price
+
+Two possible reasons for the gap:
+Reason A — Supplier doesn't have this product in their catalog.
+
+The Trina Solar Ltd supplier_products table doesn't have an entry for "Solar Inverter 5kW"
+So no price to auto-fill → defaults to 0.00
+Fix: Add Solar Inverter 5kW to Trina Solar Ltd's product catalog with the agreed price. One-time data entry. Future PRs/POs auto-fill.
+
+Reason B — PR approval dialog uses different code path than PO creation.
+
+PO line item form (Phase 6.6) auto-fills from supplier_products
+PR approval dialog (this screenshot) might NOT trigger the same auto-fill logic
+Result: even if supplier_products has the price, PR doesn't pick it up
+Fix: Code change — make PR approval dialog use the same auto-fill query as PO creation
+
+Which problem do you actually have?
+Looking at the screenshot:
+
+PR-2026-0015
+Supplier: Trina Solar Ltd (already assigned, ₹2,95,000 total visible at top)
+Product: Solar Inverter 5kW
+Unit Cost field: 0.00
+
+The fact that the supplier price for the assigned supplier shows ₹2,95,000 in the top "Price Breakdown" (which is qty 10 × ₹29,500) suggests the supplier_products table DOES have ₹29,500 listed. But the "Item Unit Costs" section below shows 0.00.
+Most likely: This is a Reason B problem. The PR dialog has TWO code paths:
+
+The "Price Breakdown" panel correctly reads from supplier_products → shows ₹29,500/unit
+The "Item Unit Costs" form fields don't auto-fill from supplier_products → shows 0.00
+
+So the data IS there, but the form doesn't pre-populate. User has to retype.
+This is a UX bug. Replit AI's code shows two parts of the same dialog disagreeing on whether to use the supplier price.
+What needs investigation
+Before writing a fix, ask Replit AI:
+Two UX issues with PR approval dialog (screenshot reference: PR-2026-0015):
+
+ISSUE 1 — Field labeling
+The "Item Unit Costs" section uses label "Unit Cost (₹)" which is fine,
+but in some PO views the same concept is labeled "Unit Price." Confirm:
+- What label does PR approval dialog use? "Unit Cost" or "Unit Price"?
+- What label does PO creation form use?
+- Are they consistent?
+
+If labels are inconsistent (one says Cost, other says Price): unify
+to "Supplier Unit Cost (₹)" or "Unit Cost (₹)" everywhere on the
+buying side. "Price" should be reserved for selling-side documents.
+
+ISSUE 2 — Auto-fill not working in PR approval
+In the screenshot:
+- Top panel "Trina Solar Ltd — Price Breakdown" shows ₹29,500/unit
+  correctly (clearly fetched from supplier_products)
+- Bottom panel "Item Unit Costs" shows 0.00 in the input field
+
+The data exists in supplier_products. Why isn't the input field
+pre-populated?
+
+Investigate:
+1. Where in the PR approval dialog code does the form state get
+   initialized?
+2. Does it query supplier_products for the assigned supplier+product?
+3. If yes, why doesn't it set the form field default value?
+4. If no, can it be added (mirror PO line item auto-fill from
+   Phase 6.6)?
+
+Report findings. Do not change yet.
+What I'd guess Replit AI will find
+Most likely:
+
+The PR was created when no supplier was assigned yet (auto-PR from sales order shortage just lists products, no supplier)
+When user opens "Approve PR" dialog and assigns Trina Solar Ltd, the top "Price Breakdown" panel is computed dynamically from supplier_products
+But the "Item Unit Costs" form field defaults to whatever was stored on the PR row (0.00 because no supplier was assigned at PR creation time)
+Form initialization doesn't re-query supplier_products when supplier is changed in the dialog
+
+If that's the case, the fix is small:
+
+When supplier dropdown changes in PR approval dialog → re-query supplier_products → update form field default
+Auto-fill behavior matches PO creation flow
+
+~1-2 hours of Replit AI work. Maybe less.
+Bigger architectural question worth raising
+Looking at this issue, I'd actually argue the entire PR approval dialog is over-engineered:
+Current flow (per the screenshot):
+
+Auto-PR generates from SO shortage → no supplier, no price
+Buyer opens PR → assigns supplier → manually types unit cost (or it auto-fills if data is there)
+Buyer approves PR → it converts to PO
+
+Simpler flow:
+
+Auto-PR generates from SO shortage → still no supplier (legitimate, you don't know yet)
+Buyer opens PR → selects supplier from dropdown → system auto-fills unit cost from supplier_products → buyer reviews, edits if needed
+Buyer approves → converts to PO
+
+The "Item Unit Costs" section as a separate form field row is redundant if the auto-fill works. User should see the auto-filled price, edit only if they want to override (negotiated different price for this batch, etc.).
+This is a separate UX cleanup, not just a bug fix. Could go in the same fix.
+Two paths forward
+Path A — Minimal fix (recommended now):
+
+Fix label inconsistency ("Unit Price" → "Unit Cost" on buying side)
+Fix auto-fill so PR approval pulls supplier_products price like PO creation does
+~2-3 hours Replit AI work
+
+Path B — Bigger UX cleanup (defer):
+
+Same as A, plus
+Restructure PR approval dialog to feel less like "fill in two redundant sections"
+Add "Override price" toggle if buyer wants to override the auto-filled price (with reason logged)
+~1 day work
+
+My recommendation: Path A now. Path B later if accounts manager complains.
+What to do right now
+Three items in your queue:
+
+Phase 3 stop gate (50 items) — STILL not walked. This is THE priority.
+Strict floor decision (A/B/C) — pending your decision
+PR approval UX issue — just surfaced
+
+Honest order:
+NOW (this hour): Walk Phase 3 50-item stop gate
+  ↓
+TOMORROW: Decide strict floor path. Send PR approval investigation request.
+  ↓
+THIS WEEK: Bundle small fixes (strict floor + PR approval + label fix)
+           into a tiny "operational polish" mini-phase. ~1-2 days.
+  ↓
+NEXT WEEK: Phase 4 — Finance & Reports (the big one).
+You have three small operational issues queuing up. Don't try to address them piecemeal. Let them queue, then bundle into one focused micro-phase after Phase 3 closes.
+But none of that until Phase 3's 50-item stop gate is walked. Walk the gate now. The longer you wait, the more side-issues accumulate.

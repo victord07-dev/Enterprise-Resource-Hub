@@ -1151,6 +1151,27 @@ export default function SupplyChain() {
 
   const selectedMatchingSupplier = matchingSuppliers?.find(ms => ms.supplierId === prForm.supplierId);
 
+  // Auto-fill item costs from supplier catalog when dialog opens with a pre-assigned supplier
+  // (handles case where PR was auto-generated with 0 unit costs but supplier is already known)
+  useEffect(() => {
+    if (!selectedMatchingSupplier || !prDialogItems) return;
+    setPrItemCosts(prev => {
+      const updated = { ...prev };
+      let changed = false;
+      for (const item of prDialogItems) {
+        const existing = prev[item.id];
+        if (!existing || parseFloat(existing) <= 0) {
+          const catalogItem = selectedMatchingSupplier.items.find(i => i.productId === item.productId);
+          if (catalogItem && catalogItem.supplierPrice && Number(catalogItem.supplierPrice) > 0) {
+            updated[item.id] = String(Number(catalogItem.supplierPrice));
+            changed = true;
+          }
+        }
+      }
+      return changed ? updated : prev;
+    });
+  }, [selectedMatchingSupplier?.supplierId, prDialogItems?.map(i => i.id).join(",")]);
+
   const openEditPr = (pr: PurchaseRequest, approveMode = false) => {
     setEditingPr(pr);
     setPrApproveMode(approveMode);
@@ -1984,7 +2005,23 @@ export default function SupplyChain() {
               {matchingSuppliersLoading ? (
                 <Skeleton className="h-10 w-full" />
               ) : matchingSuppliers && matchingSuppliers.length > 0 ? (
-                <Select value={prForm.supplierId} onValueChange={(v) => setPrForm({ ...prForm, supplierId: v })}>
+                <Select value={prForm.supplierId} onValueChange={(v) => {
+                  setPrForm({ ...prForm, supplierId: v });
+                  // Auto-fill item costs from supplier catalog when supplier is selected
+                  const ms = matchingSuppliers?.find(s => s.supplierId === v);
+                  if (ms && prDialogItems) {
+                    setPrItemCosts(prev => {
+                      const updated = { ...prev };
+                      for (const item of prDialogItems) {
+                        const catalogItem = ms.items.find(i => i.productId === item.productId);
+                        if (catalogItem && catalogItem.supplierPrice && Number(catalogItem.supplierPrice) > 0) {
+                          updated[item.id] = String(Number(catalogItem.supplierPrice));
+                        }
+                      }
+                      return updated;
+                    });
+                  }
+                }}>
                   <SelectTrigger data-testid="select-pr-supplier">
                     <SelectValue placeholder="Select supplier" />
                   </SelectTrigger>
@@ -2019,7 +2056,7 @@ export default function SupplyChain() {
                       <tr className="border-b">
                         <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
                         <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Qty</th>
-                        <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Unit Price</th>
+                        <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Unit Cost</th>
                         <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Total</th>
                       </tr>
                     </thead>

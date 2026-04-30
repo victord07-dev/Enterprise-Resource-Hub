@@ -138,6 +138,14 @@ export default function Accounts() {
     invoiceDate: new Date().toISOString().split("T")[0], subtotal: "",
     taxAmount: "0", paymentTerms: "net_30", notes: "",
   });
+  // F2: Upload status filter
+  const [siUploadFilter, setSiUploadFilter] = useState<string>("all");
+  // F3: Mark as Recorded dialog
+  const [siRecordedDialog, setSiRecordedDialog] = useState<{ id: string; currentNumber: string | null } | null>(null);
+  const [siRecordedNumber, setSiRecordedNumber] = useState("");
+  const [siRecordedDate, setSiRecordedDate] = useState(new Date().toISOString().split("T")[0]);
+  // F4: Cancel dialog
+  const [siCancelId, setSiCancelId] = useState<string | null>(null);
 
   const [spDialogOpen, setSpDialogOpen] = useState(false);
   const [spForm, setSpForm] = useState({
@@ -237,6 +245,37 @@ export default function Accounts() {
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
+  });
+
+  // F3: Mark as Recorded
+  const siMarkRecordedMutation = useMutation({
+    mutationFn: async ({ id, invoiceNumber, invoiceDate }: { id: string; invoiceNumber: string; invoiceDate: string }) => {
+      const res = await apiRequest("PATCH", `/api/supplier-invoices/${id}`, { uploadStatus: "recorded", invoiceNumber, invoiceDate });
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to mark as recorded"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      toast({ title: "Marked as recorded" });
+      setSiRecordedDialog(null);
+      setSiRecordedNumber("");
+    },
+    onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
+  });
+
+  // F4: Cancel supplier invoice
+  const siCancelMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("PATCH", `/api/supplier-invoices/${id}`, { uploadStatus: "cancelled" });
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to cancel"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+      toast({ title: "Supplier invoice cancelled" });
+      setSiCancelId(null);
+    },
+    onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
 
   const spMutation = useMutation({
@@ -615,8 +654,35 @@ export default function Accounts() {
             </Card>
           </div>
 
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">{supplierInvoices?.length ?? 0} invoice(s)</p>
+          {/* F2: Upload Status Filter Tabs */}
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex gap-1 flex-wrap">
+              {[
+                { key: "all", label: "All" },
+                { key: "pending_upload", label: "Pending Upload" },
+                { key: "uploaded", label: "Uploaded" },
+                { key: "recorded", label: "Recorded" },
+                { key: "cancelled", label: "Cancelled" },
+              ].map(({ key, label }) => {
+                const count = key === "all"
+                  ? (supplierInvoices?.length ?? 0)
+                  : (supplierInvoices?.filter(si => (si as any).uploadStatus === key).length ?? 0);
+                return (
+                  <button
+                    key={key}
+                    data-testid={`button-si-filter-${key}`}
+                    onClick={() => setSiUploadFilter(key)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                      siUploadFilter === key
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80"
+                    }`}
+                  >
+                    {label} <span className="ml-1 opacity-70">({count})</span>
+                  </button>
+                );
+              })}
+            </div>
             <Button data-testid="button-new-supplier-invoice" onClick={() => setSiDialogOpen(true)}>
               <Plus className="w-4 h-4 mr-2" />
               New Supplier Invoice
@@ -638,6 +704,7 @@ export default function Accounts() {
                       <th className="text-right p-3 font-medium text-muted-foreground">Paid</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Balance</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Upload</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
@@ -645,28 +712,47 @@ export default function Accounts() {
                     {siLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 10 }).map((_, j) => (
+                          {Array.from({ length: 11 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
                       ))
-                    ) : supplierInvoices && supplierInvoices.length > 0 ? (
-                      supplierInvoices.map((inv) => {
+                    ) : (() => {
+                      const filtered = (supplierInvoices ?? []).filter(inv =>
+                        siUploadFilter === "all" || (inv as any).uploadStatus === siUploadFilter
+                      );
+                      if (filtered.length === 0) return (
+                        <tr>
+                          <td colSpan={11} className="p-8 text-center text-muted-foreground">No supplier invoices found.</td>
+                        </tr>
+                      );
+                      return filtered.map((inv) => {
                         const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
                         const paid = (paidPerInvoice[inv.id] ?? 0) + advance;
                         const balance = Number(inv.totalAmount) - paid;
                         const isOverdue = inv.dueDate && new Date(inv.dueDate) < new Date() && inv.status !== "paid";
                         const isExpanded = expandedSiIds.has(inv.id);
+                        const uploadStatus = (inv as any).uploadStatus ?? "pending_upload";
+                        const isCreditGrn = (inv as any).isCreditGrn;
+                        const uploadBadgeClass: Record<string, string> = {
+                          pending_upload: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400",
+                          uploaded: "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400",
+                          recorded: "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400",
+                          cancelled: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400",
+                        };
                         return (
                           <Fragment key={inv.id}>
-                            <tr className="border-b last:border-0" data-testid={`row-supplier-invoice-${inv.id}`}>
+                            <tr className={`border-b last:border-0 ${uploadStatus === "cancelled" ? "opacity-50" : ""}`} data-testid={`row-supplier-invoice-${inv.id}`}>
                               <td className="p-3">
                                 <button onClick={() => toggleSiExpanded(inv.id)} className="text-muted-foreground" data-testid={`button-expand-si-${inv.id}`}>
                                   {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                 </button>
                               </td>
-                              <td className="p-3 font-medium">{supplierMap.get(inv.supplierId)?.name ?? "—"}</td>
-                              <td className="p-3">{inv.invoiceNumber}</td>
+                              <td className="p-3 font-medium">
+                                {supplierMap.get(inv.supplierId)?.name ?? "—"}
+                                {isCreditGrn && <span className="ml-1 text-xs bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-400 px-1.5 py-0.5 rounded">Credit</span>}
+                              </td>
+                              <td className="p-3">{inv.invoiceNumber ?? <span className="text-muted-foreground italic text-xs">Pending</span>}</td>
                               <td className="p-3 text-muted-foreground">{new Date(inv.invoiceDate).toLocaleDateString()}</td>
                               <td className={`p-3 ${isOverdue ? "text-red-600 dark:text-red-400 font-medium" : "text-muted-foreground"}`}>
                                 {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : "—"}
@@ -675,16 +761,35 @@ export default function Accounts() {
                               <td className="p-3 text-right text-green-600 dark:text-green-400">₹{paid.toLocaleString()}</td>
                               <td className="p-3 text-right font-semibold">₹{Math.max(0, balance).toLocaleString()}</td>
                               <td className="p-3"><StatusBadge status={inv.status} /></td>
+                              <td className="p-3">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${uploadBadgeClass[uploadStatus] || uploadBadgeClass.pending_upload}`} data-testid={`badge-si-upload-${inv.id}`}>
+                                  {uploadStatus === "pending_upload" ? "Pending Upload" : uploadStatus.charAt(0).toUpperCase() + uploadStatus.slice(1)}
+                                </span>
+                              </td>
                               <td className="p-3 text-right">
-                                <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-invoice-${inv.id}`}
-                                  onClick={() => { if (confirm("Delete this supplier invoice and its payments?")) deleteSiMutation.mutate(inv.id); }}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
+                                <div className="flex items-center justify-end gap-1">
+                                  {(uploadStatus === "pending_upload" || uploadStatus === "uploaded") && (
+                                    <Button size="sm" variant="outline" className="h-7 text-xs" data-testid={`button-si-record-${inv.id}`}
+                                      onClick={() => { setSiRecordedDialog({ id: inv.id, currentNumber: inv.invoiceNumber }); setSiRecordedNumber(inv.invoiceNumber ?? ""); setSiRecordedDate(new Date().toISOString().split("T")[0]); }}>
+                                      <CheckCircle2 className="w-3 h-3 mr-1" /> Record
+                                    </Button>
+                                  )}
+                                  {uploadStatus !== "cancelled" && uploadStatus !== "recorded" && (
+                                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" data-testid={`button-si-cancel-${inv.id}`}
+                                      onClick={() => setSiCancelId(inv.id)}>
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                    </Button>
+                                  )}
+                                  <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-invoice-${inv.id}`}
+                                    onClick={() => { if (confirm("Delete this supplier invoice and its payments?")) deleteSiMutation.mutate(inv.id); }}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
                               </td>
                             </tr>
                             {isExpanded && (
                               <tr key={`${inv.id}-attach`} className="border-b last:border-0">
-                                <td colSpan={10} className="p-0">
+                                <td colSpan={11} className="p-0">
                                   <div className="bg-muted/30 px-6 py-4 ml-8">
                                     <AttachmentsPanel entityType="supplier_invoice" entityId={inv.id} module="accounts" />
                                   </div>
@@ -693,12 +798,8 @@ export default function Accounts() {
                             )}
                           </Fragment>
                         );
-                      })
-                    ) : (
-                      <tr>
-                        <td colSpan={10} className="p-8 text-center text-muted-foreground">No supplier invoices found.</td>
-                      </tr>
-                    )}
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -966,6 +1067,67 @@ export default function Accounts() {
               {siMutation.isPending ? "Creating..." : "Create Invoice"}
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* F3: Mark Supplier Invoice as Recorded */}
+      <Dialog open={!!siRecordedDialog} onOpenChange={(o) => { if (!o) setSiRecordedDialog(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Mark as Recorded</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">Enter the actual supplier invoice number and date from the physical/digital invoice received.</p>
+            <div className="space-y-2">
+              <Label>Supplier Invoice Number <span className="text-red-500">*</span></Label>
+              <Input
+                data-testid="input-si-recorded-number"
+                value={siRecordedNumber}
+                onChange={e => setSiRecordedNumber(e.target.value)}
+                placeholder="e.g. INV-2024-00123"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Invoice Date</Label>
+              <Input
+                type="date"
+                data-testid="input-si-recorded-date"
+                value={siRecordedDate}
+                onChange={e => setSiRecordedDate(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setSiRecordedDialog(null)}>Cancel</Button>
+            <Button
+              data-testid="button-confirm-si-recorded"
+              disabled={!siRecordedNumber.trim() || siMarkRecordedMutation.isPending}
+              onClick={() => siRecordedDialog && siMarkRecordedMutation.mutate({ id: siRecordedDialog.id, invoiceNumber: siRecordedNumber.trim(), invoiceDate: siRecordedDate })}
+            >
+              {siMarkRecordedMutation.isPending ? "Saving..." : "Mark as Recorded"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* F4: Cancel Supplier Invoice */}
+      <Dialog open={!!siCancelId} onOpenChange={(o) => { if (!o) setSiCancelId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Cancel Supplier Invoice</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">This will mark the invoice as cancelled. Any associated payments will remain but the invoice will be excluded from outstanding balances.</p>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setSiCancelId(null)}>Keep</Button>
+            <Button
+              variant="destructive"
+              data-testid="button-confirm-si-cancel"
+              disabled={siCancelMutation.isPending}
+              onClick={() => siCancelId && siCancelMutation.mutate(siCancelId)}
+            >
+              {siCancelMutation.isPending ? "Cancelling..." : "Cancel Invoice"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
 

@@ -378,6 +378,7 @@ function APAgingTab() {
                     <th className="px-4 py-3 text-right font-medium text-muted-foreground">Balance</th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Days Overdue</th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Bucket</th>
+                    <th className="px-4 py-3 text-center font-medium text-muted-foreground">Flags</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -388,7 +389,7 @@ function APAgingTab() {
                       data-testid={`row-aging-${row.invoiceId}`}
                     >
                       <td className="px-4 py-3 font-medium">{row.supplierName}</td>
-                      <td className="px-4 py-3 font-mono text-xs">{row.invoiceNumber}</td>
+                      <td className="px-4 py-3 font-mono text-xs">{(row as any).invoiceNumber ?? <span className="text-muted-foreground italic">Pending</span>}</td>
                       <td className="px-4 py-3 text-muted-foreground text-xs">{row.poNumber ?? "—"}</td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {new Date(row.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
@@ -417,6 +418,24 @@ function APAgingTab() {
                           {bucketLabel[row.bucket]}
                         </Badge>
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex items-center justify-center gap-1 flex-wrap">
+                          {(row as any).isCreditGrn && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400" data-testid={`badge-credit-grn-${row.invoiceId}`}>
+                              Credit GRN
+                            </span>
+                          )}
+                          {(row as any).uploadStatus && (row as any).uploadStatus !== "recorded" && (
+                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              (row as any).uploadStatus === "pending_upload" ? "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400"
+                              : (row as any).uploadStatus === "uploaded" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400"
+                              : "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-400"
+                            }`}>
+                              {(row as any).uploadStatus === "pending_upload" ? "⚠ No Invoice" : (row as any).uploadStatus === "cancelled" ? "Cancelled" : "Uploaded"}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -428,7 +447,7 @@ function APAgingTab() {
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.totalAmount, 0))}</td>
                       <td className="px-4 py-3 text-right text-emerald-600 dark:text-emerald-400">{fmt(filtered.reduce((s, r) => s + r.totalPaid, 0))}</td>
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.balance, 0))}</td>
-                      <td colSpan={2} />
+                      <td colSpan={3} />
                     </tr>
                   </tfoot>
                 )}

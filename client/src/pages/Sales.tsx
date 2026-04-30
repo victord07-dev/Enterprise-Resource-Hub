@@ -912,6 +912,31 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   );
 }
 
+function CustomerOutstandingInline({ customerId }: { customerId: string }) {
+  const { data, isLoading } = useQuery<{ outstanding: number; total: number; collected: number }>({
+    queryKey: ["/api/customers", customerId, "outstanding"],
+    queryFn: () => {
+      const token = localStorage.getItem("token");
+      return fetch(`/api/customers/${customerId}/outstanding`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+    },
+    enabled: !!customerId,
+  });
+  if (isLoading || !data) return null;
+  const { outstanding, total, collected } = data;
+  if (outstanding <= 0) return (
+    <div className="flex items-center gap-2 text-sm bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 mb-2">
+      <span className="text-green-700 dark:text-green-400 font-medium">No outstanding dues</span>
+      <span className="text-muted-foreground">· Total invoiced ₹{total.toLocaleString("en-IN")}, fully collected</span>
+    </div>
+  );
+  return (
+    <div className="flex items-center gap-3 text-sm bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2 mb-2" data-testid="panel-customer-outstanding">
+      <span className="font-semibold text-amber-700 dark:text-amber-400">Outstanding: ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+      <span className="text-muted-foreground text-xs">· ₹{collected.toLocaleString("en-IN")} collected of ₹{total.toLocaleString("en-IN")} total</span>
+    </div>
+  );
+}
+
 export default function Sales() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -982,9 +1007,13 @@ export default function Sales() {
   const [quoteTouchedLines, setQuoteTouchedLines] = useState<Set<number>>(new Set());
   const handleQuoteLineTouched = (idx: number) => setQuoteTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
 
+  // E4: Outstanding dues override dialog state
+  const [duesOverrideDialog, setDuesOverrideDialog] = useState<{ outstanding: number; pendingOrderData: any } | null>(null);
+  const [duesOverrideReason, setDuesOverrideReason] = useState("");
+
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business" });
+  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business", paymentTerms: "immediate" });
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [customerTypeFilter, setCustomerTypeFilter] = useState<string>("__all__");
 
@@ -1141,6 +1170,17 @@ export default function Sales() {
         orderId = editingOrder.id;
       } else {
         const res = await apiRequest("POST", "/api/sales-orders", orderData);
+        if (!res.ok) {
+          const errBody = await res.json();
+          if (res.status === 400 && errBody.outstanding !== undefined) {
+            // E5: Customer has outstanding dues — open override dialog if admin
+            const err: any = new Error(errBody.message || "Outstanding dues block");
+            err.outstanding = errBody.outstanding;
+            err.pendingOrderData = orderData;
+            throw err;
+          }
+          throw new Error(errBody.message || "Failed to create order");
+        }
         const created = await res.json();
         orderId = created.id;
       }
@@ -1167,9 +1207,17 @@ export default function Sales() {
       toast({ title: editingOrder ? "Order updated" : "Order created" });
       setOrderDialogOpen(false);
       setEditingOrder(null);
+      setDuesOverrideDialog(null);
+      setDuesOverrideReason("");
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: (error: any) => {
+      if (error.outstanding !== undefined && error.pendingOrderData) {
+        // E5: open override dialog
+        setDuesOverrideDialog({ outstanding: error.outstanding, pendingOrderData: error.pendingOrderData });
+        setDuesOverrideReason("");
+      } else {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -1598,7 +1646,7 @@ export default function Sales() {
 
   const openNewCustomer = () => {
     setEditingCustomer(null);
-    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" });
+    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user", paymentTerms: "immediate" });
     setCustomerDialogOpen(true);
   };
 
@@ -1613,6 +1661,7 @@ export default function Sales() {
       contactPerson: c.contactPerson || "",
       // Hydrate from migrated value; default to end_user if column is missing/empty for any reason
       customerType: (c.customerType === "business" ? "business" : "end_user"),
+      paymentTerms: (c as any).paymentTerms || "immediate",
     });
     setCustomerDialogOpen(true);
   };
@@ -3312,6 +3361,7 @@ export default function Sales() {
             <DialogTitle>{editingCustomer ? "Edit Customer" : "New Customer"}</DialogTitle>
             <DialogDescription>Customer details</DialogDescription>
           </DialogHeader>
+          {editingCustomer && <CustomerOutstandingInline customerId={editingCustomer.id} />}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -3357,12 +3407,81 @@ export default function Sales() {
                   </SelectContent>
                 </Select>
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="custPaymentTerms">Payment Terms</Label>
+                <Select
+                  value={(customerForm as any).paymentTerms || "immediate"}
+                  onValueChange={(v) => setCustomerForm({ ...customerForm, paymentTerms: v } as any)}
+                >
+                  <SelectTrigger id="custPaymentTerms" data-testid="select-customer-payment-terms">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="immediate">Immediate (Cash/Advance)</SelectItem>
+                    <SelectItem value="net_7">Net 7 days</SelectItem>
+                    <SelectItem value="net_15">Net 15 days</SelectItem>
+                    <SelectItem value="net_30">Net 30 days</SelectItem>
+                    <SelectItem value="net_45">Net 45 days</SelectItem>
+                    <SelectItem value="net_60">Net 60 days</SelectItem>
+                    <SelectItem value="net_90">Net 90 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-customer" disabled={customerMutation.isPending} onClick={() => customerMutation.mutate(customerForm)}>
               {customerMutation.isPending ? "Saving..." : editingCustomer ? "Update" : "Create"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* E6: Outstanding Dues Override Dialog */}
+      <Dialog open={!!duesOverrideDialog} onOpenChange={(o) => { if (!o) { setDuesOverrideDialog(null); setDuesOverrideReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Customer Has Outstanding Dues</DialogTitle>
+            <DialogDescription>
+              This customer has <strong>₹{duesOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> in unpaid invoices.
+              Creating a new Sales Order is blocked.{" "}
+              {currentUser?.role === "admin"
+                ? "As admin, you can override this restriction with a reason."
+                : "Please contact an admin to override."}
+            </DialogDescription>
+          </DialogHeader>
+          {currentUser?.role === "admin" && (
+            <div className="space-y-3">
+              <Label htmlFor="dues-override-reason">Override Reason <span className="text-red-500">*</span> <span className="text-muted-foreground text-xs">(min 10 chars)</span></Label>
+              <Textarea
+                id="dues-override-reason"
+                data-testid="input-dues-override-reason"
+                value={duesOverrideReason}
+                onChange={(e) => setDuesOverrideReason(e.target.value)}
+                placeholder="e.g. Customer agreed to pay outstanding before delivery. Approved by management."
+                rows={3}
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setDuesOverrideDialog(null); setDuesOverrideReason(""); }}>Cancel</Button>
+            {currentUser?.role === "admin" && (
+              <Button
+                data-testid="button-confirm-dues-override"
+                disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending}
+                onClick={() => {
+                  if (duesOverrideDialog) {
+                    orderMutation.mutate({
+                      ...duesOverrideDialog.pendingOrderData,
+                      duesOverride: true,
+                      duesOverrideReason: duesOverrideReason.trim(),
+                    });
+                  }
+                }}
+              >
+                {orderMutation.isPending ? "Creating..." : "Override & Create Order"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

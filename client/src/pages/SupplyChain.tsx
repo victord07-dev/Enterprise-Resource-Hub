@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { useCurrentUser } from "@/lib/auth";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -24,6 +25,10 @@ interface POLineItem {
   quantity: number;
   unitCost: number;
   totalCost: number;
+  hsnCode?: string;
+  gstRate?: number;
+  taxableAmount?: number;
+  gstAmount?: number;
   _priceSource?: "supplier" | "distributor" | "fallback" | "manual" | "none";
   _priceLastUpdated?: string | null;
 }
@@ -136,8 +141,15 @@ function SupplierDropdown({ poLineItems, allSupplierProducts, suppliers, value, 
   );
 }
 
+function computeItemGst(item: POLineItem): POLineItem {
+  const rate = item.gstRate ?? 0;
+  const taxable = item.totalCost;
+  const gstAmt = +(taxable * rate / 100).toFixed(2);
+  return { ...item, taxableAmount: +taxable.toFixed(2), gstAmount: gstAmt };
+}
+
 function emptyLineItem(): POLineItem {
-  return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0 };
+  return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0, hsnCode: "", gstRate: 18, taxableAmount: 0, gstAmount: 0 };
 }
 
 function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected }: {
@@ -197,6 +209,8 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
           return;
         }
         item.description = prod.name;
+        item.hsnCode = (prod as any).hsnCode || item.hsnCode || "";
+        item.gstRate = (prod as any).gstRate != null ? Number((prod as any).gstRate) : (item.gstRate ?? 18);
         const sp = spMap.get(value);
         // Phase 6.6 C2: prefer supplier_products.supplierPrice; fallback to products.distributorPrice (NOT costPrice).
         if (sp) {
@@ -225,6 +239,14 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
       const qty = field === "quantity" ? Number(value) : item.quantity;
       const cost = field === "unitCost" ? Number(value) : item.unitCost;
       item.totalCost = qty * cost;
+    }
+
+    // Recompute GST whenever quantity, unitCost, gstRate, or productId changes
+    if (["quantity", "unitCost", "gstRate", "productId"].includes(field)) {
+      const gstRateVal = field === "gstRate" ? Number(value) : (item.gstRate ?? 0);
+      const taxable = item.totalCost;
+      item.taxableAmount = +taxable.toFixed(2);
+      item.gstAmount = +(taxable * gstRateVal / 100).toFixed(2);
     }
 
     updated[index] = item;
@@ -325,6 +347,44 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
               </div>
             </div>
 
+            {/* Row 3: HSN | GST Rate | GST Amount */}
+            <div className="grid grid-cols-12 gap-2 items-end">
+              <div className="col-span-4">
+                <Label className="text-xs text-muted-foreground mb-1 block">HSN Code</Label>
+                <Input
+                  value={item.hsnCode ?? ""}
+                  onChange={(e) => updateItem(index, "hsnCode", e.target.value)}
+                  placeholder="e.g. 85414020"
+                  data-testid={`input-po-item-hsn-${index}`}
+                />
+              </div>
+              <div className="col-span-3">
+                <Label className="text-xs text-muted-foreground mb-1 block">GST Rate (%)</Label>
+                <Select
+                  value={String(item.gstRate ?? 18)}
+                  onValueChange={(v) => updateItem(index, "gstRate", Number(v))}
+                >
+                  <SelectTrigger data-testid={`select-po-item-gst-${index}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[0, 5, 12, 18, 28].map(r => (
+                      <SelectItem key={r} value={String(r)}>{r}%</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="col-span-5 text-right">
+                <Label className="text-xs text-muted-foreground mb-1 block">GST Amount</Label>
+                <span className="text-sm text-blue-600 dark:text-blue-400 font-medium" data-testid={`text-po-item-gst-${index}`}>
+                  ₹{(item.gstAmount ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                  <span className="text-muted-foreground font-normal ml-1">
+                    (taxable ₹{(item.taxableAmount ?? item.totalCost).toLocaleString("en-IN", { minimumFractionDigits: 0 })})
+                  </span>
+                </span>
+              </div>
+            </div>
+
             {/* Price source hint */}
             {item.productId && item._priceSource && (
               <div
@@ -350,9 +410,19 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
         ))}
       </div>
 
-      <div className="flex justify-end pt-2 border-t">
-        <div className="text-sm font-semibold" data-testid="text-po-grand-total">
-          Grand Total: ₹{grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+      <div className="pt-2 border-t space-y-1 text-sm text-right">
+        <div className="text-muted-foreground">
+          Subtotal: <span className="font-medium text-foreground" data-testid="text-po-subtotal">
+            ₹{grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div className="text-muted-foreground">
+          Total GST: <span className="font-medium text-blue-600 dark:text-blue-400" data-testid="text-po-total-gst">
+            ₹{items.reduce((s, it) => s + (it.gstAmount ?? 0), 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div className="font-semibold text-base" data-testid="text-po-grand-total">
+          Grand Total (incl. GST): ₹{(grandTotal + items.reduce((s, it) => s + (it.gstAmount ?? 0), 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
         </div>
       </div>
     </div>
@@ -820,9 +890,49 @@ function PRExpandedItems({ prId }: { prId: string }) {
   );
 }
 
+function SupplierOutstandingInline({ supplierId }: { supplierId: string }) {
+  const { data: invoices } = useQuery<any[]>({ queryKey: ["/api/supplier-invoices"] });
+  const { data: payments } = useQuery<any[]>({ queryKey: ["/api/supplier-payments"] });
+  const { data: pos } = useQuery<any[]>({ queryKey: ["/api/purchase-orders"] });
+
+  const outstanding = useMemo(() => {
+    if (!invoices || !payments || !pos) return null;
+    const poMap = new Map((pos).map((p: any) => [p.id, p]));
+    const payPerInv: Record<string, number> = {};
+    (payments || []).filter((p: any) => p.paymentType === "regular" && p.supplierInvoiceId).forEach((p: any) => {
+      payPerInv[p.supplierInvoiceId] = (payPerInv[p.supplierInvoiceId] || 0) + Number(p.amount);
+    });
+    let totalPayable = 0;
+    let totalInvoiced = 0;
+    (invoices || []).filter((inv: any) => inv.supplierId === supplierId && (inv.uploadStatus ?? "pending_upload") !== "cancelled").forEach((inv: any) => {
+      const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
+      const paid = (payPerInv[inv.id] ?? 0) + advance;
+      const balance = Math.max(0, Number(inv.totalAmount) - paid);
+      totalInvoiced += Number(inv.totalAmount);
+      totalPayable += balance;
+    });
+    return { outstanding: totalPayable, total: totalInvoiced, paid: totalInvoiced - totalPayable };
+  }, [invoices, payments, pos, supplierId]);
+
+  if (!outstanding) return null;
+  if (outstanding.outstanding <= 0) return (
+    <div className="flex items-center gap-2 text-sm bg-green-50 dark:bg-green-950/20 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 mb-2" data-testid="panel-supplier-no-outstanding">
+      <span className="text-green-700 dark:text-green-400 font-medium">No outstanding dues</span>
+      <span className="text-muted-foreground text-xs">· ₹{outstanding.total.toLocaleString("en-IN")} invoiced, fully paid</span>
+    </div>
+  );
+  return (
+    <div className="flex items-center gap-3 text-sm bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2 mb-2" data-testid="panel-supplier-outstanding">
+      <span className="font-semibold text-amber-700 dark:text-amber-400">Payable: ₹{outstanding.outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+      <span className="text-muted-foreground text-xs">· ₹{outstanding.paid.toLocaleString("en-IN")} paid of ₹{outstanding.total.toLocaleString("en-IN")} invoiced</span>
+    </div>
+  );
+}
+
 export default function SupplyChain() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
+  const { data: currentUser } = useCurrentUser();
   const { data: suppliers, isLoading: suppliersLoading } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders, isLoading: poLoading } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
@@ -831,12 +941,15 @@ export default function SupplyChain() {
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
-  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "" });
+  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0" });
   const [poLineItems, setPoLineItems] = useState<POLineItem[]>([emptyLineItem()]);
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
-  const [supplierForm, setSupplierForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", category: "Solar Panels" });
+  const [supplierForm, setSupplierForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", category: "Solar Panels", paymentTerms: "net_30" });
+  // D2: Credit GRN override dialog state
+  const [creditGrnDialog, setCreditGrnDialog] = useState<{ poId: string; warehouseId: string; supplierChallanNumber: string; outstanding: number } | null>(null);
+  const [creditGrnReason, setCreditGrnReason] = useState("");
 
   const [expandedPoId, setExpandedPoId] = useState<string | null>(null);
   const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
@@ -880,8 +993,11 @@ export default function SupplyChain() {
   const poMutation = useMutation({
     mutationFn: async (data: any) => {
       const { lineItems, ...poData } = data;
-      const grandTotal = lineItems.reduce((sum: number, item: POLineItem) => sum + item.totalCost, 0);
-      const payload = { ...poData, totalAmount: String(grandTotal) };
+      const subtotal = lineItems.reduce((sum: number, item: POLineItem) => sum + item.totalCost, 0);
+      const totalTax = lineItems.reduce((sum: number, item: POLineItem) => sum + (item.gstAmount ?? 0), 0);
+      const deliveryCostNum = parseFloat(poData.deliveryCost || "0") || 0;
+      const grandTotal = subtotal + totalTax + deliveryCostNum;
+      const payload = { ...poData, totalAmount: String(subtotal), subtotal: String(subtotal), totalTax: String(totalTax), deliveryCost: String(deliveryCostNum), grandTotal: String(grandTotal) };
 
       let po: any;
       if (editingPo) {
@@ -901,6 +1017,10 @@ export default function SupplyChain() {
             description: item.description,
             quantity: item.quantity,
             unitCost: String(item.unitCost),
+            hsnCode: item.hsnCode || null,
+            gstRate: item.gstRate ?? 18,
+            taxableAmount: String(item.taxableAmount ?? item.totalCost),
+            gstAmount: String(item.gstAmount ?? 0),
           })),
         });
       }
@@ -987,26 +1107,37 @@ export default function SupplyChain() {
   const [creatingGrnPoId, setCreatingGrnPoId] = useState<string | null>(null);
 
   const createGrnFromPoMutation = useMutation({
-    mutationFn: async ({ poId, warehouseId, supplierChallanNumber }: { poId: string; warehouseId: string; supplierChallanNumber: string }) => {
+    mutationFn: async ({ poId, warehouseId, supplierChallanNumber, creditOverride, creditReason }: { poId: string; warehouseId: string; supplierChallanNumber: string; creditOverride?: boolean; creditReason?: string }) => {
       setCreatingGrnPoId(poId);
       const token = localStorage.getItem("token");
+      const body: any = { warehouseId, supplierChallanNumber };
+      if (creditOverride) { body.creditOverride = true; body.creditReason = creditReason; }
       const res = await fetch(`/api/grns/create-from-po/${poId}`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ warehouseId, supplierChallanNumber }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
-      return { status: res.status, data };
+      return { status: res.status, data, poId, warehouseId, supplierChallanNumber };
     },
-    onSuccess: ({ status, data }: { status: number; data: any }) => {
+    onSuccess: ({ status, data, poId, warehouseId, supplierChallanNumber }: { status: number; data: any; poId: string; warehouseId: string; supplierChallanNumber: string }) => {
       setCreatingGrnPoId(null);
-      setGrnWarehouseDialogPoId(null);
       if (status === 409) {
+        setGrnWarehouseDialogPoId(null);
         toast({ title: "Draft GRN already exists", description: `${data.existingGrnNumber} is already open. Find it in Inventory → GRN tab.`, variant: "destructive" });
         navigate(`/inventory?tab=grn&highlightGrn=${data.existingGrnId}`);
+      } else if (status === 400 && data.outstanding !== undefined) {
+        // D2: Payment not complete — show credit GRN override dialog
+        setGrnWarehouseDialogPoId(null);
+        setCreditGrnDialog({ poId, warehouseId, supplierChallanNumber, outstanding: data.outstanding });
+        setCreditGrnReason("");
       } else if (status >= 400) {
+        setGrnWarehouseDialogPoId(null);
         toast({ title: "Error", description: data.message || "Failed to create GRN", variant: "destructive" });
       } else {
+        setGrnWarehouseDialogPoId(null);
+        setCreditGrnDialog(null);
+        setCreditGrnReason("");
         queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
         queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
         toast({ title: "Draft GRN created", description: `${data.grnNumber} created. Opening Inventory → GRN tab...` });
@@ -1217,7 +1348,7 @@ export default function SupplyChain() {
 
   const openNewPo = () => {
     setEditingPo(null);
-    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "" });
+    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0" });
     setPoLineItems([emptyLineItem()]);
     setPoDialogOpen(true);
   };
@@ -1231,6 +1362,7 @@ export default function SupplyChain() {
       deliveryType: po.deliveryType || "warehouse",
       expectedDelivery: po.expectedDelivery ? new Date(po.expectedDelivery).toISOString().split("T")[0] : "",
       notes: po.notes || "",
+      deliveryCost: String((po as any).deliveryCost ?? "0"),
     });
     try {
       const resp = await apiRequest("GET", `/api/purchase-orders/${po.id}/items`);
@@ -1242,6 +1374,10 @@ export default function SupplyChain() {
           quantity: item.quantity,
           unitCost: Number(item.unitCost),
           totalCost: Number(item.totalCost),
+          hsnCode: (item as any).hsnCode || "",
+          gstRate: (item as any).gstRate != null ? Number((item as any).gstRate) : 18,
+          taxableAmount: Number((item as any).taxableAmount ?? item.totalCost),
+          gstAmount: Number((item as any).gstAmount ?? 0),
         })));
       } else {
         setPoLineItems([emptyLineItem()]);
@@ -1254,7 +1390,7 @@ export default function SupplyChain() {
 
   const openNewSupplier = () => {
     setEditingSupplier(null);
-    setSupplierForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", category: "Solar Panels" });
+    setSupplierForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", category: "Solar Panels", paymentTerms: "net_30" });
     setSupplierDialogOpen(true);
   };
 
@@ -1268,6 +1404,7 @@ export default function SupplyChain() {
       gstNumber: s.gstNumber || "",
       contactPerson: s.contactPerson || "",
       category: s.category || "Solar Panels",
+      paymentTerms: (s as any).paymentTerms || "net_30",
     });
     setSupplierDialogOpen(true);
   };
@@ -1890,10 +2027,14 @@ export default function SupplyChain() {
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="poDelivery">Expected Delivery</Label>
                 <Input id="poDelivery" type="date" data-testid="input-po-expected-delivery" value={poForm.expectedDelivery} onChange={(e) => setPoForm({ ...poForm, expectedDelivery: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="poDeliveryCost">Delivery / Freight Cost (₹)</Label>
+                <Input id="poDeliveryCost" type="number" min={0} step="0.01" data-testid="input-po-delivery-cost" value={(poForm as any).deliveryCost ?? "0"} onChange={(e) => setPoForm({ ...poForm, deliveryCost: e.target.value } as any)} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="poNotes">Notes</Label>
@@ -1927,6 +2068,7 @@ export default function SupplyChain() {
           <DialogHeader>
             <DialogTitle>{editingSupplier ? "Edit Supplier" : "Add Supplier"}</DialogTitle>
           </DialogHeader>
+          {editingSupplier && <SupplierOutstandingInline supplierId={editingSupplier.id} />}
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="supplierName">Name</Label>
@@ -1965,11 +2107,80 @@ export default function SupplyChain() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="supplierPaymentTerms">Payment Terms</Label>
+              <Select value={(supplierForm as any).paymentTerms || "net_30"} onValueChange={(v) => setSupplierForm({ ...supplierForm, paymentTerms: v } as any)}>
+                <SelectTrigger id="supplierPaymentTerms" data-testid="select-supplier-payment-terms">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="immediate">Immediate</SelectItem>
+                  <SelectItem value="net_7">Net 7 days</SelectItem>
+                  <SelectItem value="net_15">Net 15 days</SelectItem>
+                  <SelectItem value="net_30">Net 30 days</SelectItem>
+                  <SelectItem value="net_45">Net 45 days</SelectItem>
+                  <SelectItem value="net_60">Net 60 days</SelectItem>
+                  <SelectItem value="net_90">Net 90 days</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-supplier" disabled={supplierMutation.isPending} onClick={() => supplierMutation.mutate(supplierForm)}>
               {supplierMutation.isPending ? "Saving..." : editingSupplier ? "Update" : "Create"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* D2: Credit GRN Override Dialog */}
+      <Dialog open={!!creditGrnDialog} onOpenChange={(o) => { if (!o) { setCreditGrnDialog(null); setCreditGrnReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Supplier Payment Incomplete — Credit GRN</DialogTitle>
+            <DialogDescription>
+              Supplier has an outstanding balance of{" "}
+              <strong>₹{creditGrnDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>{" "}
+              for this PO. Normally goods receipt requires full payment.
+              {currentUser?.role === "admin" || currentUser?.role === "accountant"
+                ? " You can authorize a credit GRN with a reason."
+                : " Only admin or accountant can override."}
+            </DialogDescription>
+          </DialogHeader>
+          {(currentUser?.role === "admin" || currentUser?.role === "accountant") && (
+            <div className="space-y-3">
+              <Label htmlFor="credit-grn-reason">Credit Authorization Reason <span className="text-red-500">*</span> <span className="text-muted-foreground text-xs">(min 10 chars)</span></Label>
+              <Textarea
+                id="credit-grn-reason"
+                data-testid="input-credit-grn-reason"
+                value={creditGrnReason}
+                onChange={(e) => setCreditGrnReason(e.target.value)}
+                placeholder="e.g. Payment pending due to bank clearance. Goods needed urgently. Authorized by CFO."
+                rows={3}
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCreditGrnDialog(null); setCreditGrnReason(""); }}>Cancel</Button>
+            {(currentUser?.role === "admin" || currentUser?.role === "accountant") && (
+              <Button
+                data-testid="button-confirm-credit-grn"
+                disabled={creditGrnReason.trim().length < 10 || createGrnFromPoMutation.isPending}
+                onClick={() => {
+                  if (creditGrnDialog) {
+                    createGrnFromPoMutation.mutate({
+                      poId: creditGrnDialog.poId,
+                      warehouseId: creditGrnDialog.warehouseId,
+                      supplierChallanNumber: creditGrnDialog.supplierChallanNumber,
+                      creditOverride: true,
+                      creditReason: creditGrnReason.trim(),
+                    });
+                  }
+                }}
+              >
+                {createGrnFromPoMutation.isPending ? "Creating..." : "Authorize Credit GRN"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -114,6 +114,20 @@ async function notifyRoles(roles: string[], type: string, title: string, message
   }
 }
 
+// Phase 4A G3 — compute invoice due date from payment terms
+function computeDueDate(invoiceDate: Date, paymentTerms: string | null): Date {
+  const d = new Date(invoiceDate);
+  switch (paymentTerms) {
+    case "net_15": d.setDate(d.getDate() + 15); break;
+    case "net_30": d.setDate(d.getDate() + 30); break;
+    case "net_45": d.setDate(d.getDate() + 45); break;
+    case "net_60": d.setDate(d.getDate() + 60); break;
+    case "net_90": d.setDate(d.getDate() + 90); break;
+    default: break; // 'immediate' or null → same day
+  }
+  return d;
+}
+
 async function calculateReservedStockForOtherOrders(excludeOrderId: string, storage: IStorage): Promise<Record<string, number>> {
   const reservedStatuses = ["confirmed", "procurement", "ready_to_ship", "partial"];
   const allOrders = await storage.getSalesOrders();
@@ -2000,12 +2014,51 @@ export async function registerRoutes(
     }
   });
 
+  // Phase 4A E1 — customer outstanding endpoint (used by frontend)
+  app.get("/api/customers/:id/outstanding", authenticateToken, async (req, res) => {
+    try {
+      const result = await storage.getCustomerOutstanding(req.params.id);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch outstanding" });
+    }
+  });
+
   app.post("/api/sales-orders", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
     try {
       const body = { ...req.body };
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
+
+      // E2: Outstanding dues block
+      const { duesOverride = false, duesOverrideReason = "" } = body;
+      delete body.duesOverride;
+      delete body.duesOverrideReason;
+      if (body.customerId) {
+        const outstanding = await storage.getCustomerOutstanding(body.customerId);
+        if (outstanding.outstanding > 0) {
+          if (!duesOverride) {
+            return res.status(400).json({
+              message: `Customer has outstanding dues of ₹${outstanding.outstanding.toFixed(2)}. New SO blocked. Customer must clear dues OR admin must override.`,
+              outstanding: outstanding.outstanding,
+              invoices: outstanding.invoices,
+            });
+          }
+          if (req.user.role !== "admin") {
+            return res.status(403).json({ message: "Only admin can authorize SO despite outstanding dues" });
+          }
+          if (!duesOverrideReason || duesOverrideReason.trim().length < 10) {
+            return res.status(400).json({ message: "Dues override reason must be at least 10 characters" });
+          }
+          body.isDuesOverride = true;
+          body.duesOverrideAmount = String(outstanding.outstanding);
+          body.duesOverrideBy = req.user.id;
+          body.duesOverrideAt = new Date();
+          body.duesOverrideReason = duesOverrideReason.trim();
+        }
+      }
+
       // Strip client-provided totals — server recomputes these authoritatively when items are saved
       delete body.subtotal;
       delete body.totalTax;
@@ -2013,6 +2066,10 @@ export async function registerRoutes(
       const parsed = insertSalesOrderSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createSalesOrder(parsed.data as any);
+      if ((body as any).isDuesOverride) {
+        await logAction(req.user.id, "so_dues_override", "sales",
+          `SO ${parsed.data.orderNumber} created despite ₹${body.duesOverrideAmount} outstanding from customer. Reason: ${body.duesOverrideReason}`);
+      }
       await logAction(req.user.id, "create", "sales", `Created sales order ${parsed.data.orderNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -2415,6 +2472,31 @@ export async function registerRoutes(
       if (!quotation) return res.status(404).json({ message: "Quotation not found" });
       if (quotation.status === "accepted") return res.status(400).json({ message: "Quotation already converted" });
 
+      // E3: Outstanding dues block on quotation→SO conversion
+      const { duesOverride: convDuesOverride = false, duesOverrideReason: convDuesReason = "" } = req.body ?? {};
+      const duesResult = await storage.getCustomerOutstanding(quotation.customerId);
+      const convDuesOverrideFields: any = {};
+      if (duesResult.outstanding > 0) {
+        if (!convDuesOverride) {
+          return res.status(400).json({
+            message: `Customer has outstanding dues of ₹${duesResult.outstanding.toFixed(2)}. SO conversion blocked.`,
+            outstanding: duesResult.outstanding,
+            invoices: duesResult.invoices,
+          });
+        }
+        if (req.user.role !== "admin") {
+          return res.status(403).json({ message: "Only admin can authorize SO despite outstanding dues" });
+        }
+        if (!convDuesReason || convDuesReason.trim().length < 10) {
+          return res.status(400).json({ message: "Dues override reason must be at least 10 characters" });
+        }
+        convDuesOverrideFields.isDuesOverride = true;
+        convDuesOverrideFields.duesOverrideAmount = String(duesResult.outstanding);
+        convDuesOverrideFields.duesOverrideBy = req.user.id;
+        convDuesOverrideFields.duesOverrideAt = new Date();
+        convDuesOverrideFields.duesOverrideReason = convDuesReason.trim();
+      }
+
       const orderNumber = `SO-${Date.now().toString(36).toUpperCase()}`;
       const order = await storage.createSalesOrder({
         orderNumber,
@@ -2432,7 +2514,8 @@ export async function registerRoutes(
         deliveryMethod: (quotation as any).deliveryMethod || null,
         deliveryCost: (quotation as any).deliveryCost || null,
         deliveryAddress: (quotation as any).deliveryAddress || null,
-      });
+        ...convDuesOverrideFields,
+      } as any);
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
       for (const qi of quotationItems) {
@@ -2451,6 +2534,10 @@ export async function registerRoutes(
       }
 
       await storage.updateQuotation(req.params.id, { status: "accepted" });
+      if (convDuesOverrideFields.isDuesOverride) {
+        await logAction(req.user.id, "so_dues_override", "sales",
+          `SO ${orderNumber} (from quotation ${quotation.quoteNumber}) created despite ₹${convDuesOverrideFields.duesOverrideAmount} outstanding. Reason: ${convDuesOverrideFields.duesOverrideReason}`);
+      }
       await logAction(req.user.id, "create", "sales", `Converted quotation ${quotation.quoteNumber} to order ${orderNumber}`);
 
       res.status(201).json(order);
@@ -3127,19 +3214,37 @@ export async function registerRoutes(
       if (validItems.length === 0) return res.status(400).json({ message: "At least one valid line item is required" });
       await storage.deletePurchaseOrderItems(req.params.id);
       const created = [];
-      let total = 0;
+      // H3: Recompute header GST totals from items
+      let h3Subtotal = 0;
+      let h3TotalTax = 0;
       for (const item of validItems) {
+        const qty = Number(item.quantity);
+        const uc = Number(item.unitCost);
+        const gstRateItem = Number(item.gstRate ?? 0);
+        const taxableAmt = qty * uc;
+        const gstAmt = taxableAmt * gstRateItem / 100;
+        const itemTotalWithGst = taxableAmt + gstAmt;
+        h3Subtotal += taxableAmt;
+        h3TotalTax += gstAmt;
         const parsed = insertPurchaseOrderItemSchema.safeParse({
           ...item,
           purchaseOrderId: req.params.id,
-          totalCost: String(Number(item.quantity) * Number(item.unitCost)),
+          taxableAmount: taxableAmt.toFixed(2),
+          gstAmount: gstAmt.toFixed(2),
+          totalCost: itemTotalWithGst.toFixed(2),
         });
         if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
         const c = await storage.createPurchaseOrderItem(parsed.data as any);
         created.push(c);
-        total += Number(c.totalCost);
       }
-      await storage.updatePurchaseOrder(req.params.id, { totalAmount: String(total) } as any);
+      const h3DeliveryCost = Number(parentPo ? (parentPo as any).deliveryCost ?? 0 : 0);
+      const h3GrandTotal = h3Subtotal + h3TotalTax + h3DeliveryCost;
+      await storage.updatePurchaseOrder(req.params.id, {
+        totalAmount: h3Subtotal.toFixed(2),
+        subtotal: h3Subtotal.toFixed(2),
+        totalTax: h3TotalTax.toFixed(2),
+        grandTotal: h3GrandTotal.toFixed(2),
+      } as any);
 
       // Phase 6.6 C3: sync supplier_products.supplierPrice when PO line cost differs from current.
       // Sets lastPriceUpdatedAt, flips product.needsPricingReview, writes audit row.
@@ -4447,17 +4552,48 @@ export async function registerRoutes(
         }
       }
 
-      // Gate B: SO must be fully paid
+      // Gate B: SO must be fully paid — or admin credit override (C1)
+      const { creditOverride = false, creditReason = "" } = req.body ?? {};
       if (challan.orderId) {
         const so = await storage.getSalesOrder(challan.orderId);
         if (so) {
           const paid = Number((so as any).paidAmount ?? 0);
           const total = Number((so as any).totalAmount ?? 0);
           if (paid < total) {
-            return res.status(400).json({
-              message: "Customer payment incomplete",
-              outstanding: total - paid,
-            });
+            if (!creditOverride) {
+              return res.status(400).json({
+                message: "Customer payment incomplete",
+                outstanding: total - paid,
+              });
+            }
+            // Credit override path — admin only
+            if (req.user.role !== "admin") {
+              return res.status(403).json({ message: "Only admin can authorize credit dispatch" });
+            }
+            if (!creditReason || creditReason.trim().length < 10) {
+              return res.status(400).json({ message: "Credit reason must be at least 10 characters" });
+            }
+            const creditAmount = total - paid;
+            await db.execute(sql`
+              UPDATE delivery_challans
+              SET status = 'ready',
+                  ready_for_signature_at = now(),
+                  ready_for_signature_by = ${req.user.id},
+                  is_credit_override = true,
+                  credit_amount = ${creditAmount},
+                  credit_approved_by = ${req.user.id},
+                  credit_approved_at = now(),
+                  credit_reason = ${creditReason.trim()}
+              WHERE id = ${challan.id}
+            `);
+            await logAction(req.user.id, "challan_credit_override", "sales",
+              `Challan ${challan.challanNumber} ready-for-signature with credit override of ₹${creditAmount.toFixed(2)}. Reason: ${creditReason.trim()}`);
+            notifyRoles(["accountant"], "credit_override",
+              `Credit dispatch approved: Challan ${challan.challanNumber}`,
+              `Admin approved ₹${creditAmount.toFixed(2)} credit on Challan ${challan.challanNumber}. Reason: ${creditReason.trim()}`,
+              challan.id).catch(() => {});
+            const updated = await storage.getDeliveryChallan(challan.id);
+            return res.json(updated);
           }
         }
       }
@@ -4852,10 +4988,13 @@ export async function registerRoutes(
               totalCgst += cgst; totalSgst += sgst; totalIgst += igst; totalTax += tax;
               lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
             }
+            // G1: compute dueDate from customer payment_terms
+            const invoiceDate = new Date();
+            const invDueDate = computeDueDate(invoiceDate, cust?.payment_terms ?? null);
             const invoiceNumber = await storage.generateSalesInvoiceNumber();
             autoInvoice = await storage.createSalesInvoice({
               invoiceNumber,
-              invoiceDate: new Date(),
+              invoiceDate,
               customerId: resolvedCustomerId,
               soId: challan.orderId ?? null,
               challanId: challan.id,
@@ -4870,7 +5009,7 @@ export async function registerRoutes(
               grandTotal: String(subtotal + totalTax),
               creditedAmount: "0",
               status: "pending",
-              dueDate: null,
+              dueDate: invDueDate,
               notes: null,
               createdBy: req.user.id,
               uploadStatus: "pending_upload",
@@ -4970,21 +5109,30 @@ export async function registerRoutes(
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
       if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
 
-      // Gate (t): Supplier must be fully paid before receiving goods
-      const supplierPayments = await db.execute(sql`
+      // Gate (t): Supplier must be fully paid before receiving goods (D1: gate uses grand_total)
+      const supplierPaymentsRes = await db.execute(sql`
         SELECT COALESCE(SUM(amount), 0) as paid_amount
         FROM supplier_payments
         WHERE purchase_order_id = ${poId}
       `);
-      const paidAmount = Number((supplierPayments as any).rows?.[0]?.paid_amount ?? 0);
-      const totalAmount = Number(po.totalAmount ?? 0);
-      if (totalAmount > 0 && paidAmount < totalAmount) {
-        return res.status(400).json({
-          message: "Full supplier payment required before receiving goods",
-          paidAmount,
-          totalAmount,
-          outstanding: totalAmount - paidAmount,
-        });
+      const paidAmount = Number((supplierPaymentsRes as any).rows?.[0]?.paid_amount ?? 0);
+      const gateAmount = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
+      const { creditOverride: grnCreditOverride = false, creditReason: grnCreditReason = "" } = req.body ?? {};
+      if (gateAmount > 0 && paidAmount < gateAmount) {
+        if (!grnCreditOverride) {
+          return res.status(400).json({
+            message: "Full supplier payment required before receiving goods",
+            paidAmount,
+            totalAmount: gateAmount,
+            outstanding: gateAmount - paidAmount,
+          });
+        }
+        if (!["admin", "accountant"].includes(req.user.role)) {
+          return res.status(403).json({ message: "Only admin or accountant can authorize credit GRN" });
+        }
+        if (!grnCreditReason || grnCreditReason.trim().length < 10) {
+          return res.status(400).json({ message: "Credit reason must be at least 10 characters" });
+        }
       }
 
       const existingGrns = await storage.getGRNsByPO(poId);
@@ -5012,6 +5160,7 @@ export async function registerRoutes(
       const supplierChallanNumber = req.body?.supplierChallanNumber?.trim() || null;
       if (!supplierChallanNumber) return res.status(400).json({ message: "Supplier challan number is required to create a GRN" });
 
+      const isCreditGrn = grnCreditOverride && gateAmount > 0 && paidAmount < gateAmount;
       const grn = await storage.createGRN({
         grnNumber,
         purchaseOrderId: poId,
@@ -5023,6 +5172,13 @@ export async function registerRoutes(
         notes: req.body?.notes || null,
         createdBy: req.user.id,
         supplierChallanNumber,
+        ...(isCreditGrn ? {
+          isCreditOverride: true,
+          creditAmount: String(gateAmount - paidAmount),
+          creditApprovedBy: req.user.id,
+          creditApprovedAt: new Date(),
+          creditReason: grnCreditReason.trim(),
+        } : {}),
       } as any);
 
       if (productItems.length > 0) {
@@ -5039,6 +5195,14 @@ export async function registerRoutes(
         }
       }
 
+      if (isCreditGrn) {
+        await logAction(req.user.id, "grn_credit_override", "supply_chain",
+          `GRN ${grnNumber} created with credit override of ₹${(gateAmount - paidAmount).toFixed(2)} on PO ${po.poNumber}. Reason: ${grnCreditReason.trim()}`);
+        notifyRoles(["admin"], "credit_grn",
+          `Credit GRN authorized: ${grnNumber}`,
+          `${req.user.role === "accountant" ? "Accountant" : "Admin"} authorized credit GRN ${grnNumber} for ₹${(gateAmount - paidAmount).toFixed(2)} on PO ${po.poNumber}.`,
+          grn.id).catch(() => {});
+      }
       await logAction(req.user.id, "create", "grn", `Created draft GRN ${grnNumber} from PO ${po.poNumber}`);
       res.status(201).json(grn);
     } catch (error) {
@@ -5057,17 +5221,26 @@ export async function registerRoutes(
       if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
       if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
 
-      // D1: Supplier payment gate — full payment to supplier required
-      const supplierPayments = await storage.getSupplierPaymentsByPO(po.id);
-      const totalPaid = supplierPayments.reduce((sum: number, p: any) => sum + Number(p.amount), 0);
-      const poTotal = Number(po.totalAmount ?? 0);
-      if (poTotal > 0 && totalPaid < poTotal) {
-        return res.status(400).json({
-          message: "Cannot create GRN: full payment to supplier required before goods receipt",
-          totalPaid,
-          poTotal,
-          outstanding: poTotal - totalPaid,
-        });
+      // D1: Supplier payment gate — uses grand_total (tax-inclusive); supports credit override
+      const supplierPaymentsArr = await storage.getSupplierPaymentsByPO(po.id);
+      const totalPaid2 = supplierPaymentsArr.reduce((sum: number, p: any) => sum + Number(p.amount), 0);
+      const poGrandTotal = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
+      const { creditOverride: grnCreditOverride2 = false, creditReason: grnCreditReason2 = "" } = req.body ?? {};
+      if (poGrandTotal > 0 && totalPaid2 < poGrandTotal) {
+        if (!grnCreditOverride2) {
+          return res.status(400).json({
+            message: "Cannot create GRN: full payment to supplier required before goods receipt",
+            totalPaid: totalPaid2,
+            poTotal: poGrandTotal,
+            outstanding: poGrandTotal - totalPaid2,
+          });
+        }
+        if (!["admin", "accountant"].includes(req.user.role)) {
+          return res.status(403).json({ message: "Only admin or accountant can authorize credit GRN" });
+        }
+        if (!grnCreditReason2 || grnCreditReason2.trim().length < 10) {
+          return res.status(400).json({ message: "Credit reason must be at least 10 characters" });
+        }
       }
 
       const poGrns = await storage.getGRNsByPO(req.body.purchaseOrderId);
@@ -5084,18 +5257,34 @@ export async function registerRoutes(
       const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
 
       const rawDate = req.body.supplierChallanDate;
+      const isCreditGrn2 = grnCreditOverride2 && poGrandTotal > 0 && totalPaid2 < poGrandTotal;
       const body = {
         ...req.body,
         grnNumber,
         createdBy: req.user.id,
         supplierChallanDate: rawDate && rawDate !== "" ? new Date(rawDate) : undefined,
         supplierChallanNumber: req.body.supplierChallanNumber || undefined,
+        ...(isCreditGrn2 ? {
+          isCreditOverride: true,
+          creditAmount: String(poGrandTotal - totalPaid2),
+          creditApprovedBy: req.user.id,
+          creditApprovedAt: new Date(),
+          creditReason: grnCreditReason2.trim(),
+        } : {}),
       };
 
       const parsed = insertGoodsReceiptNoteSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
 
       const created = await storage.createGRN(parsed.data as any);
+      if (isCreditGrn2) {
+        await logAction(req.user.id, "grn_credit_override", "supply_chain",
+          `GRN ${grnNumber} created with credit override of ₹${(poGrandTotal - totalPaid2).toFixed(2)} on PO ${po.poNumber}. Reason: ${grnCreditReason2.trim()}`);
+        notifyRoles(["admin"], "credit_grn",
+          `Credit GRN authorized: ${grnNumber}`,
+          `${req.user.role === "accountant" ? "Accountant" : "Admin"} authorized credit GRN ${grnNumber} for ₹${(poGrandTotal - totalPaid2).toFixed(2)} on PO ${po.poNumber}.`,
+          created.id).catch(() => {});
+      }
       await logAction(req.user.id, "grn_drafted", "supply_chain", `Created GRN ${grnNumber} for PO ${po.poNumber}`);
       res.status(201).json(created);
     } catch (error) {
@@ -5342,6 +5531,54 @@ export async function registerRoutes(
 
       await logAction(req.user.id, "grn_confirmed", "supply_chain", `GRN ${grn.grnNumber} confirmed. Stock updated.`);
       notifyRoles(["admin", "accountant"], "grn", `GRN ${grn.grnNumber} Confirmed`, `GRN #${grn.grnNumber} confirmed. Stock updated.`, grn.id).catch(() => {});
+
+      // F1: Auto-create supplier invoice (pending_upload) if one doesn't already exist for this GRN
+      try {
+        const existingInvRes = await db.execute(sql`
+          SELECT id FROM supplier_invoices WHERE grn_id = ${grn.id} AND upload_status != 'cancelled' LIMIT 1
+        `);
+        if ((existingInvRes as any).rows?.length === 0) {
+          const grnPo = await storage.getPurchaseOrder(grn.purchaseOrderId);
+          const grnTotalAmount = grn.totalAmount ? Number(grn.totalAmount) : 0;
+          // Use PO grand_total as payable amount if available, else GRN total
+          const payableAmount = grnPo
+            ? Number((grnPo as any).grandTotal ?? grnPo.totalAmount ?? grnTotalAmount)
+            : grnTotalAmount;
+          const siYear = new Date().getFullYear();
+          const siMaxRes = await db.execute(sql`
+            SELECT invoice_number FROM supplier_invoices
+            WHERE invoice_number LIKE ${"SI-" + siYear + "-%"}
+            ORDER BY invoice_number DESC LIMIT 1
+          `);
+          const siMaxRow = (siMaxRes as any).rows?.[0] as { invoice_number?: string | null } | undefined;
+          let siNextNum = 1;
+          if (siMaxRow?.invoice_number) {
+            const parts = siMaxRow.invoice_number.split("-");
+            const lastNum = parseInt(parts[parts.length - 1], 10);
+            if (!isNaN(lastNum)) siNextNum = lastNum + 1;
+          }
+          const siAutoNumber = `SI-${siYear}-${String(siNextNum).padStart(4, "0")}`;
+          await db.execute(sql`
+            INSERT INTO supplier_invoices
+              (id, supplier_id, purchase_order_id, grn_id, invoice_number, invoice_date, total_amount, paid_amount,
+               status, upload_status, notes, created_at, updated_at)
+            VALUES
+              (gen_random_uuid(), ${grnPo?.supplierId ?? null}, ${grn.purchaseOrderId}, ${grn.id},
+               ${siAutoNumber}, CURRENT_DATE, ${payableAmount.toFixed(2)}, '0',
+               'pending', 'pending_upload', ${"Auto-created on GRN " + grn.grnNumber + " confirmation"},
+               now(), now())
+          `);
+          await logAction(req.user.id, "supplier_invoice_auto_created", "supply_chain",
+            `Auto-created supplier invoice ${siAutoNumber} (pending upload) for GRN ${grn.grnNumber}`);
+          notifyRoles(["admin", "accountant"], "supplier_invoice",
+            `Supplier Invoice Pending: ${siAutoNumber}`,
+            `Invoice ${siAutoNumber} auto-created for GRN ${grn.grnNumber}. Please upload the supplier's signed invoice.`,
+            grn.id).catch(() => {});
+        }
+      } catch (siErr) {
+        console.error("F1 auto-create supplier invoice error:", siErr);
+        // Non-fatal — GRN is confirmed regardless
+      }
 
       // Auto-create daily price sheets for products received in this GRN
       try {
@@ -5941,7 +6178,9 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Cannot convert to PO — no price found for: ${names}. Edit the purchase request to set unit costs, or add these products to the supplier's catalog.` });
       }
 
-      let totalAmount = 0;
+      // H1: Snapshot GST per item from product catalog
+      let poSubtotal = 0;
+      let poTotalTax = 0;
       const poItemsData = prItems.map(item => {
         const sp = supplierProds.find((sp: any) => sp.productId === item.productId);
         const product = productMap.get(item.productId);
@@ -5952,16 +6191,28 @@ export async function registerRoutes(
             : product?.costPrice && parseFloat(product.costPrice) > 0
               ? parseFloat(product.costPrice)
               : 0;
-        const itemTotal = unitCost * item.shortfallQuantity;
-        totalAmount += itemTotal;
+        const gstRate = parseFloat((product as any)?.gstRate ?? "0") || 0;
+        const hsnCode = (product as any)?.hsnCode ?? null;
+        const taxableAmt = unitCost * item.shortfallQuantity;
+        const gstAmt = taxableAmt * gstRate / 100;
+        const itemTotal = taxableAmt + gstAmt;
+        poSubtotal += taxableAmt;
+        poTotalTax += gstAmt;
         return {
           productId: item.productId,
           description: item.description || product?.name || "",
           quantity: item.shortfallQuantity,
           unitCost: unitCost.toFixed(2),
           totalCost: itemTotal.toFixed(2),
+          gstRate: gstRate.toFixed(2),
+          hsnCode,
+          taxableAmount: taxableAmt.toFixed(2),
+          gstAmount: gstAmt.toFixed(2),
         };
       });
+
+      const poDeliveryCost = 0;
+      const poGrandTotal = poSubtotal + poTotalTax + poDeliveryCost;
 
       const deliveryType = req.body?.deliveryType === "direct_delivery" ? "direct_delivery" : "warehouse";
 
@@ -5984,17 +6235,21 @@ export async function registerRoutes(
         supplierId: pr.supplierId,
         status: "pending",
         deliveryType,
-        totalAmount: totalAmount.toFixed(2),
+        totalAmount: poSubtotal.toFixed(2),
         expectedDelivery,
         notes: `Generated from purchase request ${pr.requestNumber}`,
         deliveryAddress,
+        subtotal: poSubtotal.toFixed(2),
+        totalTax: poTotalTax.toFixed(2),
+        deliveryCost: "0",
+        grandTotal: poGrandTotal.toFixed(2),
       } as any);
 
       for (const poItem of poItemsData) {
         await storage.createPurchaseOrderItem({
           purchaseOrderId: po.id,
           ...poItem,
-        });
+        } as any);
       }
 
       await storage.updatePurchaseRequest(pr.id, {
@@ -7008,9 +7263,10 @@ export async function registerRoutes(
       const inv = await storage.getSupplierInvoice(req.params.id);
       if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
 
-      const allowed = ["status", "notes", "paymentTerms", "dueDate", "subtotal", "taxAmount", "totalAmount", "invoiceDate"];
+      const allowed = ["status", "notes", "paymentTerms", "dueDate", "subtotal", "taxAmount", "totalAmount", "invoiceDate", "invoiceNumber", "uploadStatus", "cancelledAt"];
       const validStatuses = ["pending", "partial_paid", "paid"];
-      const validTerms = ["immediate", "net_30", "net_60"];
+      const validUploadStatuses = ["pending_upload", "uploaded", "recorded", "cancelled"];
+      const validTerms = ["immediate", "net_7", "net_15", "net_30", "net_45", "net_60", "net_90"];
 
       const updates: Record<string, unknown> = {};
       for (const key of allowed) {
@@ -7018,6 +7274,12 @@ export async function registerRoutes(
       }
       if (updates.status && !validStatuses.includes(updates.status as string)) {
         return res.status(400).json({ message: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
+      }
+      if (updates.uploadStatus && !validUploadStatuses.includes(updates.uploadStatus as string)) {
+        return res.status(400).json({ message: `Invalid uploadStatus. Must be one of: ${validUploadStatuses.join(", ")}` });
+      }
+      if (updates.uploadStatus === "cancelled") {
+        updates.cancelledAt = new Date();
       }
       if (updates.paymentTerms && !validTerms.includes(updates.paymentTerms as string)) {
         return res.status(400).json({ message: `Invalid paymentTerms. Must be one of: ${validTerms.join(", ")}` });
@@ -7202,6 +7464,13 @@ export async function registerRoutes(
         await recomputeInvoiceStatus(supplierInvoiceId);
       }
 
+      // I1: Audit log for supplier payment recording
+      const payRef = paymentType === "advance"
+        ? `advance on PO ${purchaseOrderId}`
+        : `regular payment on invoice ${supplierInvoiceId}`;
+      await logAction((req as any).user?.id, "supplier_payment_recorded", "supply_chain",
+        `Supplier payment ₹${amountNum.toFixed(2)} (${paymentType}) recorded for supplier ${supplierId} — ${payRef}`);
+
       res.status(201).json(pay);
     } catch (error: any) {
       res.status(500).json({ message: error.message || "Failed to record supplier payment" });
@@ -7308,6 +7577,8 @@ export async function registerRoutes(
           daysOverdue,
           bucket,
           status: inv.status,
+          isCreditGrn: !!(inv as any).isCreditGrn,
+          uploadStatus: (inv as any).uploadStatus ?? "pending_upload",
         };
       });
 

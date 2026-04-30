@@ -354,6 +354,9 @@ export interface IStorage {
   createCustomerPayment(data: Omit<CustomerPayment, "id" | "createdAt">): Promise<CustomerPayment>;
   deleteCustomerPayment(id: string): Promise<boolean>;
 
+  // Phase 4A — outstanding dues query (E1)
+  getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }>;
+
   // Invoice Number Generation
   generateSalesInvoiceNumber(): Promise<string>;
 
@@ -1592,6 +1595,33 @@ export class DatabaseStorage implements IStorage {
   async deleteCustomerPayment(id: string): Promise<boolean> {
     await db.delete(customerPayments).where(eq(customerPayments.id, id));
     return true;
+  }
+
+  async getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }> {
+    const invRows = await db.execute(sql`
+      SELECT id, invoice_number, invoice_date, grand_total
+      FROM sales_invoices
+      WHERE customer_id = ${customerId}
+        AND status NOT IN ('cancelled')
+        AND upload_status NOT IN ('cancelled')
+      ORDER BY invoice_date ASC
+    `);
+    const totalPaidRow = await db.execute(sql`
+      SELECT COALESCE(SUM(amount), 0) as total_paid
+      FROM customer_payments
+      WHERE customer_id = ${customerId}
+    `);
+    const totalInvoiced = (invRows.rows as any[]).reduce((s: number, r: any) => s + Number(r.grand_total ?? 0), 0);
+    const totalPaid = Number((totalPaidRow.rows[0] as any)?.total_paid ?? 0);
+    const outstanding = Math.max(0, totalInvoiced - totalPaid);
+    const invoices = (invRows.rows as any[]).map((r: any) => ({
+      id: r.id,
+      invoiceNumber: r.invoice_number,
+      invoiceDate: r.invoice_date,
+      grandTotal: Number(r.grand_total ?? 0),
+      balance: Number(r.grand_total ?? 0),
+    }));
+    return { outstanding, invoices };
   }
 
   async generateSalesInvoiceNumber(): Promise<string> {

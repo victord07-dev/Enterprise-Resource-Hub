@@ -46,6 +46,8 @@ export const suppliers = pgTable("suppliers", {
   gstNumber: text("gst_number"),
   contactPerson: text("contact_person"),
   category: text("category"),
+  // Phase 4A — payment terms for AP aging & credit control
+  paymentTerms: text("payment_terms").notNull().default("net_30"),
 });
 
 export const products = pgTable("products", {
@@ -160,6 +162,12 @@ export const salesOrders = pgTable("sales_orders", {
   deliveryAddress: text("delivery_address"),
   warehouseId: varchar("warehouse_id").references(() => warehouses.id),
   subsidyScheme: text("subsidy_scheme").notNull().default("none"),
+  // Phase 4A — outstanding dues override fields (E2)
+  isDuesOverride: boolean("is_dues_override").notNull().default(false),
+  duesOverrideAmount: decimal("dues_override_amount", { precision: 12, scale: 2 }),
+  duesOverrideBy: varchar("dues_override_by"),
+  duesOverrideAt: timestamp("dues_override_at"),
+  duesOverrideReason: text("dues_override_reason"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -235,6 +243,11 @@ export const purchaseOrders = pgTable("purchase_orders", {
   cancellationRequestedBy: varchar("cancellation_requested_by"),
   cancellationRequestedAt: timestamp("cancellation_requested_at"),
   advancePaid: decimal("advance_paid", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Phase 4A — GST-inclusive header totals (H3)
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }),
+  totalTax: decimal("total_tax", { precision: 12, scale: 2 }),
+  deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
+  grandTotal: decimal("grand_total", { precision: 12, scale: 2 }),
 });
 
 export const invoices = pgTable("invoices", {
@@ -441,6 +454,11 @@ export const purchaseOrderItems = pgTable("purchase_order_items", {
   quantity: integer("quantity").notNull(),
   unitCost: decimal("unit_cost", { precision: 12, scale: 2 }).notNull(),
   totalCost: decimal("total_cost", { precision: 12, scale: 2 }).notNull(),
+  // Phase 4A — GST snapshot per line (H1/H2)
+  hsnCode: text("hsn_code"),
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  taxableAmount: decimal("taxable_amount", { precision: 12, scale: 2 }),
+  gstAmount: decimal("gst_amount", { precision: 12, scale: 2 }),
 });
 
 export const stockMovements = pgTable("stock_movements", {
@@ -495,6 +513,12 @@ export const deliveryChallans = pgTable("delivery_challans", {
   driverPhone: text("driver_phone"),
   doIssuedAt: timestamp("do_issued_at"),
   doIssuedBy: varchar("do_issued_by"),
+  // Phase 4A — credit override fields (C1)
+  isCreditOverride: boolean("is_credit_override").notNull().default(false),
+  creditAmount: decimal("credit_amount", { precision: 12, scale: 2 }),
+  creditApprovedBy: varchar("credit_approved_by"),
+  creditApprovedAt: timestamp("credit_approved_at"),
+  creditReason: text("credit_reason"),
 });
 
 export const deliveryChallanItems = pgTable("delivery_challan_items", {
@@ -566,6 +590,12 @@ export const goodsReceiptNotes = pgTable("goods_receipt_notes", {
   cancelledAt: timestamp("cancelled_at"),
   cancelledBy: varchar("cancelled_by"),
   cancellationReason: text("cancellation_reason"),
+  // Phase 4A — credit override fields (D1)
+  isCreditOverride: boolean("is_credit_override").notNull().default(false),
+  creditAmount: decimal("credit_amount", { precision: 12, scale: 2 }),
+  creditApprovedBy: varchar("credit_approved_by"),
+  creditApprovedAt: timestamp("credit_approved_at"),
+  creditReason: text("credit_reason"),
 });
 
 export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
@@ -583,23 +613,35 @@ export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
 
 export const supplierInvoices = pgTable("supplier_invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  invoiceNumber: text("invoice_number").notNull(),
+  // Phase 4A: nullable — filled by accountant via Mark as Recorded (auto-created invoices start NULL)
+  invoiceNumber: text("invoice_number"),
   supplierId: varchar("supplier_id").notNull(),
   purchaseOrderId: varchar("purchase_order_id"),
   grnId: varchar("grn_id"),
   invoiceDate: timestamp("invoice_date").notNull().defaultNow(),
-  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),
+  // nullable — filled at Mark as Recorded stage for auto-created invoices
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }),
   taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
-  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull(),
+  totalAmount: decimal("total_amount", { precision: 12, scale: 2 }),
   paymentTerms: text("payment_terms").notNull().default("net_30"),
   dueDate: timestamp("due_date"),
   status: text("status").notNull().default("pending"),
   notes: text("notes"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
-}, (table) => ({
-  supplierInvoiceUnique: uniqueIndex("supplier_invoice_number_supplier_idx").on(table.supplierId, table.invoiceNumber),
-}));
+  // Phase 4A — upload shell lifecycle (F1/F3)
+  uploadStatus: text("upload_status").notNull().default("pending_upload"),
+  signedCopyUrl: text("signed_copy_url"),
+  signedCopyUploadedBy: varchar("signed_copy_uploaded_by"),
+  signedCopyUploadedAt: timestamp("signed_copy_uploaded_at"),
+  // Phase 4A — credit GRN linkage (F1/J2)
+  isCreditGrn: boolean("is_credit_grn").notNull().default(false),
+  creditAmount: decimal("credit_amount", { precision: 12, scale: 2 }),
+  // Phase 4A — cancellation fields (F4)
+  cancelledAt: timestamp("cancelled_at"),
+  cancelledBy: varchar("cancelled_by"),
+  cancellationReason: text("cancellation_reason"),
+});
 
 export const supplierPayments = pgTable("supplier_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

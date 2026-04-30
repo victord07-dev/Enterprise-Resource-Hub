@@ -201,14 +201,15 @@ function buildPdf(
 
   const lineGsts: LineGst[] = items.map(item => {
     const prod = item.productId ? productMap.get(item.productId) : undefined;
-    const gstRate   = prod ? Number(prod.gstRate) : 0;
-    const hsn       = prod?.hsnCode ?? "";
     const unit      = prod?.unit ?? "pcs";
     const qty       = Number(item.quantity);
     const unitCost  = Number(item.unitCost);
     const disc      = 0;
-    const taxable   = qty * unitCost * (1 - disc / 100);
-    const gstAmt    = Math.round(taxable * gstRate) / 100;
+    // H6: prefer snapshotted GST data on item; fall back to product catalog
+    const gstRate   = (item as any).gstRate != null ? Number((item as any).gstRate) : (prod ? Number(prod.gstRate) : 0);
+    const hsn       = (item as any).hsnCode ?? prod?.hsnCode ?? "";
+    const taxable   = (item as any).taxableAmount != null ? Number((item as any).taxableAmount) : qty * unitCost * (1 - disc / 100);
+    const gstAmt    = (item as any).gstAmount != null ? Number((item as any).gstAmount) : Math.round(taxable * gstRate) / 100;
     const total     = taxable + gstAmt;
     return { taxable, gstRate, gstAmt, total, hsn, unit, disc };
   });

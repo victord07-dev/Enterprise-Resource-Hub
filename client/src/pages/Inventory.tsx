@@ -252,6 +252,10 @@ export default function Inventory() {
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
   const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
+  // C2: Credit override dialog state
+  const [creditOverrideDialog, setCreditOverrideDialog] = useState<{ challanId: string; challanNumber: string; outstanding: number } | null>(null);
+  const [creditOverrideReason, setCreditOverrideReason] = useState("");
+
   // Challan lifecycle dialog state
   const [challanSignedCopyDialog, setChallanSignedCopyDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
   const [challanCancelDialog, setChallanCancelDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
@@ -408,16 +412,39 @@ export default function Inventory() {
   });
 
   const readyForSignatureMutation = useMutation({
-    mutationFn: async (challanId: string) => {
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/ready-for-signature`);
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed"); }
+    mutationFn: async ({ challanId, creditOverride, creditReason }: { challanId: string; creditOverride?: boolean; creditReason?: string }) => {
+      const body: any = {};
+      if (creditOverride) { body.creditOverride = true; body.creditReason = creditReason; }
+      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/ready-for-signature`, body);
+      if (!res.ok) {
+        const e = await res.json();
+        if (res.status === 400 && e.outstanding) {
+          // Payment incomplete — surface to credit override dialog (handled in onError)
+          const err: any = new Error(e.message || "Payment incomplete");
+          err.outstanding = e.outstanding;
+          err.challanId = challanId;
+          throw err;
+        }
+        throw new Error(e.message || "Failed");
+      }
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      setCreditOverrideDialog(null);
+      setCreditOverrideReason("");
       toast({ title: "Challan marked ready for signature" });
     },
-    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+    onError: (e: any) => {
+      if (e.outstanding !== undefined && e.challanId) {
+        // Open credit override dialog — only if admin (backend enforces it too)
+        const challan = (deliveryChallans ?? []).find(c => c.id === e.challanId);
+        setCreditOverrideDialog({ challanId: e.challanId, challanNumber: challan?.challanNumber ?? e.challanId, outstanding: e.outstanding });
+        setCreditOverrideReason("");
+      } else {
+        toast({ title: "Error", description: e.message, variant: "destructive" });
+      }
+    },
   });
 
   const issueDeliveryOrderMutation = useMutation({
@@ -1505,7 +1532,7 @@ export default function Inventory() {
                                       variant="outline"
                                       data-testid={`button-ready-sig-challan-${challan.id}`}
                                       disabled={readyForSignatureMutation.isPending}
-                                      onClick={() => readyForSignatureMutation.mutate(challan.id)}
+                                      onClick={() => readyForSignatureMutation.mutate({ challanId: challan.id })}
                                     >
                                       <PenLine className="w-3 h-3 mr-1" /> Ready
                                     </Button>
@@ -2567,6 +2594,49 @@ export default function Inventory() {
               onClick={() => { if (challanSignedCopyDialog && challanSignedCopyFile) uploadChallanSignedCopyMutation.mutate({ challanId: challanSignedCopyDialog.challanId, file: challanSignedCopyFile }); }}
             >
               {uploadChallanSignedCopyMutation.isPending ? "Uploading..." : "Upload"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── C2: Credit Override Dialog (admin-only credit dispatch) ─────── */}
+      <Dialog open={!!creditOverrideDialog} onOpenChange={(o) => { if (!o) { setCreditOverrideDialog(null); setCreditOverrideReason(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Credit Dispatch Authorization</DialogTitle>
+            <DialogDescription>
+              Challan <strong>{creditOverrideDialog?.challanNumber}</strong> has an outstanding customer balance of{" "}
+              <strong>₹{creditOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>.
+              As admin, you can authorize dispatch on credit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="credit-override-reason">Credit Authorization Reason <span className="text-red-500">*</span> <span className="text-muted-foreground text-xs">(min 10 chars)</span></Label>
+            <Textarea
+              id="credit-override-reason"
+              data-testid="input-credit-override-reason"
+              value={creditOverrideReason}
+              onChange={(e) => setCreditOverrideReason(e.target.value)}
+              placeholder="e.g. Trusted long-term customer, payment promised by DD/MM. Authorized by GM."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCreditOverrideDialog(null); setCreditOverrideReason(""); }}>Cancel</Button>
+            <Button
+              data-testid="button-confirm-credit-override"
+              disabled={creditOverrideReason.trim().length < 10 || readyForSignatureMutation.isPending}
+              onClick={() => {
+                if (creditOverrideDialog) {
+                  readyForSignatureMutation.mutate({
+                    challanId: creditOverrideDialog.challanId,
+                    creditOverride: true,
+                    creditReason: creditOverrideReason.trim(),
+                  });
+                }
+              }}
+            >
+              {readyForSignatureMutation.isPending ? "Authorizing..." : "Authorize Credit Dispatch"}
             </Button>
           </DialogFooter>
         </DialogContent>

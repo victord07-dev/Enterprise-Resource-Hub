@@ -12,6 +12,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1525,18 +1526,68 @@ export default function Inventory() {
                                     <Download className="w-3 h-3" />
                                   </Button>
 
-                                  {/* Draft → Ready for Signature */}
-                                  {challan.status === "draft" && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      data-testid={`button-ready-sig-challan-${challan.id}`}
-                                      disabled={readyForSignatureMutation.isPending}
-                                      onClick={() => readyForSignatureMutation.mutate({ challanId: challan.id })}
-                                    >
-                                      <PenLine className="w-3 h-3 mr-1" /> Ready
-                                    </Button>
-                                  )}
+                                  {/* Draft → Ready for Signature (SO-outstanding-aware) */}
+                                  {challan.status === "draft" && (() => {
+                                    const linkedSO = (salesOrders ?? []).find(o => o.id === challan.orderId);
+                                    const soOutstanding = linkedSO
+                                      ? Math.max(0, Number((linkedSO as any).totalAmount ?? 0) - Number((linkedSO as any).paidAmount ?? 0))
+                                      : 0;
+                                    const needsCredit = soOutstanding > 0;
+
+                                    if (needsCredit && isAdmin) {
+                                      return (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                                          data-testid={`button-ready-sig-challan-${challan.id}`}
+                                          disabled={readyForSignatureMutation.isPending}
+                                          onClick={() => {
+                                            setCreditOverrideDialog({ challanId: challan.id, challanNumber: challan.challanNumber, outstanding: soOutstanding });
+                                            setCreditOverrideReason("");
+                                          }}
+                                        >
+                                          <PenLine className="w-3 h-3 mr-1" /> Ready (Credit)
+                                        </Button>
+                                      );
+                                    }
+
+                                    if (needsCredit && !isAdmin) {
+                                      return (
+                                        <TooltipProvider>
+                                          <Tooltip>
+                                            <TooltipTrigger asChild>
+                                              <span data-testid={`button-ready-sig-challan-${challan.id}`} className="inline-block">
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  disabled
+                                                  className="pointer-events-none"
+                                                >
+                                                  <PenLine className="w-3 h-3 mr-1" /> Ready
+                                                </Button>
+                                              </span>
+                                            </TooltipTrigger>
+                                            <TooltipContent side="top">
+                                              Credit override required — contact admin (₹{soOutstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })} outstanding)
+                                            </TooltipContent>
+                                          </Tooltip>
+                                        </TooltipProvider>
+                                      );
+                                    }
+
+                                    return (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        data-testid={`button-ready-sig-challan-${challan.id}`}
+                                        disabled={readyForSignatureMutation.isPending}
+                                        onClick={() => readyForSignatureMutation.mutate({ challanId: challan.id })}
+                                      >
+                                        <PenLine className="w-3 h-3 mr-1" /> Ready
+                                      </Button>
+                                    );
+                                  })()}
 
                                   {/* Ready → Issue Delivery Order (admin only) */}
                                   {challan.status === "ready" && isAdmin && (

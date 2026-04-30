@@ -1529,6 +1529,9 @@ export default function Inventory() {
                                   {/* Draft → Ready for Signature (SO-outstanding-aware) */}
                                   {challan.status === "draft" && (() => {
                                     const linkedSO = (salesOrders ?? []).find(o => o.id === challan.orderId);
+                                    if (challan.challanNumber === "DC-2026-0018") {
+                                      console.log("[K3DEBUG] DC-2026-0018 orderId:", challan.orderId, "salesOrders count:", (salesOrders ?? []).length, "linkedSO:", linkedSO?.id, "totalAmount:", (linkedSO as any)?.totalAmount, "paidAmount:", (linkedSO as any)?.paidAmount);
+                                    }
                                     const soOutstanding = linkedSO
                                       ? Math.max(0, Number((linkedSO as any).totalAmount ?? 0) - Number((linkedSO as any).paidAmount ?? 0))
                                       : 0;

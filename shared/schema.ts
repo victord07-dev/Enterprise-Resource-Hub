@@ -24,6 +24,8 @@ export const customers = pgTable("customers", {
   gstNumber: text("gst_number"),
   contactPerson: text("contact_person"),
   customerType: text("customer_type").notNull().default("end_user"),
+  // Phase 4A — payment terms for credit control & dueDate computation
+  paymentTerms: text("payment_terms").notNull().default("immediate"),
 });
 
 export const brands = pgTable("brands", {

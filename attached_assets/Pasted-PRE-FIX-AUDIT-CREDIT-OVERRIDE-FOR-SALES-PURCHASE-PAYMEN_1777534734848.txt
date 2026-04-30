@@ -1,0 +1,259 @@
+PRE-FIX AUDIT — CREDIT OVERRIDE FOR SALES & PURCHASE PAYMENT GATES
+
+CEO has confirmed that:
+1. Sometimes ITFI dispatches sales orders without 100% customer payment
+   (credit sales to trusted customers)
+2. Sometimes ITFI receives goods (GRN) without 100% supplier payment
+   (taking goods on credit from trusted suppliers)
+
+The current Phase 1 hard-block gates need to change to allow controlled
+override-with-reason. Before I design the fix plan, I need a thorough
+audit of every place these gates exist and every related code path.
+
+This is investigation only. DO NOT change any code. DO NOT propose
+solutions. Report findings only.
+
+==========================================================
+SECTION 1 — SALES SIDE: PAYMENT GATE LOCATIONS
+==========================================================
+
+1.1 Find every place sales-side payment is checked:
+    - Search for: "paidAmount", "paid_amount", "fully paid", "payment
+      incomplete", "Customer payment", "100%", "outstanding"
+    - Report file path + line number + the surrounding 5-10 lines of
+      code for each match
+    - For each match: classify as either (a) a hard-block gate, (b)
+      an information display, (c) a notification/audit trigger, or
+      (d) something else
+
+1.2 Specifically for Mark Ready transition (challan draft → ready):
+    - Exact file + line number of the gate check
+    - Exact code: `if (paidAmount < totalAmount) { block }`
+    - What error message is returned?
+    - Which roles are checked?
+    - Is there ANY existing override path? (admin bypass, force flag,
+      etc.)
+
+1.3 Are there other places where customer payment is enforced as a
+    gate?
+    - At dispatch step? (challan do_issued → dispatched)
+    - At sales order status changes?
+    - At quotation finalization?
+    - At any document download/PDF generation?
+    - Report each instance.
+
+1.4 Sales Order schema relevant to credit:
+    - SQL: SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name = 'sales_orders';
+    - Is there ANY field indicating "this order was extended on
+      credit" or "credit terms negotiated"?
+    - Is there a notes/comments field that might be used informally?
+
+==========================================================
+SECTION 2 — PURCHASE SIDE: PAYMENT GATE LOCATIONS
+==========================================================
+
+2.1 Find every place purchase-side payment is checked:
+    - Search for: "supplier_payments", "advancePaid", "Full supplier
+      payment", "supplier payment required", "outstanding supplier"
+    - Report file path + line number + surrounding code for each match
+    - Classify each (gate, display, notification, etc.)
+
+2.2 Specifically for GRN creation (Gate D1):
+    - Exact file + line number
+    - Exact code: `sum(supplier_payments) >= po.totalAmount`
+    - Error message returned
+    - Roles checked
+    - Any existing override path?
+
+2.3 Other places supplier payment is enforced:
+    - At GRN confirm step?
+    - At PO approval?
+    - At supplier invoice creation?
+    - Report each instance.
+
+2.4 Purchase Order schema relevant to credit:
+    - SQL: SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name = 'purchase_orders';
+    - Is there a field for credit terms taken from supplier?
+    - Is there a notes/comments field used for this?
+    - Confirm: po.advancePaid is the only payment-tracking field on
+      the PO row itself, with detail in supplier_payments table?
+
+==========================================================
+SECTION 3 — CUSTOMER & SUPPLIER MASTER DATA
+==========================================================
+
+3.1 Customers table — what's the existing structure?
+    - SQL: SELECT column_name, data_type, is_nullable FROM
+      information_schema.columns WHERE table_name = 'customers'
+      ORDER BY ordinal_position;
+    - Are there any existing credit-related fields? (credit_limit,
+      payment_terms, credit_days, payment_grade, etc.)
+    - What customer types exist? SQL: SELECT DISTINCT customer_type,
+      COUNT(*) FROM customers GROUP BY customer_type;
+
+3.2 Suppliers table — same investigation:
+    - SQL: SELECT column_name, data_type, is_nullable FROM
+      information_schema.columns WHERE table_name = 'suppliers'
+      ORDER BY ordinal_position;
+    - Existing credit-related fields?
+
+3.3 Are there separate credit_terms or payment_terms tables linked to
+    customers/suppliers?
+    - SQL: SELECT table_name FROM information_schema.tables WHERE
+      table_schema = 'public' AND (
+        table_name LIKE '%credit%' OR
+        table_name LIKE '%term%'
+      );
+
+==========================================================
+SECTION 4 — EXISTING OVERRIDE PATTERNS IN THE CODEBASE
+==========================================================
+
+4.1 The codebase has existing override-with-reason patterns. Find them:
+    - Strict floor override on /pricing (per recent investigation)
+    - Below-floor block on quotations/SOs (the pricing engine)
+    - Any other "save anyway with reason" flows?
+    - Report file paths and the code patterns used
+
+4.2 For each existing override pattern, document:
+    - What field stores the override reason? (column name)
+    - Is there a separate override_by, override_at audit field?
+    - How is it logged in audit_logs?
+    - Is there a notification triggered?
+    - What role is allowed to override?
+
+4.3 This is reference for designing the credit override pattern
+    consistently. Identify the cleanest existing pattern that can
+    be mirrored.
+
+==========================================================
+SECTION 5 — NOTIFICATION & AUDIT INFRASTRUCTURE
+==========================================================
+
+5.1 Confirm the Phase 1 notification helper signature still applies:
+    - File location of storage.createNotification
+    - Required fields, optional fields
+    - relatedId pattern for deep-linking
+
+5.2 Audit log helper:
+    - Confirm logAction signature
+    - Where is it called for sales-side actions today?
+    - Where for purchase-side?
+
+5.3 What audit_logs entries already exist for payment-related events?
+    - SQL: SELECT DISTINCT action FROM audit_logs WHERE action LIKE
+      '%payment%' OR action LIKE '%paid%' OR action LIKE '%credit%';
+
+==========================================================
+SECTION 6 — UI FLOWS THAT WILL CHANGE
+==========================================================
+
+6.1 Sales — Mark Ready button location:
+    - Where in Inventory.tsx is the Mark Ready button?
+    - What component renders it?
+    - What does the button currently do? (mutation called, on success)
+    - When is it disabled? (conditions)
+    - What tooltip/error shows on disabled state?
+
+6.2 Purchase — Create GRN button location:
+    - Where in Inventory.tsx (or SupplyChain.tsx) is the Create GRN
+      flow?
+    - PO detail panel where "Receive Goods" appears?
+    - When is it disabled?
+    - What error shows for incomplete payment?
+
+6.3 Existing override UI patterns:
+    - Where in the UI is the strict floor override (with reason text
+      box)?
+    - Take note of the visual pattern: button → modal? Inline expand?
+      Toast confirmation?
+
+==========================================================
+SECTION 7 — DATA INTEGRITY CONSIDERATIONS
+==========================================================
+
+7.1 Existing data state:
+    - SQL: SELECT COUNT(*) FROM sales_orders WHERE paid_amount 
+      total_amount;
+      (How many SOs are partially paid right now?)
+    - SQL: SELECT COUNT(*) FROM delivery_challans WHERE status IN
+      ('ready', 'do_issued', 'dispatched');
+    - SQL: SELECT COUNT(*) FROM purchase_orders WHERE advance_paid 
+      total_amount;
+    - SQL: SELECT COUNT(*) FROM grns WHERE status='confirmed';
+
+7.2 If we change the payment gate to allow override, are any in-flight
+    workflows at risk?
+    - Are there draft/ready/do_issued challans tied to unpaid SOs that
+      would need re-evaluation?
+    - Are there draft GRNs tied to unpaid POs?
+
+==========================================================
+SECTION 8 — REPORTING IMPLICATIONS
+==========================================================
+
+8.1 If credit dispatches and credit GRNs are now allowed:
+    - Will the existing AR Aging report at /reports show these
+      receivables correctly?
+    - What's the data flow: customer_payments < sales_invoices.grandTotal
+      → AR Aging shows balance?
+    - For sales invoice creation on dispatch — does the auto-create
+      happen regardless of payment status, or only when paid?
+    - Same for AP Aging on the supplier side.
+
+8.2 Sales invoice schema today:
+    - Does sales_invoices.dueDate exist?
+    - Is it auto-set on creation? (per audit: NO — set to null)
+    - This affects whether credit dispatches will surface correctly
+      in AR aging.
+
+==========================================================
+SECTION 9 — CONFIRM ASSUMPTIONS FROM PRIOR INVESTIGATIONS
+==========================================================
+
+9.1 Re-verify these from the recent comprehensive audit:
+    - Customer payment_terms field on customers: still doesn't exist?
+    - Supplier payment_terms field on suppliers: still doesn't exist?
+    - cash_accounts table: still doesn't exist?
+    - sales_invoices.dueDate is null in 2 of 3 rows?
+    - 0 rows in supplier_invoices?
+    - GRN payment gate uses supplier_payments rows, NOT po.advancePaid?
+
+==========================================================
+SECTION 10 — UNKNOWNS & EDGE CASES
+==========================================================
+
+10.1 What happens to a credit-dispatched challan in the sales flow?
+    - Does sales_invoice still auto-create on dispatch?
+    - Does it have a meaningful dueDate?
+    - How will accountant/CEO know this is a credit transaction vs
+      a normal one?
+
+10.2 What about partial payments?
+    - Can a customer pay 50% upfront, take goods on credit, pay rest
+      later?
+    - Currently: SO.paidAmount accumulates. Does the system handle
+      partial payment correctly today?
+    - SQL: SELECT id, total_amount, paid_amount FROM sales_orders
+      WHERE paid_amount > 0 AND paid_amount < total_amount LIMIT 5;
+
+10.3 If CEO/admin overrides the gate, can the override be reversed?
+    - If override was wrong, can the challan be moved back to draft?
+    - Or does the action become permanent?
+
+==========================================================
+DELIVERABLE FORMAT
+==========================================================
+
+Report findings in one consolidated message structured by section.
+For each SQL query: report the result.
+For each file/line lookup: provide the actual code snippet.
+For each architectural question: describe the current pattern.
+
+At the end of each section, add a "Flags" subsection listing anything
+unexpected or worth highlighting for the fix design.
+
+Estimated effort: 1-2 hours of focused investigation. Take the time —
+the quality of the credit override design depends on this audit.

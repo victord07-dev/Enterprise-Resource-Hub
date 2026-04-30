@@ -1,0 +1,46 @@
+Good — confirms AR and AP aging logic exists. Before Phase 4, I need
+to know what's already built UI-side and what's missing. Investigate:
+
+1. AR Aging — is there an existing UI page showing the report? If
+   yes:
+   - What page route? Screenshot it.
+   - What columns are shown?
+   - Can it be filtered by date range, customer, status?
+   - Can it be exported (CSV/PDF)?
+   If no → just exists as backend logic, never surfaced.
+
+2. AP Aging — same questions. Where is it surfaced in UI today?
+
+3. Sales Invoice and Supplier Invoice tables — confirm dueDate field
+   exists and has good data for existing invoices. SQL:
+   SELECT COUNT(*), COUNT(due_date) FROM sales_invoices;
+   SELECT COUNT(*), COUNT(due_date) FROM supplier_invoices;
+   If most rows have NULL due_date, the aging report will be useless
+   without backfilling.
+
+4. How is dueDate set today? Is it:
+   - Auto-calculated from invoice date + payment terms?
+   - Manually entered by accountant?
+   - Defaulted to invoice date (i.e., always due immediately)?
+   If manual → operational discipline issue worth knowing.
+
+5. Supplier_invoices table — is this populated automatically when GRN
+   confirms? Or does accountant have to manually create supplier
+   invoice entries? If manual, how often does it actually happen?
+   SQL: SELECT COUNT(*) FROM supplier_invoices;
+   SELECT COUNT(*) FROM grns WHERE status='confirmed';
+   Compare counts.
+
+6. Existing reports infrastructure — is there a /reports page already?
+   What reports exist today (if any)? What pattern do they follow
+   (server-side query → JSON → table render)?
+
+7. Daily opening/closing balance — does any of this exist? Cash
+   accounts table? Daily balance entries? Or is this completely new
+   territory?
+
+8. Petty cash / expenses — does any expenses table exist? Any UI for
+   recording non-supplier-payment outflows? Or completely new?
+
+Report findings. Do not change anything. I want to scope Phase 4
+accurately based on what's already there vs what needs to be built.

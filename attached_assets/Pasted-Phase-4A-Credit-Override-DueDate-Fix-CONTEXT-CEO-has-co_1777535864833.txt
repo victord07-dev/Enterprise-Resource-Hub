@@ -1,0 +1,507 @@
+Phase 4A: Credit Override + DueDate Fix
+
+CONTEXT
+
+CEO has confirmed that ITFI sometimes dispatches sales orders without
+100% customer payment (credit sales) and sometimes receives goods
+without 100% supplier payment (credit purchases). The current Phase 1
+hard-block gates contradict actual business operations.
+
+This phase:
+1. Adds CEO/admin-controlled override paths for both gates
+2. Tracks the exact credit amount taken (for AR/AP aging)
+3. Fixes sales_invoices.dueDate so credit transactions surface
+   correctly in AR aging
+4. Adds missing audit log entries for payment recording
+5. Adds basic credit visibility on customer/supplier detail pages
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend tests insufficient.
+- Only operator (me) declares phase closure.
+- Mirror existing patterns. Read existing code first.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Reuse the pricing-floor-override pattern as the design template
+  (per audit Section 4.4 — inline reason textarea, action button
+  disabled until filled, role-gated, audit-logged).
+
+CEO POLICY DECISIONS LOCKED
+- Sales-side credit override: admin role ONLY
+- Purchase-side credit override: admin + accountant
+- Credit reason: free text, mandatory
+- Track exact credit amount (not just flag)
+- Override is permanent once approved (cancel is the only escape,
+  not undo)
+- Customer credit_limit: track but soft-warning only, no hard block
+- Customer payment terms: B2C → immediate, B2B → net_30 (default)
+- Supplier payment terms: per-supplier setting, defaults to immediate
+
+PRE-WORK READING (MANDATORY, BEFORE ANY CODE)
+
+Most pre-work is already done in the prior credit-override audit.
+Confirm these specifics before writing code:
+
+1. The pricing-floor-override pattern in client/src/pages/Pricing.tsx
+   — re-read it. We are mirroring this exact pattern: inline textarea,
+   action button disabled until reason filled, role-gated server-side,
+   stored on the action's row, logged via logAction.
+
+2. The sales_invoices auto-create code path at dispatch — confirm
+   exact location in server/routes.ts. We will modify it to populate
+   dueDate from customer.payment_terms.
+
+3. The customer create/edit form in client/src/pages/Sales.tsx (or
+   Customers.tsx if separate) — confirm where customer fields are
+   edited so we can add payment_terms and credit_limit cleanly.
+
+4. The supplier create/edit form — same investigation.
+
+5. Confirm storage helper signatures:
+   - storage.getCustomer(id), storage.updateCustomer(id, data)
+   - storage.getSupplier(id), storage.updateSupplier(id, data)
+   - storage.getSalesOrder(id), storage.updateSalesOrder(id, data)
+   - storage.getSalesInvoice(id), storage.updateSalesInvoice(id, data)
+   - storage.getDeliveryChallan(id), storage.updateDeliveryChallan(id, data)
+   - storage.getGRN(id), storage.updateGRN(id, data)
+   - storage.createNotification(data)
+   - logAction(userId, action, module, details?)
+
+Report findings in one message. Await go-ahead before implementation.
+
+==========================================================
+SECTION A — SCHEMA ADDITIONS
+==========================================================
+
+A1. customers table — add columns:
+    payment_terms (text, nullable)
+    -- Allowed values: 'immediate' | 'net_15' | 'net_30' | 'net_45' |
+                       'net_60' | 'net_90'
+    -- No DB constraint; enforce in form validation
+    credit_limit (numeric, nullable)
+    -- Outstanding receivables warning threshold; null = no limit set
+
+A2. suppliers table — add columns:
+    payment_terms (text, nullable)
+    -- Same allowed values as customers
+
+A3. delivery_challans table — add columns:
+    is_credit_override (boolean, NOT NULL, default false)
+    credit_amount (numeric, nullable)
+    -- Outstanding amount on the linked SO at the moment of override
+    credit_approved_by (uuid FK → users, nullable)
+    credit_approved_at (timestamp, nullable)
+    credit_reason (text, nullable)
+    -- Required at API level when is_credit_override = true
+
+A4. goods_receipt_notes table — add columns (mirror of A3):
+    is_credit_override (boolean, NOT NULL, default false)
+    credit_amount (numeric, nullable)
+    credit_approved_by (uuid FK → users, nullable)
+    credit_approved_at (timestamp, nullable)
+    credit_reason (text, nullable)
+
+A5. sales_invoices table — confirm dueDate column already exists.
+    No new columns needed; we just start populating it correctly.
+    NOTE: keep existing nullable since old invoices may not have one.
+
+A6. Run db:push.
+
+A7. Backfill existing customers with default payment_terms:
+    - customer_type = 'business' → payment_terms = 'net_30'
+    - customer_type = 'end_user' → payment_terms = 'immediate'
+    UPDATE customers SET payment_terms = CASE
+      WHEN customer_type = 'business' THEN 'net_30'
+      ELSE 'immediate'
+    END WHERE payment_terms IS NULL;
+
+A8. Backfill existing suppliers with payment_terms = 'immediate'
+    (conservative default; CEO can edit individual suppliers later):
+    UPDATE suppliers SET payment_terms = 'immediate'
+    WHERE payment_terms IS NULL;
+
+A9. Backfill existing 3 sales_invoices with dueDate computed from
+    invoice_date + customer.payment_terms:
+    For each existing sales_invoice:
+      Look up customer.payment_terms
+      Compute dueDate = invoice_date + interval (e.g., '30 days' for net_30)
+      UPDATE sales_invoices SET due_date = computed_value;
+    Report which invoices were backfilled.
+
+==========================================================
+SECTION B — CUSTOMER & SUPPLIER FORMS
+==========================================================
+
+B1. Customer create/edit form — add fields:
+    - Payment Terms (dropdown: Immediate / Net 15 / Net 30 / Net 45 /
+      Net 60 / Net 90; required, default based on customer type)
+    - Credit Limit (₹) (numeric input, optional, no asterisk)
+      Helper text: "Maximum outstanding receivable. Leave blank for
+      no limit. Soft warning only — does not block sales."
+
+B2. Supplier create/edit form — add fields:
+    - Payment Terms (dropdown, same options as customer; required,
+      default Immediate)
+
+B3. Customer detail page — add display:
+    "Payment Terms: Net 30"
+    "Credit Limit: ₹5,00,000"
+    "Outstanding Credit: ₹2,30,000 (46% of limit)"
+    Outstanding credit = sum of (sales_invoices.grandTotal - paid_amount)
+    where customer_id = X AND status != 'cancelled'.
+    If outstanding > credit_limit: show amber warning banner.
+
+B4. Supplier detail page — add display:
+    "Payment Terms: Net 30"
+    "Outstanding Credit: ₹X" (sum of GRN credit amounts where
+    supplier_id = X and is_credit_override = true and not yet
+    fully paid back via supplier_payments)
+
+==========================================================
+SECTION C — SALES-SIDE CREDIT OVERRIDE
+==========================================================
+
+C1. Modify POST /api/delivery-challans/:id/ready-for-signature:
+    Accept new optional body fields:
+    - creditOverride: boolean (default false)
+    - creditReason: string (required if creditOverride = true)
+
+    Logic:
+    - Existing checks (stock, 5 mandatory fields) preserved
+    - If SO.paidAmount >= SO.totalAmount: proceed normally (no
+      override needed)
+    - If SO.paidAmount < SO.totalAmount AND creditOverride = false:
+      return 400 "Customer payment incomplete" as today
+    - If SO.paidAmount < SO.totalAmount AND creditOverride = true:
+      * Require req.user.role === 'admin' (otherwise 403 "Only admin
+        can authorize credit dispatch")
+      * Require creditReason is non-empty string (otherwise 400)
+      * Compute creditAmount = SO.totalAmount - SO.paidAmount
+      * Update challan: status='ready', is_credit_override=true,
+        credit_amount=creditAmount, credit_approved_by=req.user.id,
+        credit_approved_at=now(), credit_reason=creditReason
+      * Audit log: action='challan_credit_override', module='sales',
+        details=`Challan ${challan.number} ready-for-signature with
+        credit override of ₹${creditAmount}. Reason: ${creditReason}`
+      * Notification: notifyRoles(['accountant'], type='credit_override',
+        title=`Credit dispatch approved: Challan ${challan.number}`,
+        message=`Admin approved ₹${creditAmount} credit on
+        Challan ${challan.number}. Reason: ${creditReason}`,
+        relatedId=challan.id)
+
+C2. UI — Mark Ready button on Inventory > Challans tab:
+
+    When SO.paidAmount >= SO.totalAmount:
+    - Existing "Ready" button (no change)
+
+    When SO.paidAmount < SO.totalAmount AND user role !== 'admin':
+    - Button label: "Ready" (greyed out)
+    - Disabled
+    - Tooltip: "Customer payment incomplete: Outstanding ₹X. Only
+      admin can authorize credit dispatch."
+
+    When SO.paidAmount < SO.totalAmount AND user role === 'admin':
+    - Button label: "Ready (Credit)"
+    - Amber/yellow styling (not red — this is allowed action)
+    - Click → opens "Credit Dispatch Authorization" dialog:
+
+      Dialog content:
+      Title: "Authorize Credit Dispatch"
+      Body:
+        "Sales Order: SO-XXX
+         Customer: [Customer Name]
+         Total Amount: ₹X
+         Paid: ₹Y
+         Outstanding Credit: ₹Z
+
+         Customer Payment Terms: [Net 30]
+         Credit Limit: ₹A
+         Current Outstanding: ₹B
+
+         [If B + Z > A: amber warning] 'Approving this dispatch will
+         exceed the customer's credit limit by ₹(B+Z-A).'
+
+         [Reason textarea, required]
+         placeholder: 'e.g., Long-term customer with strong payment
+         history; cash flow constraint this month; strategic deal
+         negotiated by CEO'
+
+         [Cancel] [Authorize Credit Dispatch]"
+
+      Authorize button disabled until reason has at least 10 characters.
+      On authorize: call mutation with creditOverride=true,
+      creditReason=text; spinner; on success close dialog, refresh
+      challan list.
+
+C3. Reasoning for the credit_amount captured at override time:
+    - At the moment of override, the outstanding amount is fixed
+    - Subsequent customer payments will reduce SO.paidAmount but the
+      challan's credit_amount stays as the snapshot
+    - This makes auditing clean: "On May 5, CEO approved ₹2,30,000
+      credit. As of May 30, ₹1,50,000 is still owed."
+
+==========================================================
+SECTION D — PURCHASE-SIDE CREDIT OVERRIDE
+==========================================================
+
+D1. Modify POST /api/grns/create-from-po/:poId AND POST /api/grns
+    (both routes — identical logic):
+    Accept new optional body fields:
+    - creditOverride: boolean
+    - creditReason: string (required if creditOverride = true)
+
+    Logic:
+    - Existing checks preserved
+    - If supplier_payments sum >= po.totalAmount: proceed normally
+    - If sum < total AND creditOverride = false: return 400 as today
+    - If sum < total AND creditOverride = true:
+      * Require req.user.role IN ('admin', 'accountant') (else 403)
+      * Require creditReason non-empty
+      * Compute creditAmount = po.totalAmount - paidAmount
+      * Create GRN row with is_credit_override=true,
+        credit_amount=creditAmount, credit_approved_by=req.user.id,
+        credit_approved_at=now(), credit_reason=creditReason
+      * Audit log: action='grn_credit_override', module='supply_chain'
+      * Notification: notifyRoles(['admin'], type='credit_grn',
+        relatedId=grn.id)
+
+D2. UI — Create GRN button on PO detail in SupplyChain.tsx:
+
+    When supplier paid in full:
+    - Existing "Create GRN" button (no change)
+
+    When not fully paid AND user role NOT IN ('admin', 'accountant'):
+    - Button disabled with existing tooltip showing shortfall
+    - Tooltip extension: "Only admin or accountant can authorize
+      credit GRN."
+
+    When not fully paid AND user role IN ('admin', 'accountant'):
+    - Button label: "Create GRN (Credit)"
+    - Amber styling
+    - Click → opens "Credit GRN Authorization" dialog (mirror of C2):
+
+      Title: "Authorize Credit Goods Receipt"
+      Body:
+        "Purchase Order: PO-XXX
+         Supplier: [Supplier Name]
+         Total Amount: ₹X
+         Paid to Supplier: ₹Y
+         Outstanding Credit: ₹Z
+
+         Supplier Payment Terms: [Net 30]
+
+         [Reason textarea, required, min 10 chars]
+         placeholder: 'e.g., Trusted supplier extending Net 30 credit;
+         goods needed urgently for customer order'
+
+         [Cancel] [Authorize Credit GRN]"
+
+      Same disable-until-reason-filled pattern.
+
+==========================================================
+SECTION E — DUEDATE FIX FOR SALES INVOICES
+==========================================================
+
+E1. Modify the sales_invoice auto-create logic (at challan dispatch)
+    to populate dueDate:
+    - Look up the customer associated with the linked SO
+    - Compute dueDate = invoice_date + customer.payment_terms
+    - If customer.payment_terms = 'immediate': dueDate = invoice_date
+    - If customer.payment_terms = 'net_30': dueDate = invoice_date + 30 days
+    - Etc.
+    - If customer.payment_terms IS NULL (shouldn't happen post-A7
+      backfill, but defensive): default to invoice_date
+
+E2. For credit-override challans:
+    - Same dueDate computation applies
+    - The auto-created sales_invoice gets dueDate based on customer's
+      standard payment_terms
+    - Result: invoice will appear in AR Aging with correct overdue
+      status
+
+E3. Allow accountant to override dueDate at "Mark as Recorded" stage:
+    - Add 'invoice_due_date' (date input, required, defaults to
+      auto-computed value) to the Mark as Recorded form
+    - Helper text: "Auto-set from customer payment terms. Override
+      if needed."
+    - Stored in sales_invoices.due_date
+
+E4. Quick utility function in shared code (server-side and possibly
+    client-side):
+    function computeDueDate(invoiceDate: Date, paymentTerms: string): Date
+    Returns invoiceDate + 0/15/30/45/60/90 days as appropriate.
+
+==========================================================
+SECTION F — AUDIT LOG ADDITIONS (PAYMENT RECORDING)
+==========================================================
+
+F1. Add logAction() calls (currently missing per audit Section 5.3):
+    - On customer payment record (POST /api/sales-orders/:id/record-payment):
+      action='customer_payment_recorded', module='sales',
+      details=`Customer payment of ₹${amount} recorded for SO ${order.number}.
+               Method: ${paymentMethod}. Reference: ${reference || 'N/A'}.`
+    - On supplier payment record (POST /api/supplier-payments):
+      action='supplier_payment_recorded', module='supply_chain',
+      details=`Supplier payment of ₹${amount} recorded. Type:
+               ${paymentType}. PO: ${purchase_order_id || 'N/A'}.
+               Method: ${payment_method}.`
+
+F2. These are pure additions — no other behavior change. Improves
+    audit trail completeness.
+
+==========================================================
+SECTION G — REPORTING ENHANCEMENTS (LIGHT)
+==========================================================
+
+G1. AR Aging report (existing at /reports → AR Aging tab):
+    - Add a "Credit Sale" badge column when sales_invoice was
+      auto-created from a credit-override challan
+    - Query: LEFT JOIN delivery_challans ON
+      sales_invoices.delivery_challan_id = delivery_challans.id
+    - Display amber badge "Credit Sale" if challan.is_credit_override
+      = true; show challan.credit_reason in tooltip
+
+G2. AP Aging report — same treatment for credit GRN-derived supplier
+    invoices (when accountant manually creates them).
+
+G3. Customer detail page — outstanding credit visibility (covered
+    in B3).
+
+G4. Supplier detail page — same (B4).
+
+==========================================================
+SECTION H — STOP GATE (OPERATOR WALKS — DO NOT DECLARE PASSED YOURSELF)
+==========================================================
+
+H1. Schema and backfill verification:
+    (a) SQL: SELECT customer_type, payment_terms, COUNT(*) FROM
+        customers GROUP BY customer_type, payment_terms;
+        → Verify all customers have payment_terms set; B2C =
+        immediate, B2B = net_30.
+    (b) SQL: SELECT payment_terms, COUNT(*) FROM suppliers GROUP BY
+        payment_terms;
+        → All suppliers have payment_terms set.
+    (c) SQL: SELECT id, due_date FROM sales_invoices;
+        → All 3 existing invoices have non-null dueDate.
+    (d) SQL: \d delivery_challans; \d goods_receipt_notes;
+        → 5 new columns each.
+
+H2. Customer/supplier form fields:
+    (e) Open customer edit form. Payment Terms dropdown shows 6
+        options. Credit Limit field shows. Save with new values
+        works.
+    (f) Open supplier edit form. Payment Terms dropdown shows.
+        Save works.
+
+H3. Customer detail outstanding credit display:
+    (g) Open customer detail page. "Outstanding Credit" displays
+        with amount. If credit_limit set: shows percentage.
+    (h) If outstanding > credit_limit: amber warning banner
+        appears.
+
+H4. Sales-side credit override:
+    (i) Login as sales_manager. Open SO that's partially paid.
+        "Ready" button: greyed out with tooltip
+        "Customer payment incomplete... Only admin can authorize
+        credit dispatch."
+    (j) Direct API call as sales_manager with
+        creditOverride: true → 403 "Only admin can authorize credit
+        dispatch."
+    (k) Login as admin. Same SO. "Ready (Credit)" button visible
+        with amber styling.
+    (l) Click → "Authorize Credit Dispatch" dialog opens. Shows SO,
+        customer, amounts, payment terms, credit limit.
+    (m) Reason textarea empty: Authorize button disabled.
+    (n) Reason: 5 chars: still disabled (min 10 required).
+    (o) Reason: 50 chars valid: button enables.
+    (p) If credit_limit + this credit exceeds limit: amber warning
+        in dialog ("Approving will exceed limit by ₹X").
+    (q) Click Authorize. Spinner. Success. Challan moves to 'ready'.
+        Toast: "Credit dispatch authorized."
+    (r) SQL check: SELECT is_credit_override, credit_amount,
+        credit_approved_by, credit_approved_at, credit_reason FROM
+        delivery_challans WHERE id = X; → All populated correctly.
+    (s) Audit log entry exists: SELECT * FROM audit_logs WHERE
+        action='challan_credit_override' ORDER BY timestamp DESC
+        LIMIT 1;
+    (t) Notification fires to accountant: SELECT * FROM
+        notifications WHERE type='credit_override' ORDER BY
+        created_at DESC LIMIT 1;
+
+H5. Sales flow after credit override:
+    (u) Continue: admin clicks "Issue Delivery Order". Status →
+        do_issued. Warehouse_manager dispatches. Status →
+        dispatched. Stock deducts.
+    (v) Sales invoice auto-created with non-null dueDate computed
+        from customer.payment_terms.
+    (w) Open the auto-created sales invoice. See ext_invoice_*
+        fields blank (Mark as Recorded form). dueDate field shows
+        with auto-computed value, editable.
+
+H6. Purchase-side credit override:
+    (x) Login as warehouse_manager. PO with no/partial supplier
+        payment. "Create GRN" button: disabled with tooltip
+        showing shortfall + "Only admin or accountant can authorize
+        credit GRN."
+    (y) Login as accountant. Same PO. "Create GRN (Credit)" button:
+        amber.
+    (z) Click → Authorize Credit Goods Receipt dialog. Reason
+        required. Submit succeeds. SQL: GRN row has
+        is_credit_override=true and all credit fields populated.
+    (aa) Audit log: action='grn_credit_override' present.
+    (bb) Notification fires to admin.
+
+H7. Backfill correctness:
+    (cc) Existing 5 in-flight challans (ready/do_issued/dispatched)
+         retain is_credit_override = false (they passed pre-fix
+         gate normally).
+    (dd) Existing 7 confirmed GRNs same.
+    (ee) Open one of these existing challans/GRNs in UI: no credit
+         badges show (correct — they aren't credit transactions).
+
+H8. Audit log additions:
+    (ff) Record a customer payment. Audit log entry:
+         'customer_payment_recorded' action present with full
+         details.
+    (gg) Record a supplier payment. Audit log entry:
+         'supplier_payment_recorded' action present.
+
+H9. Reports:
+    (hh) Open /reports → AR Aging. Credit-overridden invoices show
+         amber "Credit Sale" badge.
+    (ii) Tooltip on badge shows credit reason.
+    (jj) AR Aging now shows due dates correctly (not all "current"
+         as before).
+    (kk) /reports → AP Aging: same treatment for credit-GRN
+         supplier invoices (when manually created).
+
+H10. Regression — Phase 1, 2, 3 features:
+    (ll) Existing sales workflow with full payment: no credit
+         dialogs, no behavior change. Mark Ready works as before.
+    (mm) Existing GRN creation with full supplier payment: no
+         credit dialogs, no behavior change.
+    (nn) Phase 3 5-mandatory-field challan creation still works.
+    (oo) Phase 3 GRN simplification (text-only supplier challan
+         no.) still works.
+    (pp) PO PDF download still works.
+    (qq) Hierarchical picker on Sales and PO still works.
+    (rr) Pricing engine floor override still works.
+
+==========================================================
+OUT OF SCOPE FOR THIS PHASE
+==========================================================
+
+- Cash & bank account tracking (Phase 4B)
+- Financial dashboard (Phase 4C)
+- Auto-create supplier_invoice on GRN confirm
+- Multi-company support (Phase 5)
+- Credit limit hard enforcement (CEO can decide later)
+- Credit dispatch reversal/undo (cancel is the only escape)
+- Credit notifications to customer/supplier (separate communication)
+- Email/WhatsApp credit confirmations
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Stop after implementation ships and ping me. I will walk the H1-H10
+stop gate (~70 items, ~70 min).

@@ -1,0 +1,273 @@
+WORKFLOW & DATA AUDIT FOR PHASE 4 PLANNING
+
+I need a comprehensive understanding of how money, documents, and stock
+flow through the system today before scoping Phase 4 (Finance & Reports).
+This is investigation only — DO NOT change any code.
+
+Report findings in clearly numbered sections matching the structure
+below.
+
+==========================================================
+SECTION 1 — SALES SIDE WORKFLOW (Customer → Money In)
+==========================================================
+
+1.1 Trace the complete sales workflow from lead to cash:
+    - Lead creation → Quotation → Sales Order → Challan → Dispatch →
+      Invoice → Customer Payment → cash in account
+    - For each step, list: which table is written to, which user role
+      can perform the action, what gates/validations exist.
+
+1.2 Customer Payment recording:
+    - File location of the "Record Payment" form
+    - What fields are captured? (amount, date, mode, reference, etc.)
+    - Is it linked to a sales_order_id, sales_invoice_id, or customer_id?
+    - Can one payment cover multiple invoices?
+    - Can one invoice be paid by multiple payments?
+    - Is there any field indicating WHICH bank/cash account the money
+      went into? (e.g., bank_account_id, payment_destination)
+    - SQL: SELECT column_name FROM information_schema.columns WHERE
+      table_name = 'customer_payments';
+
+1.3 Sales invoice payment status calculation:
+    - How is "paid / partially_paid / pending" computed today?
+    - Is it stored on the row or computed dynamically?
+    - SQL: SELECT status, COUNT(*) FROM sales_invoices GROUP BY status;
+    - SQL: SELECT COUNT(*) FROM sales_invoices WHERE due_date IS NULL;
+
+1.4 Sales-side payment policy (per recent investigation):
+    - Confirm: can a challan progress to "ready" without 100% customer
+      payment? Yes/No
+    - Confirm: can a challan dispatch without 100% customer payment? Yes/No
+    - Are there any edge cases or override paths? (e.g., admin can
+      bypass payment check)
+    - If a challan has no linked SO (orderId IS NULL), does the payment
+      gate skip?
+    - SQL: SELECT COUNT(*) FROM delivery_challans WHERE order_id IS NULL;
+
+==========================================================
+SECTION 2 — PURCHASE SIDE WORKFLOW (Money Out → Goods In)
+==========================================================
+
+2.1 Trace the complete purchase workflow:
+    - Auto-PR or Manual PO → PO Approval → Supplier Payment → GRN
+      → Stock Added → Supplier Invoice (manual)
+    - For each step, list: which table is written to, role allowed,
+      gates.
+
+2.2 Supplier Payment recording:
+    - File location of the "Record Supplier Payment" form
+    - What fields are captured?
+    - Is it linked to purchase_order_id, supplier_invoice_id, or
+      supplier_id?
+    - What's the difference between payment_type='regular' vs 'advance'
+      in supplier_payments?
+    - How is po.advancePaid field updated? (Manual entry on PO, or
+      automatic from supplier_payments rows?)
+    - Is there any bank/cash account field? (e.g., source account
+      from which payment was made)
+    - SQL: SELECT column_name FROM information_schema.columns WHERE
+      table_name = 'supplier_payments';
+
+2.3 Purchase-side payment policy:
+    - Confirm: GRN cannot be created without 100% supplier payment
+    - How is "100% paid" computed? (sum supplier_payments where
+      purchase_order_id = X, vs po.totalAmount)
+    - Does po.advancePaid count toward the gate, or only
+      supplier_payments rows?
+    - Are there override paths?
+
+2.4 Supplier Invoice creation:
+    - File location of the supplier invoice creation form
+    - What fields are captured?
+    - Is creation triggered automatically anywhere, or always manual?
+    - SQL: SELECT COUNT(*) FROM supplier_invoices;
+    - SQL: SELECT COUNT(*) FROM grns WHERE status='confirmed';
+    - SQL: SELECT COUNT(*) FROM purchase_orders WHERE status IN
+      ('approved','received','partial');
+
+==========================================================
+SECTION 3 — EXPENSES MODULE (Money Out → Non-Supplier)
+==========================================================
+
+3.1 Expenses table structure:
+    - SQL: SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name = 'expenses';
+    - Confirm fields: amount, category_id, paid_date, paid_by (user),
+      payment_method, reference, receipt_url, etc.
+    - Is there a bank/cash account field?
+
+3.2 Expense categories:
+    - SQL: SELECT id, name FROM expense_categories ORDER BY name;
+    - List all 15 seeded categories with their names.
+
+3.3 Expense usage in production data:
+    - SQL: SELECT COUNT(*) FROM expenses;
+    - SQL: SELECT category_id, COUNT(*) FROM expenses GROUP BY category_id;
+    - SQL: SELECT MAX(created_at), MIN(created_at) FROM expenses;
+      (Are entries recent or stale?)
+    - Who has been recording expenses? (Group by created_by user role)
+
+3.4 Expense workflow:
+    - Who can create expenses? (which roles)
+    - Is there approval workflow? (draft → approved → paid)
+    - Or is "create = paid" instant?
+
+==========================================================
+SECTION 4 — CASH/BANK INFRASTRUCTURE (CURRENT STATE)
+==========================================================
+
+4.1 Confirm absence of cash/bank tracking:
+    - SQL: SELECT table_name FROM information_schema.tables WHERE
+      table_schema = 'public' AND (
+        table_name LIKE '%bank%' OR
+        table_name LIKE '%cash%' OR
+        table_name LIKE '%account%' OR
+        table_name LIKE '%balance%' OR
+        table_name LIKE '%ledger%'
+      );
+    - For each table found, list columns.
+    - If nothing found: confirm "no cash/bank infrastructure exists"
+
+4.2 Are there ANY fields hinting at bank/account tracking?
+    - SQL: SELECT table_name, column_name FROM information_schema.columns
+      WHERE column_name LIKE '%account%' OR column_name LIKE '%bank%';
+    - Report all matches.
+
+4.3 Payment method tracking (existing):
+    - In customer_payments, supplier_payments, expenses — what
+      payment_method values exist?
+    - SQL: SELECT DISTINCT payment_method FROM customer_payments;
+    - SQL: SELECT DISTINCT payment_method FROM supplier_payments;
+    - SQL: SELECT DISTINCT payment_method FROM expenses;
+    - This tells us what cash/bank routes ITFI actually uses.
+
+==========================================================
+SECTION 5 — CUSTOMERS & SUPPLIERS — PAYMENT TERMS
+==========================================================
+
+5.1 Customer payment terms:
+    - SQL: SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'customers';
+    - Is there a payment_terms or credit_days field?
+    - If yes: SELECT DISTINCT payment_terms FROM customers;
+
+5.2 Supplier payment terms:
+    - SQL: SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'suppliers';
+    - Is there a payment_terms field?
+    - If yes: SELECT DISTINCT payment_terms FROM suppliers;
+
+5.3 If payment terms exist anywhere, report distribution:
+    - SQL: SELECT payment_terms, COUNT(*) FROM customers GROUP BY
+      payment_terms;
+
+==========================================================
+SECTION 6 — REPORTING INFRASTRUCTURE (CURRENT STATE)
+==========================================================
+
+6.1 Reports page:
+    - File location of /reports
+    - List all tabs and what each shows
+    - For each tab: data source query, filters available, export
+      options
+
+6.2 Existing dashboard/overview pages:
+    - Is there a /dashboard or /home page with financial summary?
+    - File location of the main dashboard
+    - What widgets exist today? List each.
+    - Where does data come from for each widget?
+
+6.3 PDF/CSV export utilities:
+    - File location of PDF export helper
+    - File location of CSV export helper
+    - Can be reused for new reports?
+
+==========================================================
+SECTION 7 — DATE/TIME PATTERNS
+==========================================================
+
+7.1 How are dates handled?
+    - Are dates stored as DATE or TIMESTAMP in the database?
+    - Is there a "business day" concept anywhere?
+    - Timezone: are timestamps stored in UTC or local time?
+
+7.2 Recent activity tracking:
+    - Is there a unified activity log/feed?
+    - Or is each module's audit_log separate?
+    - What's the pattern for "show last 10 transactions"?
+
+==========================================================
+SECTION 8 — BUSINESS METRICS THAT ALREADY EXIST
+==========================================================
+
+8.1 Revenue calculation:
+    - Where is "revenue this month" computed today?
+    - Is it from sales_invoices.grandTotal sum, or from
+      customer_payments sum?
+    - Are draft/cancelled invoices excluded?
+
+8.2 Expenses summary:
+    - Is "total expenses this month" computed somewhere?
+    - File location?
+
+8.3 Gross profit calculation:
+    - Is gross margin computed anywhere? (revenue - cost of goods sold)
+    - How is COGS computed? FIFO from GRN lots?
+
+8.4 Top customers/suppliers:
+    - Any existing logic ranking customers by purchase volume?
+    - Any existing logic ranking suppliers by spend?
+
+==========================================================
+SECTION 9 — BACKFILL CONSIDERATIONS
+==========================================================
+
+9.1 Existing data volumes:
+    - SQL: SELECT COUNT(*) FROM customer_payments;
+    - SQL: SELECT COUNT(*) FROM supplier_payments;
+    - SQL: SELECT COUNT(*) FROM expenses;
+    - SQL: SELECT COUNT(*) FROM sales_invoices;
+    - SQL: SELECT COUNT(*) FROM purchase_orders;
+    - SQL: SELECT COUNT(*) FROM grns;
+
+9.2 Data integrity for backfill:
+    - If we add a "bank_account_id" to customer_payments, what should
+      existing rows be backfilled with?
+    - How many distinct payment_method values are in use? Could those
+      seed initial bank_accounts?
+
+==========================================================
+SECTION 10 — OPEN WORKFLOW QUESTIONS
+==========================================================
+
+10.1 Multi-account scenarios:
+    - Has any user ever entered a payment with a reference to a
+      specific bank? Check the "reference" field for hints.
+    - SQL: SELECT reference FROM customer_payments WHERE reference IS
+      NOT NULL LIMIT 20;
+    - SQL: SELECT reference FROM supplier_payments WHERE reference IS
+      NOT NULL LIMIT 20;
+
+10.2 Cash flow gaps you've observed:
+    - In your investigation, are there workflow steps where the
+      operator manually does something OUTSIDE the system that should
+      ideally be inside? (e.g., bank reconciliation, account
+      transfers between cash and bank)
+
+==========================================================
+DELIVERABLE FORMAT
+==========================================================
+
+Report findings in one consolidated message structured by section.
+For each SQL query: report the result.
+For each "yes/no" question: answer with the evidence.
+For each architectural question: describe the current pattern.
+
+Where you spot inconsistencies, gaps, or operational adoption issues,
+flag them in a "Flags" subsection at the end of each section.
+
+DO NOT make any code changes. This is investigation only.
+DO NOT propose solutions. I'll do that based on your findings.
+
+Estimated effort: 1-2 hours of focused investigation. Take the time —
+the quality of Phase 4 depends on this audit being thorough.

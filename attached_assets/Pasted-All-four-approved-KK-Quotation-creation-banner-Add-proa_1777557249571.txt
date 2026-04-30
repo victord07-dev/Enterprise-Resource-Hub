@@ -1,0 +1,76 @@
+All four approved.
+
+KK — Quotation creation banner:
+- Add proactive getCustomerOutstanding query in quotation dialog
+  triggered when customer is selected
+- When outstanding > 0:
+  * Amber (informational, NOT red) banner at top of form
+  * Banner content: "ℹ Customer has ₹X in unpaid invoices. You can
+    still create a quotation, but the customer will need to clear
+    dues before any resulting Sales Order can be confirmed."
+  * Compact unpaid-invoices table (Invoice # | Date | Balance)
+- "Create Quotation" button stays enabled regardless
+- Same banner for both admin and non-admin (informational only)
+
+LL-1 — Convert button proactive check:
+- Replace browser confirm() with the same outstanding-aware logic
+  used in SO creation
+- On click of "Convert to Sales Order":
+  * Query getCustomerOutstanding for the quotation's customer
+  * If outstanding == 0 AND user can convert: fire mutation directly
+    (no browser confirm)
+  * If outstanding > 0 AND user is admin: open duesOverrideDialog
+    proactively with full invoice list + new order total
+  * If outstanding > 0 AND user is NOT admin: show toast error:
+    "Cannot convert to Sales Order. Customer has ₹X outstanding.
+    Contact admin to authorize."
+
+LL-2 — Forward invoices to dialog state:
+- In convertToOrderMutation.onError, when the 400 response indicates
+  dues block:
+  * Extract invoices array from error.body.invoices
+  * Look up customer name from the quotation's customer reference
+  * Set duesOverrideDialog state with full payload:
+    { outstanding, invoices, customerName, quotationId, newOrderTotal }
+- Same fix applies anywhere else duesOverrideDialog is set
+  reactively (audit all setDuesOverrideDialog calls in Sales.tsx)
+
+LL-3 — Role gate inside dialog:
+- In duesOverrideDialog component body:
+  * If currentUser?.role === 'admin': render existing amber
+    "Authorize and Create" button as today (after fix C)
+  * Else: render disabled grey button labeled "Admin authorization
+    required"
+  * Below the button (for non-admin): small text "Contact admin to
+    authorize this order despite outstanding dues."
+- This handles edge cases where non-admin reaches the dialog via
+  some unexpected path
+
+After all four ship: walk K7 items end-to-end with screenshots.
+
+(kk) — Open quotation dialog. Select customer with dues. Banner
+       appears. Create Quotation succeeds normally. Verify in DB
+       a quotation exists for that customer.
+       
+(ll) — Two scenarios:
+       
+       Non-admin (sales_manager) flow:
+       - Open existing quotation for customer with dues
+       - Click Convert to Sales Order
+       - Toast appears: "Cannot convert to Sales Order. Customer has
+         ₹X outstanding. Contact admin to authorize."
+       - No dialog opens. No SO created.
+       - Screenshot
+       
+       Admin flow:
+       - Same quotation, login as admin
+       - Click Convert to Sales Order
+       - duesOverrideDialog opens with invoice list + new order total
+       - Reason field required min 10 chars
+       - Submit → SO created with dues_override flag
+       - SQL verify: SELECT is_dues_override, dues_override_amount,
+         dues_override_reason, dues_override_by FROM sales_orders
+         WHERE id = X
+       - Screenshot
+
+After K7 closes, move to K8 (supplier invoice auto-create, 3 items).

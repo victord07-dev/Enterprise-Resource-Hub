@@ -14,7 +14,7 @@ import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, XCircle, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload } from "lucide-react";
+import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, XCircle, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload, Info as InfoIcon } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
 import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
 import {
@@ -1033,6 +1033,23 @@ export default function Sales() {
     enabled: orderDialogOpen && !!orderForm.customerId && !editingOrder,
   });
 
+  // kk-proactive: fetch outstanding for selected customer when QUOTE dialog is open (informational only)
+  const { data: quoteCustomerOutstanding } = useQuery<{
+    outstanding: number;
+    invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: string; grandTotal: number; balance: number }>;
+    total: number;
+    collected: number;
+  }>({
+    queryKey: ["/api/customers", quoteForm.customerId, "outstanding"],
+    queryFn: () => fetch(`/api/customers/${quoteForm.customerId}/outstanding`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+    }).then((r) => r.json()),
+    enabled: quoteDialogOpen && !!quoteForm.customerId,
+  });
+
+  // ll-1: track which quotation is currently being checked for outstanding (to disable button during fetch)
+  const [convertingQuoteId, setConvertingQuoteId] = useState<string | null>(null);
+
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business", paymentTerms: "immediate" });
@@ -1223,7 +1240,12 @@ export default function Sales() {
     },
     onError: (error: any, variables: any) => {
       if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
-        setDuesOverrideDialog({ outstanding: error.body.outstanding, pendingOrderData: variables });
+        setDuesOverrideDialog({
+          outstanding: error.body.outstanding,
+          pendingOrderData: variables,
+          invoices: error.body.invoices ?? [],
+          customerName: customers?.find((c) => c.id === (variables as any).customerId)?.name,
+        });
         setDuesOverrideReason("");
       } else {
         toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1336,7 +1358,14 @@ export default function Sales() {
     },
     onError: (error: any, variables: { id: string }) => {
       if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
-        setDuesOverrideDialog({ outstanding: error.body.outstanding, quotationId: variables.id });
+        const quot = quotations?.find((q) => q.id === variables.id);
+        setDuesOverrideDialog({
+          outstanding: error.body.outstanding,
+          quotationId: variables.id,
+          invoices: error.body.invoices ?? [],
+          customerName: customers?.find((c) => c.id === quot?.customerId)?.name,
+          newOrderTotal: Number(quot?.totalAmount ?? 0),
+        });
         setDuesOverrideReason("");
       } else {
         toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -2494,8 +2523,39 @@ export default function Sales() {
                               <div className="flex items-center justify-end gap-1">
                                 {!isReadOnly && q.status !== "accepted" && (
                                   <Button size="icon" variant="ghost" title="Convert to Order" data-testid={`button-convert-quote-${q.id}`}
-                                    onClick={() => { if (confirm("Convert this quotation to an order?")) convertToOrderMutation.mutate({ id: q.id }); }}
-                                    disabled={convertToOrderMutation.isPending}>
+                                    disabled={convertToOrderMutation.isPending || convertingQuoteId === q.id}
+                                    onClick={async () => {
+                                      setConvertingQuoteId(q.id);
+                                      try {
+                                        const result = await fetch(`/api/customers/${q.customerId}/outstanding`, {
+                                          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                                        }).then((r) => r.json());
+                                        if (result.outstanding > 0) {
+                                          if (isAdmin) {
+                                            setDuesOverrideDialog({
+                                              outstanding: result.outstanding,
+                                              invoices: result.invoices ?? [],
+                                              customerName: customers?.find((c) => c.id === q.customerId)?.name,
+                                              quotationId: q.id,
+                                              newOrderTotal: Number(q.totalAmount),
+                                            });
+                                            setDuesOverrideReason("");
+                                          } else {
+                                            toast({
+                                              title: "Cannot Convert to Sales Order",
+                                              description: `Customer has ₹${result.outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })} outstanding. Contact admin to authorize.`,
+                                              variant: "destructive",
+                                            });
+                                          }
+                                        } else {
+                                          convertToOrderMutation.mutate({ id: q.id });
+                                        }
+                                      } catch {
+                                        convertToOrderMutation.mutate({ id: q.id });
+                                      } finally {
+                                        setConvertingQuoteId(null);
+                                      }
+                                    }}>
                                     <ArrowRightLeft className="w-4 h-4" />
                                   </Button>
                                 )}
@@ -3248,6 +3308,38 @@ export default function Sales() {
               </div>
             );
           })()}
+          {/* kk: Outstanding dues informational banner in quote dialog */}
+          {quoteCustomerOutstanding && quoteCustomerOutstanding.outstanding > 0 && (
+            <div className="mt-2 rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-300" data-testid="banner-quote-dues-info">
+              <div className="flex items-start gap-2 mb-2">
+                <InfoIcon className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  Customer has <strong>₹{quoteCustomerOutstanding.outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> in unpaid invoices. You can still create a quotation, but the customer will need to clear dues before any resulting Sales Order can be confirmed.
+                </span>
+              </div>
+              {quoteCustomerOutstanding.invoices.length > 0 && (
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="border-b border-amber-300 dark:border-amber-700 opacity-70">
+                      <th className="text-left py-0.5 pr-2 font-medium">Invoice #</th>
+                      <th className="text-left py-0.5 pr-2 font-medium">Date</th>
+                      <th className="text-right py-0.5 font-medium">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {quoteCustomerOutstanding.invoices.map((inv) => (
+                      <tr key={inv.id} className="border-b border-amber-200 dark:border-amber-900 opacity-80">
+                        <td className="py-0.5 pr-2 font-mono">{inv.invoiceNumber}</td>
+                        <td className="py-0.5 pr-2">{new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                        <td className="py-0.5 text-right">₹{inv.balance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+
           <DialogFooter>
             {(() => {
               const floorBlocked = findBelowFloorBlockIndices(quoteItems, effectivePrices, quoteTouchedLines);
@@ -3591,34 +3683,43 @@ export default function Sales() {
             />
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="flex-col gap-2 sm:flex-row sm:gap-0">
             <Button variant="outline" onClick={() => { setDuesOverrideDialog(null); setDuesOverrideReason(""); }}>Cancel</Button>
-            <Button
-              data-testid="button-confirm-dues-override"
-              variant="outline"
-              className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
-              disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending || convertToOrderMutation.isPending}
-              onClick={() => {
-                if (!duesOverrideDialog) return;
-                if (duesOverrideDialog.quotationId) {
-                  convertToOrderMutation.mutate({
-                    id: duesOverrideDialog.quotationId,
-                    duesOverride: true,
-                    duesOverrideReason: duesOverrideReason.trim(),
-                  });
-                } else if (duesOverrideDialog.pendingOrderData) {
-                  orderMutation.mutate({
-                    ...duesOverrideDialog.pendingOrderData,
-                    duesOverride: true,
-                    duesOverrideReason: duesOverrideReason.trim(),
-                  });
-                }
-              }}
-            >
-              {(orderMutation.isPending || convertToOrderMutation.isPending)
-                ? "Processing..."
-                : duesOverrideDialog?.quotationId ? "Authorize & Convert to Order" : "Authorize & Create Order"}
-            </Button>
+            {isAdmin ? (
+              <Button
+                data-testid="button-confirm-dues-override"
+                variant="outline"
+                className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending || convertToOrderMutation.isPending}
+                onClick={() => {
+                  if (!duesOverrideDialog) return;
+                  if (duesOverrideDialog.quotationId) {
+                    convertToOrderMutation.mutate({
+                      id: duesOverrideDialog.quotationId,
+                      duesOverride: true,
+                      duesOverrideReason: duesOverrideReason.trim(),
+                    });
+                  } else if (duesOverrideDialog.pendingOrderData) {
+                    orderMutation.mutate({
+                      ...duesOverrideDialog.pendingOrderData,
+                      duesOverride: true,
+                      duesOverrideReason: duesOverrideReason.trim(),
+                    });
+                  }
+                }}
+              >
+                {(orderMutation.isPending || convertToOrderMutation.isPending)
+                  ? "Processing..."
+                  : duesOverrideDialog?.quotationId ? "Authorize & Convert to Order" : "Authorize & Create Order"}
+              </Button>
+            ) : (
+              <div className="flex flex-col items-end gap-1">
+                <Button data-testid="button-confirm-dues-override" disabled variant="outline" className="cursor-not-allowed opacity-60">
+                  Admin Authorization Required
+                </Button>
+                <p className="text-xs text-muted-foreground">Contact admin to authorize this order despite outstanding dues.</p>
+              </div>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

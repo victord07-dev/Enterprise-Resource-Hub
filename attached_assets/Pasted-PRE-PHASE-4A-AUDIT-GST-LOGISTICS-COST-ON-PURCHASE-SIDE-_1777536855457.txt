@@ -1,0 +1,272 @@
+PRE-PHASE-4A AUDIT — GST + LOGISTICS COST ON PURCHASE SIDE
+
+Operator has identified that GST is not properly implemented on the
+purchase side (PR approval, PO creation, supplier invoice). Sales side
+has full GST handling (line-level CGST/SGST/IGST splits, intra/inter-
+state logic). Purchase side appears to be missing equivalent capability.
+
+Additionally, optional logistics/delivery cost should be capturable on
+purchase documents (currently appears to exist only on sales-side
+delivery_cost).
+
+This audit will scope what needs to be added to Phase 4A. Investigation
+only. DO NOT change any code.
+
+==========================================================
+SECTION 1 — SALES-SIDE GST (REFERENCE BASELINE)
+==========================================================
+
+1.1 How GST works on sales-side documents (quotations, sales orders,
+    sales invoices):
+    - SQL: SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name IN ('quotations', 'sales_orders',
+                            'sales_invoices', 'quotation_items',
+                            'sales_order_items', 'sales_invoice_items');
+    - For each table, list GST-relevant columns: gst_rate, cgst_amount,
+      sgst_amount, igst_amount, hsn_code, taxable_amount, total_tax,
+      etc.
+
+1.2 Intra-state vs inter-state logic:
+    - Where in code is the determination made?
+    - SQL: SELECT DISTINCT is_inter_state FROM sales_invoices;
+    - How does the system decide CGST+SGST vs IGST?
+
+1.3 Multi-rate GST:
+    - In sales documents, can different line items have different GST
+      rates (e.g., one line at 5%, another at 18%)?
+    - Where does the per-line gstRate come from? (products.gst_rate?
+      manual entry?)
+
+1.4 GST UI on sales-side forms:
+    - Where in client/src/pages/Sales.tsx are GST amounts displayed
+      and computed?
+    - Is the user shown CGST/SGST split or just total tax?
+    - Are taxable amount, GST amount, total amount all shown clearly?
+
+==========================================================
+SECTION 2 — PURCHASE-SIDE GST (CURRENT STATE)
+==========================================================
+
+2.1 Schema check on purchase tables:
+    - SQL: SELECT column_name, data_type FROM information_schema.columns
+      WHERE table_name IN ('purchase_requests', 'purchase_orders',
+                            'goods_receipt_notes', 'supplier_invoices',
+                            'pr_items', 'purchase_order_items',
+                            'grn_items', 'supplier_invoice_items');
+    - List GST-relevant columns on each (or note absence)
+
+2.2 What IS captured today on PO line items:
+    - SQL: SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'purchase_order_items';
+    - Specifically: gst_rate? hsn_code? cgst_amount? igst_amount?
+      taxable_amount? gst_amount?
+
+2.3 What IS captured today on supplier_invoices:
+    - tax_amount field exists per audit. Is it just a single number,
+      or split across CGST/SGST/IGST?
+    - SQL: SELECT * FROM supplier_invoices LIMIT 1; (even if 0 rows,
+      schema visible)
+    - subtotal field exists. What's its relationship to total_amount?
+      Is it pre-tax or post-tax?
+
+2.4 Where does GST appear in purchase UIs?
+    - In SupplyChain.tsx PR approval dialog (the one in your
+      screenshot earlier showing "Item Unit Costs"): is GST shown
+      anywhere?
+    - In SupplyChain.tsx PO creation form: is GST captured per line?
+    - In Inventory.tsx GRN creation form: is GST captured?
+    - In Accounts.tsx supplier invoice creation form: is GST captured?
+
+2.5 Existing PO PDF (Phase 2 deliverable):
+    - File: client/src/lib/purchase-order-pdf.ts (or server-side
+      equivalent)
+    - Does it show GST breakdown?
+    - Does it show HSN codes?
+    - Does it show multi-rate GST totals (taxable @ 5%, GST @ 5%,
+      taxable @ 18%, GST @ 18%, etc.)?
+    - Confirm what's already present so we don't duplicate.
+
+2.6 Total calculations on purchase documents today:
+    - In PR approval dialog, the "Total: ₹2,95,000" shown — what's
+      it computing? Just sum(quantity × unit_cost)? Does it include
+      GST or not?
+    - Same question for PO total.
+    - Same for GRN total.
+
+==========================================================
+SECTION 3 — LOGISTICS / DELIVERY COST
+==========================================================
+
+3.1 Sales-side delivery cost:
+    - SQL: SELECT column_name FROM information_schema.columns WHERE
+      column_name LIKE '%delivery%' OR column_name LIKE '%freight%'
+      OR column_name LIKE '%logistics%';
+    - Confirm sales_orders.delivery_cost field per recent audit.
+    - Where in Sales.tsx is delivery cost entered?
+    - Is it added to grandTotal? Or shown separately?
+    - Is GST applied to delivery cost?
+
+3.2 Purchase-side delivery cost (current state):
+    - Per audit: goods_receipt_notes has delivery_cost column.
+      Confirm.
+    - Does purchase_orders have a delivery_cost field?
+    - Does supplier_invoices have one?
+    - Is there a "freight charge" or "transport cost" concept on
+      purchase docs?
+
+3.3 How is GRN delivery_cost used today?
+    - When GRN is confirmed, is delivery_cost added to landed cost
+      per item? (FIFO lot calculation)
+    - Or is it tracked separately?
+    - Find the code path.
+
+3.4 Whether logistics is a line-item or document-level field:
+    - On purchase docs, does logistics belong on each line, or is
+      it a single charge applied to the whole document?
+    - Recommendation: document-level (single freight charge for the
+      whole shipment). Confirm what makes sense given current schema.
+
+==========================================================
+SECTION 4 — TAX-INCLUSIVE VS TAX-EXCLUSIVE PRICING
+==========================================================
+
+4.1 Sales side:
+    - Are unit prices stored tax-inclusive or tax-exclusive?
+    - Is the user entering "₹100 with GST included" or
+      "₹100 + 18% GST = ₹118"?
+    - Find the code that computes line totals from unit price.
+
+4.2 Purchase side:
+    - When supplier price is captured (in supplier_products,
+      purchase_order_items, etc.), is it tax-inclusive or
+      tax-exclusive?
+    - Suppliers usually quote tax-exclusive (e.g., "₹29,500 + 18% GST").
+    - What's currently the convention in the database?
+
+==========================================================
+SECTION 5 — SUPPLIER STATE AND IGST/CGST SPLIT
+==========================================================
+
+5.1 Suppliers can be intra-state or inter-state from ITFI's perspective:
+    - Does the suppliers table have a state field?
+    - SQL: SELECT column_name FROM information_schema.columns WHERE
+      table_name = 'suppliers';
+    - If no state field: how would the system determine intra/inter-
+      state purchase? (ITFI is in Assam; supplier in Karnataka =
+      inter-state = IGST; supplier in Assam = intra = CGST+SGST)
+
+5.2 Same check for customers:
+    - Does customers table have a state field?
+    - This was needed for sales-side intra/inter-state logic. Confirm
+      it exists.
+
+5.3 ITFI's own state:
+    - Where is ITFI's state stored? (Likely hardcoded as "Assam" in
+      a config or letterhead).
+    - Find the source.
+
+==========================================================
+SECTION 6 — PR AND PO LINE ITEM FORMS
+==========================================================
+
+6.1 PR approval dialog (in SupplyChain.tsx):
+    - File line locations for the price breakdown panel + item unit
+      costs form (per recent screenshot)
+    - Currently shows: product, qty, unit price, total
+    - Is HSN code shown anywhere?
+    - Is GST rate shown anywhere?
+    - Is per-line tax computed anywhere?
+
+6.2 PO creation/edit form:
+    - Same questions
+    - Phase 2 added hierarchical picker; did it also bring HSN/GST?
+    - What columns exist in the line items table UI?
+
+6.3 GRN form:
+    - Per Phase 3, GRN creation has supplier_challan_number field
+    - Does GRN form capture HSN/GST per line?
+
+==========================================================
+SECTION 7 — IMPACT ON PHASE 4A SUPPLIER INVOICE
+==========================================================
+
+7.1 Phase 4A is about to add auto-create supplier_invoice on GRN
+    confirm. Currently planned to:
+    - Copy total_amount from PO/GRN
+    - Set tax_amount as currently captured
+    - Compute due_date from supplier.payment_terms
+
+    With proper GST on purchase side, this needs to also:
+    - Copy CGST/SGST/IGST split from source PO/GRN
+    - Copy HSN codes per line
+    - Include logistics cost if any
+
+7.2 Scope question: does the supplier invoice need its own line-item
+    GST capture, OR can it inherit from the GRN/PO?
+    - If supplier sends a paper invoice with different amounts than
+      the PO (e.g., they invoiced wrong qty or different tax rate),
+      who corrects what?
+    - In real-world: accountant verifies supplier paper invoice
+      against PO/GRN at "Mark as Recorded" time. Variance modal
+      should catch differences (mirror sales-side T93).
+
+==========================================================
+SECTION 8 — EXISTING DATA IMPLICATIONS
+==========================================================
+
+8.1 Volume of purchase data:
+    - SQL: SELECT COUNT(*) FROM purchase_orders;
+    - SQL: SELECT COUNT(*) FROM purchase_order_items;
+    - SQL: SELECT SUM(total_amount) FROM purchase_orders;
+
+8.2 If we add gst_rate, hsn_code columns to purchase_order_items
+    (and similar to other purchase tables), what's the backfill
+    strategy?
+    - Option A: pull from products.gst_rate / products.hsn_code at
+      backfill time (snapshot)
+    - Option B: leave NULL on existing rows, populate only going
+      forward
+    - Recommendation depends on how much existing data matters for
+      reporting.
+
+8.3 Existing PR/PO/GRN line items: do any have correct totals today
+    despite missing GST?
+    - SQL: SELECT po.total_amount, SUM(poi.quantity * poi.unit_cost)
+      AS computed FROM purchase_orders po JOIN purchase_order_items
+      poi ON poi.purchase_order_id = po.id GROUP BY po.id, po.total_amount
+      LIMIT 5;
+    - If po.total_amount = sum(qty * unit_cost): GST is NOT included
+      in totals today. So all existing POs are tax-exclusive totals.
+
+==========================================================
+SECTION 9 — ADJACENT GAPS WORTH SURFACING
+==========================================================
+
+9.1 Cancellation reasons, discount fields, freight, packing charges
+    — any other commonly-needed fields missing on purchase docs that
+    haven't been raised yet?
+
+9.2 Round-off / adjustment field — Indian invoices often have
+    ₹0.50-₹1 round-off. Does sales-side handle this? Should purchase
+    side?
+
+9.3 Any other purchase-side gaps Replit AI noticed during this
+    investigation worth flagging now (so we don't ship Phase 4A and
+    discover more in Phase 4B)?
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Report findings in one consolidated message structured by section.
+For each SQL query: report results.
+For each file lookup: provide actual code snippets.
+For each architectural question: describe the current pattern.
+
+At the end of each section, add a "Flags" subsection listing anything
+unexpected or worth highlighting for the Phase 4A scope decision.
+
+DO NOT propose solutions. I'll do that based on findings.
+DO NOT change any code.
+
+Estimated effort: 1-2 hours of focused investigation.

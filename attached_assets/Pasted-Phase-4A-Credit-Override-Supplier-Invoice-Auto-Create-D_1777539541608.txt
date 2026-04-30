@@ -1,0 +1,849 @@
+Phase 4A: Credit Override + Supplier Invoice Auto-Create + DueDate Fix
+         + PO GST + Outstanding-Dues Block
+
+CONTEXT
+
+CEO has confirmed multiple operational realities not currently
+reflected in the system:
+
+1. Sales orders sometimes dispatch without 100% customer payment
+   (credit sales). Phase 1 hard-block contradicts business reality.
+
+2. GRNs sometimes received without 100% supplier payment (credit
+   purchases). Phase 1 hard-block contradicts reality.
+
+3. AP aging is broken because supplier invoices aren't created (0
+   rows for 7 confirmed GRNs).
+
+4. AR aging is broken because sales_invoice.dueDate is always null
+   on auto-creation.
+
+5. Purchase orders capture no GST per line — totals are tax-exclusive,
+   PO PDF reads GST live from products at render time (snapshot risk).
+
+6. Customers with outstanding dues can have new sales orders created
+   for them, leading to growing unpaid balances.
+
+This phase implements coordinated fixes for all six gaps:
+- Sales-side credit override (admin-only, mirror of pricing-floor-
+  override pattern)
+- Purchase-side credit override (admin + accountant)
+- Auto-create supplier_invoice on GRN confirm (upload-shell pattern,
+  mirror of Phase 1 sales_invoice auto-create)
+- Sales invoice dueDate computed from customer payment_terms
+- PO line items get GST snapshot (gst_rate + hsn_code + gst_amount)
+  at PR-to-PO conversion or PO line entry
+- New SO creation blocked if customer has outstanding dues (admin
+  override allowed)
+- Customer/supplier payment_terms field
+- Audit log additions for payment recording
+- AR/AP aging credit visibility
+
+After this ships, ITFI's credit handling, AR aging, AP aging, and
+PO GST tracking match real operational reality.
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend tests insufficient.
+- Only operator declares phase closure.
+- Mirror existing patterns. Read existing code first.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Mirror the pricing-floor-override pattern (inline reason textarea,
+  action button disabled until filled, role-gated, audit-logged) for
+  all three override scenarios in this phase.
+- Mirror Phase 1 sales_invoice auto-create pattern for supplier_invoice
+  auto-create.
+- Tax-exclusive on purchase totals stays. Add new tax-aware columns
+  alongside legacy total_amount, do NOT modify total_amount semantics.
+
+CEO POLICY DECISIONS LOCKED
+- Sales-side credit override at Mark Ready: admin role ONLY
+- Purchase-side credit override at GRN creation: admin + accountant
+- New SO creation block override: admin role ONLY
+- Override reason: free text, mandatory, min 10 chars
+- Override is permanent (cancel is the only escape, not undo)
+- Customer payment_terms: B2C → immediate, B2B → net_30 (defaults)
+- Supplier payment_terms: per-supplier, defaults to immediate
+- Customer credit_limit: NOT IMPLEMENTED in this phase (rule is
+  zero-dues-required for new SO, not a limit)
+- Supplier invoice auto-creates on GRN confirm (not draft)
+- Supplier invoice cancel does NOT reverse GRN/stock
+- Inter-state detection on supplier invoice: SKIP (Tally handles tax
+  compliance; system tracks numbers only)
+- po.total_amount stays tax-exclusive (legacy). New columns added
+  alongside for GST tracking.
+
+PRE-WORK READING (MANDATORY, BEFORE ANY CODE)
+
+Most pre-work is already complete via prior audits. Confirm these
+specifics before writing code:
+
+1. The pricing-floor-override pattern in client/src/pages/Pricing.tsx
+   — re-read it. Mirror this pattern: inline textarea, action button
+   disabled until reason filled, role-gated, stored on the action
+   row, logged via logAction.
+
+2. The Phase 1 sales_invoice auto-create at challan dispatch —
+   confirm exact location in server/routes.ts. We will mirror this
+   for supplier_invoice auto-create at GRN confirm.
+
+3. The Phase 1 sales_invoice "Mark as Recorded" T93 form —
+   confirm exact pattern (4 required fields, signed copy upload
+   prerequisite, ₹5 variance modal, e-way bill threshold advisory).
+   Supplier invoice gets the same Mark as Recorded form.
+
+4. PR → PO conversion route — confirm exact code path that creates
+   purchase_order_items from purchase_request_items. The new GST
+   snapshot logic plugs in here.
+
+5. Storage helper signatures — confirm:
+   - storage.getCustomer(id), storage.updateCustomer(id, data)
+   - storage.getSupplier(id), storage.updateSupplier(id, data)
+   - storage.getSalesOrder(id), storage.updateSalesOrder(id, data)
+   - storage.getSalesInvoice(id), storage.updateSalesInvoice(id, data)
+   - storage.getDeliveryChallan(id), storage.updateDeliveryChallan(id, data)
+   - storage.getGRN(id), storage.updateGRN(id, data)
+   - storage.getSupplierInvoice(id), storage.updateSupplierInvoice(id, data)
+   - storage.createSupplierInvoice(data)
+   - storage.createNotification(data)
+   - logAction(userId, action, module, details?)
+   - Customer outstanding query helper (or build new)
+
+6. Confirm supplier_invoices schema. Per audit, has: invoice_number,
+   invoice_date, total_amount, subtotal, tax_amount, payment_terms,
+   due_date, status, supplier_id, purchase_order_id, grn_id, notes.
+   Verify and report.
+
+Report findings in one message. Await go-ahead before implementation.
+
+==========================================================
+SECTION A — SCHEMA ADDITIONS
+==========================================================
+
+A1. customers table — add columns:
+    payment_terms (text, nullable)
+    -- Allowed values: 'immediate' | 'net_15' | 'net_30' | 'net_45' |
+                       'net_60' | 'net_90'
+    -- Enforce in form validation; no DB constraint
+
+A2. suppliers table — add columns:
+    payment_terms (text, nullable)
+    -- Same allowed values
+
+A3. delivery_challans table — add columns:
+    is_credit_override (boolean, NOT NULL, default false)
+    credit_amount (numeric, nullable)
+    -- Outstanding amount on linked SO at moment of override
+    credit_approved_by (uuid FK → users, nullable)
+    credit_approved_at (timestamp, nullable)
+    credit_reason (text, nullable)
+
+A4. goods_receipt_notes table — add columns (mirror of A3):
+    is_credit_override (boolean, NOT NULL, default false)
+    credit_amount (numeric, nullable)
+    credit_approved_by (uuid FK → users, nullable)
+    credit_approved_at (timestamp, nullable)
+    credit_reason (text, nullable)
+
+A5. sales_orders table — add columns:
+    is_dues_override (boolean, NOT NULL, default false)
+    dues_override_amount (numeric, nullable)
+    -- Customer's outstanding amount at moment of admin override
+    dues_override_by (uuid FK → users, nullable)
+    dues_override_at (timestamp, nullable)
+    dues_override_reason (text, nullable)
+
+A6. supplier_invoices table — add new upload-shell fields (mirror of
+    Phase 1 sales_invoices restructure):
+    upload_status (text, NOT NULL, default 'pending_upload')
+    -- Allowed values: 'pending_upload' | 'recorded' | 'cancelled'
+    -- This is ADDITIVE alongside existing status (pending/paid/partial)
+    -- upload_status tracks document upload; status tracks payment
+
+    signed_copy_url (text, nullable)
+    signed_copy_uploaded_by (uuid FK → users, nullable)
+    signed_copy_uploaded_at (timestamp, nullable)
+
+    is_credit_grn (boolean, NOT NULL, default false)
+    -- Copied from source GRN's is_credit_override
+    credit_amount (numeric, nullable)
+    -- Copied from source GRN's credit_amount
+
+    Confirm if external invoice tracking fields exist (invoice_number,
+    invoice_date, total_amount accepted from supplier paper invoice).
+    If they do, reuse. If not, add accordingly.
+
+A7. purchase_order_items table — add columns (PO-only GST capture):
+    gst_rate (numeric, nullable, default 0)
+    hsn_code (text, nullable)
+    taxable_amount (numeric, nullable)
+    -- Equals quantity × unit_cost; stored explicitly for clarity
+    gst_amount (numeric, nullable)
+    -- Equals taxable_amount × gst_rate / 100
+
+A8. purchase_orders table — add columns (header-level GST aggregates):
+    subtotal (numeric, nullable)
+    -- Sum of all line items' taxable_amount (= existing total_amount
+    -- value for new POs, kept for clarity going forward)
+    total_tax (numeric, nullable)
+    -- Sum of all line items' gst_amount
+    delivery_cost (numeric, nullable, default 0)
+    -- Optional purchase-side logistics charge (mirrors sales-side)
+    grand_total (numeric, nullable)
+    -- subtotal + total_tax + delivery_cost
+    -- Used for new PO PDF totals + payment gates going forward
+
+    NOTE: legacy total_amount field stays unchanged for backward
+    compatibility. New code uses grand_total. Existing GRN payment
+    gate continues using legacy total_amount until backfill (A12).
+
+A9. sales_invoices table — confirm dueDate column already exists.
+    No new columns needed.
+
+A10. Run db:push.
+
+A11. Backfill existing customers with default payment_terms:
+     - customer_type = 'business' → payment_terms = 'net_30'
+     - customer_type = 'end_user' → payment_terms = 'immediate'
+     SQL:
+     UPDATE customers SET payment_terms = CASE
+       WHEN customer_type = 'business' THEN 'net_30'
+       ELSE 'immediate'
+     END WHERE payment_terms IS NULL;
+
+A12. Backfill existing suppliers with payment_terms = 'immediate':
+     UPDATE suppliers SET payment_terms = 'immediate'
+     WHERE payment_terms IS NULL;
+
+A13. Backfill existing 3 sales_invoices with dueDate computed from
+     invoice_date + customer.payment_terms.
+
+A14. Backfill existing 27 POs and their line items with GST snapshot:
+     For each purchase_order_items row:
+       Update gst_rate = (SELECT gst_rate FROM products WHERE id = product_id)
+       Update hsn_code = (SELECT hsn_code FROM products WHERE id = product_id)
+       Update taxable_amount = quantity × unit_cost
+       Update gst_amount = taxable_amount × gst_rate / 100
+     For each purchase_orders row:
+       Update subtotal = SUM(line items' taxable_amount)
+       Update total_tax = SUM(line items' gst_amount)
+       Update delivery_cost = 0 (default)
+       Update grand_total = subtotal + total_tax + delivery_cost
+     Note: total_amount stays unchanged (= subtotal). The GRN payment
+     gate continues comparing supplier_payments.SUM against total_amount
+     (legacy semantics) — see A15.
+
+A15. Decision on GRN payment gate threshold:
+     Going forward, the GRN payment gate compares supplier_payments
+     sum against po.grand_total (tax-inclusive). For old POs (where
+     total_amount = subtotal because no tax was tracked), grand_total
+     = subtotal + total_tax. This means existing partially-paid POs
+     may now require more payment than before to clear the gate.
+
+     Migration handling:
+     For 21 currently-underpaid POs, compute the payment shortfall
+     under the new semantics:
+       new_outstanding = grand_total - sum(supplier_payments)
+     Report a migration table to operator showing each PO's old
+     vs new outstanding for review. Operator confirms before
+     proceeding to A16.
+
+A16. Backfill existing 7 confirmed GRNs with auto-created
+     supplier_invoices (mirror of sales-side Phase 1 backfill):
+     For each confirmed GRN without an existing supplier_invoice:
+       Insert supplier_invoice row:
+         - supplier_id = grn's PO supplier
+         - purchase_order_id = grn.purchase_order_id
+         - grn_id = grn.id
+         - upload_status = 'pending_upload'
+         - status = 'pending' (existing payment status field)
+         - is_credit_grn = grn.is_credit_override (default false for
+           pre-Phase-4A GRNs)
+         - credit_amount = NULL
+         - All external paper-invoice fields (invoice_number,
+           invoice_date, total_amount, subtotal, tax_amount,
+           due_date) = NULL
+         - notes = 'Auto-backfilled by Phase 4A migration. Awaiting
+                    supplier paper invoice details.'
+     Report count and IDs.
+
+==========================================================
+SECTION B — CUSTOMER & SUPPLIER FORMS
+==========================================================
+
+B1. Customer create/edit form — add field:
+    - Payment Terms (dropdown: Immediate / Net 15 / Net 30 / Net 45 /
+      Net 60 / Net 90; required, default based on customer type)
+
+B2. Supplier create/edit form — add field:
+    - Payment Terms (dropdown, same options; required, default
+      Immediate)
+
+B3. Customer detail page — add display:
+    "Payment Terms: Net 30"
+    "Outstanding Dues: ₹2,30,000"
+    -- Outstanding = sum(sales_invoices.grand_total - paid_amount)
+       where customer_id = X AND status != 'cancelled'
+    If outstanding > 0: amber banner "Customer has unpaid dues."
+
+B4. Supplier detail page — add display:
+    "Payment Terms: Net 30"
+    "Outstanding Payable: ₹X"
+    -- Outstanding = sum(supplier_invoices.total_amount - paid amounts)
+       where supplier_id = X
+
+==========================================================
+SECTION C — SALES-SIDE CREDIT OVERRIDE (Mark Ready)
+==========================================================
+
+C1. Modify POST /api/delivery-challans/:id/ready-for-signature:
+    Accept new optional body fields:
+    - creditOverride: boolean (default false)
+    - creditReason: string (required if creditOverride = true, min 10 chars)
+
+    Logic:
+    - Existing checks (stock, 5 mandatory fields) preserved
+    - If SO.paidAmount >= SO.totalAmount: proceed normally
+    - If SO.paidAmount < SO.totalAmount AND creditOverride = false:
+      return 400 "Customer payment incomplete" as today
+    - If SO.paidAmount < SO.totalAmount AND creditOverride = true:
+      * Require req.user.role === 'admin' (else 403 "Only admin can
+        authorize credit dispatch")
+      * Require creditReason non-empty, min 10 chars (else 400)
+      * Compute creditAmount = SO.totalAmount - SO.paidAmount
+      * Update challan: status='ready', is_credit_override=true,
+        credit_amount=creditAmount, credit_approved_by=req.user.id,
+        credit_approved_at=now(), credit_reason=creditReason
+      * Audit log: action='challan_credit_override', module='sales',
+        details=`Challan ${challan.number} ready-for-signature with
+        credit override of ₹${creditAmount}. Reason: ${creditReason}`
+      * Notification: notifyRoles(['accountant'], type='credit_override',
+        title=`Credit dispatch approved: Challan ${challan.number}`,
+        message=`Admin approved ₹${creditAmount} credit on Challan
+        ${challan.number}. Reason: ${creditReason}`, relatedId=challan.id)
+
+C2. UI — Mark Ready button on Inventory > Challans tab:
+
+    When SO.paidAmount >= SO.totalAmount:
+    - Existing "Ready" button (no change)
+
+    When SO.paidAmount < SO.totalAmount AND user role !== 'admin':
+    - Button: "Ready" greyed out, disabled
+    - Tooltip: "Customer payment incomplete: ₹X outstanding. Only
+      admin can authorize credit dispatch."
+
+    When SO.paidAmount < SO.totalAmount AND user role === 'admin':
+    - Button: "Ready (Credit)" with amber styling
+    - Click → "Authorize Credit Dispatch" dialog:
+
+      Dialog content:
+        Title: "Authorize Credit Dispatch"
+        Body:
+          "Sales Order: SO-XXX
+           Customer: [Name]
+           Total Amount: ₹X
+           Paid: ₹Y
+           Outstanding Credit: ₹Z
+
+           Customer Payment Terms: [Net 30]
+
+           [Reason textarea, required, min 10 chars]
+           placeholder: 'e.g., Long-term customer with strong payment
+           history; cash flow constraint this month; strategic deal
+           negotiated by CEO'
+
+           [Cancel] [Authorize Credit Dispatch]"
+
+      Authorize button disabled until reason has min 10 chars.
+      On authorize: spinner; on success close dialog, refresh list.
+
+==========================================================
+SECTION D — PURCHASE-SIDE CREDIT OVERRIDE (Create GRN)
+==========================================================
+
+D1. Modify POST /api/grns/create-from-po/:poId AND POST /api/grns
+    (both routes — identical logic):
+    Accept new optional body fields:
+    - creditOverride: boolean
+    - creditReason: string (required if creditOverride = true, min 10)
+
+    Logic:
+    - Payment gate uses po.grand_total (tax-inclusive going forward)
+    - Existing supplier_payments sum check preserved
+    - If sum >= po.grand_total: proceed normally
+    - If sum < grand_total AND creditOverride = false: return 400 as today
+    - If sum < grand_total AND creditOverride = true:
+      * Require req.user.role IN ('admin', 'accountant') (else 403)
+      * Require creditReason non-empty, min 10 chars
+      * Compute creditAmount = po.grand_total - paidAmount
+      * Create GRN with is_credit_override=true, credit_amount,
+        credit_approved_by, credit_approved_at, credit_reason populated
+      * Audit log: action='grn_credit_override', module='supply_chain'
+      * Notification: notifyRoles(['admin'], type='credit_grn',
+        relatedId=grn.id)
+
+D2. UI — Create GRN button on PO detail in SupplyChain.tsx:
+
+    When supplier paid in full:
+    - Existing "Create GRN" button
+
+    When not fully paid AND user role NOT IN ('admin', 'accountant'):
+    - Disabled with tooltip showing shortfall + "Only admin or
+      accountant can authorize credit GRN."
+
+    When not fully paid AND user role IN ('admin', 'accountant'):
+    - Button: "Create GRN (Credit)" with amber styling
+    - Click → "Authorize Credit Goods Receipt" dialog (mirror of C2):
+
+      Title: "Authorize Credit Goods Receipt"
+      Body:
+        "Purchase Order: PO-XXX
+         Supplier: [Name]
+         Total Amount (incl. GST): ₹X
+         Paid to Supplier: ₹Y
+         Outstanding Credit: ₹Z
+
+         Supplier Payment Terms: [Net 30]
+
+         [Reason textarea, required, min 10 chars]
+
+         [Cancel] [Authorize Credit GRN]"
+
+==========================================================
+SECTION E — OUTSTANDING-DUES BLOCK ON SO CREATION
+==========================================================
+
+E1. Customer outstanding dues query — server-side helper:
+    storage.getCustomerOutstanding(customerId) → numeric
+    Returns sum(sales_invoices.grand_total - paid_amount) where:
+    - customer_id = X
+    - status NOT IN ('cancelled')
+    Returns 0 if no unpaid invoices.
+
+E2. Modify POST /api/sales-orders (manual creation):
+    Accept new optional body fields:
+    - duesOverride: boolean
+    - duesOverrideReason: string (required if duesOverride = true, min 10)
+
+    Logic:
+    - Compute outstanding = storage.getCustomerOutstanding(customerId)
+    - If outstanding == 0: proceed normally
+    - If outstanding > 0 AND duesOverride = false:
+      return 400 "Customer has outstanding dues of ₹X. New SO blocked.
+      Customer must clear dues OR admin must override."
+    - If outstanding > 0 AND duesOverride = true:
+      * Require req.user.role === 'admin' (else 403)
+      * Require duesOverrideReason non-empty, min 10 chars
+      * Create SO with is_dues_override=true, dues_override_amount=
+        outstanding, dues_override_by=req.user.id, dues_override_at=
+        now(), dues_override_reason=duesOverrideReason
+      * Audit log: action='so_dues_override', module='sales',
+        details=`SO ${so.number} created despite ₹${outstanding}
+        outstanding from customer. Reason: ${duesOverrideReason}`
+
+E3. Modify quotation→SO conversion route:
+    Same logic as E2. Quotation creation itself unchanged.
+
+E4. UI — Quotation creation in Sales.tsx:
+    When user selects a customer with outstanding dues:
+    - Show amber banner: "Customer has ₹X in unpaid invoices."
+    - List the unpaid invoices (number, date, balance) below banner
+    - Quotation creation proceeds normally (no block)
+
+E5. UI — Sales Order creation form (manual or via convert-quotation):
+    When user selects a customer with outstanding dues:
+
+    Banner displayed (red if non-admin, amber if admin):
+    - List of unpaid invoices: "INV-XXX dated DD-MMM-YYYY: balance ₹X"
+    - Total outstanding sum
+
+    For non-admin users:
+    - Save/Create button disabled
+    - Disabled tooltip: "Cannot create SO. Customer has ₹X in unpaid
+      invoices. Clear dues first or contact admin for override."
+
+    For admin users:
+    - Save button label: "Create SO" (default behavior if dues = 0)
+      OR "Create SO (Override Dues)" with amber styling (if dues > 0)
+    - Click "Create SO (Override Dues)" → "Authorize SO Despite Dues"
+      dialog:
+
+      Title: "Authorize Sales Order Despite Outstanding Dues"
+      Body:
+        "Customer: [Name]
+         Outstanding Dues: ₹X
+         [Unpaid invoices list]
+
+         New Order Total: ₹Y
+
+         [Reason textarea, required, min 10 chars]
+         placeholder: 'e.g., Strategic customer; partial payment
+         expected this week; CEO-approved exception'
+
+         [Cancel] [Authorize and Create]"
+
+      Authorize button disabled until reason has min 10 chars.
+
+E6. Quotation→SO conversion in UI:
+    Same dues check applies. If outstanding > 0:
+    - Non-admin: conversion blocked with same error
+    - Admin: same override dialog before conversion
+
+==========================================================
+SECTION F — SUPPLIER INVOICE AUTO-CREATE ON GRN CONFIRM
+==========================================================
+
+F1. Modify POST /api/grns/:id/confirm:
+    On successful GRN confirmation (after stock added, FIFO lots
+    created, daily price sheet drafted), auto-create a supplier_invoice:
+
+    INSERT INTO supplier_invoices (
+      supplier_id,                -- from grn.purchase_order's supplier
+      purchase_order_id,          -- grn.purchase_order_id
+      grn_id,                     -- grn.id
+      upload_status,              -- 'pending_upload'
+      status,                     -- 'pending' (legacy payment status)
+      is_credit_grn,              -- grn.is_credit_override
+      credit_amount,              -- grn.credit_amount
+      payment_terms,              -- supplier.payment_terms
+      created_by,                 -- system user or req.user.id
+      created_at                  -- now()
+    )
+
+    External fields (invoice_number, invoice_date, total_amount,
+    subtotal, tax_amount, due_date) left NULL — accountant fills via
+    Mark as Recorded form.
+
+    Audit log: action='supplier_invoice_auto_created',
+    module='supply_chain', details=`Supplier invoice auto-created
+    for GRN ${grn.number}, status pending_upload`.
+
+    Notification: notifyRoles(['accountant', 'admin'],
+    type='supplier_invoice_pending_upload', message=`GRN ${grn.number}
+    confirmed. Supplier invoice pending external paper invoice
+    details.`, relatedId=supplier_invoice.id)
+
+F2. Supplier Invoice list page — extend filter:
+    - Add upload_status filter tabs: All | Upload Pending | Recorded
+    - Mirror Phase 1 sales invoice list pattern
+
+F3. Supplier Invoice detail page — Mark as Recorded form (mirror of
+    Phase 1 T93 sales invoice form):
+    Required fields when status='pending_upload':
+    - Supplier Invoice Number (text, required)
+    - Supplier Invoice Date (date, required)
+    - Total Amount (₹) (numeric, required)
+    Optional fields:
+    - Subtotal (₹)
+    - Tax Amount (₹)
+    - Due Date (date, auto-computed from invoice_date + supplier.payment_terms,
+      editable)
+
+    Signed Copy upload section:
+    - File upload (PDF/JPEG/PNG, max 10MB)
+    - Stored signed_copy_url, signed_copy_uploaded_by, signed_copy_uploaded_at
+    - Replace allowed (audit logged)
+
+    Action button:
+    - "Mark as Recorded" — disabled until 3 required fields + signed
+      copy uploaded
+    - Variance modal: if |total_amount entered - po.grand_total|
+      > ₹5, show modal:
+      "External invoice total: ₹X
+       Linked PO grand total: ₹Y
+       Difference: ₹Z
+       Continue with this amount?"
+      [Cancel] [Continue]
+    - Within ₹5: silent record
+    - On confirm: status='recorded', upload_status='recorded'
+
+F4. Cancel Supplier Invoice:
+    - Available on pending_upload and recorded
+    - Required: cancellation_reason
+    - Sets upload_status='cancelled', status='cancelled' (legacy)
+    - Audit log
+    - Does NOT reverse GRN or stock changes
+
+==========================================================
+SECTION G — SALES INVOICE DUEDATE FIX
+==========================================================
+
+G1. Modify sales_invoice auto-create logic at challan dispatch:
+    - Look up customer.payment_terms via SO → customer
+    - Compute dueDate = invoice_date + interval days based on terms:
+      'immediate' → 0
+      'net_15' → 15
+      'net_30' → 30
+      'net_45' → 45
+      'net_60' → 60
+      'net_90' → 90
+    - If customer.payment_terms IS NULL (defensive): dueDate =
+      invoice_date
+
+G2. Allow accountant to override dueDate at "Mark as Recorded" stage:
+    - Add 'invoice_due_date' (date input, required, defaults to
+      auto-computed value) to T93 form
+    - Helper text: "Auto-set from customer payment terms. Override
+      if needed."
+    - Stored in sales_invoices.due_date
+
+G3. Utility helper (server-side, callable from any module):
+    function computeDueDate(invoiceDate: Date, paymentTerms: string): Date
+
+==========================================================
+SECTION H — PO GST CAPTURE
+==========================================================
+
+H1. Modify PR → PO conversion route:
+    For each new purchase_order_items row created from a
+    purchase_request_items row:
+    - Look up products.gst_rate and products.hsn_code by product_id
+    - Snapshot to po_item:
+      gst_rate = product.gst_rate
+      hsn_code = product.hsn_code
+      taxable_amount = quantity × unit_cost
+      gst_amount = taxable_amount × gst_rate / 100
+
+H2. Modify direct PO creation (POLineItemsEditor):
+    When user selects a product:
+    - Auto-populate gstRate from products.gstRate
+    - Auto-populate hsnCode from products.hsnCode
+    - Show in line item editor (read-only display, OR editable per
+      line — mirror of sales-side LineItemsEditor pattern)
+    - Recompute taxable_amount and gst_amount on quantity/unit_cost
+      change
+
+H3. PO header totals — populate at PO save:
+    subtotal = SUM(line items' taxable_amount)
+    total_tax = SUM(line items' gst_amount)
+    grand_total = subtotal + total_tax + delivery_cost
+
+H4. PO PDF — update server/po-pdf.ts (Phase 2 deliverable):
+    - Stop reading GST from products at render time
+    - Use po_items.gst_rate, po_items.hsn_code, po_items.taxable_amount,
+      po_items.gst_amount directly (snapshot)
+    - Show subtotal, total_tax, delivery_cost (if > 0), grand_total
+    - Multi-rate breakdown still works: group lines by gst_rate
+
+H5. POLineItemsEditor UI:
+    - Add columns: HSN | GST% | GST Amt | Total (taxable + GST)
+    - Footer: Subtotal | Total GST | Delivery Cost (optional input) |
+      Grand Total
+
+H6. Delivery Cost on PO:
+    - New optional input field at PO header level
+    - Numeric, can be 0 or empty
+    - Added to grand_total computation
+    - Mirrors sales_orders.delivery_cost pattern (no GST applied to
+      delivery)
+
+==========================================================
+SECTION I — AUDIT LOG ADDITIONS
+==========================================================
+
+I1. Add logAction() calls to currently-untracked payment events
+    (per audit Section 5.3 — zero payment-related audit entries today):
+    - On customer payment record (POST /api/sales-orders/:id/record-payment):
+      action='customer_payment_recorded', module='sales',
+      details=`Customer payment of ₹${amount} recorded for SO ${order.number}.
+               Method: ${paymentMethod}. Reference: ${reference || 'N/A'}.`
+    - On supplier payment record (POST /api/supplier-payments):
+      action='supplier_payment_recorded', module='supply_chain',
+      details=`Supplier payment of ₹${amount} recorded. Type:
+               ${paymentType}. PO: ${purchase_order_id || 'N/A'}.
+               Method: ${payment_method}.`
+
+I2. These are pure additions — no other behavior change.
+
+==========================================================
+SECTION J — REPORTING (LIGHT)
+==========================================================
+
+J1. AR Aging report (existing at /reports → AR Aging tab):
+    - Add "Credit Sale" badge column when sales_invoice was
+      auto-created from a credit-override challan
+    - Query: LEFT JOIN delivery_challans ON sales_invoices.delivery_challan_id
+      = delivery_challans.id
+    - Display amber badge "Credit Sale" if challan.is_credit_override
+      = true; show challan.credit_reason in tooltip
+    - dueDate fix (G1) flows through automatically — invoices now
+      surface in correct overdue buckets
+
+J2. AP Aging report:
+    - Add "Credit GRN" badge column when supplier_invoice was
+      auto-created from a credit-override GRN (is_credit_grn = true)
+    - dueDate auto-flows through Mark as Recorded form
+
+J3. Customer detail outstanding visibility (covered in B3).
+
+J4. Supplier detail outstanding payable (covered in B4).
+
+==========================================================
+SECTION K — STOP GATE (OPERATOR WALKS — DO NOT DECLARE PASSED YOURSELF)
+==========================================================
+
+K1. Schema and backfill verification:
+    (a) SQL: SELECT customer_type, payment_terms, COUNT(*) FROM
+        customers GROUP BY customer_type, payment_terms;
+        → All have payment_terms set; B2C = immediate, B2B = net_30
+    (b) SQL: SELECT payment_terms, COUNT(*) FROM suppliers GROUP BY
+        payment_terms; → All set
+    (c) SQL: SELECT id, due_date FROM sales_invoices; → All 3 have
+        non-null dueDate
+    (d) SQL check po backfill: SELECT id, subtotal, total_tax,
+        delivery_cost, grand_total, total_amount FROM purchase_orders
+        LIMIT 5; → All 27 POs have new columns populated
+    (e) SQL: \d delivery_challans, goods_receipt_notes,
+        sales_orders, supplier_invoices, purchase_orders,
+        purchase_order_items;
+        → All new columns present
+    (f) SQL: SELECT COUNT(*) FROM supplier_invoices WHERE
+        upload_status = 'pending_upload'; → 7 (auto-backfill)
+
+K2. Customer/supplier forms:
+    (g) Customer edit form has Payment Terms dropdown. Save works.
+    (h) Supplier edit form has Payment Terms dropdown. Save works.
+    (i) Customer detail page shows outstanding dues if any.
+    (j) Supplier detail page shows outstanding payable.
+
+K3. Sales-side credit override (Mark Ready):
+    (k) Login as sales_manager. Open partially-paid SO. "Ready"
+        button: greyed out with tooltip "Customer payment incomplete...
+        Only admin can authorize credit dispatch."
+    (l) Direct API call as sales_manager with creditOverride: true →
+        403 "Only admin can authorize credit dispatch."
+    (m) Login as admin. Same SO. "Ready (Credit)" button visible
+        with amber styling.
+    (n) Click → "Authorize Credit Dispatch" dialog opens. Shows SO,
+        customer, amounts.
+    (o) Reason 5 chars: button disabled. Reason 50 chars valid:
+        button enables.
+    (p) Authorize. Spinner. Success. Challan moves to 'ready'. Toast.
+    (q) SQL: SELECT is_credit_override, credit_amount, credit_approved_by,
+        credit_approved_at, credit_reason FROM delivery_challans
+        WHERE id = X; → All populated.
+    (r) Audit log: action='challan_credit_override' present.
+    (s) Notification fires to accountant.
+
+K4. Sales flow after credit override:
+    (t) Continue: admin issues DO. Warehouse dispatches. Stock
+        deducts. Sales invoice auto-created with non-null dueDate.
+    (u) Open auto-created invoice. dueDate populated from customer
+        payment terms. Editable in Mark as Recorded form.
+
+K5. Purchase-side credit override (Create GRN):
+    (v) Login as warehouse_manager. PO with no/partial supplier
+        payment. "Create GRN" disabled with tooltip + "Only admin
+        or accountant can authorize credit GRN."
+    (w) Login as accountant. Same PO. "Create GRN (Credit)" amber
+        button. Click → Authorize dialog.
+    (x) Reason required min 10 chars. Submit. GRN created with
+        is_credit_override=true. SQL verifies all credit fields.
+    (y) Audit log: action='grn_credit_override'.
+    (z) Notification fires to admin.
+
+K6. Outstanding dues block:
+    (aa) Customer C has 1 unpaid invoice ₹50,000.
+    (bb) Login as sales_manager. Try to create new SO for C.
+         Red banner: "Customer has ₹50,000 in unpaid invoices."
+         List of unpaid invoices visible. Save button disabled.
+    (cc) Same user clicks Save anyway → 400 "Customer has outstanding
+         dues..." (server-side enforcement).
+    (dd) Direct API call as sales_manager with duesOverride: true →
+         403 "Only admin can authorize SO despite dues."
+    (ee) Login as admin. Same customer. "Create SO (Override Dues)"
+         button visible with amber styling. Banner shows in amber.
+    (ff) Click → "Authorize SO Despite Outstanding Dues" dialog.
+         Shows unpaid invoices, new order total. Reason required.
+    (gg) Authorize. SO created. SQL: is_dues_override=true,
+         dues_override_amount=50000, dues_override_by, dues_override_at,
+         dues_override_reason populated.
+    (hh) Audit log: action='so_dues_override'.
+    (ii) Now record full payment of ₹50,000 against the unpaid
+         invoice. Outstanding becomes 0.
+    (jj) Try create new SO for same customer. No banner. Normal
+         flow. Save works.
+
+K7. Quotation behavior with dues:
+    (kk) Customer C has unpaid invoice. Login as sales_manager.
+         Create quotation for C. Amber banner shows unpaid invoices.
+         Quotation creation proceeds normally (no block).
+    (ll) Try to convert that quotation to SO. Same dues block as
+         direct SO creation. Non-admin: blocked. Admin: override
+         dialog.
+
+K8. Supplier invoice auto-create:
+    (mm) Confirm a draft GRN. After confirm: SQL: SELECT * FROM
+         supplier_invoices WHERE grn_id = X ORDER BY created_at DESC
+         LIMIT 1; → 1 row, upload_status='pending_upload', linked
+         correctly.
+    (nn) Notification fires to accountant + admin.
+    (oo) Open Supplier Invoices list. New entry visible with
+         "Pending Upload" badge.
+
+K9. Supplier invoice Mark as Recorded:
+    (pp) Open auto-created supplier invoice. T93-style form visible.
+         3 required fields (Supplier Invoice No., Invoice Date,
+         Total Amount). Signed copy upload required.
+    (qq) Try Mark as Recorded with empty Total Amount → blocked.
+    (rr) Fill all 3 required + upload signed copy. Total Amount
+         differs from po.grand_total by > ₹5 → variance modal.
+    (ss) Total Amount within ₹5 → silent record. Status=recorded.
+    (tt) Audit log entry.
+
+K10. PO GST capture:
+    (uu) Create new PO. Pick a product. Line item shows: HSN,
+         GST%, GST Amt columns. Values auto-populate from product.
+    (vv) Multi-rate test: add lines with different GST rates (5%
+         and 18%). Totals compute correctly.
+    (ww) Add delivery cost in PO header. Grand total = subtotal +
+         total_tax + delivery_cost.
+    (xx) PO PDF: shows new columns, multi-rate breakdown, delivery
+         cost line, grand total.
+    (yy) Existing 27 POs: open one. PDF shows the backfilled values.
+
+K11. Audit log additions:
+    (zz) Record customer payment. Audit log:
+         'customer_payment_recorded' action present.
+    (aaa) Record supplier payment. Audit log:
+          'supplier_payment_recorded' action present.
+
+K12. Reports:
+    (bbb) /reports → AR Aging. Credit-overridden invoices show amber
+          "Credit Sale" badge. Tooltip shows reason.
+    (ccc) AR Aging now shows due dates correctly (not all "Current").
+    (ddd) /reports → AP Aging: "Credit GRN" badge for credit-override-
+          sourced supplier invoices.
+
+K13. Regression — Phase 1, 2, 3 features:
+    (eee) Sales workflow with full payment + zero customer dues:
+          no override dialogs, no behavior change.
+    (fff) GRN creation with full supplier payment: no override
+          dialogs, no behavior change.
+    (ggg) Phase 3 5-mandatory-field challan creation still works.
+    (hhh) Phase 3 GRN simplification still works.
+    (iii) Phase 2 PO PDF still downloads.
+    (jjj) Hierarchical picker on Sales and PO still works.
+    (kkk) Pricing engine floor override still works.
+
+==========================================================
+OUT OF SCOPE FOR THIS PHASE
+==========================================================
+
+- Cash & bank account tracking (Phase 4B)
+- Financial dashboard (Phase 4C)
+- Supplier invoice CGST/SGST/IGST splits (Tally handles tax compliance)
+- Customer/supplier state field for auto inter-state detection
+- Round-off field on documents
+- Multi-company support (Phase 5)
+- Customer credit_limit (replaced by zero-dues rule)
+- Email/WhatsApp on credit overrides
+- Credit dispatch reversal/undo (cancel is the only escape)
+- Customer or supplier statement generation
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Stop after implementation ships and ping me. I will walk the K1-K13
+stop gate (~85 items, ~75 min).

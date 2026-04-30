@@ -5558,15 +5558,20 @@ export async function registerRoutes(
             if (!isNaN(lastNum)) siNextNum = lastNum + 1;
           }
           const siAutoNumber = `SI-${siYear}-${String(siNextNum).padStart(4, "0")}`;
+          if (!grnPo?.supplierId) throw new Error(`F1: GRN ${grn.grnNumber} has no linked supplier — skipping auto-create`);
           await db.execute(sql`
             INSERT INTO supplier_invoices
-              (id, supplier_id, purchase_order_id, grn_id, invoice_number, invoice_date, total_amount, paid_amount,
-               status, upload_status, notes, created_at, updated_at)
+              (id, supplier_id, purchase_order_id, grn_id, invoice_number, invoice_date,
+               tax_amount, total_amount, payment_terms,
+               status, upload_status, notes, created_by, created_at,
+               is_credit_grn, credit_amount)
             VALUES
-              (gen_random_uuid(), ${grnPo?.supplierId ?? null}, ${grn.purchaseOrderId}, ${grn.id},
-               ${siAutoNumber}, CURRENT_DATE, ${payableAmount.toFixed(2)}, '0',
+              (gen_random_uuid(), ${grnPo.supplierId}, ${grn.purchaseOrderId}, ${grn.id},
+               ${siAutoNumber}, CURRENT_DATE,
+               '0', ${payableAmount.toFixed(2)}, 'net_30',
                'pending', 'pending_upload', ${"Auto-created on GRN " + grn.grnNumber + " confirmation"},
-               now(), now())
+               ${req.user.id}, now(),
+               ${(grn as any).isCreditOverride ?? false}, ${(grn as any).creditAmount ?? null})
           `);
           await logAction(req.user.id, "supplier_invoice_auto_created", "supply_chain",
             `Auto-created supplier invoice ${siAutoNumber} (pending upload) for GRN ${grn.grnNumber}`);

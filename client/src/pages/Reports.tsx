@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tooltip as UITooltip, TooltipContent as UITooltipContent, TooltipTrigger as UITooltipTrigger, TooltipProvider as UITooltipProvider } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
@@ -421,9 +422,21 @@ function APAgingTab() {
                       <td className="px-4 py-3 text-center">
                         <div className="flex items-center justify-center gap-1 flex-wrap">
                           {(row as any).isCreditGrn && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400" data-testid={`badge-credit-grn-${row.invoiceId}`}>
-                              Credit GRN
-                            </span>
+                            <UITooltipProvider>
+                              <UITooltip>
+                                <UITooltipTrigger asChild>
+                                  <span
+                                    className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-400 cursor-help"
+                                    data-testid={`badge-credit-grn-${row.invoiceId}`}
+                                  >
+                                    Credit GRN
+                                  </span>
+                                </UITooltipTrigger>
+                                <UITooltipContent side="left" className="max-w-xs text-xs">
+                                  {(row as any).creditReason ?? "Credit override approved"}
+                                </UITooltipContent>
+                              </UITooltip>
+                            </UITooltipProvider>
                           )}
                           {(row as any).uploadStatus && (row as any).uploadStatus !== "recorded" && (
                             <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
@@ -610,6 +623,7 @@ function ARAgingTab() {
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground cursor-pointer select-none hover:text-foreground" onClick={() => handleSort("daysOverdue")}>Days Overdue<SortIcon k="daysOverdue" /></th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Status</th>
                     <th className="px-4 py-3 text-center font-medium text-muted-foreground">Bucket</th>
+                    <th className="px-4 py-3 text-center font-medium text-muted-foreground">Flags</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -664,6 +678,25 @@ function ARAgingTab() {
                           {bucketLabel[row.bucket]}
                         </Badge>
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        {(row as any).isCreditOverride && (
+                          <UITooltipProvider>
+                            <UITooltip>
+                              <UITooltipTrigger asChild>
+                                <span
+                                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400 cursor-help"
+                                  data-testid={`badge-credit-sale-${row.invoiceId}`}
+                                >
+                                  Credit Sale
+                                </span>
+                              </UITooltipTrigger>
+                              <UITooltipContent side="left" className="max-w-xs text-xs">
+                                {(row as any).creditReason ?? "Credit override approved"}
+                              </UITooltipContent>
+                            </UITooltip>
+                          </UITooltipProvider>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -674,7 +707,7 @@ function ARAgingTab() {
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.grandTotal, 0))}</td>
                       <td className="px-4 py-3 text-right text-emerald-600 dark:text-emerald-400">{fmt(filtered.reduce((s, r) => s + r.totalPaid, 0))}</td>
                       <td className="px-4 py-3 text-right">{fmt(filtered.reduce((s, r) => s + r.balance, 0))}</td>
-                      <td colSpan={3} />
+                      <td colSpan={4} />
                     </tr>
                   </tfoot>
                 )}

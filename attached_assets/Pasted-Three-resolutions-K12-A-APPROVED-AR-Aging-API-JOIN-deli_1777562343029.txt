@@ -1,0 +1,60 @@
+Three resolutions:
+
+K12-A APPROVED:
+- AR Aging API: JOIN delivery_challans on challan_id, include
+  isCreditOverride + creditReason fields in row response
+- Reports.tsx AR Aging table: add amber "Credit Sale" badge
+  matching the AP Aging purple "Credit GRN" pattern
+- Both badges should support hover tooltip showing the credit
+  reason (close K12-C in same change)
+
+K12-B SKIPPED (don't run UPDATE):
+- INV-2526-0001 due_date is 1 day off due to backfill calculation
+  edge case at month boundaries. New invoices compute correctly
+  via computeDueDate utility.
+- Don't synthesize a "correct" value. Production data — even dummy —
+  should reflect what the system actually did.
+- Document this in a commit comment: "Backfill due_date for older
+  invoices may differ ±1 day at month boundaries from forward-going
+  computeDueDate calculation. Affects display-only; aging buckets
+  unaffected."
+- If operator wants exact match later, easy SQL update.
+
+K12-C APPROVED (combine with K12-A):
+- Add creditReason field to AP Aging API response (similar JOIN
+  pattern: supplier_invoices → goods_receipt_notes for credit_reason)
+- Reports.tsx: wrap both Credit Sale + Credit GRN badges with
+  tooltip showing the reason text
+- Use shadcn Tooltip component (or whatever UI lib pattern is used
+  elsewhere — confirm consistency with rest of app)
+
+Implementation:
+1. Update server/routes.ts AR Aging route — add JOIN + return
+   isCreditOverride, creditReason
+2. Update server/routes.ts AP Aging route — add JOIN if not already
+   there, return creditReason
+3. Update Reports.tsx — render badges with tooltips
+4. Take screenshots of both AR Aging and AP Aging showing badges
+   with tooltips visible
+
+After ship: walk K12 items end-to-end:
+
+(bbb) Open /reports → AR Aging. Find INV-2627-0003. Verify amber
+       "Credit Sale" badge. Hover → tooltip shows credit_reason.
+       Screenshot.
+
+(ccc) Confirm aging buckets distributed correctly:
+       SQL: SELECT bucket, COUNT(*) FROM (SELECT
+            CASE WHEN due_date >= CURRENT_DATE THEN 'Current'
+                 WHEN CURRENT_DATE - due_date <= 30 THEN '1-30'
+                 ELSE 'Older' END AS bucket
+            FROM sales_invoices WHERE upload_status != 'cancelled')
+            GROUP BY bucket;
+       Confirm rows in multiple buckets (not all "Current").
+
+(ddd) Open AP Aging. Find SUP-INV-12345. Verify purple "Credit GRN"
+       badge. Hover → tooltip shows credit_reason. Screenshot.
+
+After K12 closes, move to K13 (regression of Phases 1-3, 7 items).
+This is the LAST section. Take it slow. Regression items catch
+collateral damage that wasn't visible during feature-specific walks.

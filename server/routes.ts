@@ -7604,6 +7604,9 @@ export async function registerRoutes(
       const allPayments = await storage.getSupplierPayments();
       const allSuppliers = await storage.getSuppliers();
       const allPOs = await storage.getPurchaseOrders();
+      // K12-C: fetch GRNs to get creditReason for credit GRN invoices
+      const allGRNs = await storage.getGRNs();
+      const grnMap = new Map(allGRNs.map(g => [g.id, g]));
 
       const supplierMap = new Map(allSuppliers.map(s => [s.id, s]));
       const poMap = new Map(allPOs.map(p => [p.id, p]));
@@ -7653,6 +7656,10 @@ export async function registerRoutes(
           else summary.days90plus += balance;
         }
 
+        // K12-C: get creditReason from linked GRN for credit GRN invoices
+        const grn = (inv as any).grnId ? grnMap.get((inv as any).grnId) : undefined;
+        const creditReason = (inv as any).isCreditGrn ? ((grn as any)?.creditReason ?? null) : null;
+
         return {
           invoiceId: inv.id,
           invoiceNumber: inv.invoiceNumber,
@@ -7669,6 +7676,7 @@ export async function registerRoutes(
           bucket,
           status: inv.status,
           isCreditGrn: !!(inv as any).isCreditGrn,
+          creditReason,
           uploadStatus: (inv as any).uploadStatus ?? "pending_upload",
         };
       });
@@ -7691,6 +7699,9 @@ export async function registerRoutes(
       const allInvoices = await storage.getSalesInvoices();
       const allPayments = await storage.getAllCustomerPayments();
       const allCustomers = await storage.getCustomers();
+      // K12-A: fetch challans to get credit-override info per invoice
+      const allChallans = await storage.getDeliveryChallans();
+      const challanMap = new Map(allChallans.map(dc => [dc.id, dc]));
 
       const customerMap = new Map(allCustomers.map(c => [c.id, c]));
 
@@ -7733,6 +7744,11 @@ export async function registerRoutes(
           else summary.days90plus += balance;
         }
 
+        // K12-A: credit override info from linked delivery challan
+        const challan = inv.challanId ? challanMap.get(inv.challanId) : undefined;
+        const isCreditOverride = !!(challan as any)?.isCreditOverride;
+        const creditReason = (challan as any)?.creditReason ?? null;
+
         return {
           invoiceId: inv.id,
           invoiceNumber: inv.invoiceNumber,
@@ -7748,6 +7764,8 @@ export async function registerRoutes(
           daysOverdue,
           bucket,
           status: inv.status,
+          isCreditOverride,
+          creditReason,
         };
       });
 

@@ -1748,16 +1748,18 @@ export default function SupplyChain() {
                                     const supplierPaid = Number((po as any).supplierPaidAmount ?? 0);
                                     const poTotal = Number(po.totalAmount ?? 0);
                                     const paymentComplete = poTotal === 0 || supplierPaid >= poTotal;
-                                    return (
-                                      <span title={!paymentComplete ? `Full supplier payment required (paid ₹${supplierPaid.toLocaleString()} of ₹${poTotal.toLocaleString()})` : undefined}>
+                                    const canCreditOverride = currentUser?.role === "admin" || currentUser?.role === "accountant";
+
+                                    // Payment complete → regular Create GRN button for all roles
+                                    if (paymentComplete) {
+                                      return (
                                         <Button
                                           size="sm"
                                           variant="link"
-                                          className={`text-xs mr-1 p-0 h-auto ${paymentComplete ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground opacity-50 cursor-not-allowed"}`}
+                                          className="text-xs mr-1 p-0 h-auto text-emerald-600 dark:text-emerald-400"
                                           data-testid={`button-create-grn-${po.id}`}
-                                          disabled={creatingGrnPoId === po.id || !paymentComplete}
+                                          disabled={creatingGrnPoId === po.id}
                                           onClick={() => {
-                                            if (!paymentComplete) return;
                                             setGrnWarehouseDialogPoId(po.id);
                                             setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
                                             setGrnSupplierChallan("");
@@ -1765,6 +1767,43 @@ export default function SupplyChain() {
                                         >
                                           <PackagePlus className="w-3 h-3 mr-1" />
                                           {creatingGrnPoId === po.id ? "Creating..." : "Create GRN"}
+                                        </Button>
+                                      );
+                                    }
+
+                                    // Payment incomplete + admin/accountant → amber credit override button
+                                    if (canCreditOverride) {
+                                      return (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="text-xs mr-1 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                                          data-testid={`button-create-grn-credit-${po.id}`}
+                                          disabled={creatingGrnPoId === po.id}
+                                          onClick={() => {
+                                            setGrnWarehouseDialogPoId(po.id);
+                                            setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
+                                            setGrnSupplierChallan("");
+                                          }}
+                                        >
+                                          <PackagePlus className="w-3 h-3 mr-1" />
+                                          {creatingGrnPoId === po.id ? "Creating..." : "Create GRN (Credit)"}
+                                        </Button>
+                                      );
+                                    }
+
+                                    // Payment incomplete + other roles → disabled button with tooltip
+                                    return (
+                                      <span title={`Full supplier payment required (paid ₹${supplierPaid.toLocaleString()} of ₹${poTotal.toLocaleString()})`}>
+                                        <Button
+                                          size="sm"
+                                          variant="link"
+                                          className="text-xs mr-1 p-0 h-auto text-muted-foreground opacity-50 cursor-not-allowed"
+                                          data-testid={`button-create-grn-${po.id}`}
+                                          disabled
+                                        >
+                                          <PackagePlus className="w-3 h-3 mr-1" />
+                                          Create GRN
                                         </Button>
                                       </span>
                                     );

@@ -1,0 +1,65 @@
+K11 closed. Both items verified. The bonus PATCH/DELETE audit
+entries are accepted — same pattern, closes real gap, no scope
+drift outside payment recording.
+
+Soft process note: when you find adjacent gaps mid-walk, flag them
+to me first ("noticed PATCH and DELETE don't log — should I add?")
+before implementing. Today the additions were trivial and aligned,
+so no harm. But the standing rule is: surface and ask, don't
+unilaterally extend scope.
+
+Now K12 — Reports credit badges (3 items):
+
+(bbb) AR Aging report shows "Credit Sale" badge for invoices that
+       came from credit-override challans.
+       
+       Pre-flight check: do we have any sales_invoices linked to
+       credit-override challans?
+       SQL: SELECT si.invoice_number, dc.is_credit_override,
+            dc.credit_reason FROM sales_invoices si JOIN
+            delivery_challans dc ON si.delivery_challan_id = dc.id
+            WHERE dc.is_credit_override = true;
+       
+       If yes: open /reports → AR Aging tab. Find that invoice in
+       the list. Verify amber "Credit Sale" badge visible.
+       Hover/click for tooltip showing credit_reason.
+       Screenshot.
+       
+       If no rows: walk DC-2026-0018 (or whichever credit-override
+       challan exists) through to dispatch. Auto-invoice should
+       create. Then verify in AR Aging report.
+
+(ccc) AR Aging dueDates correct.
+       
+       SQL: SELECT invoice_number, invoice_date, due_date,
+            (due_date - invoice_date) AS days_offset
+            FROM sales_invoices ORDER BY created_at DESC LIMIT 10;
+       
+       Confirm: each invoice's days_offset matches customer's
+       payment_terms (immediate=0, net_30=30, etc.). Spot-check
+       3 invoices.
+       
+       Open /reports → AR Aging. Confirm aging buckets are
+       distributed correctly (some "Current", some "1-30 days",
+       etc.) — NOT all in "Current".
+
+(ddd) AP Aging report shows "Credit GRN" badge for supplier
+       invoices auto-created from credit-override GRNs.
+       
+       Pre-flight check:
+       SQL: SELECT si.invoice_number, si.is_credit_grn, grn.id,
+            grn.is_credit_override FROM supplier_invoices si JOIN
+            goods_receipt_notes grn ON si.grn_id = grn.id
+            WHERE si.is_credit_grn = true;
+       
+       SI-2026-0001 (auto-created from K8) should match — confirmed
+       earlier as is_credit_grn = true.
+       
+       Open /reports → AP Aging. Find SI-2026-0001 in the list.
+       Verify amber "Credit GRN" badge visible. Tooltip shows the
+       grn.credit_reason if accessible.
+       Screenshot.
+
+After K12 closes, move to K13 (regression of Phases 1-3, 7 items).
+This is the final section. Be thorough — regression items catch
+collateral damage.

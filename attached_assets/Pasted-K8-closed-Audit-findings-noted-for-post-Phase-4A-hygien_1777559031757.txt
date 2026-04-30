@@ -1,0 +1,59 @@
+K8 closed. Audit findings noted for post-Phase-4A hygiene task.
+
+Move to K9 (supplier invoice Mark as Recorded, 5 items):
+
+Use SI-2026-0001 (just auto-created, ₹85,300, pending_upload) as
+the test subject. It's already in the right state.
+
+Walk these 5 items:
+
+(pp) Open SI-2026-0001 in Accounts → Supplier Invoices.
+     Mark as Recorded form visible with:
+     - 3 required fields: Supplier Invoice Number (text),
+       Supplier Invoice Date (date), Total Amount (₹)
+     - Signed Copy upload section (PDF/JPEG/PNG, max 10MB)
+     - Mark as Recorded button at bottom
+     Take screenshot.
+
+(qq) Try Mark as Recorded with all 3 required fields filled but
+     Total Amount left empty (or zero). Button should be disabled
+     OR submission blocked with field-level error.
+     Screenshot.
+
+(rr) Fill all 3 required fields:
+     - Supplier Invoice Number: "SUP-INV-12345" (any test value)
+     - Supplier Invoice Date: today
+     - Total Amount: enter ₹95,300 (₹10,000 MORE than the auto-
+       created total of ₹85,300, exceeding ₹5 tolerance)
+     Upload signed copy (any sample PDF/JPEG).
+     Click Mark as Recorded.
+     Variance modal should appear showing:
+     - External invoice total: ₹95,300
+     - Linked PO grand total: ₹85,300
+     - Difference: ₹10,000
+     - Cancel / Continue buttons
+     Click Continue. Status should flip to 'recorded'.
+     Screenshot the modal.
+
+(ss) Same flow but with Total Amount = ₹85,302 (within ₹5 tolerance
+     of ₹85,300). No variance modal should appear. Silent record.
+     SQL: SELECT total_amount, upload_status, status,
+          supplier_invoice_number, signed_copy_url
+          FROM supplier_invoices WHERE invoice_number = 'SI-2026-0001';
+
+(tt) Audit log entry:
+     SELECT user_id, action, module, details, timestamp
+     FROM audit_logs
+     WHERE action='supplier_invoice_recorded'
+        OR action='supplier_invoice_marked_recorded'
+     ORDER BY timestamp DESC LIMIT 1;
+     Confirm action present with details.
+
+For (rr) and (ss): you'll need TWO separate supplier invoices in
+pending_upload state (since (rr) records SI-2026-0001 with the
+₹95,300 override, (ss) needs another). Confirm a second draft GRN
+to create SI-2026-0002 in pending_upload. Or use any of the 7
+backfilled supplier invoices in pending_upload state.
+
+After all 5 items pass, K9 closes. Move to K10 (PO GST capture,
+5 items).

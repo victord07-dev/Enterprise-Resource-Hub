@@ -355,7 +355,7 @@ export interface IStorage {
   deleteCustomerPayment(id: string): Promise<boolean>;
 
   // Phase 4A — outstanding dues query (E1)
-  getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }>;
+  getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; total: number; collected: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }>;
 
   // Invoice Number Generation
   generateSalesInvoiceNumber(): Promise<string>;
@@ -1597,7 +1597,7 @@ export class DatabaseStorage implements IStorage {
     return true;
   }
 
-  async getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }> {
+  async getCustomerOutstanding(customerId: string): Promise<{ outstanding: number; total: number; collected: number; invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: Date; grandTotal: number; balance: number }> }> {
     const invRows = await db.execute(sql`
       SELECT id, invoice_number, invoice_date, grand_total
       FROM sales_invoices
@@ -1621,7 +1621,7 @@ export class DatabaseStorage implements IStorage {
       grandTotal: Number(r.grand_total ?? 0),
       balance: Number(r.grand_total ?? 0),
     }));
-    return { outstanding, invoices };
+    return { outstanding, total: totalInvoiced, collected: totalPaid, invoices };
   }
 
   async generateSalesInvoiceNumber(): Promise<string> {

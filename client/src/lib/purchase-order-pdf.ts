@@ -214,7 +214,11 @@ function buildPdf(
     return { taxable, gstRate, gstAmt, total, hsn, unit, disc };
   });
 
-  const grandTotal   = lineGsts.reduce((s, g) => s + g.total, 0);
+  // K10-B: include delivery cost in PDF grand total
+  const deliveryCost = Number((po as any).deliveryCost ?? 0);
+
+  const lineItemsTotal = lineGsts.reduce((s, g) => s + g.total, 0);
+  const grandTotal   = lineItemsTotal + deliveryCost;
   const totalTaxable = lineGsts.reduce((s, g) => s + g.taxable, 0);
   const totalGst     = lineGsts.reduce((s, g) => s + g.gstAmt, 0);
 
@@ -268,6 +272,27 @@ function buildPdf(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
 
+  // ── K10-C: Legacy PO fallback (no line items in DB) ──────────────────────────
+  const poGrandTotal = Number((po as any).grandTotal ?? 0);
+  if (lineGsts.length === 0) {
+    checkPageBreak(20);
+    if (poGrandTotal > 0) {
+      doc.setFontSize(7.5);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("Line items not available — header total only", col.desc, y + 5);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...COLORS.textPrimary);
+      doc.text(fmt(poGrandTotal), col.total - 2, y + 5, { align: "right" });
+      doc.setFont("helvetica", "normal");
+    } else {
+      doc.setFontSize(7.5);
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("No line items", col.desc, y + 5);
+    }
+    y += 10;
+  }
+
   // ── Line items ────────────────────────────────────────────────────────────────
   items.forEach((item, idx) => {
     const g = lineGsts[idx];
@@ -309,8 +334,15 @@ function buildPdf(
   const summaryX = pageWidth - margin - 90;
   const sumW     = 90;
 
+  // K10-C: for legacy POs with no items, use stored grand total (or 0)
+  const effectiveGrandTotal = lineGsts.length === 0 ? poGrandTotal : grandTotal;
+
   const summaryRows: Array<{ label: string; value: string; bold?: boolean; color?: [number,number,number] }> = [];
 
+  if (lineGsts.length === 0) {
+    // K10-C: legacy PO — show stored total or ₹0 fallback
+    summaryRows.push({ label: "Total as per PO", value: fmt(poGrandTotal > 0 ? poGrandTotal : 0), bold: true });
+  } else {
   summaryRows.push({ label: "Taxable Amount", value: fmt(totalTaxable) });
 
   if (multiRate) {
@@ -324,8 +356,13 @@ function buildPdf(
     summaryRows.push({ label: `GST (${rate ?? 0}%)`, value: fmt(totalGst) });
   }
 
-  if (po.notes || true) { /* always show subtotal row */ }
-  summaryRows.push({ label: "Grand Total", value: fmt(grandTotal), bold: true });
+  // K10-B: delivery cost row (only when > 0)
+  if (deliveryCost > 0) {
+    summaryRows.push({ label: "Delivery / Freight Cost", value: fmt(deliveryCost) });
+  }
+
+  summaryRows.push({ label: "Grand Total", value: fmt(effectiveGrandTotal), bold: true });
+  } // end else (lineGsts.length > 0)
 
   const rowH = 6;
   const summaryH = summaryRows.length * rowH + 4;

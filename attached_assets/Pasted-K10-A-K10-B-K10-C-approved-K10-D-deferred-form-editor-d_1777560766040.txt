@@ -1,0 +1,48 @@
+K10-A, K10-B, K10-C approved. K10-D deferred (form editor doesn't
+need per-rate breakdown — PDF is sufficient).
+
+K10-A — Delivery cost in editor footer:
+- Pass deliveryCost as prop to POLineItemsEditor
+- Add to running grand total display: Subtotal + Total GST + Delivery
+  Cost = Grand Total
+- Update reactively when deliveryCost field changes in poForm
+- Show "Delivery Cost: ₹X" as a separate line in the footer when > 0
+
+K10-B — Delivery cost in PDF:
+- Read deliveryCost from PO row
+- When deliveryCost > 0, add "Delivery Cost: ₹X" row in summary
+  panel (between "Total GST" and "Grand Total")
+- Include in grandTotal computation: lineGsts sum + deliveryCost
+- When deliveryCost = 0 or null, omit the row entirely (clean)
+
+K10-C — Legacy PO fallback in PDF:
+- If lineGsts.length === 0 (no line items in DB) AND
+  Number(po.grandTotal) > 0:
+  * Render a single summary row: "Total as per PO: ₹X" using
+    po.grandTotal as the authoritative value
+  * Add note below: "Line items not available — header total only"
+- This handles the 4 legacy POs without items gracefully
+
+After all 3 ship, walk K10 items end-to-end with screenshots:
+
+(uu) — Confirm pass: select product in PO line, HSN + GST% + GST Amt
+       auto-populate from products table.
+
+(vv) — Confirm pass: add lines with 5% and 18% GST. Form shows
+       correct per-line totals. PDF shows per-rate breakdown.
+
+(ww) — Re-test: enter delivery cost ₹5,000 in PO header. Form
+       footer Grand Total = subtotal + total_tax + ₹5,000.
+       Screenshot.
+
+(xx) — Re-test: open existing PO with delivery cost > 0. Download
+       PDF. Verify "Delivery Cost" row visible, grand total includes
+       it. Screenshot of PDF page showing summary section.
+
+(yy) — Open one of the 4 legacy POs (PO-2026-001 etc.) Download PDF.
+       Verify fallback row "Total as per PO: ₹925,000" with note.
+       Screenshot. Then open a normal PO from same set — verify no
+       fallback message, normal items table shown.
+
+After K10 closes, move to K11 (audit log additions for payments,
+2 items).

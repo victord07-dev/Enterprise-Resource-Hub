@@ -152,13 +152,14 @@ function emptyLineItem(): POLineItem {
   return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0, hsnCode: "", gstRate: 18, taxableAmount: 0, gstAmount: 0 };
 }
 
-function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected }: {
+function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected, deliveryCost = 0 }: {
   items: POLineItem[];
   onChange: (items: POLineItem[]) => void;
   products: Product[];
   supplierProducts: SupplierProduct[];
   supplierProductsLoading: boolean;
   supplierSelected: boolean;
+  deliveryCost?: number;
 }) {
   const { toast: poToast } = useToast();
   const spMap = new Map<string, SupplierProduct>();
@@ -421,8 +422,15 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
             ₹{items.reduce((s, it) => s + (it.gstAmount ?? 0), 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
           </span>
         </div>
+        {deliveryCost > 0 && (
+          <div className="text-muted-foreground">
+            Delivery Cost: <span className="font-medium text-foreground" data-testid="text-po-delivery-cost">
+              ₹{deliveryCost.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+        )}
         <div className="font-semibold text-base" data-testid="text-po-grand-total">
-          Grand Total (incl. GST): ₹{(grandTotal + items.reduce((s, it) => s + (it.gstAmount ?? 0), 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          Grand Total (incl. GST{deliveryCost > 0 ? " + Delivery" : ""}): ₹{(grandTotal + items.reduce((s, it) => s + (it.gstAmount ?? 0), 0) + deliveryCost).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
         </div>
       </div>
     </div>
@@ -2088,6 +2096,7 @@ export default function SupplyChain() {
               supplierProducts={supplierCatalog || []}
               supplierProductsLoading={!!selectedSupplierId && (supplierCatalogLoading || supplierCatalogFetching)}
               supplierSelected={!!selectedSupplierId}
+              deliveryCost={parseFloat(poForm.deliveryCost || "0") || 0}
             />
           </div>
           <DialogFooter>

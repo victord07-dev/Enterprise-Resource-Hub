@@ -7469,6 +7469,10 @@ export async function registerRoutes(
         await recomputeInvoiceStatus(pay.supplierInvoiceId);
       }
 
+      // K11-1: Audit log for supplier payment update
+      await logAction((req as any).user?.id, "supplier_payment_updated", "supply_chain",
+        `Supplier payment ${pay.id} updated — amount: ₹${updated?.amount ?? pay.amount}, method: ${updated?.paymentMethod ?? pay.paymentMethod}, ref: ${updated?.reference ?? pay.reference}`);
+
       res.json(updated);
     } catch (error: any) {
       res.status(500).json({ message: error.message || "Failed to update supplier payment" });
@@ -7581,6 +7585,10 @@ export async function registerRoutes(
       if (pay.paymentType === "regular" && pay.supplierInvoiceId) {
         await recomputeInvoiceStatus(pay.supplierInvoiceId);
       }
+
+      // K11-2: Audit log for supplier payment deletion
+      await logAction((req as any).user?.id, "supplier_payment_deleted", "supply_chain",
+        `Supplier payment ${pay.id} deleted — ₹${pay.amount} (${pay.paymentType}) for supplier ${pay.supplierId}`);
 
       res.json({ success: true });
     } catch { res.status(500).json({ message: "Failed to delete supplier payment" }); }

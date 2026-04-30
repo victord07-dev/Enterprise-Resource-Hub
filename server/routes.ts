@@ -7304,6 +7304,84 @@ export async function registerRoutes(
     } catch { res.status(500).json({ message: "Failed to delete supplier invoice" }); }
   });
 
+  // ── K9: Upload Signed Copy for Supplier Invoice ───────────────────────────
+  app.post("/api/supplier-invoices/:id/upload-signed-copy", authenticateToken, (req: any, res: any, next: any) => {
+    const siUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: (_r, f, cb) => { if (["application/pdf","image/jpeg","image/jpg","image/png"].includes(f.mimetype)) cb(null, true); else cb(new Error("Only PDF, JPG, PNG allowed")); } });
+    siUpload.single("file")(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) return res.status(400).json({ message: err.code === "LIMIT_FILE_SIZE" ? "File must be ≤ 10 MB" : err.message });
+      if (err instanceof Error) return res.status(400).json({ message: err.message });
+      next();
+    });
+  }, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+      const inv = await storage.getSupplierInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
+      let fileUrl: string | null = req.body?.fileUrl ?? null;
+      if (req.file) {
+        const os = new ObjectStorageService();
+        const uploadURL = await os.getObjectEntityUploadURL();
+        const objectPath = os.normalizeObjectEntityPath(uploadURL);
+        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
+        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
+        fileUrl = objectPath;
+      }
+      if (!fileUrl) return res.status(400).json({ message: "File or fileUrl is required" });
+      const prevUrl = (inv as any).signedCopyUrl;
+      await db.execute(sql`
+        UPDATE supplier_invoices
+        SET signed_copy_url = ${fileUrl},
+            signed_copy_uploaded_by = ${req.user.id},
+            signed_copy_uploaded_at = now()
+        WHERE id = ${inv.id}
+      `);
+      await logAction(req.user.id, "supplier_invoice_signed_copy_uploaded", "accounts",
+        `Signed copy uploaded for supplier invoice ${(inv as any).invoiceNumber}${prevUrl ? " (replaced)" : ""}`);
+      const updated = await storage.getSupplierInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to upload signed copy" });
+    }
+  });
+
+  // ── K9: Mark Supplier Invoice as Recorded ─────────────────────────────────
+  app.post("/api/supplier-invoices/:id/mark-recorded", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+      const inv = await storage.getSupplierInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
+      if ((inv as any).uploadStatus === "recorded") return res.status(400).json({ message: "Invoice already recorded" });
+      if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot record a cancelled invoice" });
+      const { extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount } = req.body;
+      if (!extInvoiceNumber?.trim()) return res.status(400).json({ message: "Supplier invoice number is required" });
+      if (!extInvoiceDate) return res.status(400).json({ message: "Invoice date is required" });
+      if (!extTotalAmount) return res.status(400).json({ message: "Total amount is required" });
+      if (!(inv as any).signedCopyUrl) return res.status(400).json({ message: "Upload signed copy before marking as recorded" });
+      const extTotal = Number(extTotalAmount);
+      const sysTotal = Number((inv as any).totalAmount ?? 0);
+      const variance = Math.abs(extTotal - sysTotal);
+      await db.execute(sql`
+        UPDATE supplier_invoices
+        SET upload_status = 'recorded',
+            ext_invoice_number = ${extInvoiceNumber.trim()},
+            ext_invoice_date = ${new Date(extInvoiceDate)},
+            ext_total_amount = ${String(extTotal)},
+            ext_gst_amount = ${extGstAmount ? String(Number(extGstAmount)) : null}
+        WHERE id = ${inv.id}
+      `);
+      const varianceNote = variance > 0.01 ? ` Variance from system: ₹${variance.toFixed(2)}` : "";
+      await logAction(req.user.id, "supplier_invoice_recorded", "accounts",
+        `Supplier invoice ${(inv as any).invoiceNumber} recorded. Ext invoice: ${extInvoiceNumber} dated ${extInvoiceDate} for ₹${extTotal.toFixed(2)}.${varianceNote}`);
+      const updated = await storage.getSupplierInvoice(inv.id);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to mark invoice as recorded" });
+    }
+  });
+
   // ── Supplier Payments ───────────────────────────────────────────────────────
   app.get("/api/supplier-payments", authenticateToken, async (_req, res) => {
     try {

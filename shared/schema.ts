@@ -641,6 +641,11 @@ export const supplierInvoices = pgTable("supplier_invoices", {
   cancelledAt: timestamp("cancelled_at"),
   cancelledBy: varchar("cancelled_by"),
   cancellationReason: text("cancellation_reason"),
+  // Phase 4A — ext fields from Mark as Recorded (K9-6): supplier's paper invoice details
+  extInvoiceNumber: text("ext_invoice_number"),
+  extInvoiceDate: timestamp("ext_invoice_date"),
+  extTotalAmount: decimal("ext_total_amount", { precision: 12, scale: 2 }),
+  extGstAmount: decimal("ext_gst_amount", { precision: 12, scale: 2 }),
 });
 
 export const supplierPayments = pgTable("supplier_payments", {

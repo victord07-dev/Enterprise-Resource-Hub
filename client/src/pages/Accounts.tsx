@@ -9,12 +9,29 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import ExpensesTab from "@/components/ExpensesTab";
 import { getUser } from "@/lib/auth";
+
+async function uploadSupplierInvoiceSignedCopy(file: File, invoiceId: string): Promise<string> {
+  const token = localStorage.getItem("token");
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`/api/supplier-invoices/${invoiceId}/upload-signed-copy`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    const d = await res.json();
+    throw new Error(d.message || "Upload failed");
+  }
+  const data = await res.json();
+  return (data as any).signedCopyUrl as string;
+}
 
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, string> = {
@@ -141,9 +158,15 @@ export default function Accounts() {
   // F2: Upload status filter
   const [siUploadFilter, setSiUploadFilter] = useState<string>("all");
   // F3: Mark as Recorded dialog
-  const [siRecordedDialog, setSiRecordedDialog] = useState<{ id: string; currentNumber: string | null } | null>(null);
+  const [siRecordedDialog, setSiRecordedDialog] = useState<{ id: string; systemTotal: number } | null>(null);
   const [siRecordedNumber, setSiRecordedNumber] = useState("");
   const [siRecordedDate, setSiRecordedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [siRecordedTotal, setSiRecordedTotal] = useState("");
+  const [siRecordedGst, setSiRecordedGst] = useState("");
+  const [siRecordedFile, setSiRecordedFile] = useState<File | null>(null);
+  const [siRecordedFileUrl, setSiRecordedFileUrl] = useState<string | null>(null);
+  const [siRecordedUploading, setSiRecordedUploading] = useState(false);
+  const [siVarianceModal, setSiVarianceModal] = useState<{ extTotal: number; sysTotal: number; diff: number; invoiceId: string; invoiceNumber: string; extInvoiceNumber: string; extInvoiceDate: string; extGst: string } | null>(null);
   // F4: Cancel dialog
   const [siCancelId, setSiCancelId] = useState<string | null>(null);
 
@@ -249,19 +272,54 @@ export default function Accounts() {
 
   // F3: Mark as Recorded
   const siMarkRecordedMutation = useMutation({
-    mutationFn: async ({ id, invoiceNumber, invoiceDate }: { id: string; invoiceNumber: string; invoiceDate: string }) => {
-      const res = await apiRequest("PATCH", `/api/supplier-invoices/${id}`, { uploadStatus: "recorded", invoiceNumber, invoiceDate });
+    mutationFn: async ({ id, extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount }: {
+      id: string; extInvoiceNumber: string; extInvoiceDate: string; extTotalAmount: string; extGstAmount?: string;
+    }) => {
+      const res = await apiRequest("POST", `/api/supplier-invoices/${id}/mark-recorded`, {
+        extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount: extGstAmount || undefined,
+      });
       if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to mark as recorded"); }
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
-      toast({ title: "Marked as recorded" });
+      toast({ title: "Supplier invoice recorded", description: "Ext. invoice details saved." });
       setSiRecordedDialog(null);
+      setSiVarianceModal(null);
       setSiRecordedNumber("");
+      setSiRecordedDate(new Date().toISOString().split("T")[0]);
+      setSiRecordedTotal("");
+      setSiRecordedGst("");
+      setSiRecordedFile(null);
+      setSiRecordedFileUrl(null);
     },
     onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
+
+  function handleMarkRecordedSubmit(forceSubmit = false) {
+    if (!siRecordedDialog) return;
+    const extTotal = parseFloat(siRecordedTotal);
+    const sysTotal = siRecordedDialog.systemTotal;
+    const diff = Math.abs(extTotal - sysTotal);
+    if (!forceSubmit && diff > 5) {
+      setSiVarianceModal({
+        extTotal, sysTotal, diff,
+        invoiceId: siRecordedDialog.id,
+        invoiceNumber: "",
+        extInvoiceNumber: siRecordedNumber,
+        extInvoiceDate: siRecordedDate,
+        extGst: siRecordedGst,
+      });
+      return;
+    }
+    siMarkRecordedMutation.mutate({
+      id: siRecordedDialog.id,
+      extInvoiceNumber: siRecordedNumber,
+      extInvoiceDate: siRecordedDate,
+      extTotalAmount: siRecordedTotal,
+      extGstAmount: siRecordedGst || undefined,
+    });
+  }
 
   // F4: Cancel supplier invoice
   const siCancelMutation = useMutation({
@@ -770,7 +828,15 @@ export default function Accounts() {
                                 <div className="flex items-center justify-end gap-1">
                                   {(uploadStatus === "pending_upload" || uploadStatus === "uploaded") && (
                                     <Button size="sm" variant="outline" className="h-7 text-xs" data-testid={`button-si-record-${inv.id}`}
-                                      onClick={() => { setSiRecordedDialog({ id: inv.id, currentNumber: inv.invoiceNumber }); setSiRecordedNumber(inv.invoiceNumber ?? ""); setSiRecordedDate(new Date().toISOString().split("T")[0]); }}>
+                                      onClick={() => {
+                                        setSiRecordedDialog({ id: inv.id, systemTotal: Number(inv.totalAmount ?? 0) });
+                                        setSiRecordedNumber("");
+                                        setSiRecordedDate(new Date().toISOString().split("T")[0]);
+                                        setSiRecordedTotal("");
+                                        setSiRecordedGst("");
+                                        setSiRecordedFile(null);
+                                        setSiRecordedFileUrl((inv as any).signedCopyUrl ?? null);
+                                      }}>
                                       <CheckCircle2 className="w-3 h-3 mr-1" /> Record
                                     </Button>
                                   )}
@@ -1071,24 +1137,26 @@ export default function Accounts() {
       </Dialog>
 
       {/* F3: Mark Supplier Invoice as Recorded */}
-      <Dialog open={!!siRecordedDialog} onOpenChange={(o) => { if (!o) setSiRecordedDialog(null); }}>
+      <Dialog open={!!siRecordedDialog} onOpenChange={(o) => { if (!o) { setSiRecordedDialog(null); setSiRecordedFile(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Mark as Recorded</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">Enter the actual supplier invoice number and date from the physical/digital invoice received.</p>
+          <div className="space-y-4 py-1">
+            <p className="text-sm text-muted-foreground">Enter the details from the supplier's physical/digital invoice. System total: <span className="font-semibold text-foreground">₹{siRecordedDialog ? Number(siRecordedDialog.systemTotal).toLocaleString("en-IN") : "—"}</span></p>
+
             <div className="space-y-2">
               <Label>Supplier Invoice Number <span className="text-red-500">*</span></Label>
               <Input
                 data-testid="input-si-recorded-number"
                 value={siRecordedNumber}
                 onChange={e => setSiRecordedNumber(e.target.value)}
-                placeholder="e.g. INV-2024-00123"
+                placeholder="e.g. SUP-INV-00123"
               />
             </div>
+
             <div className="space-y-2">
-              <Label>Invoice Date</Label>
+              <Label>Invoice Date <span className="text-red-500">*</span></Label>
               <Input
                 type="date"
                 data-testid="input-si-recorded-date"
@@ -1096,15 +1164,139 @@ export default function Accounts() {
                 onChange={e => setSiRecordedDate(e.target.value)}
               />
             </div>
+
+            <div className="space-y-2">
+              <Label>Ext. Total Amount (₹) <span className="text-red-500">*</span></Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                data-testid="input-si-recorded-total"
+                value={siRecordedTotal}
+                onChange={e => setSiRecordedTotal(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Ext. GST Amount (₹) <span className="text-xs text-muted-foreground ml-1">optional</span></Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                data-testid="input-si-recorded-gst"
+                value={siRecordedGst}
+                onChange={e => setSiRecordedGst(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Signed Copy <span className="text-red-500">*</span></Label>
+              {siRecordedFileUrl ? (
+                <div className="flex items-center gap-2 p-2 bg-green-50 dark:bg-green-950/20 rounded border border-green-200 dark:border-green-800">
+                  <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  <span className="text-sm text-green-700 dark:text-green-400">Signed copy uploaded</span>
+                  <Button size="sm" variant="ghost" className="h-6 text-xs ml-auto" onClick={() => { setSiRecordedFileUrl(null); setSiRecordedFile(null); }}>Replace</Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="file"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      data-testid="input-si-signed-copy"
+                      className="text-sm"
+                      onChange={e => setSiRecordedFile(e.target.files?.[0] ?? null)}
+                    />
+                  </div>
+                  {siRecordedFile && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full"
+                      data-testid="button-si-upload-signed-copy"
+                      disabled={siRecordedUploading}
+                      onClick={async () => {
+                        if (!siRecordedDialog || !siRecordedFile) return;
+                        setSiRecordedUploading(true);
+                        try {
+                          const url = await uploadSupplierInvoiceSignedCopy(siRecordedFile, siRecordedDialog.id);
+                          setSiRecordedFileUrl(url);
+                          queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
+                          toast({ title: "Signed copy uploaded" });
+                        } catch (err: any) {
+                          toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+                        } finally {
+                          setSiRecordedUploading(false);
+                        }
+                      }}
+                    >
+                      <Upload className="w-3.5 h-3.5 mr-1.5" />
+                      {siRecordedUploading ? "Uploading…" : "Upload"}
+                    </Button>
+                  )}
+                  <p className="text-xs text-muted-foreground">PDF, JPG, PNG — max 10 MB</p>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex justify-end gap-2 pt-4">
-            <Button variant="outline" onClick={() => setSiRecordedDialog(null)}>Cancel</Button>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => { setSiRecordedDialog(null); setSiRecordedFile(null); }}>Cancel</Button>
             <Button
               data-testid="button-confirm-si-recorded"
-              disabled={!siRecordedNumber.trim() || siMarkRecordedMutation.isPending}
-              onClick={() => siRecordedDialog && siMarkRecordedMutation.mutate({ id: siRecordedDialog.id, invoiceNumber: siRecordedNumber.trim(), invoiceDate: siRecordedDate })}
+              disabled={
+                !siRecordedNumber.trim() ||
+                !siRecordedDate ||
+                !siRecordedTotal || parseFloat(siRecordedTotal) <= 0 ||
+                !siRecordedFileUrl ||
+                siMarkRecordedMutation.isPending
+              }
+              onClick={() => handleMarkRecordedSubmit(false)}
             >
-              {siMarkRecordedMutation.isPending ? "Saving..." : "Mark as Recorded"}
+              {siMarkRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* F3: Variance confirmation modal */}
+      <Dialog open={!!siVarianceModal} onOpenChange={(o) => { if (!o) setSiVarianceModal(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+              Amount Variance Detected
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-sm text-muted-foreground">The entered amount differs from the system total by more than ₹5. Please confirm you want to proceed.</p>
+            <div className="rounded-lg border bg-muted/40 p-3 space-y-1.5 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Ext. invoice total</span>
+                <span className="font-semibold">₹{siVarianceModal ? Number(siVarianceModal.extTotal).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">System total (GRN)</span>
+                <span className="font-semibold">₹{siVarianceModal ? Number(siVarianceModal.sysTotal).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
+              </div>
+              <div className="border-t pt-1.5 flex justify-between font-semibold text-amber-700 dark:text-amber-400">
+                <span>Difference</span>
+                <span>₹{siVarianceModal ? Number(siVarianceModal.diff).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Clicking Continue will record this invoice with the entered amounts. The variance will be noted in the audit log.</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" data-testid="button-variance-cancel" onClick={() => setSiVarianceModal(null)}>Cancel</Button>
+            <Button
+              data-testid="button-variance-continue"
+              className="bg-amber-600 hover:bg-amber-700 text-white"
+              disabled={siMarkRecordedMutation.isPending}
+              onClick={() => handleMarkRecordedSubmit(true)}
+            >
+              {siMarkRecordedMutation.isPending ? "Saving…" : "Continue"}
             </Button>
           </div>
         </DialogContent>

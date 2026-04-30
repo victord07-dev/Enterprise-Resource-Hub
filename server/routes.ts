@@ -8037,6 +8037,13 @@ export async function registerRoutes(
       if (!extTotalAmount) return res.status(400).json({ message: "Total amount is required" });
       if (!(inv as any).signedCopyUrl) return res.status(400).json({ message: "Upload signed copy before marking as recorded" });
 
+      // Optional dueDate override — validate if provided
+      let overrideDueDate: Date | null = null;
+      if (req.body.dueDate) {
+        const parsed = new Date(req.body.dueDate);
+        if (!isNaN(parsed.getTime())) overrideDueDate = parsed;
+      }
+
       // Eway bill threshold warning (total >= 50000) is handled client-side; server does NOT block
       await db.execute(sql`
         UPDATE sales_invoices
@@ -8045,7 +8052,8 @@ export async function registerRoutes(
             ext_invoice_date = ${new Date(extInvoiceDate)},
             ext_total_amount = ${String(extTotalAmount)},
             ext_gst_amount = ${req.body.extGstAmount ? String(req.body.extGstAmount) : null},
-            upload_notes = ${req.body.uploadNotes ?? null}
+            upload_notes = ${req.body.uploadNotes ?? null},
+            due_date = ${overrideDueDate ?? (inv as any).dueDate ?? null}
         WHERE id = ${inv.id}
       `);
 

@@ -640,6 +640,7 @@ function InvoiceDetailPanel({
   const [extInvoiceDate, setExtInvoiceDate] = useState("");
   const [extTotalAmount, setExtTotalAmount] = useState("");
   const [extGstAmount, setExtGstAmount] = useState("");
+  const [markDueDate, setMarkDueDate] = useState("");
   const [showVarianceModal, setShowVarianceModal] = useState(false);
   const [docsExpanded, setDocsExpanded] = useState(false);
 
@@ -662,12 +663,23 @@ function InvoiceDetailPanel({
     queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
   };
 
+  // Pre-populate markDueDate from the invoice's computed dueDate once loaded
+  useEffect(() => {
+    if (inv?.dueDate && !markDueDate) {
+      const d = new Date(inv.dueDate);
+      if (!isNaN(d.getTime())) {
+        setMarkDueDate(d.toISOString().slice(0, 10));
+      }
+    }
+  }, [inv?.dueDate]);
+
   const markRecordedMutation = useMutation({
     mutationFn: () => apiRequest("POST", `/api/sales-invoices/${invoiceId}/mark-recorded`, {
       extInvoiceNumber,
       extInvoiceDate,
       extTotalAmount,
       extGstAmount: extGstAmount || undefined,
+      dueDate: markDueDate || undefined,
     }),
     onSuccess: () => {
       invalidateInv();
@@ -1084,6 +1096,11 @@ function InvoiceDetailPanel({
                     <div className="space-y-1">
                       <Label className="text-xs">Ext. GST Amount ₹ (opt.)</Label>
                       <Input type="number" className="h-8 text-xs" data-testid="input-ext-gst-amount" value={extGstAmount} onChange={(e) => setExtGstAmount(e.target.value)} placeholder={fmt(totalTax)} step="0.01" />
+                    </div>
+                    <div className="space-y-1 col-span-2">
+                      <Label className="text-xs">Override Due Date (opt.)</Label>
+                      <Input type="date" className="h-8 text-xs" data-testid="input-mark-due-date" value={markDueDate} onChange={(e) => setMarkDueDate(e.target.value)} />
+                      <p className="text-xs text-muted-foreground">Leave as-is to keep the auto-computed due date.</p>
                     </div>
                   </div>
                   <Button

@@ -17,7 +17,7 @@ import {
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
   insertStockMovementSchema, insertDeliveryChallanSchema, insertDeliveryChallanItemSchema,
   insertPurchaseRequestSchema, insertPurchaseRequestItemSchema,
-  insertGoodsReceiptNoteSchema, insertGoodsReceiptNoteItemSchema,
+  insertGoodsReceiptNoteItemSchema,
   insertSupplierInvoiceSchema, insertSupplierPaymentSchema,
   insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
   insertAttachmentSchema, attachments as attachmentsTable,
@@ -5211,87 +5211,9 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/grns", authenticateToken, async (req: any, res) => {
-    try {
-      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
-      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
-
-      const po = await storage.getPurchaseOrder(req.body.purchaseOrderId);
-      if (!po) return res.status(400).json({ message: "Purchase order not found" });
-      if (po.deliveryType !== "warehouse") return res.status(400).json({ message: "Only warehouse-type POs can have GRNs" });
-      if (!["approved", "shipped", "partial"].includes(po.status)) return res.status(400).json({ message: "PO must be approved, shipped, or partially received to create a GRN" });
-
-      // D1: Supplier payment gate — uses grand_total (tax-inclusive); supports credit override
-      const supplierPaymentsArr = await storage.getSupplierPaymentsByPO(po.id);
-      const totalPaid2 = supplierPaymentsArr.reduce((sum: number, p: any) => sum + Number(p.amount), 0);
-      const poGrandTotal = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
-      const { creditOverride: grnCreditOverride2 = false, creditReason: grnCreditReason2 = "" } = req.body ?? {};
-      if (poGrandTotal > 0 && totalPaid2 < poGrandTotal) {
-        if (!grnCreditOverride2) {
-          return res.status(400).json({
-            message: "Cannot create GRN: full payment to supplier required before goods receipt",
-            totalPaid: totalPaid2,
-            poTotal: poGrandTotal,
-            outstanding: poGrandTotal - totalPaid2,
-          });
-        }
-        if (!["admin", "accountant"].includes(req.user.role)) {
-          return res.status(403).json({ message: "Only admin or accountant can authorize credit GRN" });
-        }
-        if (!grnCreditReason2 || grnCreditReason2.trim().length < 10) {
-          return res.status(400).json({ message: "Credit reason must be at least 10 characters" });
-        }
-      }
-
-      const poGrns = await storage.getGRNsByPO(req.body.purchaseOrderId);
-      const draftGrn = poGrns.find((g: any) => g.status === "draft");
-      if (draftGrn) return res.status(409).json({ message: "A draft GRN already exists for this PO", existingGrnId: draftGrn.id, existingGrnNumber: draftGrn.grnNumber });
-
-      const year = new Date().getFullYear();
-      const allGrns = await storage.getGRNs();
-      const yearGrns = allGrns.filter(g => g.grnNumber.startsWith(`GRN-${year}`));
-      const maxNum = yearGrns.reduce((max: number, g: any) => {
-        const num = parseInt(g.grnNumber.split("-").pop() || "0", 10);
-        return num > max ? num : max;
-      }, 0);
-      const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
-
-      const rawDate = req.body.supplierChallanDate;
-      const isCreditGrn2 = grnCreditOverride2 && poGrandTotal > 0 && totalPaid2 < poGrandTotal;
-      const body = {
-        ...req.body,
-        grnNumber,
-        createdBy: req.user.id,
-        supplierChallanDate: rawDate && rawDate !== "" ? new Date(rawDate) : undefined,
-        supplierChallanNumber: req.body.supplierChallanNumber || undefined,
-        ...(isCreditGrn2 ? {
-          isCreditOverride: true,
-          creditAmount: String(poGrandTotal - totalPaid2),
-          creditApprovedBy: req.user.id,
-          creditApprovedAt: new Date(),
-          creditReason: grnCreditReason2.trim(),
-        } : {}),
-      };
-
-      const parsed = insertGoodsReceiptNoteSchema.safeParse(body);
-      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-
-      const created = await storage.createGRN(parsed.data as any);
-      if (isCreditGrn2) {
-        await logAction(req.user.id, "grn_credit_override", "supply_chain",
-          `GRN ${grnNumber} created with credit override of ₹${(poGrandTotal - totalPaid2).toFixed(2)} on PO ${po.poNumber}. Reason: ${grnCreditReason2.trim()}`);
-        notifyRoles(["admin"], "credit_grn",
-          `Credit GRN authorized: ${grnNumber}`,
-          `${req.user.role === "accountant" ? "Accountant" : "Admin"} authorized credit GRN ${grnNumber} for ₹${(poGrandTotal - totalPaid2).toFixed(2)} on PO ${po.poNumber}.`,
-          created.id).catch(() => {});
-      }
-      await logAction(req.user.id, "grn_drafted", "supply_chain", `Created GRN ${grnNumber} for PO ${po.poNumber}`);
-      res.status(201).json(created);
-    } catch (error) {
-      console.error("Create GRN error:", error);
-      res.status(500).json({ message: "Failed to create GRN" });
-    }
-  });
+  // POST /api/grns generic endpoint removed in Phase 4A —
+  // use /api/grns/create-from-po/:poId for all GRN creation.
+  // Inventory.tsx was the sole consumer and was migrated in Phase 4A cleanup.
 
   app.patch("/api/grns/:id", authenticateToken, async (req: any, res) => {
     try {

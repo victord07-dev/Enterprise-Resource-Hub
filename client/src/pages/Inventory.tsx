@@ -607,29 +607,15 @@ export default function Inventory() {
 
   const grnMutation = useMutation({
     mutationFn: async (data: any) => {
-      const { lineItems, ...grnData } = data;
-      const itemTotal = lineItems.reduce((sum: number, it: any) => sum + (it.receivedQuantity * it.buyingPrice), 0);
-      const deliveryCostNum = Number(grnData.deliveryCost) || 0;
-      const totalAmount = itemTotal + deliveryCostNum;
-      const payload = {
-        ...grnData,
-        deliveryCost: deliveryCostNum > 0 ? String(deliveryCostNum) : null,
-        totalAmount: String(totalAmount),
-      };
-      const res = await apiRequest("POST", "/api/grns", payload);
-      const grn = await res.json();
-      if (lineItems.length > 0) {
-        await apiRequest("POST", `/api/grns/${grn.id}/items`, {
-          items: lineItems.map((it: any) => ({
-            productId: it.productId,
-            description: it.description,
-            orderedQuantity: it.orderedQuantity,
-            receivedQuantity: it.receivedQuantity,
-            buyingPrice: String(it.buyingPrice),
-          })),
-        });
-      }
-      return grn;
+      const { lineItems: _lineItems, deliveryCost: _dc, totalAmount: _ta, ...grnData } = data;
+      const poId = grnData.purchaseOrderId;
+      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`, {
+        warehouseId: grnData.warehouseId,
+        supplierChallanNumber: grnData.supplierChallanNumber,
+        supplierChallanDate: grnData.supplierChallanDate || undefined,
+        notes: grnData.notes || undefined,
+      });
+      return res.json();
     },
     onSuccess: (grn: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/grns"] });

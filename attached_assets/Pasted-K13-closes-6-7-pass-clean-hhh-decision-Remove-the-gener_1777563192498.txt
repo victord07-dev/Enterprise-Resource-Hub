@@ -1,0 +1,73 @@
+K13 closes — 6/7 pass clean.
+
+(hhh) decision: Remove the generic POST /api/grns endpoint entirely.
+This is dead code:
+- UI exclusively uses create-from-po route
+- Generic endpoint has been broken with no consumer reporting issues
+- Maintaining a broken parallel path is worse than removing it
+
+Implementation:
+1. Delete the POST /api/grns route handler in server/routes.ts
+2. Remove the corresponding Zod schema if it's only used by this route
+3. Add a comment in routes.ts where the route used to be:
+   "// POST /api/grns generic endpoint removed in Phase 4A —
+    use /api/grns/create-from-po/:poId for all GRN creation."
+4. Search codebase for any reference to /api/grns POST that isn't
+   create-from-po — confirm zero usage
+5. Verify the create-from-po route still works after the cleanup
+
+Do not refactor anything else.
+
+After this ships, K13 closes and Phase 4A is COMPLETE.
+
+==================================================================
+PHASE 4A CLOSURE
+==================================================================
+
+All 13 sections walked. All blockers resolved. Phase 4A closed.
+
+Summary of what shipped:
+- Sales-side credit override (admin-only)
+- Purchase-side credit override (admin/accountant)
+- Auto-supplier-invoice on GRN confirm with upload-shell pattern
+- Outstanding-dues block on SO creation with admin override
+- Sales invoice dueDate auto-computed from customer payment_terms
+- PO line items GST snapshot (gst_rate, hsn_code, taxable_amount,
+  gst_amount)
+- PO header GST aggregates + delivery_cost + grand_total
+- AR Aging credit badges with reason tooltips
+- AP Aging credit badges with reason tooltips
+- Audit log additions for customer + supplier payment recording
+
+Phase 4A also surfaced and fixed pre-existing bugs from earlier
+phases:
+- Phase 3 Issue Delivery Order button (silently broken since shipped)
+- Phase 3 GRN Cancel button (silently broken since shipped)
+- useAuth hook entirely broken (affecting all isAdmin gates)
+- apiRequest swallowing structured error bodies
+- Multiple silent-failure try/catch patterns
+
+Plus added bonus audit logging for supplier_payment_updated and
+supplier_payment_deleted (closes earlier audit gap).
+
+==================================================================
+PENDING WORK FOR FUTURE PHASES
+==================================================================
+
+Bundle into a small "Phase 3.5 Cleanup" mini-phase OR fold into
+Phase 4B setup:
+
+1. Strict floor → Path B (advisory in quotation/SO line items, not
+   hard-block)
+2. F2 Phase 3 fixes — confirm: did challan form 5 mandatory fields
+   and notification deep-link ever ship?
+3. PR auto-fill from supplier_products on supplier change (the
+   PR approval dialog issue from much earlier in this conversation)
+4. Silent-failure hygiene: audit all try/catch blocks that swallow
+   errors silently. Add at least console.error() to make them
+   visible in logs. The L1849, L1884 patterns flagged in K8.
+5. K12-B documented edge case — INV-2526-0001 due_date 1 day off
+   at month boundary (no fix needed, just commit-noted).
+
+After Phase 4A closes:
+- Phase 4B (Cash & Bank Account Ledger

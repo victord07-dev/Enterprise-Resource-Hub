@@ -1,0 +1,97 @@
+All three fixes approved.
+
+Fix A — Test data: Create the spec-aligned test customer.
+
+INSERT customer "K6 Test Customer" (or similar memorable name) as
+B2B/business type with payment_terms='net_30'.
+
+Then INSERT one sales_invoices row for that customer:
+- grand_total: 50000
+- status: 'pending' (legacy payment status)
+- upload_status: 'pending_upload'
+- invoice_date: 30 days ago
+- due_date: today (so it shows as "Current/just-due")
+- Linked to a fabricated SO/challan if needed for FK constraints,
+  OR confirm the schema allows orphan invoices.
+
+Verify via SQL: getCustomerOutstanding returns 50000 for this
+customer.
+
+Don't use existing "Laiphang" (₹4.41L) or "Test Customer ABC" (₹15k)
+as the canonical test subject — pick the new ₹50k customer to match
+the spec exactly.
+
+Fix B — Sales.tsx SO creation form proactive dues check:
+
+When SO creation dialog opens AND a customer is selected:
+- Query getCustomerOutstanding(customerId)
+- If outstanding > 0:
+
+For non-admin user:
+- Red banner at top of form: "⚠ Customer has ₹X in unpaid invoices.
+  Cannot create new order until dues cleared."
+- Show compact table: Invoice # | Date | Balance | Due Date
+- Disable "Create Order" button
+- Tooltip on disabled button: "Customer has outstanding dues.
+  Contact admin for override."
+
+For admin user:
+- Amber banner with same info
+- List of unpaid invoices in same table format
+- Replace "Create Order" button with amber "Create SO (Override Dues)"
+- Click → opens duesOverrideDialog proactively (not reactively after
+  400)
+
+When outstanding == 0:
+- No banner, normal flow, "Create Order" button as today
+
+Fix C — duesOverrideDialog enhancement:
+
+Extend dialog state to hold:
+- customerName
+- outstandingTotal
+- unpaidInvoices: Array<{ number, date, balance }>
+- newOrderTotal (sum of line items in current SO form)
+
+Dialog body should show:
+
+"Customer: [Name]
+ Outstanding Dues: ₹[Total]
+ 
+ Unpaid Invoices:
+ +------------+-------------+----------+
+ | Invoice #  | Date        | Balance  |
+ +------------+-------------+----------+
+ | INV-XXX    | DD-MMM-YYYY | ₹X       |
+ | (more...)  |             |          |
+ +------------+-------------+----------+
+ 
+ New Order Total: ₹Y
+ 
+ [Reason textarea, required, min 10 chars]
+ 
+ [Cancel] [Authorize and Create]"
+
+Authorize button disabled until reason has min 10 chars.
+
+After all three fixes: walk K6 items end-to-end using the new test
+customer.
+
+For each item, screenshot evidence:
+(aa) — confirm test customer created with ₹50k unpaid via SQL
+(bb) — sales_manager sees red banner + disabled Save button
+(ee) — admin sees amber banner + "Create SO (Override Dues)" button
+(ff) — dialog shows invoice list + new order total
+(gg) — SQL after admin authorize: SELECT is_dues_override,
+       dues_override_amount, dues_override_by, dues_override_at,
+       dues_override_reason FROM sales_orders WHERE customer_id = X
+       ORDER BY created_at DESC LIMIT 1
+(hh) — SQL: SELECT * FROM audit_logs WHERE action='so_dues_override'
+       ORDER BY timestamp DESC LIMIT 1
+(ii) — Pay full ₹50k via existing customer payment flow.
+       Outstanding becomes 0.
+(jj) — Open new SO form for same customer. No banner. Normal flow.
+
+Items (cc) and (dd) already verified as PASS — backend works.
+
+Estimated time: 60-90 min implementation + 15-20 min walk.

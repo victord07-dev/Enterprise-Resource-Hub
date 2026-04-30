@@ -943,6 +943,7 @@ export default function Sales() {
   const { data: currentUser } = useCurrentUser();
   const isReadOnly = currentUser?.role === "accountant";
   const canSeePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+  const isAdmin = currentUser?.role === "admin";
   const { data: orders, isLoading: ordersLoading } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
   const { data: customers, isLoading: customersLoading } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: quotations, isLoading: quotationsLoading } = useQuery<Quotation[]>({ queryKey: ["/api/quotations"] });
@@ -1008,8 +1009,29 @@ export default function Sales() {
   const handleQuoteLineTouched = (idx: number) => setQuoteTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
 
   // E4: Outstanding dues override dialog state
-  const [duesOverrideDialog, setDuesOverrideDialog] = useState<{ outstanding: number; pendingOrderData?: any; quotationId?: string } | null>(null);
+  const [duesOverrideDialog, setDuesOverrideDialog] = useState<{
+    outstanding: number;
+    pendingOrderData?: any;
+    quotationId?: string;
+    invoices?: Array<{ id: string; invoiceNumber: string; invoiceDate: string; grandTotal: number; balance: number }>;
+    customerName?: string;
+    newOrderTotal?: number;
+  } | null>(null);
   const [duesOverrideReason, setDuesOverrideReason] = useState("");
+
+  // E4-proactive: fetch outstanding for selected customer when SO dialog is open (new orders only)
+  const { data: orderCustomerOutstanding } = useQuery<{
+    outstanding: number;
+    invoices: Array<{ id: string; invoiceNumber: string; invoiceDate: string; grandTotal: number; balance: number }>;
+    total: number;
+    collected: number;
+  }>({
+    queryKey: ["/api/customers", orderForm.customerId, "outstanding"],
+    queryFn: () => fetch(`/api/customers/${orderForm.customerId}/outstanding`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+    }).then((r) => r.json()),
+    enabled: orderDialogOpen && !!orderForm.customerId && !editingOrder,
+  });
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -3002,6 +3024,14 @@ export default function Sales() {
             const almmBlocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
             const floorBlocked = findBelowFloorBlockIndices(orderItems, effectivePrices, orderTouchedLines);
             const anySaveBlocked = almmBlocked.length > 0 || floorBlocked.length > 0;
+
+            // E4: dues gate — only for new orders (not edits)
+            const duesAmt = !editingOrder ? (orderCustomerOutstanding?.outstanding ?? 0) : 0;
+            const duesInvoices = !editingOrder ? (orderCustomerOutstanding?.invoices ?? []) : [];
+            const hasDues = duesAmt > 0;
+            const newOrderTotal = orderItems.reduce((s, it) => s + Number(it.unitPrice || 0) * Number(it.quantity || 0) * (1 + Number((it as any).gstRate || 0) / 100), 0);
+            const selectedCustomer = customers?.find(c => c.id === orderForm.customerId);
+
             return (
               <>
                 {almmBlocked.length > 0 && (
@@ -3024,10 +3054,80 @@ export default function Sales() {
                     </div>
                   </div>
                 )}
+
+                {/* E4: Outstanding dues banner */}
+                {hasDues && !editingOrder && (
+                  <div
+                    className={`mt-2 rounded border px-3 py-2 text-xs ${isAdmin
+                      ? "bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+                      : "bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800 text-red-800 dark:text-red-300"}`}
+                    data-testid="banner-dues-block"
+                  >
+                    <div className="flex items-start gap-2 mb-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span className="font-semibold">
+                        {isAdmin
+                          ? `Customer has ₹${duesAmt.toLocaleString("en-IN", { minimumFractionDigits: 2 })} in unpaid invoices. Override required to create order.`
+                          : `⚠ Customer has ₹${duesAmt.toLocaleString("en-IN", { minimumFractionDigits: 2 })} in unpaid invoices. Cannot create new order until dues are cleared.`}
+                      </span>
+                    </div>
+                    {duesInvoices.length > 0 && (
+                      <table className="w-full text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-current opacity-50">
+                            <th className="text-left py-0.5 pr-2 font-medium">Invoice #</th>
+                            <th className="text-left py-0.5 pr-2 font-medium">Date</th>
+                            <th className="text-right py-0.5 font-medium">Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {duesInvoices.map((inv) => (
+                            <tr key={inv.id} className="border-b border-current opacity-30">
+                              <td className="py-0.5 pr-2 font-mono">{inv.invoiceNumber}</td>
+                              <td className="py-0.5 pr-2">{new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                              <td className="py-0.5 text-right">₹{inv.balance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {!isAdmin && (
+                      <p className="mt-1 opacity-75">Contact admin to override this restriction.</p>
+                    )}
+                  </div>
+                )}
+
                 <DialogFooter>
-                  <Button data-testid="button-submit-order" disabled={orderMutation.isPending || anySaveBlocked} onClick={() => orderMutation.mutate(orderForm)}>
-                    {orderMutation.isPending ? "Saving..." : editingOrder ? "Update Order" : "Create Order"}
-                  </Button>
+                  {hasDues && !editingOrder && isAdmin ? (
+                    <Button
+                      data-testid="button-override-dues-order"
+                      variant="outline"
+                      className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                      disabled={anySaveBlocked || orderMutation.isPending}
+                      onClick={() => {
+                        setDuesOverrideDialog({
+                          outstanding: duesAmt,
+                          pendingOrderData: orderForm,
+                          invoices: duesInvoices,
+                          customerName: selectedCustomer?.name,
+                          newOrderTotal,
+                        });
+                        setDuesOverrideReason("");
+                      }}
+                    >
+                      Create SO (Override Dues)
+                    </Button>
+                  ) : (
+                    <span title={hasDues && !editingOrder && !isAdmin ? "Customer has outstanding dues. Contact admin for override." : undefined}>
+                      <Button
+                        data-testid="button-submit-order"
+                        disabled={orderMutation.isPending || anySaveBlocked || (hasDues && !editingOrder && !isAdmin)}
+                        onClick={() => orderMutation.mutate(orderForm)}
+                      >
+                        {orderMutation.isPending ? "Saving..." : editingOrder ? "Update Order" : "Create Order"}
+                      </Button>
+                    </span>
+                  )}
                 </DialogFooter>
               </>
             );
@@ -3436,58 +3536,89 @@ export default function Sales() {
 
       {/* E6: Outstanding Dues Override Dialog */}
       <Dialog open={!!duesOverrideDialog} onOpenChange={(o) => { if (!o) { setDuesOverrideDialog(null); setDuesOverrideReason(""); } }}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Customer Has Outstanding Dues</DialogTitle>
+            <DialogTitle>Authorize SO Despite Outstanding Dues</DialogTitle>
             <DialogDescription>
-              This customer has <strong>₹{duesOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> in unpaid invoices.
-              Creating a new Sales Order is blocked.{" "}
-              {currentUser?.role === "admin"
-                ? "As admin, you can override this restriction with a reason."
-                : "Please contact an admin to override."}
+              {duesOverrideDialog?.customerName && (
+                <span><strong>Customer:</strong> {duesOverrideDialog.customerName}<br /></span>
+              )}
+              <span><strong>Outstanding Dues:</strong> ₹{duesOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
             </DialogDescription>
           </DialogHeader>
-          {currentUser?.role === "admin" && (
-            <div className="space-y-3">
-              <Label htmlFor="dues-override-reason">Override Reason <span className="text-red-500">*</span> <span className="text-muted-foreground text-xs">(min 10 chars)</span></Label>
-              <Textarea
-                id="dues-override-reason"
-                data-testid="input-dues-override-reason"
-                value={duesOverrideReason}
-                onChange={(e) => setDuesOverrideReason(e.target.value)}
-                placeholder="e.g. Customer agreed to pay outstanding before delivery. Approved by management."
-                rows={3}
-              />
+
+          {/* Unpaid invoice table */}
+          {duesOverrideDialog?.invoices && duesOverrideDialog.invoices.length > 0 && (
+            <div className="rounded border text-xs overflow-hidden">
+              <table className="w-full border-collapse">
+                <thead className="bg-muted text-muted-foreground">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium">Invoice #</th>
+                    <th className="text-left px-3 py-2 font-medium">Date</th>
+                    <th className="text-right px-3 py-2 font-medium">Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {duesOverrideDialog.invoices.map((inv) => (
+                    <tr key={inv.id} className="border-t">
+                      <td className="px-3 py-1.5 font-mono">{inv.invoiceNumber}</td>
+                      <td className="px-3 py-1.5">{new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                      <td className="px-3 py-1.5 text-right text-red-600 dark:text-red-400 font-medium">₹{inv.balance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+
+          {/* New order total */}
+          {duesOverrideDialog?.newOrderTotal !== undefined && duesOverrideDialog.newOrderTotal > 0 && (
+            <div className="flex justify-between text-sm font-medium border rounded px-3 py-2 bg-muted/40">
+              <span>New Order Total</span>
+              <span>₹{duesOverrideDialog.newOrderTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Label htmlFor="dues-override-reason">Override Reason <span className="text-red-500">*</span> <span className="text-muted-foreground text-xs">(min 10 chars)</span></Label>
+            <Textarea
+              id="dues-override-reason"
+              data-testid="input-dues-override-reason"
+              value={duesOverrideReason}
+              onChange={(e) => setDuesOverrideReason(e.target.value)}
+              placeholder="e.g. Customer agreed to pay outstanding before delivery. Approved by management."
+              rows={3}
+            />
+          </div>
+
           <DialogFooter>
             <Button variant="outline" onClick={() => { setDuesOverrideDialog(null); setDuesOverrideReason(""); }}>Cancel</Button>
-            {currentUser?.role === "admin" && (
-              <Button
-                data-testid="button-confirm-dues-override"
-                disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending || convertToOrderMutation.isPending}
-                onClick={() => {
-                  if (!duesOverrideDialog) return;
-                  if (duesOverrideDialog.quotationId) {
-                    convertToOrderMutation.mutate({
-                      id: duesOverrideDialog.quotationId,
-                      duesOverride: true,
-                      duesOverrideReason: duesOverrideReason.trim(),
-                    });
-                  } else if (duesOverrideDialog.pendingOrderData) {
-                    orderMutation.mutate({
-                      ...duesOverrideDialog.pendingOrderData,
-                      duesOverride: true,
-                      duesOverrideReason: duesOverrideReason.trim(),
-                    });
-                  }
-                }}
-              >
-                {(orderMutation.isPending || convertToOrderMutation.isPending)
-                  ? "Processing..."
-                  : duesOverrideDialog?.quotationId ? "Override & Convert to Order" : "Override & Create Order"}
-              </Button>
-            )}
+            <Button
+              data-testid="button-confirm-dues-override"
+              variant="outline"
+              className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+              disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending || convertToOrderMutation.isPending}
+              onClick={() => {
+                if (!duesOverrideDialog) return;
+                if (duesOverrideDialog.quotationId) {
+                  convertToOrderMutation.mutate({
+                    id: duesOverrideDialog.quotationId,
+                    duesOverride: true,
+                    duesOverrideReason: duesOverrideReason.trim(),
+                  });
+                } else if (duesOverrideDialog.pendingOrderData) {
+                  orderMutation.mutate({
+                    ...duesOverrideDialog.pendingOrderData,
+                    duesOverride: true,
+                    duesOverrideReason: duesOverrideReason.trim(),
+                  });
+                }
+              }}
+            >
+              {(orderMutation.isPending || convertToOrderMutation.isPending)
+                ? "Processing..."
+                : duesOverrideDialog?.quotationId ? "Authorize & Convert to Order" : "Authorize & Create Order"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

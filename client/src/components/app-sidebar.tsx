@@ -61,7 +61,7 @@ const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports", "/accounts"],
   field_staff: ["/my-portal", "/field-staff", "/inbox"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports", "/accounts"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports", "/accounts", "/inventory"],
   warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports", "/accounts"],
   accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports"],
 };

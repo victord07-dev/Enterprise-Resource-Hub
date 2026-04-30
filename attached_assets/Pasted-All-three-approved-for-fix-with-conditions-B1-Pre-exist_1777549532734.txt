@@ -1,0 +1,60 @@
+All three approved for fix, with conditions:
+
+B1 — Pre-existing routing issue. Fix sales_manager allowed-routes to
+include /inventory. Confirm via grep:
+  Find all places where sales_manager's allowed routes are defined
+  (likely client/src/components/Layout/Sidebar.tsx or auth/role
+  config). Add /inventory.
+  
+  This is not a Phase 4A regression. Note as "pre-existing routing
+  gap surfaced during K3 walk."
+
+B2 — Root cause confirmation required BEFORE fix:
+  
+  In Inventory.tsx, find where the IIFE rendering "Ready" / "Ready
+  (Credit)" runs. Trace:
+  1. Where does `salesOrders` come from (useQuery? prop drill?)
+  2. Is the component subscribed to salesOrders updates so it
+     re-renders when query resolves?
+  3. When the IIFE runs, what is `salesOrders.length` and what is
+     `linkedSO` for DC-2026-0018?
+  4. Is challan.orderId actually matching any SO in the list?
+  
+  Add temporary console.log to capture this. Run once. Show me what
+  it logs. THEN fix based on actual root cause, not assumed cause.
+  
+  If the issue is missing query subscription: add useQuery for
+  salesOrders in this component if not present.
+  If the issue is data shape mismatch: fix the comparison.
+  Don't guess — diagnose first.
+
+B3 — apiRequest body-discarding bug:
+  
+  This affects every error-driven flow in the app, not just credit
+  override. Two-part fix:
+  
+  1. Modify apiRequest helper to preserve response body on error.
+     Either:
+     (a) Don't call throwIfResNotOk by default; let mutations decide
+     (b) Throw a custom error class that preserves response.json()
+         payload as a property
+     
+     Recommend (b): export class ApiError extends Error { 
+       constructor(public response: Response, public body: any) {...}
+     }
+     Mutations can: catch (e) { if (e instanceof ApiError) {...} }
+  
+  2. After the helper change, audit OTHER places in the codebase
+     that depend on structured error bodies. Specifically:
+     - Phase 1 ready-for-signature outstanding amount display
+     - Any GRN payment gate error handling
+     - Strict floor below-floor errors
+     - Any toast that should show structured info beyond just message
+     
+     Report: how many call sites need updating to use the new
+     ApiError pattern, vs how many can stay with .message-only?
+
+Stop after B1+B3 root-cause investigation + fix proposal. Don't
+implement B2's fix yet — show me the diagnostic logs first.
+
+Goal: get K3 unblocked cleanly without introducing new bugs.

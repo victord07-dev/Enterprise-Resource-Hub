@@ -9,16 +9,31 @@ function getAuthHeaders(): Record<string, string> {
   return {};
 }
 
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: Record<string, any>
+  ) {
+    super(body?.message ?? `HTTP ${status}`);
+    this.name = "ApiError";
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       localStorage.removeItem("token");
       localStorage.removeItem("user");
       window.location.href = "/login";
-      throw new Error("Session expired");
+      throw new ApiError(401, { message: "Session expired" });
     }
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    let body: Record<string, any> = {};
+    try {
+      body = await res.json();
+    } catch {
+      body = { message: res.statusText };
+    }
+    throw new ApiError(res.status, body);
   }
 }
 

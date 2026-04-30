@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
@@ -1008,7 +1008,7 @@ export default function Sales() {
   const handleQuoteLineTouched = (idx: number) => setQuoteTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
 
   // E4: Outstanding dues override dialog state
-  const [duesOverrideDialog, setDuesOverrideDialog] = useState<{ outstanding: number; pendingOrderData: any } | null>(null);
+  const [duesOverrideDialog, setDuesOverrideDialog] = useState<{ outstanding: number; pendingOrderData?: any; quotationId?: string } | null>(null);
   const [duesOverrideReason, setDuesOverrideReason] = useState("");
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
@@ -1170,17 +1170,6 @@ export default function Sales() {
         orderId = editingOrder.id;
       } else {
         const res = await apiRequest("POST", "/api/sales-orders", orderData);
-        if (!res.ok) {
-          const errBody = await res.json();
-          if (res.status === 400 && errBody.outstanding !== undefined) {
-            // E5: Customer has outstanding dues — open override dialog if admin
-            const err: any = new Error(errBody.message || "Outstanding dues block");
-            err.outstanding = errBody.outstanding;
-            err.pendingOrderData = orderData;
-            throw err;
-          }
-          throw new Error(errBody.message || "Failed to create order");
-        }
         const created = await res.json();
         orderId = created.id;
       }
@@ -1210,10 +1199,9 @@ export default function Sales() {
       setDuesOverrideDialog(null);
       setDuesOverrideReason("");
     },
-    onError: (error: any) => {
-      if (error.outstanding !== undefined && error.pendingOrderData) {
-        // E5: open override dialog
-        setDuesOverrideDialog({ outstanding: error.outstanding, pendingOrderData: error.pendingOrderData });
+    onError: (error: any, variables: any) => {
+      if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
+        setDuesOverrideDialog({ outstanding: error.body.outstanding, pendingOrderData: variables });
         setDuesOverrideReason("");
       } else {
         toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1311,17 +1299,26 @@ export default function Sales() {
   });
 
   const convertToOrderMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiRequest("POST", `/api/quotations/${id}/convert-to-order`);
+    mutationFn: async ({ id, duesOverride, duesOverrideReason }: { id: string; duesOverride?: boolean; duesOverrideReason?: string }) => {
+      const body: any = {};
+      if (duesOverride) { body.duesOverride = true; body.duesOverrideReason = duesOverrideReason; }
+      const res = await apiRequest("POST", `/api/quotations/${id}/convert-to-order`, Object.keys(body).length ? body : undefined);
       return res.json();
     },
     onSuccess: (order: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotations"] });
       toast({ title: "Quotation converted to order", description: `Order ${order.orderNumber} created` });
+      setDuesOverrideDialog(null);
+      setDuesOverrideReason("");
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: (error: any, variables: { id: string }) => {
+      if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
+        setDuesOverrideDialog({ outstanding: error.body.outstanding, quotationId: variables.id });
+        setDuesOverrideReason("");
+      } else {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -2475,7 +2472,7 @@ export default function Sales() {
                               <div className="flex items-center justify-end gap-1">
                                 {!isReadOnly && q.status !== "accepted" && (
                                   <Button size="icon" variant="ghost" title="Convert to Order" data-testid={`button-convert-quote-${q.id}`}
-                                    onClick={() => { if (confirm("Convert this quotation to an order?")) convertToOrderMutation.mutate(q.id); }}
+                                    onClick={() => { if (confirm("Convert this quotation to an order?")) convertToOrderMutation.mutate({ id: q.id }); }}
                                     disabled={convertToOrderMutation.isPending}>
                                     <ArrowRightLeft className="w-4 h-4" />
                                   </Button>
@@ -3468,9 +3465,16 @@ export default function Sales() {
             {currentUser?.role === "admin" && (
               <Button
                 data-testid="button-confirm-dues-override"
-                disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending}
+                disabled={duesOverrideReason.trim().length < 10 || orderMutation.isPending || convertToOrderMutation.isPending}
                 onClick={() => {
-                  if (duesOverrideDialog) {
+                  if (!duesOverrideDialog) return;
+                  if (duesOverrideDialog.quotationId) {
+                    convertToOrderMutation.mutate({
+                      id: duesOverrideDialog.quotationId,
+                      duesOverride: true,
+                      duesOverrideReason: duesOverrideReason.trim(),
+                    });
+                  } else if (duesOverrideDialog.pendingOrderData) {
                     orderMutation.mutate({
                       ...duesOverrideDialog.pendingOrderData,
                       duesOverride: true,
@@ -3479,7 +3483,9 @@ export default function Sales() {
                   }
                 }}
               >
-                {orderMutation.isPending ? "Creating..." : "Override & Create Order"}
+                {(orderMutation.isPending || convertToOrderMutation.isPending)
+                  ? "Processing..."
+                  : duesOverrideDialog?.quotationId ? "Override & Convert to Order" : "Override & Create Order"}
               </Button>
             )}
           </DialogFooter>

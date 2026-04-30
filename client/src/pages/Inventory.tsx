@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { Badge } from "@/components/ui/badge";
@@ -417,17 +417,6 @@ export default function Inventory() {
       const body: any = {};
       if (creditOverride) { body.creditOverride = true; body.creditReason = creditReason; }
       const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/ready-for-signature`, body);
-      if (!res.ok) {
-        const e = await res.json();
-        if (res.status === 400 && e.outstanding) {
-          // Payment incomplete — surface to credit override dialog (handled in onError)
-          const err: any = new Error(e.message || "Payment incomplete");
-          err.outstanding = e.outstanding;
-          err.challanId = challanId;
-          throw err;
-        }
-        throw new Error(e.message || "Failed");
-      }
       return res.json();
     },
     onSuccess: () => {
@@ -436,11 +425,15 @@ export default function Inventory() {
       setCreditOverrideReason("");
       toast({ title: "Challan marked ready for signature" });
     },
-    onError: (e: any) => {
-      if (e.outstanding !== undefined && e.challanId) {
-        // Open credit override dialog — only if admin (backend enforces it too)
-        const challan = (deliveryChallans ?? []).find(c => c.id === e.challanId);
-        setCreditOverrideDialog({ challanId: e.challanId, challanNumber: challan?.challanNumber ?? e.challanId, outstanding: e.outstanding });
+    onError: (e: any, variables: { challanId: string }) => {
+      const outstanding = e?.body?.outstanding ?? e?.outstanding;
+      if (e?.status === 400 && outstanding !== undefined) {
+        const challan = (deliveryChallans ?? []).find(c => c.id === variables.challanId);
+        setCreditOverrideDialog({
+          challanId: variables.challanId,
+          challanNumber: challan?.challanNumber ?? variables.challanId,
+          outstanding: Number(outstanding),
+        });
         setCreditOverrideReason("");
       } else {
         toast({ title: "Error", description: e.message, variant: "destructive" });
@@ -1529,9 +1522,6 @@ export default function Inventory() {
                                   {/* Draft → Ready for Signature (SO-outstanding-aware) */}
                                   {challan.status === "draft" && (() => {
                                     const linkedSO = (salesOrders ?? []).find(o => o.id === challan.orderId);
-                                    if (challan.challanNumber === "DC-2026-0018") {
-                                      console.log("[K3DEBUG] DC-2026-0018 orderId:", challan.orderId, "salesOrders count:", (salesOrders ?? []).length, "linkedSO:", linkedSO?.id, "totalAmount:", (linkedSO as any)?.totalAmount, "paidAmount:", (linkedSO as any)?.paidAmount);
-                                    }
                                     const soOutstanding = linkedSO
                                       ? Math.max(0, Number((linkedSO as any).totalAmount ?? 0) - Number((linkedSO as any).paidAmount ?? 0))
                                       : 0;

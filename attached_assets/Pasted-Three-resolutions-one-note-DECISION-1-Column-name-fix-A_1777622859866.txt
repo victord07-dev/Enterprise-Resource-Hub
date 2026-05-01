@@ -1,0 +1,52 @@
+Three resolutions + one note:
+
+DECISION 1 — Column name fix: APPROVED
+- B2 backfill SQL for customer_payments uses 'method' (not 
+  'payment_method')
+- supplier_payments and expenses keep 'payment_method'
+- Note for future hygiene phase: standardize to 'payment_method' 
+  across all three tables. Don't refactor in Phase 4B.
+
+DECISION 2 — Balance computation: Option A (on-the-fly)
+- Lock in spec: "All balance computations are on-the-fly. No 
+  cached current_balance field on cash_accounts. Performance 
+  acceptable at ITFI scale."
+- Section I of brief stays as-is (computeAccountBalance helper)
+
+DECISION 3 — Smart dropdown filtering (refinement of soft warning):
+- Don't add a yellow advisory. Filter the dropdown options by 
+  payment method:
+  
+  cash → show only cash-type accounts (CEO Cash + future cash boxes)
+  bank_transfer/rtgs/neft/cheque/imps/upi → show only bank-type 
+    accounts
+  null/other → show all accounts
+  
+- Behavior: when user changes payment method AFTER selecting 
+  account, dropdown re-filters. If previously-chosen account is 
+  now invalid (e.g., HDFC selected, then user changes method to 
+  cash), clear the selection and force re-pick.
+  
+- This is prevention over detection. Bad combination can't be 
+  created.
+
+Apply this to:
+- Customer Payment form (D1)
+- Supplier Payment form (D2)  
+- Expense form (D3)
+- For all three: dropdown options are reactive to payment_method 
+  selection in real-time
+
+NOTE — Cheque clearance lag (your real-world observation):
+- Acknowledged as a genuine gap
+- Defer to a future reconciliation phase (NOT 4B, NOT 4C)
+- Workaround for now: accountant uses balance_adjustments to 
+  reconcile when bank statement diverges from system
+- Document this as a known limitation in Phase 4B's exit notes
+
+Everything else in the brief stands. Proceed with implementation.
+
+Standing rules apply: UI verification with screenshots, backend 
+tests insufficient, no scope drift, only operator declares closure.
+
+Ship and ping me. I'll walk J1-J11 (~50 items, ~50 min).

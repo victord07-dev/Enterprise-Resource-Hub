@@ -1,0 +1,679 @@
+Phase 4B: Cash & Bank Account Ledger
+
+CONTEXT
+
+Phase 4A is closed. The system tracks customer payments, supplier
+payments, and expenses correctly per-counterparty (customer/supplier),
+but has no concept of WHICH bank account or cash box money flows
+through. CEO can see "₹X total revenue" but not "₹Y came into HDFC,
+₹Z came into ICICI."
+
+This phase fills the structural gap by adding cash_accounts as
+first-class entities, links every payment and expense to a specific
+account, and provides per-account balance and transaction visibility.
+
+What this phase delivers:
+- cash_accounts table with admin-managed CRUD (4 seed accounts:
+  HDFC, ICICI, AXIS, CEO Cash)
+- cash_account_id FK on customer_payments, supplier_payments, expenses
+- Account selection required on all payment + expense forms going
+  forward
+- Account-to-account transfer feature (rare but needed)
+- Balance adjustment entries (admin/accountant only, with reason)
+- Cash Position page showing all accounts + per-account drill-down
+- Date range filters: today / week / month / quarter / year / custom
+- Opening balance editable per account (so CEO can set real values
+  at production go-live time)
+
+What this phase does NOT deliver (Phase 4C):
+- Financial dashboard widgets (revenue, top customers, etc.)
+- Cross-account reports beyond basic cash position
+- Cash flow forecasting / predictive analytics
+
+STANDING RULES
+- Before declaring complete, walk every UI path in Build mode with
+  screenshots and SQL evidence. Backend tests insufficient.
+- Only operator (me) declares phase closure.
+- Mirror existing patterns. Read existing code first.
+- No unrequested cleanup or refactoring. Additive changes only.
+- Don't touch Phase 4A credit override, supplier invoice auto-create,
+  GST capture, or dues block work unless explicitly required.
+- Use existing audit log + notification infrastructure (logAction +
+  notifyRoles).
+- All payment + expense forms must validate cash_account_id is set
+  going forward — but DO NOT enforce on existing 14 dummy records
+  (those get auto-assigned during migration).
+
+CEO POLICY DECISIONS LOCKED
+- 4 seed accounts: HDFC, ICICI, AXIS (all bank type), CEO Cash
+  (cash type)
+- All seed accounts: opening_balance = 0, opening_balance_date =
+  migration date (today)
+- Opening balance EDITABLE later by admin (for real go-live values)
+- UPI is NOT a separate account — it's a payment_method that
+  ultimately funds a bank account
+- Account-to-account transfers: supported as separate transaction
+  type (rare but allowed)
+- Balance adjustments: admin + accountant authorized, mandatory
+  reason
+- Daily/weekly/monthly/annual/custom date range filters required
+- Multi-company NOT in scope (each company forks to own DB later)
+- 14 existing test transactions get auto-assigned during migration
+  (they're dummy data, no manual ceremony needed)
+
+PRE-WORK READING (MANDATORY, BEFORE ANY CODE)
+
+Confirm before writing code:
+
+1. Existing storage helpers and patterns:
+   - storage.createCustomerPayment, storage.createSupplierPayment,
+     storage.createExpense — confirm signatures
+   - logAction(userId, action, module, details?)
+   - notifyRoles(roles, type, title, message, relatedId?)
+   - getAuthHeaders pattern in client API calls
+
+2. Existing form locations:
+   - Customer payment form: where rendered? (likely Sales.tsx
+     "Record Payment" dialog, ~line 3115 per prior audits)
+   - Supplier payment form: Accounts.tsx Supplier Payments tab
+   - Expense form: Accounts.tsx Expenses tab
+
+3. Existing payment_method values in use:
+   - SQL: SELECT DISTINCT payment_method FROM customer_payments;
+   - SQL: SELECT DISTINCT payment_method FROM supplier_payments;
+   - SQL: SELECT DISTINCT payment_method FROM expenses;
+   - Confirm: cash, bank_transfer, rtgs, etc.
+
+4. Existing data volumes:
+   - SQL: SELECT COUNT(*) FROM customer_payments;
+   - SQL: SELECT COUNT(*) FROM supplier_payments;
+   - SQL: SELECT COUNT(*) FROM expenses;
+   - Confirm 14 total or report actual count
+
+5. Phase 4A's account mention check:
+   - Search codebase for any existing "cash_account" or "bank_account"
+     references that we missed
+   - SQL: SELECT table_name FROM information_schema.tables WHERE
+     table_schema='public' AND (table_name LIKE '%cash%' OR
+     table_name LIKE '%bank%' OR table_name LIKE '%account%');
+   - Should be near-zero matches; confirm
+
+6. Existing /accounts route structure in Accounts.tsx:
+   - What tabs exist today?
+   - Confirm: Expenses, Customer Payments, Supplier Payments,
+     Supplier Invoices (Phase 4A added this)
+   - Where would a "Cash Accounts" tab sit cleanly?
+
+7. Date filter patterns already in codebase:
+   - The Daily Pricing page (/reports → Daily Pricing tab) likely
+     has date filters. Check the pattern.
+   - The Expenses tab in Accounts has date range filters too. Check.
+   - Reuse the same library/pattern (likely shadcn date picker or
+     similar)
+
+Report findings in one message. Await go-ahead before implementation.
+
+==========================================================
+SECTION A — SCHEMA ADDITIONS
+==========================================================
+
+A1. New table cash_accounts:
+    id (uuid PK, default gen_random_uuid())
+    name (text, NOT NULL, unique)
+    -- e.g., "HDFC Bank", "ICICI Bank", "AXIS Bank", "CEO Cash"
+    type (text, NOT NULL)
+    -- Allowed values: 'bank' | 'cash'
+    account_number (text, nullable)
+    -- Optional, only meaningful for bank accounts
+    opening_balance (numeric, NOT NULL, default 0)
+    opening_balance_date (timestamp, NOT NULL, default now())
+    is_active (boolean, NOT NULL, default true)
+    notes (text, nullable)
+    created_at (timestamp, NOT NULL, default now())
+    updated_at (timestamp, NOT NULL, default now())
+
+A2. New table account_transfers:
+    id (uuid PK)
+    from_account_id (uuid FK → cash_accounts, NOT NULL)
+    to_account_id (uuid FK → cash_accounts, NOT NULL)
+    -- DB constraint: from_account_id != to_account_id
+    amount (numeric, NOT NULL, > 0)
+    transfer_date (timestamp, NOT NULL, default now())
+    reference (text, nullable)
+    -- Free-text reference (e.g., "Cash deposit at branch", "NEFT TXN12345")
+    notes (text, nullable)
+    created_by (uuid FK → users, NOT NULL)
+    created_at (timestamp, NOT NULL, default now())
+
+A3. New table balance_adjustments:
+    id (uuid PK)
+    cash_account_id (uuid FK → cash_accounts, NOT NULL)
+    adjustment_amount (numeric, NOT NULL)
+    -- Signed: positive = increase balance, negative = decrease
+    adjustment_date (timestamp, NOT NULL, default now())
+    reason (text, NOT NULL)
+    -- Mandatory free-text reason (e.g., "Bank fee debit",
+    -- "Interest credit", "Reconciliation correction")
+    adjusted_by (uuid FK → users, NOT NULL)
+    created_at (timestamp, NOT NULL, default now())
+
+A4. Add cash_account_id (nullable initially, NOT NULL after backfill)
+    to existing tables:
+    - customer_payments: cash_account_id (uuid FK → cash_accounts)
+    - supplier_payments: cash_account_id (uuid FK → cash_accounts)
+    - expenses: cash_account_id (uuid FK → cash_accounts)
+
+A5. Run db:push.
+
+==========================================================
+SECTION B — SEED + BACKFILL
+==========================================================
+
+B1. Seed 4 cash_accounts:
+    INSERT INTO cash_accounts (name, type, opening_balance,
+                                opening_balance_date) VALUES
+      ('HDFC Bank',  'bank', 0, now()),
+      ('ICICI Bank', 'bank', 0, now()),
+      ('AXIS Bank',  'bank', 0, now()),
+      ('CEO Cash',   'cash', 0, now());
+    Report inserted IDs.
+
+B2. Auto-assign cash_account_id on existing 14 records (test data,
+    no ceremony needed):
+    
+    Rule:
+    - payment_method = 'cash' OR similar → CEO Cash account
+    - payment_method IN ('bank_transfer', 'rtgs', 'neft', 'cheque',
+      'imps') → HDFC Bank account (default bank)
+    - payment_method = 'upi' OR null → HDFC Bank (default)
+    
+    Apply to:
+    - customer_payments (2 rows)
+    - supplier_payments (4 rows)
+    - expenses (4 rows)
+    
+    SQL:
+    UPDATE customer_payments SET cash_account_id = (
+      SELECT id FROM cash_accounts WHERE name = CASE
+        WHEN payment_method = 'cash' THEN 'CEO Cash'
+        ELSE 'HDFC Bank'
+      END
+    ) WHERE cash_account_id IS NULL;
+    -- Mirror for supplier_payments and expenses
+    
+    Report: count of rows updated per table.
+
+B3. After backfill verified, add NOT NULL constraint:
+    ALTER TABLE customer_payments ALTER COLUMN cash_account_id SET NOT NULL;
+    ALTER TABLE supplier_payments ALTER COLUMN cash_account_id SET NOT NULL;
+    ALTER TABLE expenses ALTER COLUMN cash_account_id SET NOT NULL;
+    
+    This locks the column going forward — new records must have it.
+
+==========================================================
+SECTION C — CASH ACCOUNT MANAGEMENT UI
+==========================================================
+
+C1. New tab in /accounts page: "Cash Accounts" (admin-only access).
+
+C2. Cash Accounts list view:
+    Columns: Name | Type (bank/cash) | Account Number | Current
+              Balance | Opening Balance | Opening Date | Status
+              (Active/Inactive) | Actions
+    
+    Actions per row: Edit, Deactivate (if active) / Reactivate
+    (if inactive)
+    Add: "+ New Account" button (top right)
+
+C3. New/Edit Account dialog:
+    Fields:
+    - Account Name (text, required, must be unique)
+    - Account Type (select: Bank | Cash, required)
+    - Account Number (text, optional, only relevant for bank)
+    - Opening Balance (numeric, optional, default 0)
+    - Opening Balance Date (date, optional, default today)
+    - Notes (textarea, optional)
+    - Status (Active/Inactive toggle, default Active)
+    
+    On save:
+    - Create or update cash_accounts row
+    - Audit log: action='cash_account_created' or 'cash_account_updated'
+    - If opening_balance changed: add note in audit details
+    - Show toast: "Account saved"
+
+C4. Deactivate flow:
+    - If account has any linked transactions: confirmation modal
+      "This account has X transactions. Deactivating will hide it
+      from new payment forms but preserve history. Continue?"
+    - If no transactions: simple confirmation
+    - Set is_active = false (don't delete row)
+    - Audit log: action='cash_account_deactivated'
+
+C5. Account dropdowns elsewhere in the app filter to is_active=true:
+    - Customer payment form
+    - Supplier payment form
+    - Expense form
+    - Transfer form
+    - Balance adjustment form
+    Inactive accounts visible in list view + detail page (for
+    historical reference) but not selectable for new transactions.
+
+==========================================================
+SECTION D — ACCOUNT SELECTION ON EXISTING FORMS
+==========================================================
+
+D1. Customer Payment form (Sales.tsx "Record Payment" dialog):
+    - Add field: "Cash Account *" (dropdown, required, asterisk)
+    - Options: all is_active=true accounts
+    - Default: HDFC Bank (or first bank account in alphabetical order)
+    - Save button disabled until cash_account_id selected
+    - On save: include cash_account_id in mutation payload
+
+D2. Supplier Payment form (Accounts.tsx Supplier Payments tab):
+    - Same pattern as D1
+    - "Cash Account *" dropdown, required
+    - Default: HDFC Bank
+
+D3. Expense form (Accounts.tsx Expenses tab):
+    - Same pattern as D1
+    - "Cash Account *" dropdown, required
+    - Default behavior: 
+      * If payment_method = 'cash' → default to CEO Cash
+      * Else → default to HDFC Bank
+
+D4. Existing payment/expense lists (left side panels):
+    - Add "Account" column showing account name
+    - Filter: by account dropdown (in addition to existing filters)
+
+D5. Edit existing payment/expense:
+    - cash_account_id is editable (admin/accountant only)
+    - Audit log on change
+
+==========================================================
+SECTION E — ACCOUNT-TO-ACCOUNT TRANSFER
+==========================================================
+
+E1. New form in /accounts → Cash Accounts tab: "Record Transfer" button
+
+E2. Transfer dialog:
+    Fields:
+    - From Account (dropdown, required, all is_active=true accounts)
+    - To Account (dropdown, required, all is_active=true accounts
+      EXCLUDING the from_account selection)
+    - Amount (numeric, required, > 0)
+    - Transfer Date (date, required, default today)
+    - Reference (text, optional, e.g., "Cash deposit branch slip
+      #1234" or "NEFT/UTR-12345678")
+    - Notes (textarea, optional)
+    
+    Validation:
+    - From and To must be different (UI + server)
+    - Amount > 0
+    - Both accounts must be active
+
+E3. On save:
+    - Insert account_transfers row
+    - Audit log: action='transfer_recorded', details:
+      `Transfer ₹X from [from_account] to [to_account]. 
+      Reference: [reference]`
+    - Notification to admin: "Transfer of ₹X recorded:
+      [from] → [to]"
+    - Show toast: "Transfer recorded"
+
+E4. Transfer appears in BOTH accounts' transaction history:
+    - In from_account: shown as outgoing (red, negative)
+    - In to_account: shown as incoming (green, positive)
+    - Same transfer_id linked, so detail view shows full transfer info
+
+E5. Transfers cannot be edited (only deleted by admin with reason):
+    - Delete: requires admin role + cancellation reason
+    - On delete: audit log action='transfer_deleted'
+    - Both legs of the transfer disappear from history
+    - This keeps audit trail clean: edits create reconciliation
+      complexity, deletes are explicit
+
+==========================================================
+SECTION F — BALANCE ADJUSTMENT
+==========================================================
+
+F1. New action on Cash Account detail page: "Record Adjustment" button
+    (admin + accountant only)
+
+F2. Balance Adjustment dialog:
+    Fields:
+    - Cash Account (pre-selected from detail page)
+    - Adjustment Type (select: Increase Balance | Decrease Balance,
+      required)
+    - Amount (numeric, required, > 0; gets signed based on type)
+    - Adjustment Date (date, required, default today)
+    - Reason (textarea, REQUIRED, min 10 chars)
+      placeholder: "e.g., Bank fee debit ₹500; HDFC quarterly interest
+                    credit ₹2,150; Reconciliation correction for missed
+                    May expense"
+    
+    Validation:
+    - Reason min 10 chars (mirror of credit override pattern)
+    - Submit button disabled until reason filled
+
+F3. On save:
+    - Compute signed amount: positive if Increase, negative if Decrease
+    - Insert balance_adjustments row
+    - Audit log: action='balance_adjustment_recorded', details:
+      `Balance adjustment ₹±X on [account]. Reason: [reason]`
+    - Notification to admin (if adjustment by accountant): 
+      "Balance adjustment ₹±X recorded by [user] on [account]"
+    - Show toast: "Adjustment recorded"
+
+F4. Balance adjustments appear in account transaction history:
+    - Type: "Balance Adjustment"
+    - Counterparty: [System / reason summary]
+    - Amount: signed
+    - Click to view full reason
+
+==========================================================
+SECTION G — CASH POSITION PAGE
+==========================================================
+
+G1. New page or extension to /accounts: "Cash Position" view
+    Accessible from sidebar OR as the default landing in /accounts
+
+G2. Top-level summary:
+    - Total Cash Position: sum of all active accounts' current balances
+    - As of: [current date]
+    - Trend indicator: vs yesterday, vs last week (small chart or
+      delta arrow)
+
+G3. Per-account cards (one per active account):
+    Card content:
+    - Account name + type icon
+    - Current balance (large, bold)
+    - Today: +₹X in / -₹Y out (small text)
+    - This Month: +₹A / -₹B
+    - Click card → drill into Account Detail page
+
+G4. Date range selector:
+    Pills: Today | Week | Month | Quarter | Year | Custom
+    Custom opens a date range picker (from / to)
+    
+    Selected range affects:
+    - Per-account "Inflows" and "Outflows" totals on each card
+    - Top-level "Cash Movement" summary (total in - total out for
+      the range)
+
+==========================================================
+SECTION H — ACCOUNT DETAIL PAGE
+==========================================================
+
+H1. Route: /accounts/cash-accounts/:id
+
+H2. Header:
+    - Account name (large)
+    - Type badge (Bank / Cash)
+    - Current Balance (large, bold, dynamic)
+    - Account Number (if bank)
+    - Opening Balance: ₹X (as of [date])
+    - Status: Active/Inactive
+    - Actions: Edit | Record Transfer | Record Adjustment
+
+H3. Date range selector:
+    Pills: Today | Week | Month | Quarter | Year | Custom
+    Default: This Month
+
+H4. Summary stats for selected range:
+    - Opening Balance for range start
+    - Total Inflows
+    - Total Outflows  
+    - Net Movement (signed)
+    - Closing Balance
+
+H5. Transaction history table:
+    Columns:
+    - Date (sortable, default desc)
+    - Type (Customer Payment | Supplier Payment | Expense | 
+      Transfer In | Transfer Out | Adjustment)
+    - Counterparty (customer name, supplier name, or transfer
+      pair, or "System" for adjustments)
+    - Reference (free-text or transaction ref)
+    - Amount (signed, color-coded: green for in, red for out)
+    - Running Balance
+    
+    Pagination: 50 per page
+    
+    Filter: by transaction type (multi-select)
+    
+    Click a row → drill to underlying entity (payment, expense,
+    transfer detail)
+
+H6. Inactive accounts:
+    - Header shows "Inactive" badge
+    - All actions (Edit, Transfer, Adjustment) disabled
+    - Transaction history still viewable
+    - "Reactivate" button available (admin only)
+
+==========================================================
+SECTION I — BALANCE COMPUTATION LOGIC
+==========================================================
+
+I1. Backend helper function (reusable):
+    storage.computeAccountBalance(accountId, asOfDate?)
+    
+    Returns: numeric (current balance as of asOfDate, defaults to now)
+    
+    Computation:
+    balance = account.opening_balance
+            + SUM(customer_payments.amount WHERE cash_account_id = X
+                  AND payment_date <= asOfDate)
+            + SUM(account_transfers.amount WHERE to_account_id = X
+                  AND transfer_date <= asOfDate)
+            + SUM(balance_adjustments.adjustment_amount WHERE
+                  cash_account_id = X AND adjustment_date <= asOfDate)
+            - SUM(supplier_payments.amount WHERE cash_account_id = X
+                  AND payment_date <= asOfDate)
+            - SUM(expenses.amount WHERE cash_account_id = X
+                  AND expense_date <= asOfDate)
+            - SUM(account_transfers.amount WHERE from_account_id = X
+                  AND transfer_date <= asOfDate)
+
+I2. For date range views:
+    storage.computeAccountStats(accountId, fromDate, toDate)
+    
+    Returns: {
+      openingBalance: number,    // computeAccountBalance(id, fromDate - 1)
+      totalInflows: number,      // sum of all incoming in range
+      totalOutflows: number,     // sum of all outgoing in range
+      netMovement: number,       // inflows - outflows
+      closingBalance: number,    // computeAccountBalance(id, toDate)
+      transactionCount: number
+    }
+
+I3. For unified transaction history:
+    storage.getAccountTransactions(accountId, fromDate, toDate, limit, offset)
+    
+    Returns array of unified transaction objects from all 5 sources
+    (customer_payments, supplier_payments, expenses, transfers in,
+    transfers out, adjustments) with running balance computed.
+
+I4. No snapshot table for now. All computed on-the-fly. ITFI scale
+    (₹2 Cr/month, ~150-450 transactions/month) supports this without
+    performance issues. Add snapshots in future phase if year-end
+    queries become slow.
+
+==========================================================
+SECTION J — STOP GATE (OPERATOR WALKS)
+==========================================================
+
+J1. Schema + seed verification:
+    (a) SQL: \d cash_accounts; → all columns present
+    (b) SQL: SELECT name, type, opening_balance FROM cash_accounts;
+        → 4 rows: HDFC Bank, ICICI Bank, AXIS Bank, CEO Cash;
+        all opening_balance = 0
+    (c) SQL: SELECT COUNT(*), COUNT(cash_account_id) FROM
+        customer_payments; → all rows have cash_account_id (NOT NULL
+        constraint applied)
+    (d) SQL: same for supplier_payments and expenses
+    (e) SQL: \d account_transfers; \d balance_adjustments; → tables
+        exist with correct columns
+
+J2. Backfill auto-assignment:
+    (f) SQL: SELECT cash_account_id, COUNT(*) FROM customer_payments
+        GROUP BY cash_account_id;
+        → All 2 records assigned to either HDFC or CEO Cash
+        based on payment_method
+    (g) Same for supplier_payments and expenses
+
+J3. Account management UI (admin):
+    (h) Login as admin. Open /accounts → Cash Accounts tab.
+        See list of 4 accounts with balances (all ₹0).
+    (i) Click "+ New Account". Add "Test Account" (cash, ₹50,000
+        opening, today). Save. Toast confirms. Appears in list.
+    (j) Edit "Test Account". Change opening balance to ₹1,00,000.
+        Save. Audit log entry: cash_account_updated with details.
+    (k) Deactivate "Test Account". Confirmation: "Account has 0
+        transactions. Continue?" Confirm. Status badge changes
+        to Inactive.
+    (l) Try to deactivate "HDFC Bank" (which has transactions).
+        Modal: "Account has 2 transactions. Continue?" Cancel,
+        keeps active.
+    (m) Login as accountant. /accounts → Cash Accounts tab NOT
+        visible. Direct URL access → 403 or redirect.
+
+J4. Account selection on payment forms:
+    (n) Open Sales → Record Payment dialog. "Cash Account *"
+        dropdown visible at bottom. Required asterisk shown.
+        Save button disabled until selected.
+    (o) Select HDFC Bank, fill amount, save. Verify SQL:
+        SELECT cash_account_id FROM customer_payments
+        ORDER BY created_at DESC LIMIT 1; → HDFC's UUID
+    (p) Same flow for Supplier Payment in Accounts → Supplier
+        Payments. Cash Account required.
+    (q) Same for Expense in Accounts → Expenses. Cash Account
+        required. Default for cash payment_method should be
+        "CEO Cash".
+
+J5. Transfer feature:
+    (r) /accounts → Cash Accounts → Record Transfer button.
+        Form: From=HDFC, To=ICICI, Amount=₹50,000, Date=today.
+        Save. Toast confirms.
+    (s) Verify: SQL SELECT * FROM account_transfers ORDER BY
+        created_at DESC LIMIT 1; → row inserted correctly.
+    (t) Audit log: action='transfer_recorded' present.
+    (u) Open HDFC account detail. Transaction history shows
+        outgoing transfer (red, -₹50,000).
+    (v) Open ICICI account detail. Same transaction shown as
+        incoming (green, +₹50,000).
+    (w) Try to transfer From=HDFC, To=HDFC → blocked with error.
+    (x) Try transfer with negative amount → blocked.
+
+J6. Balance adjustment:
+    (y) Login as accountant. Open HDFC account detail.
+        "Record Adjustment" button visible.
+    (z) Click. Dialog opens. Fields: Type (Increase/Decrease),
+        Amount, Date, Reason (required, min 10 chars).
+    (aa) Reason 5 chars: Save disabled. Reason 50 chars: enabled.
+    (bb) Increase ₹2,150, reason "HDFC quarterly interest credit
+         received per bank statement."
+         Save. Toast confirms.
+    (cc) SQL: SELECT * FROM balance_adjustments ORDER BY
+         created_at DESC LIMIT 1; → row inserted.
+    (dd) Audit log: action='balance_adjustment_recorded' present.
+    (ee) HDFC account balance reflects the +₹2,150.
+    (ff) Transaction history shows "Balance Adjustment" entry
+         with reason in tooltip/detail.
+    (gg) Login as field_staff. Try direct URL to record adjustment
+         → 403.
+
+J7. Cash Position page:
+    (hh) Open /accounts (default landing or "Cash Position" tab).
+         See total cash position card + 4 account cards.
+    (ii) Click date range pill "This Month". Cards update to show
+         month inflows/outflows.
+    (jj) Custom date range: select last 7 days. Cards update.
+    (kk) Click HDFC card → drills to Account Detail page.
+
+J8. Account Detail page:
+    (ll) Header shows current balance, opening balance, status.
+    (mm) Date range "Today" → shows only today's transactions.
+    (nn) Date range "Year" → shows all-year transactions, paginated.
+    (oo) Transaction type filter: select only "Customer Payment"
+         → list filtered.
+    (pp) Click a transaction → drills to original entity (the
+         underlying customer payment, supplier payment, etc.).
+    (qq) Running balance column: each row shows cumulative balance
+         after that transaction. Verify mathematically: for any
+         row, balance = previous row's balance + (this row's
+         signed amount).
+
+J9. Balance computation accuracy:
+    (rr) After all the test transactions in J3-J6:
+         - HDFC Bank balance computed correctly
+         - SQL verify: 
+           SELECT 
+             (opening_balance 
+              + COALESCE((SELECT SUM(amount) FROM customer_payments 
+                          WHERE cash_account_id = ca.id), 0)
+              + COALESCE((SELECT SUM(amount) FROM account_transfers 
+                          WHERE to_account_id = ca.id), 0)
+              + COALESCE((SELECT SUM(adjustment_amount) FROM
+                          balance_adjustments WHERE cash_account_id 
+                          = ca.id), 0)
+              - COALESCE((SELECT SUM(amount) FROM supplier_payments 
+                          WHERE cash_account_id = ca.id), 0)
+              - COALESCE((SELECT SUM(amount) FROM expenses 
+                          WHERE cash_account_id = ca.id), 0)
+              - COALESCE((SELECT SUM(amount) FROM account_transfers 
+                          WHERE from_account_id = ca.id), 0)
+             ) AS computed_balance
+           FROM cash_accounts ca WHERE name = 'HDFC Bank';
+         - Compare against UI display. Must match exactly.
+
+J10. Authorization spot checks:
+    (ss) sales_manager: cannot see Cash Accounts tab; cannot record
+         balance adjustment; CAN record customer payment with
+         account selection.
+    (tt) warehouse_manager: same restrictions.
+    (uu) field_staff: cannot access /accounts at all.
+    (vv) kiosk: redirects to /kiosk.
+
+J11. Regression — Phase 1, 2, 3, 4A features:
+    (ww) Sales workflow: customer payment recording still works
+         (now with account selection).
+    (xx) Purchase workflow: supplier payment recording works (with
+         account selection).
+    (yy) Expense recording works (with account selection).
+    (zz) GRN auto-supplier-invoice still fires on confirm (Phase 4A).
+    (aaa) Credit override flows (sales + purchase) still work
+          (Phase 4A).
+    (bbb) Outstanding dues block on SO creation still works
+          (Phase 4A).
+    (ccc) PO PDF download still works (Phase 4A + Phase 2).
+    (ddd) AR/AP aging reports still show credit badges (Phase 4A).
+    (eee) Phase 3 challan workflow + GRN simplification still work.
+    (fff) Hierarchical picker on Sales + PO still works.
+
+==========================================================
+OUT OF SCOPE FOR THIS PHASE
+==========================================================
+
+- Financial dashboard (Phase 4C)
+- Daily snapshot table (deferred — only add if performance
+  becomes an issue)
+- Bulk import of historical financial data (CEO will set real
+  opening balances at go-live)
+- UPI as separate accounts (UPI is a payment method)
+- Multi-currency support
+- Bank reconciliation file import (e.g., uploading bank statement
+  CSV to auto-match transactions)
+- Cash flow forecasting / predictions
+- Per-company filtering (each company forks to own DB)
+- Account-level role permissions (only admin manages accounts;
+  others select from dropdown)
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Stop after implementation ships and ping me. I will walk the J1-J11
+stop gate (~50 items, ~50 min).
+
+Standing rules apply: UI verification with screenshots, backend
+tests insufficient, no scope drift, only operator declares closure.

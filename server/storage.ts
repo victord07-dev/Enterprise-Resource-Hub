@@ -9,6 +9,9 @@ import {
   type WhatsappWebhookRejectedPayload,
   debugPayloadCaptures, type DebugPayloadCapture,
   expenseCategories, expenses, type ExpenseCategory, type Expense, type InsertExpense, type InsertExpenseCategory,
+  cashAccounts, accountTransfers, balanceAdjustments,
+  type CashAccount, type AccountTransfer, type BalanceAdjustment,
+  type InsertCashAccount, type InsertAccountTransfer, type InsertBalanceAdjustment,
   customFieldUsageStats, type CustomFieldUsageStat,
   type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
@@ -52,6 +55,28 @@ export type ExpenseAnalytics = {
   byPerson: Array<{ userId: string; userName: string; amount: number }>;
   dailyTrend: Array<{ date: string; amount: number }>;
   categoryShare: Array<{ categoryId: string; categoryName: string; color: string; amount: number; pct: number }>;
+};
+
+// Phase 4B types
+export type AccountTransactionRow = {
+  id: string;
+  transactionDate: string;
+  type: "customer_payment" | "supplier_payment" | "expense" | "transfer_in" | "transfer_out" | "adjustment";
+  amount: number; // positive = credit, negative = debit
+  runningBalance: number;
+  description: string;
+  reference: string | null;
+  linkedEntityId: string | null;
+  linkedEntityType: string | null;
+};
+
+export type AccountStats = {
+  totalIn: number;
+  totalOut: number;
+  netChange: number;
+  openingBalance: number;
+  closingBalance: number;
+  transactionCount: number;
 };
 
 export interface IStorage {
@@ -502,6 +527,26 @@ export interface IStorage {
   deleteExpense(id: string): Promise<boolean>;
   getExpensesSummary(filters?: ExpenseFilters): Promise<ExpenseSummary>;
   getExpensesAnalytics(filters?: ExpenseFilters): Promise<ExpenseAnalytics>;
+
+  // Cash Accounts (Phase 4B)
+  getCashAccounts(includeInactive?: boolean): Promise<CashAccount[]>;
+  getCashAccount(id: string): Promise<CashAccount | undefined>;
+  createCashAccount(data: InsertCashAccount): Promise<CashAccount>;
+  updateCashAccount(id: string, data: Partial<InsertCashAccount>): Promise<CashAccount | undefined>;
+  deactivateCashAccount(id: string): Promise<CashAccount | undefined>;
+  reactivateCashAccount(id: string): Promise<CashAccount | undefined>;
+  seedDefaultCashAccounts(): Promise<number>;
+  // Account Transfers
+  createAccountTransfer(data: InsertAccountTransfer): Promise<AccountTransfer>;
+  getAccountTransfers(accountId?: string): Promise<AccountTransfer[]>;
+  deleteAccountTransfer(id: string): Promise<boolean>;
+  // Balance Adjustments
+  createBalanceAdjustment(data: InsertBalanceAdjustment): Promise<BalanceAdjustment>;
+  getBalanceAdjustments(accountId?: string): Promise<BalanceAdjustment[]>;
+  // Balance computation and ledger
+  computeAccountBalance(accountId: string, asOfDate?: string): Promise<number>;
+  getAccountStats(accountId: string, fromDate: string, toDate: string): Promise<AccountStats>;
+  getAccountTransactions(accountId: string, fromDate?: string, toDate?: string, limit?: number, offset?: number): Promise<{ rows: AccountTransactionRow[]; total: number }>;
 
   // Dashboard
   getDashboardStats(): Promise<{
@@ -2501,6 +2546,340 @@ export class DatabaseStorage implements IStorage {
     const categoryShare = byCategory.map(c => ({ ...c, pct: total > 0 ? Math.round((c.amount / total) * 1000) / 10 : 0 }));
 
     return { byCategory, byPerson, dailyTrend, categoryShare };
+  }
+
+  // ── Cash Accounts (Phase 4B) ────────────────────────────────────────────────
+
+  async getCashAccounts(includeInactive = false): Promise<CashAccount[]> {
+    const q = includeInactive
+      ? db.select().from(cashAccounts)
+      : db.select().from(cashAccounts).where(eq(cashAccounts.isActive, true));
+    return await q.orderBy(cashAccounts.name);
+  }
+
+  async getCashAccount(id: string): Promise<CashAccount | undefined> {
+    const [row] = await db.select().from(cashAccounts).where(eq(cashAccounts.id, id));
+    return row;
+  }
+
+  async createCashAccount(data: InsertCashAccount): Promise<CashAccount> {
+    const [row] = await db.insert(cashAccounts).values(data).returning();
+    return row;
+  }
+
+  async updateCashAccount(id: string, data: Partial<InsertCashAccount>): Promise<CashAccount | undefined> {
+    const [row] = await db.update(cashAccounts).set(data).where(eq(cashAccounts.id, id)).returning();
+    return row;
+  }
+
+  async deactivateCashAccount(id: string): Promise<CashAccount | undefined> {
+    const [row] = await db.update(cashAccounts).set({ isActive: false }).where(eq(cashAccounts.id, id)).returning();
+    return row;
+  }
+
+  async reactivateCashAccount(id: string): Promise<CashAccount | undefined> {
+    const [row] = await db.update(cashAccounts).set({ isActive: true }).where(eq(cashAccounts.id, id)).returning();
+    return row;
+  }
+
+  async seedDefaultCashAccounts(): Promise<number> {
+    const DEFAULTS = [
+      { name: "HDFC Bank", type: "bank", bankName: "HDFC Bank" },
+      { name: "ICICI Bank", type: "bank", bankName: "ICICI Bank" },
+      { name: "AXIS Bank", type: "bank", bankName: "AXIS Bank" },
+      { name: "CEO Cash", type: "cash", bankName: null },
+    ] as const;
+    let inserted = 0;
+    for (const acct of DEFAULTS) {
+      const [existing] = await db.select().from(cashAccounts).where(eq(cashAccounts.name, acct.name));
+      if (!existing) {
+        await db.insert(cashAccounts).values({ name: acct.name, type: acct.type, bankName: acct.bankName ?? undefined, openingBalance: "0", isActive: true });
+        inserted++;
+      }
+    }
+    return inserted;
+  }
+
+  // Account Transfers
+  async createAccountTransfer(data: InsertAccountTransfer): Promise<AccountTransfer> {
+    const [row] = await db.insert(accountTransfers).values(data).returning();
+    return row;
+  }
+
+  async getAccountTransfers(accountId?: string): Promise<AccountTransfer[]> {
+    if (accountId) {
+      return await db.select().from(accountTransfers)
+        .where(or(eq(accountTransfers.fromAccountId, accountId), eq(accountTransfers.toAccountId, accountId)))
+        .orderBy(desc(accountTransfers.transferDate), desc(accountTransfers.createdAt));
+    }
+    return await db.select().from(accountTransfers).orderBy(desc(accountTransfers.transferDate), desc(accountTransfers.createdAt));
+  }
+
+  async deleteAccountTransfer(id: string): Promise<boolean> {
+    await db.delete(accountTransfers).where(eq(accountTransfers.id, id));
+    return true;
+  }
+
+  // Balance Adjustments
+  async createBalanceAdjustment(data: InsertBalanceAdjustment): Promise<BalanceAdjustment> {
+    const [row] = await db.insert(balanceAdjustments).values(data).returning();
+    return row;
+  }
+
+  async getBalanceAdjustments(accountId?: string): Promise<BalanceAdjustment[]> {
+    if (accountId) {
+      return await db.select().from(balanceAdjustments)
+        .where(eq(balanceAdjustments.accountId, accountId))
+        .orderBy(desc(balanceAdjustments.adjustmentDate), desc(balanceAdjustments.createdAt));
+    }
+    return await db.select().from(balanceAdjustments).orderBy(desc(balanceAdjustments.adjustmentDate), desc(balanceAdjustments.createdAt));
+  }
+
+  // Balance computation (on-the-fly, no cached field)
+  // Uses .rows[0] pattern consistent with the rest of the codebase.
+  async computeAccountBalance(accountId: string, asOfDate?: string): Promise<number> {
+    const acct = await this.getCashAccount(accountId);
+    if (!acct) return 0;
+    const opening = Number(acct.openingBalance ?? "0");
+
+    const dateFilter = asOfDate ? sql`AND date(payment_date) <= ${asOfDate}` : sql``;
+    const expDateFilter = asOfDate ? sql`AND expense_date <= ${asOfDate}` : sql``;
+    const transferDateFilter = asOfDate ? sql`AND transfer_date <= ${asOfDate}` : sql``;
+    const adjDateFilter = asOfDate ? sql`AND adjustment_date <= ${asOfDate}` : sql``;
+
+    const cpResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM customer_payments WHERE cash_account_id = ${accountId} ${dateFilter}
+    `);
+    const cpIn = Number((cpResult.rows[0] as any)?.total ?? 0);
+
+    const spResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM supplier_payments WHERE cash_account_id = ${accountId} ${dateFilter}
+    `);
+    const spOut = Number((spResult.rows[0] as any)?.total ?? 0);
+
+    const expResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM expenses WHERE cash_account_id = ${accountId} ${expDateFilter}
+    `);
+    const expOut = Number((expResult.rows[0] as any)?.total ?? 0);
+
+    const trInResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM account_transfers WHERE to_account_id = ${accountId} ${transferDateFilter}
+    `);
+    const trIn = Number((trInResult.rows[0] as any)?.total ?? 0);
+
+    const trOutResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM account_transfers WHERE from_account_id = ${accountId} ${transferDateFilter}
+    `);
+    const trOut = Number((trOutResult.rows[0] as any)?.total ?? 0);
+
+    const adjResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM balance_adjustments WHERE account_id = ${accountId} ${adjDateFilter}
+    `);
+    const adjNet = Number((adjResult.rows[0] as any)?.total ?? 0);
+
+    return opening + cpIn - spOut - expOut + trIn - trOut + adjNet;
+  }
+
+  async getAccountStats(accountId: string, fromDate: string, toDate: string): Promise<AccountStats> {
+    const openingBalance = await this.computeAccountBalance(accountId, fromDate);
+    const closingBalance = await this.computeAccountBalance(accountId, toDate);
+
+    const cpRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM customer_payments WHERE cash_account_id = ${accountId}
+        AND date(payment_date) BETWEEN ${fromDate} AND ${toDate}
+    `);
+    const spRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM supplier_payments WHERE cash_account_id = ${accountId}
+        AND date(payment_date) BETWEEN ${fromDate} AND ${toDate}
+    `);
+    const expRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM expenses WHERE cash_account_id = ${accountId}
+        AND expense_date BETWEEN ${fromDate} AND ${toDate}
+    `);
+    const trInRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM account_transfers WHERE to_account_id = ${accountId}
+        AND transfer_date BETWEEN ${fromDate} AND ${toDate}
+    `);
+    const trOutRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM account_transfers WHERE from_account_id = ${accountId}
+        AND transfer_date BETWEEN ${fromDate} AND ${toDate}
+    `);
+    const adjRes = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM balance_adjustments WHERE account_id = ${accountId}
+        AND adjustment_date BETWEEN ${fromDate} AND ${toDate}
+    `);
+
+    const cpRow = cpRes.rows[0] as any;
+    const spRow = spRes.rows[0] as any;
+    const expRow = expRes.rows[0] as any;
+    const trInRow = trInRes.rows[0] as any;
+    const trOutRow = trOutRes.rows[0] as any;
+    const adjRow = adjRes.rows[0] as any;
+
+    const adjTotal = Number(adjRow?.total ?? 0);
+    const totalIn = Number(cpRow?.total ?? 0) + Number(trInRow?.total ?? 0) + Math.max(0, adjTotal);
+    const totalOut = Number(spRow?.total ?? 0) + Number(expRow?.total ?? 0) + Number(trOutRow?.total ?? 0) + Math.abs(Math.min(0, adjTotal));
+    const netChange = closingBalance - openingBalance;
+    const transactionCount = Number(cpRow?.cnt ?? 0) + Number(spRow?.cnt ?? 0) +
+      Number(expRow?.cnt ?? 0) + Number(trInRow?.cnt ?? 0) +
+      Number(trOutRow?.cnt ?? 0) + Number(adjRow?.cnt ?? 0);
+
+    return { totalIn, totalOut, netChange, openingBalance, closingBalance, transactionCount };
+  }
+
+  async getAccountTransactions(
+    accountId: string,
+    fromDate?: string,
+    toDate?: string,
+    limit = 50,
+    offset = 0
+  ): Promise<{ rows: AccountTransactionRow[]; total: number }> {
+    // Build a UNION of all transaction sources for this account
+    // Each row: id, tx_date (DATE), type, amount (positive=credit, negative=debit), description, reference, entity_id, entity_type
+    const fromCond = fromDate ? sql`AND tx_date >= ${fromDate}` : sql``;
+    const toCond = toDate ? sql`AND tx_date <= ${toDate}` : sql``;
+
+    const rawRows = await db.execute(sql`
+      WITH all_txns AS (
+        -- Customer payments IN
+        SELECT
+          id,
+          date(payment_date) AS tx_date,
+          'customer_payment' AS type,
+          amount::numeric AS amount,
+          COALESCE(reference, 'Customer Payment') AS description,
+          reference,
+          invoice_id AS entity_id,
+          'invoice' AS entity_type
+        FROM customer_payments
+        WHERE cash_account_id = ${accountId}
+
+        UNION ALL
+
+        -- Supplier payments OUT (negative)
+        SELECT
+          id,
+          date(payment_date) AS tx_date,
+          'supplier_payment' AS type,
+          -(amount::numeric) AS amount,
+          COALESCE(reference, 'Supplier Payment') AS description,
+          reference,
+          coalesce(supplier_invoice_id, purchase_order_id) AS entity_id,
+          CASE WHEN supplier_invoice_id IS NOT NULL THEN 'supplier_invoice' ELSE 'purchase_order' END AS entity_type
+        FROM supplier_payments
+        WHERE cash_account_id = ${accountId}
+
+        UNION ALL
+
+        -- Expenses OUT (negative)
+        SELECT
+          id,
+          expense_date::date AS tx_date,
+          'expense' AS type,
+          -(amount::numeric) AS amount,
+          description,
+          NULL AS reference,
+          id AS entity_id,
+          'expense' AS entity_type
+        FROM expenses
+        WHERE cash_account_id = ${accountId}
+
+        UNION ALL
+
+        -- Transfer IN
+        SELECT
+          id,
+          transfer_date::date AS tx_date,
+          'transfer_in' AS type,
+          amount::numeric AS amount,
+          COALESCE('Transfer In: ' || COALESCE(reference, ''), 'Transfer In') AS description,
+          reference,
+          id AS entity_id,
+          'account_transfer' AS entity_type
+        FROM account_transfers
+        WHERE to_account_id = ${accountId}
+
+        UNION ALL
+
+        -- Transfer OUT (negative)
+        SELECT
+          id,
+          transfer_date::date AS tx_date,
+          'transfer_out' AS type,
+          -(amount::numeric) AS amount,
+          COALESCE('Transfer Out: ' || COALESCE(reference, ''), 'Transfer Out') AS description,
+          reference,
+          id AS entity_id,
+          'account_transfer' AS entity_type
+        FROM account_transfers
+        WHERE from_account_id = ${accountId}
+
+        UNION ALL
+
+        -- Balance adjustments (can be positive or negative)
+        SELECT
+          id,
+          adjustment_date::date AS tx_date,
+          'adjustment' AS type,
+          amount::numeric AS amount,
+          reason AS description,
+          NULL AS reference,
+          id AS entity_id,
+          'balance_adjustment' AS entity_type
+        FROM balance_adjustments
+        WHERE account_id = ${accountId}
+      ),
+      acct AS (SELECT opening_balance::numeric AS ob FROM cash_accounts WHERE id = ${accountId}),
+      dated AS (
+        SELECT * FROM all_txns
+        WHERE 1=1 ${fromCond} ${toCond}
+      ),
+      with_running AS (
+        SELECT
+          id,
+          tx_date::text,
+          type,
+          amount,
+          description,
+          reference,
+          entity_id,
+          entity_type,
+          (SELECT ob FROM acct) + SUM(amount) OVER (ORDER BY tx_date, id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance,
+          COUNT(*) OVER () AS total_count
+        FROM dated
+        ORDER BY tx_date DESC, id DESC
+      )
+      SELECT * FROM with_running
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    const total = rawRows.rows.length > 0 ? Number((rawRows.rows[0] as any).total_count ?? 0) : 0;
+
+    const rows: AccountTransactionRow[] = rawRows.rows.map((r: any) => ({
+      id: r.id,
+      transactionDate: r.tx_date,
+      type: r.type as AccountTransactionRow["type"],
+      amount: Number(r.amount),
+      runningBalance: Number(r.running_balance),
+      description: r.description ?? "",
+      reference: r.reference ?? null,
+      linkedEntityId: r.entity_id ?? null,
+      linkedEntityType: r.entity_type ?? null,
+    }));
+
+    return { rows, total };
   }
 
   // Dashboard

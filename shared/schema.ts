@@ -648,6 +648,22 @@ export const supplierInvoices = pgTable("supplier_invoices", {
   extGstAmount: decimal("ext_gst_amount", { precision: 12, scale: 2 }),
 });
 
+// ── Cash & Bank Accounts (Phase 4B) ──────────────────────────────────────────
+// Represents a physical cash drawer or bank account. Every payment and expense
+// is linked to one of these via cash_account_id. The running balance is always
+// computed on-the-fly (no cached column) via computeAccountBalance().
+export const cashAccounts = pgTable("cash_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  type: text("type").notNull(), // 'cash' | 'bank'
+  bankName: varchar("bank_name", { length: 100 }),
+  accountNumber: varchar("account_number", { length: 50 }),
+  ifscCode: varchar("ifsc_code", { length: 20 }),
+  openingBalance: decimal("opening_balance", { precision: 12, scale: 2 }).notNull().default("0"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const supplierPayments = pgTable("supplier_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   supplierInvoiceId: varchar("supplier_invoice_id"),
@@ -658,6 +674,7 @@ export const supplierPayments = pgTable("supplier_payments", {
   paymentMethod: text("payment_method").notNull().default("bank_transfer"),
   paymentDate: timestamp("payment_date").notNull().defaultNow(),
   reference: text("reference"),
+  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -781,6 +798,7 @@ export const customerPayments = pgTable("customer_payments", {
   reference: text("reference"),
   notes: text("notes"),
   createdBy: varchar("created_by"),
+  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1033,6 +1051,7 @@ export const expenses = pgTable("expenses", {
   linkedEntityType: text("linked_entity_type"),
   linkedEntityId: varchar("linked_entity_id"),
   notes: text("notes"),
+  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -1075,6 +1094,54 @@ export type SupplierPayment = typeof supplierPayments.$inferSelect;
 export type SalesInvoice = typeof salesInvoices.$inferSelect;
 export type SalesInvoiceItem = typeof salesInvoiceItems.$inferSelect;
 export type CustomerPayment = typeof customerPayments.$inferSelect;
+
+// ── Account Transfers (Phase 4B) ──────────────────────────────────────────────
+// Records a movement of funds between two cash_accounts (e.g., cash hand-off
+// deposited to bank, or inter-bank transfer). Contributes +amount to toAccount
+// and -amount from fromAccount in balance calculations.
+export const accountTransfers = pgTable("account_transfers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fromAccountId: varchar("from_account_id").notNull().references(() => cashAccounts.id),
+  toAccountId: varchar("to_account_id").notNull().references(() => cashAccounts.id),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  transferDate: date("transfer_date").notNull(),
+  reference: varchar("reference", { length: 100 }),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_account_transfers_from").on(t.fromAccountId),
+  index("idx_account_transfers_to").on(t.toAccountId),
+  index("idx_account_transfers_date").on(t.transferDate),
+]);
+
+// ── Balance Adjustments (Phase 4B) ────────────────────────────────────────────
+// Manual corrections for a cash_account (opening balance reconciliation,
+// cheque clearance lag, petty cash corrections, etc.).
+// Positive amount = credit to account; negative = debit.
+export const balanceAdjustments = pgTable("balance_adjustments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  accountId: varchar("account_id").notNull().references(() => cashAccounts.id),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(), // may be negative
+  adjustmentDate: date("adjustment_date").notNull(),
+  reason: text("reason").notNull(),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_balance_adjustments_account").on(t.accountId),
+  index("idx_balance_adjustments_date").on(t.adjustmentDate),
+]);
+
+export const insertCashAccountSchema = createInsertSchema(cashAccounts).omit({ id: true, createdAt: true });
+export const insertAccountTransferSchema = createInsertSchema(accountTransfers).omit({ id: true, createdAt: true });
+export const insertBalanceAdjustmentSchema = createInsertSchema(balanceAdjustments).omit({ id: true, createdAt: true });
+
+export type CashAccount = typeof cashAccounts.$inferSelect;
+export type AccountTransfer = typeof accountTransfers.$inferSelect;
+export type BalanceAdjustment = typeof balanceAdjustments.$inferSelect;
+export type InsertCashAccount = z.infer<typeof insertCashAccountSchema>;
+export type InsertAccountTransfer = z.infer<typeof insertAccountTransferSchema>;
+export type InsertBalanceAdjustment = z.infer<typeof insertBalanceAdjustmentSchema>;
 
 // Sales Returns
 export const salesReturns = pgTable("sales_returns", {

@@ -602,6 +602,14 @@ export async function registerRoutes(
     console.error("[startup] seedDefaultExpenseCategories failed:", err);
   }
 
+  // Seed default cash/bank accounts at startup (idempotent — Phase 4B)
+  try {
+    const n = await storage.seedDefaultCashAccounts();
+    if (n > 0) console.log(`[startup] seedDefaultCashAccounts: ${n} new accounts`);
+  } catch (err) {
+    console.error("[startup] seedDefaultCashAccounts failed:", err);
+  }
+
   // Seed kiosk user
   const existingKiosk = await storage.getUserByUsername("kiosk");
   if (!existingKiosk) {
@@ -10541,6 +10549,175 @@ export async function registerRoutes(
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to delete expense" });
+    }
+  });
+
+  // ── Cash Accounts (Phase 4B) ────────────────────────────────────────────────
+
+  app.get("/api/cash-accounts", authenticateToken, async (req: any, res) => {
+    try {
+      const includeInactive = req.query.includeInactive === "true";
+      const accounts = await storage.getCashAccounts(includeInactive);
+      const withBalances = await Promise.all(accounts.map(async (a) => ({
+        ...a,
+        balance: await storage.computeAccountBalance(a.id),
+      })));
+      res.json(withBalances);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch accounts" });
+    }
+  });
+
+  app.get("/api/cash-accounts/:id", authenticateToken, async (req, res) => {
+    try {
+      const account = await storage.getCashAccount(req.params.id);
+      if (!account) return res.status(404).json({ message: "Account not found" });
+      const balance = await storage.computeAccountBalance(account.id);
+      res.json({ ...account, balance });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch account" });
+    }
+  });
+
+  app.post("/api/cash-accounts", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const account = await storage.createCashAccount(req.body);
+      await logAction(req.user.id, "create", "cash_accounts", JSON.stringify({ id: account.id, name: account.name, type: account.type }));
+      res.status(201).json(account);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create account" });
+    }
+  });
+
+  app.patch("/api/cash-accounts/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const account = await storage.updateCashAccount(req.params.id, req.body);
+      if (!account) return res.status(404).json({ message: "Account not found" });
+      await logAction(req.user.id, "update", "cash_accounts", JSON.stringify({ id: account.id, changes: req.body }));
+      res.json(account);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update account" });
+    }
+  });
+
+  app.patch("/api/cash-accounts/:id/deactivate", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const account = await storage.deactivateCashAccount(req.params.id);
+      if (!account) return res.status(404).json({ message: "Account not found" });
+      await logAction(req.user.id, "deactivate", "cash_accounts", JSON.stringify({ id: account.id, name: account.name }));
+      res.json(account);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to deactivate account" });
+    }
+  });
+
+  app.patch("/api/cash-accounts/:id/reactivate", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const account = await storage.reactivateCashAccount(req.params.id);
+      if (!account) return res.status(404).json({ message: "Account not found" });
+      await logAction(req.user.id, "reactivate", "cash_accounts", JSON.stringify({ id: account.id, name: account.name }));
+      res.json(account);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to reactivate account" });
+    }
+  });
+
+  app.get("/api/cash-accounts/:id/balance", authenticateToken, async (req, res) => {
+    try {
+      const { asOfDate } = req.query as { asOfDate?: string };
+      const balance = await storage.computeAccountBalance(req.params.id, asOfDate);
+      res.json({ balance });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to compute balance" });
+    }
+  });
+
+  app.get("/api/cash-accounts/:id/stats", authenticateToken, async (req, res) => {
+    try {
+      const { fromDate, toDate } = req.query as { fromDate: string; toDate: string };
+      if (!fromDate || !toDate) return res.status(400).json({ message: "fromDate and toDate required" });
+      const stats = await storage.getAccountStats(req.params.id, fromDate, toDate);
+      res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to compute stats" });
+    }
+  });
+
+  app.get("/api/cash-accounts/:id/transactions", authenticateToken, async (req, res) => {
+    try {
+      const { fromDate, toDate, limit, offset } = req.query as Record<string, string>;
+      const result = await storage.getAccountTransactions(
+        req.params.id,
+        fromDate,
+        toDate,
+        limit ? Number(limit) : 50,
+        offset ? Number(offset) : 0
+      );
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch transactions" });
+    }
+  });
+
+  // Account Transfers
+  app.get("/api/account-transfers", authenticateToken, async (req, res) => {
+    try {
+      const { accountId } = req.query as { accountId?: string };
+      const transfers = await storage.getAccountTransfers(accountId);
+      res.json(transfers);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch transfers" });
+    }
+  });
+
+  app.post("/api/account-transfers", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { fromAccountId, toAccountId, amount } = req.body;
+      if (fromAccountId === toAccountId) {
+        return res.status(400).json({ message: "Cannot transfer to the same account" });
+      }
+      if (Number(amount) <= 0) {
+        return res.status(400).json({ message: "Amount must be positive" });
+      }
+      const transfer = await storage.createAccountTransfer({ ...req.body, createdBy: req.user.id });
+      await logAction(req.user.id, "create", "account_transfers", JSON.stringify({ id: transfer.id, fromAccountId, toAccountId, amount }));
+      res.status(201).json(transfer);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create transfer" });
+    }
+  });
+
+  app.delete("/api/account-transfers/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      await storage.deleteAccountTransfer(req.params.id);
+      await logAction(req.user.id, "delete", "account_transfers", JSON.stringify({ id: req.params.id }));
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to delete transfer" });
+    }
+  });
+
+  // Balance Adjustments
+  app.get("/api/balance-adjustments", authenticateToken, async (req, res) => {
+    try {
+      const { accountId } = req.query as { accountId?: string };
+      const adjustments = await storage.getBalanceAdjustments(accountId);
+      res.json(adjustments);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch adjustments" });
+    }
+  });
+
+  app.post("/api/balance-adjustments", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      if (req.body.amount === 0) {
+        return res.status(400).json({ message: "Adjustment amount cannot be zero" });
+      }
+      const adjustment = await storage.createBalanceAdjustment({ ...req.body, createdBy: req.user.id });
+      await logAction(req.user.id, "create", "balance_adjustments", JSON.stringify({ id: adjustment.id, accountId: adjustment.accountId, amount: adjustment.amount }));
+      res.status(201).json(adjustment);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create adjustment" });
     }
   });
 

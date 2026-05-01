@@ -6,13 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronDown, ChevronRight, CheckCircle2 } from "lucide-react";
+import { ChevronDown, ChevronRight, CheckCircle2, Landmark, Banknote } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { getUser } from "@/lib/auth";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { todayIST } from "@shared/datetime";
-import type { Expense, ExpenseCategory, Customer, SalesOrder, DeliveryChallan, Project, PurchaseOrder, GoodsReceiptNote, User } from "@shared/schema";
+import type { Expense, ExpenseCategory, Customer, SalesOrder, DeliveryChallan, Project, PurchaseOrder, GoodsReceiptNote, User, CashAccount } from "@shared/schema";
 
 const PAYMENT_METHODS = [
   { value: "cash", label: "Cash" },
@@ -50,6 +50,7 @@ interface ExpensePayload {
   notes: string | null;
   linkedEntityType: string | null;
   linkedEntityId: string | null;
+  cashAccountId?: string | null;
 }
 
 function toDateInput(value: string | Date): string {
@@ -80,6 +81,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
     notes: "",
     linkedEntityType: "none",
     linkedEntityId: "",
+    cashAccountId: "",
   });
   const [showOptional, setShowOptional] = useState(false);
 
@@ -97,6 +99,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
         notes: editingExpense.notes ?? "",
         linkedEntityType: editingExpense.linkedEntityType ?? "none",
         linkedEntityId: editingExpense.linkedEntityId ?? "",
+        cashAccountId: (editingExpense as any).cashAccountId ?? "",
       });
       setShowOptional(!!(editingExpense.vendorName || editingExpense.notes || editingExpense.linkedEntityType));
     } else {
@@ -111,6 +114,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
         notes: "",
         linkedEntityType: defaultLinked?.entityType ?? "none",
         linkedEntityId: defaultLinked?.entityId ?? "",
+        cashAccountId: "",
       });
       setShowOptional(!!defaultLinked);
     }
@@ -118,6 +122,12 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
 
   const { data: categories } = useQuery<ExpenseCategory[]>({ queryKey: ["/api/expense-categories"], enabled: open });
   const { data: users } = useQuery<User[]>({ queryKey: ["/api/users"], enabled: open && isPrivileged });
+  const { data: cashAccounts } = useQuery<(CashAccount & { balance: number })[]>({ queryKey: ["/api/cash-accounts"], enabled: open });
+  const expAccounts = useMemo(() => {
+    if (!cashAccounts) return [];
+    const isCash = form.paymentMethod === "cash";
+    return cashAccounts.filter(a => a.isActive && (isCash ? a.type === "cash" : a.type === "bank"));
+  }, [cashAccounts, form.paymentMethod]);
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"], enabled: open && form.linkedEntityType === "customer" });
   const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"], enabled: open && form.linkedEntityType === "sales_order" });
   const { data: challans } = useQuery<DeliveryChallan[]>({ queryKey: ["/api/delivery-challans"], enabled: open && form.linkedEntityType === "delivery_challan" });
@@ -184,6 +194,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
       notes: form.notes.trim() || null,
       linkedEntityType: form.linkedEntityType === "none" ? null : form.linkedEntityType,
       linkedEntityId: form.linkedEntityType === "none" || !form.linkedEntityId ? null : form.linkedEntityId,
+      cashAccountId: form.cashAccountId || null,
     };
     mutation.mutate(payload);
   };
@@ -258,6 +269,23 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
                 <Input id="exp-date" type="date" value={form.expenseDate} onChange={e => setForm({ ...form, expenseDate: e.target.value })} data-testid="input-expense-date" required />
               </div>
             </div>
+            {expAccounts.length > 0 && (
+              <div>
+                <Label htmlFor="exp-account">Account <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                <Select value={form.cashAccountId} onValueChange={(v) => setForm({ ...form, cashAccountId: v === "__none__" ? "" : v })}>
+                  <SelectTrigger id="exp-account" data-testid="select-expense-account"><SelectValue placeholder="Select account" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">— Not specified —</SelectItem>
+                    {expAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label htmlFor="exp-paid-by">Paid By *</Label>
               {isPrivileged ? (

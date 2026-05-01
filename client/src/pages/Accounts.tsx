@@ -9,10 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment } from "@shared/schema";
+import { Badge } from "@/components/ui/badge";
+import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
+import { useLocation } from "wouter";
 import ExpensesTab from "@/components/ExpensesTab";
 import { getUser } from "@/lib/auth";
 
@@ -82,6 +84,7 @@ export default function Accounts() {
   // ── AP Queries ────────────────────────────────────────────────────────────
   const { data: supplierInvoices, isLoading: siLoading } = useQuery<SupplierInvoice[]>({ queryKey: ["/api/supplier-invoices"] });
   const { data: supplierPayments, isLoading: spLoading } = useQuery<SupplierPayment[]>({ queryKey: ["/api/supplier-payments"] });
+  const { data: cashAccountsData } = useQuery<(CashAccount & { balance: number })[]>({ queryKey: ["/api/cash-accounts"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
@@ -144,7 +147,7 @@ export default function Accounts() {
 
   // ── AR State ──────────────────────────────────────────────────────────────
   const [arPayDialogOpen, setArPayDialogOpen] = useState(false);
-  const [arPayForm, setArPayForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
+  const [arPayForm, setArPayForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0], cashAccountId: "" });
 
   // ── AP State ──────────────────────────────────────────────────────────────
   const [expandedSiIds, setExpandedSiIds] = useState<Set<string>>(new Set());
@@ -174,8 +177,15 @@ export default function Accounts() {
   const [spForm, setSpForm] = useState({
     paymentType: "regular", supplierId: "", supplierInvoiceId: "",
     purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer",
-    paymentDate: new Date().toISOString().split("T")[0], reference: "",
+    paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "",
   });
+
+  // ── Cash Accounts CRUD state (Phase 4B) ─────────────────────────────────
+  const [caDialogOpen, setCaDialogOpen] = useState(false);
+  const [caEditing, setCaEditing] = useState<CashAccount | null>(null);
+  const [caForm, setCaForm] = useState({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" });
+  const [caDeactivateId, setCaDeactivateId] = useState<string | null>(null);
+  const [, setLocation] = useLocation();
 
   // ── AR Computed helpers ───────────────────────────────────────────────────
   const siDueDate = useMemo(() => {
@@ -214,6 +224,17 @@ export default function Accounts() {
     return Number(selectedSI.totalAmount) - advance - paid;
   }, [selectedSI, paidPerInvoice, poMap]);
 
+  // ── Smart account filter helpers (Phase 4B) ─────────────────────────────
+  // Determines which accounts to show based on payment method type
+  function accountsForMethod(method: string): (CashAccount & { balance: number })[] {
+    if (!cashAccountsData) return [];
+    const isCashMethod = method === "cash";
+    return cashAccountsData.filter(a => a.isActive && (isCashMethod ? a.type === "cash" : a.type === "bank"));
+  }
+
+  const arPayAccounts = useMemo(() => accountsForMethod(arPayForm.method), [cashAccountsData, arPayForm.method]);
+  const spAccounts = useMemo(() => accountsForMethod(spForm.paymentMethod), [cashAccountsData, spForm.paymentMethod]);
+
   // ── AR Mutations ──────────────────────────────────────────────────────────
   const arPayMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -228,9 +249,10 @@ export default function Accounts() {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/customer-payments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/ar-aging"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
       toast({ title: "Payment recorded successfully" });
       setArPayDialogOpen(false);
-      setArPayForm({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
+      setArPayForm({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0], cashAccountId: "" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -351,7 +373,8 @@ export default function Accounts() {
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       toast({ title: "Payment recorded" });
       setSpDialogOpen(false);
-      setSpForm({ paymentType: "regular", supplierId: "", supplierInvoiceId: "", purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "" });
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      setSpForm({ paymentType: "regular", supplierId: "", supplierInvoiceId: "", purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -370,9 +393,46 @@ export default function Accounts() {
     },
   });
 
+  // ── Cash Account CRUD mutations (Phase 4B) ──────────────────────────────
+  const caMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (caEditing) {
+        const res = await apiRequest("PATCH", `/api/cash-accounts/${caEditing.id}`, data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to update"); }
+        return res.json();
+      } else {
+        const res = await apiRequest("POST", "/api/cash-accounts", data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to create"); }
+        return res.json();
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      toast({ title: caEditing ? "Account updated" : "Account created" });
+      setCaDialogOpen(false);
+      setCaEditing(null);
+      setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" });
+    },
+    onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
+  });
+
+  const caDeactivateMutation = useMutation({
+    mutationFn: async ({ id, activate }: { id: string; activate: boolean }) => {
+      const res = await apiRequest("PATCH", `/api/cash-accounts/${id}/${activate ? "reactivate" : "deactivate"}`, {});
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      toast({ title: vars.activate ? "Account reactivated" : "Account deactivated" });
+      setCaDeactivateId(null);
+    },
+    onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
+  });
+
   // ── AR helpers ────────────────────────────────────────────────────────────
   const openArPayDialog = (invoiceId?: string) => {
-    setArPayForm({ invoiceId: invoiceId ?? "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0] });
+    setArPayForm({ invoiceId: invoiceId ?? "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0], cashAccountId: "" });
     setArPayDialogOpen(true);
   };
 
@@ -456,6 +516,8 @@ export default function Accounts() {
           {!expensesOnly && <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>}
           {!expensesOnly && <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>}
           <TabsTrigger value="expenses" data-testid="tab-expenses">Expenses</TabsTrigger>
+          {role === "admin" && <TabsTrigger value="cash-position" data-testid="tab-cash-position">Cash Position</TabsTrigger>}
+          {role === "admin" && <TabsTrigger value="cash-accounts" data-testid="tab-cash-accounts">Cash Accounts</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="expenses" className="space-y-4">
@@ -940,6 +1002,154 @@ export default function Accounts() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── Cash Position Tab ─────────────────────────────────────────── */}
+        {role === "admin" && (
+          <TabsContent value="cash-position" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">Live balances across all cash and bank accounts.</p>
+              <Button size="sm" variant="outline" onClick={() => { setActiveAccountsTab("cash-accounts"); }} data-testid="button-manage-accounts">
+                <SlidersHorizontal className="h-4 w-4 mr-2" /> Manage Accounts
+              </Button>
+            </div>
+
+            {cashAccountsData && (() => {
+              const totalBank = cashAccountsData.filter(a => a.type === "bank").reduce((s, a) => s + Number(a.balance), 0);
+              const totalCash = cashAccountsData.filter(a => a.type === "cash").reduce((s, a) => s + Number(a.balance), 0);
+              const netBalance = totalBank + totalCash;
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-blue-100 dark:bg-blue-950/40 flex items-center justify-center">
+                          <Landmark className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground uppercase tracking-wide">Bank Total</p>
+                          <p className={`text-xl font-bold ${totalBank < 0 ? "text-red-600" : ""}`}>₹{totalBank.toLocaleString()}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-emerald-100 dark:bg-emerald-950/40 flex items-center justify-center">
+                          <Banknote className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground uppercase tracking-wide">Cash Total</p>
+                          <p className={`text-xl font-bold ${totalCash < 0 ? "text-red-600" : ""}`}>₹{totalCash.toLocaleString()}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-full bg-purple-100 dark:bg-purple-950/40 flex items-center justify-center">
+                          <IndianRupee className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground uppercase tracking-wide">Net Position</p>
+                          <p className={`text-xl font-bold ${netBalance < 0 ? "text-red-600" : "text-green-600"}`}>₹{netBalance.toLocaleString()}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              );
+            })()}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {(cashAccountsData ?? []).map(acct => (
+                <Card key={acct.id} className={`cursor-pointer hover:border-blue-400 transition-colors ${!acct.isActive ? "opacity-50" : ""}`}
+                  onClick={() => setLocation(`/accounts/cash-accounts/${acct.id}`)}
+                  data-testid={`card-cash-account-${acct.id}`}>
+                  <CardContent className="pt-5 pb-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2">
+                        {acct.type === "bank" ? <Landmark className="h-5 w-5 text-blue-500" /> : <Banknote className="h-5 w-5 text-emerald-500" />}
+                        <div>
+                          <p className="font-semibold text-sm">{acct.name}</p>
+                          <p className="text-xs text-muted-foreground">{acct.type === "bank" ? acct.bankName ?? "Bank" : "Cash"}</p>
+                        </div>
+                      </div>
+                      <Badge variant={acct.isActive ? "default" : "secondary"} className="text-xs">{acct.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <div className="mt-4 flex items-end justify-between">
+                      <p className="text-xs text-muted-foreground">Current Balance</p>
+                      <p className={`text-xl font-bold ${Number(acct.balance) < 0 ? "text-red-600" : ""}`}>₹{Number(acct.balance).toLocaleString()}</p>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 text-right">Click to view ledger →</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </TabsContent>
+        )}
+
+        {/* ── Cash Accounts Tab (admin CRUD) ────────────────────────────── */}
+        {role === "admin" && (
+          <TabsContent value="cash-accounts" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">{cashAccountsData?.length ?? 0} account(s). Manage cash drawers and bank accounts.</p>
+              <Button size="sm" onClick={() => { setCaEditing(null); setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" }); setCaDialogOpen(true); }} data-testid="button-new-cash-account">
+                <Plus className="h-4 w-4 mr-2" /> New Account
+              </Button>
+            </div>
+            <Card>
+              <CardContent className="p-0">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="text-left p-3 font-medium text-muted-foreground">Account</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Bank</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Opening Bal.</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Current Bal.</th>
+                      <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(cashAccountsData ?? []).map(acct => (
+                      <tr key={acct.id} className="border-b hover:bg-muted/20 cursor-pointer" onClick={() => setLocation(`/accounts/cash-accounts/${acct.id}`)} data-testid={`row-cash-account-${acct.id}`}>
+                        <td className="p-3 font-medium">{acct.name}</td>
+                        <td className="p-3">
+                          {acct.type === "bank" ? <span className="flex items-center gap-1"><Landmark className="h-3.5 w-3.5 text-blue-500" /> Bank</span>
+                            : <span className="flex items-center gap-1"><Banknote className="h-3.5 w-3.5 text-emerald-500" /> Cash</span>}
+                        </td>
+                        <td className="p-3 text-muted-foreground">{acct.bankName ?? "—"}</td>
+                        <td className="p-3 text-right">₹{Number(acct.openingBalance).toLocaleString()}</td>
+                        <td className={`p-3 text-right font-semibold ${Number(acct.balance) < 0 ? "text-red-600" : ""}`}>₹{Number(acct.balance).toLocaleString()}</td>
+                        <td className="p-3 text-center">
+                          <Badge variant={acct.isActive ? "default" : "secondary"} className="text-xs">{acct.isActive ? "Active" : "Inactive"}</Badge>
+                        </td>
+                        <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button size="icon" variant="ghost" title="Edit" data-testid={`button-edit-ca-${acct.id}`}
+                              onClick={(e) => { e.stopPropagation(); setCaEditing(acct); setCaForm({ name: acct.name, type: acct.type, bankName: acct.bankName ?? "", accountNumber: acct.accountNumber ?? "", ifscCode: acct.ifscCode ?? "", openingBalance: String(acct.openingBalance ?? "0") }); setCaDialogOpen(true); }}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" title={acct.isActive ? "Deactivate" : "Reactivate"} data-testid={`button-toggle-ca-${acct.id}`}
+                              onClick={(e) => { e.stopPropagation(); if (acct.isActive) { setCaDeactivateId(acct.id); } else { caDeactivateMutation.mutate({ id: acct.id, activate: true }); } }}>
+                              <Power className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {(cashAccountsData ?? []).length === 0 && (
+                      <tr><td colSpan={7} className="text-center p-8 text-muted-foreground">No accounts yet. Create one to get started.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
 
       {/* ── AR: Record Customer Payment Dialog ────────────────────────────── */}
@@ -995,6 +1205,24 @@ export default function Accounts() {
                 </SelectContent>
               </Select>
             </div>
+            {arPayAccounts.length > 0 && (
+              <div className="space-y-2">
+                <Label>Account <span className="text-muted-foreground text-xs">(required)</span></Label>
+                <Select value={arPayForm.cashAccountId} onValueChange={(v) => setArPayForm({ ...arPayForm, cashAccountId: v })}>
+                  <SelectTrigger data-testid="select-ar-payment-account">
+                    <SelectValue placeholder="Select account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {arPayAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Payment Date</Label>
               <Input type="date" data-testid="input-ar-payment-date" value={arPayForm.paymentDate} onChange={(e) => setArPayForm({ ...arPayForm, paymentDate: e.target.value })} />
@@ -1008,13 +1236,14 @@ export default function Accounts() {
             <Button variant="outline" onClick={() => setArPayDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-ar-payment"
-              disabled={arPayMutation.isPending || !arPayForm.invoiceId || !arPayForm.amount}
+              disabled={arPayMutation.isPending || !arPayForm.invoiceId || !arPayForm.amount || (arPayAccounts.length > 0 && !arPayForm.cashAccountId)}
               onClick={() => arPayMutation.mutate({
                 invoiceId: arPayForm.invoiceId,
                 amount: arPayForm.amount,
                 method: arPayForm.method,
                 paymentDate: arPayForm.paymentDate,
                 reference: arPayForm.reference || null,
+                cashAccountId: arPayForm.cashAccountId || null,
               })}
             >
               {arPayMutation.isPending ? "Recording..." : "Record Payment"}
@@ -1408,6 +1637,24 @@ export default function Accounts() {
                 </SelectContent>
               </Select>
             </div>
+            {spAccounts.length > 0 && (
+              <div className="space-y-2">
+                <Label>Account <span className="text-muted-foreground text-xs">(required)</span></Label>
+                <Select value={spForm.cashAccountId} onValueChange={(v) => setSpForm({ ...spForm, cashAccountId: v })}>
+                  <SelectTrigger data-testid="select-sp-account">
+                    <SelectValue placeholder="Select account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {spAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Payment Date</Label>
               <Input type="date" data-testid="input-sp-date" value={spForm.paymentDate} onChange={e => setSpForm({ ...spForm, paymentDate: e.target.value })} />
@@ -1423,7 +1670,8 @@ export default function Accounts() {
               data-testid="button-submit-supplier-payment"
               disabled={spMutation.isPending || !spForm.supplierId || !spForm.amount ||
                 (spForm.paymentType === "regular" && !spForm.supplierInvoiceId) ||
-                (spForm.paymentType === "advance" && !spForm.purchaseOrderId)}
+                (spForm.paymentType === "advance" && !spForm.purchaseOrderId) ||
+                (spAccounts.length > 0 && !spForm.cashAccountId)}
               onClick={() => spMutation.mutate({
                 paymentType: spForm.paymentType,
                 supplierId: spForm.supplierId,
@@ -1433,9 +1681,82 @@ export default function Accounts() {
                 paymentMethod: spForm.paymentMethod,
                 paymentDate: spForm.paymentDate,
                 reference: spForm.reference || null,
+                cashAccountId: spForm.cashAccountId || null,
               })}
             >
               {spMutation.isPending ? "Recording..." : "Record Payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── duplicate sections removed ─── */}
+      {/* ── Cash Account Create/Edit Dialog ─────────────────────────────── */}
+      <Dialog open={caDialogOpen} onOpenChange={(o) => { setCaDialogOpen(o); if (!o) { setCaEditing(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{caEditing ? "Edit Account" : "New Cash / Bank Account"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Name *</Label>
+              <Input data-testid="input-ca-name" value={caForm.name} onChange={e => setCaForm({ ...caForm, name: e.target.value })} placeholder="e.g. HDFC Bank, CEO Cash" />
+            </div>
+            <div className="space-y-2">
+              <Label>Type *</Label>
+              <Select value={caForm.type} onValueChange={v => setCaForm({ ...caForm, type: v })}>
+                <SelectTrigger data-testid="select-ca-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="bank"><Landmark className="inline mr-1 h-3 w-3" /> Bank Account</SelectItem>
+                  <SelectItem value="cash"><Banknote className="inline mr-1 h-3 w-3" /> Cash Drawer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {caForm.type === "bank" && (
+              <>
+                <div className="space-y-2">
+                  <Label>Bank Name</Label>
+                  <Input data-testid="input-ca-bank-name" value={caForm.bankName} onChange={e => setCaForm({ ...caForm, bankName: e.target.value })} placeholder="e.g. HDFC Bank" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label>Account Number</Label>
+                    <Input data-testid="input-ca-account-number" value={caForm.accountNumber} onChange={e => setCaForm({ ...caForm, accountNumber: e.target.value })} placeholder="••••1234" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>IFSC Code</Label>
+                    <Input data-testid="input-ca-ifsc" value={caForm.ifscCode} onChange={e => setCaForm({ ...caForm, ifscCode: e.target.value })} placeholder="HDFC0001234" />
+                  </div>
+                </div>
+              </>
+            )}
+            <div className="space-y-2">
+              <Label>Opening Balance (₹)</Label>
+              <Input type="number" data-testid="input-ca-opening-balance" value={caForm.openingBalance} onChange={e => setCaForm({ ...caForm, openingBalance: e.target.value })} placeholder="0" />
+              <p className="text-xs text-muted-foreground">Balance at the time of first use. Use 0 if unknown.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCaDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-submit-ca" disabled={caMutation.isPending || !caForm.name || !caForm.type}
+              onClick={() => caMutation.mutate({ name: caForm.name, type: caForm.type, bankName: caForm.bankName || null, accountNumber: caForm.accountNumber || null, ifscCode: caForm.ifscCode || null, openingBalance: caForm.openingBalance || "0" })}>
+              {caMutation.isPending ? "Saving..." : caEditing ? "Save Changes" : "Create Account"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Deactivate Confirm Dialog ────────────────────────────────────── */}
+      <Dialog open={!!caDeactivateId} onOpenChange={o => { if (!o) setCaDeactivateId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Deactivate Account?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This account will be hidden from payment dropdowns. Existing transactions are preserved. You can reactivate it at any time.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCaDeactivateId(null)}>Cancel</Button>
+            <Button variant="destructive" data-testid="button-confirm-deactivate-ca"
+              disabled={caDeactivateMutation.isPending}
+              onClick={() => caDeactivateId && caDeactivateMutation.mutate({ id: caDeactivateId, activate: false })}>
+              {caDeactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
             </Button>
           </DialogFooter>
         </DialogContent>

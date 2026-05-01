@@ -35,6 +35,7 @@ import Pricing from "@/pages/Pricing";
 import Inbox from "@/pages/Inbox";
 import Campaigns from "@/pages/Campaigns";
 import WhatsAppTemplates from "@/pages/WhatsAppTemplates";
+import CashAccountDetail from "@/pages/CashAccountDetail";
 
 interface NotificationBellProps {
   open: boolean;
@@ -189,6 +190,7 @@ function Router() {
       <Route path="/projects" component={() => <ProtectedRoute component={Projects} path="/projects" />} />
       <Route path="/inventory" component={() => <ProtectedRoute component={Inventory} path="/inventory" />} />
       <Route path="/supply-chain" component={() => <ProtectedRoute component={SupplyChain} path="/supply-chain" />} />
+      <Route path="/accounts/cash-accounts/:id" component={() => <ProtectedRoute component={CashAccountDetail} path="/accounts/cash-accounts/:id" />} />
       <Route path="/accounts" component={() => <ProtectedRoute component={Accounts} path="/accounts" />} />
       <Route path="/employees" component={() => <ProtectedRoute component={Employees} path="/employees" />} />
       <Route path="/field-staff" component={() => <ProtectedRoute component={FieldStaff} path="/field-staff" />} />

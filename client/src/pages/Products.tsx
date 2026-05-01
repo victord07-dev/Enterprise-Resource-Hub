@@ -8,12 +8,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle, Boxes, Info } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle, Boxes, Info, ChevronsUpDown } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -617,6 +618,9 @@ export default function Products() {
   const [productForm, setProductForm] = useState<ProductForm>(emptyProductForm());
   // Phase 7: bundle component rows (separate from productForm because saved via different endpoint)
   const [bundleItems, setBundleItems] = useState<BundleItemRow[]>([]);
+  // Searchable combobox state for bundle component picker
+  const [bundleCompOpenIdx, setBundleCompOpenIdx] = useState<number | null>(null);
+  const [bundleCompSearch, setBundleCompSearch] = useState("");
 
   // Brand mini-dialog state
   const [brandDialogOpen, setBrandDialogOpen] = useState(false);
@@ -1642,32 +1646,74 @@ export default function Products() {
                       return (
                         <div key={idx} className="grid grid-cols-12 gap-2 items-start" data-testid={`row-bundle-component-${idx}`}>
                           <div className="col-span-6">
-                            <Select
-                              value={row.componentProductId}
-                              onValueChange={(v) => {
-                                const comp = productById.get(v);
-                                const newUnit = comp?.unit || "pcs";
-                                const currentQty = Number(row.quantity) || 1;
-                                // If switching to an integer unit and current qty has a decimal, round down.
-                                const needsRound = !isDecimalUnit(newUnit) && currentQty !== Math.floor(currentQty);
-                                const newQty = needsRound ? String(Math.floor(currentQty)) : row.quantity;
-                                updateBundleRow(idx, { componentProductId: v, unit: newUnit, quantity: newQty });
-                                if (needsRound) {
-                                  toast({ title: `Qty adjusted to ${newQty} — fractional units not allowed for ${newUnit}` });
-                                }
-                              }}
-                            >
-                              <SelectTrigger data-testid={`select-bundle-component-${idx}`}>
-                                <SelectValue placeholder="Select component…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {availableComponentProducts.map((p) => (
-                                  <SelectItem key={p.id} value={p.id}>
-                                    {p.name} <span className="text-muted-foreground">({p.sku})</span>
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            {(() => {
+                              const selected = row.componentProductId ? productById.get(row.componentProductId) : null;
+                              const isOpen = bundleCompOpenIdx === idx;
+                              const filtered = availableComponentProducts.filter((p) => {
+                                const q = bundleCompSearch.toLowerCase();
+                                return !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+                              });
+                              return (
+                                <Popover open={isOpen} onOpenChange={(open) => {
+                                  setBundleCompOpenIdx(open ? idx : null);
+                                  if (!open) setBundleCompSearch("");
+                                }}>
+                                  <PopoverTrigger asChild>
+                                    <Button
+                                      variant="outline"
+                                      role="combobox"
+                                      aria-expanded={isOpen}
+                                      className="w-full justify-between font-normal"
+                                      data-testid={`select-bundle-component-${idx}`}
+                                    >
+                                      <span className="truncate">
+                                        {selected
+                                          ? <>{selected.name} <span className="text-muted-foreground">({selected.sku})</span></>
+                                          : <span className="text-muted-foreground">Select component…</span>
+                                        }
+                                      </span>
+                                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent className="w-[320px] p-2" align="start">
+                                    <Input
+                                      autoFocus
+                                      placeholder="Search by name or SKU…"
+                                      value={bundleCompSearch}
+                                      onChange={(e) => setBundleCompSearch(e.target.value)}
+                                      className="mb-2 h-8 text-sm"
+                                      data-testid={`input-bundle-component-search-${idx}`}
+                                    />
+                                    <div className="max-h-56 overflow-y-auto space-y-0.5">
+                                      {filtered.length === 0 ? (
+                                        <p className="py-4 text-center text-sm text-muted-foreground">No products found.</p>
+                                      ) : filtered.map((p) => (
+                                        <button
+                                          key={p.id}
+                                          type="button"
+                                          className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground ${row.componentProductId === p.id ? "bg-accent text-accent-foreground" : ""}`}
+                                          onClick={() => {
+                                            const comp = productById.get(p.id);
+                                            const newUnit = comp?.unit || "pcs";
+                                            const currentQty = Number(row.quantity) || 1;
+                                            const needsRound = !isDecimalUnit(newUnit) && currentQty !== Math.floor(currentQty);
+                                            const newQty = needsRound ? String(Math.floor(currentQty)) : row.quantity;
+                                            updateBundleRow(idx, { componentProductId: p.id, unit: newUnit, quantity: newQty });
+                                            if (needsRound) {
+                                              toast({ title: `Qty adjusted to ${newQty} — fractional units not allowed for ${newUnit}` });
+                                            }
+                                            setBundleCompOpenIdx(null);
+                                            setBundleCompSearch("");
+                                          }}
+                                        >
+                                          {p.name} <span className="text-muted-foreground">({p.sku})</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                              );
+                            })()}
                             {line && line.lifecycleStatus !== "active" && line.name !== "(select component)" && (
                               <p className="text-xs text-red-600 dark:text-red-400 mt-1">
                                 Status: {line.lifecycleStatus}

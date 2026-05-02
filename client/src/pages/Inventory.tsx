@@ -887,7 +887,22 @@ export default function Inventory() {
         </Card>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          setActiveTab(v);
+          // Phase 4 Cleanup F — persist tab in URL so refresh / share-link preserves view.
+          // Mirror Accounts.tsx pattern: drop ?tab when on default ("products"), strip
+          // stale highlight/challanId/highlightGrn params (they belong to the prior tab).
+          const params = new URLSearchParams(window.location.search);
+          params.delete("highlightGrn");
+          params.delete("challanId");
+          if (v === "products") params.delete("tab"); else params.set("tab", v);
+          const qs = params.toString();
+          window.history.replaceState({}, "", `/inventory${qs ? `?${qs}` : ""}`);
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
           <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>

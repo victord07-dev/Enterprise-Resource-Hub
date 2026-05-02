@@ -114,7 +114,13 @@ async function notifyRoles(roles: string[], type: string, title: string, message
   }
 }
 
-// Phase 4A G3 — compute invoice due date from payment terms
+// Phase 4A G3 — compute invoice due date from payment terms.
+// Phase 4 Cleanup G1: This is the single source of truth for due-date math
+// across the AR pipeline (auto-invoice on dispatch, manual invoice creation,
+// AR Aging Report). Customer-level `payment_terms` (immediate|net_15|net_30|
+// net_45|net_60|net_90) drives the offset. Any new payment-term value MUST be
+// added here AND in shared/schema.ts customers.paymentTerms enum to avoid
+// silent fall-through to "immediate" (same-day due).
 function computeDueDate(invoiceDate: Date, paymentTerms: string | null): Date {
   const d = new Date(invoiceDate);
   switch (paymentTerms) {
@@ -1854,7 +1860,9 @@ export async function registerRoutes(
       // Phase 4 — increment custom-field usage counts for any non-template keys
       const customKeys = customSpecKeysFor(created.category, created.specs);
       if (customKeys.length > 0) {
-        try { await storage.incrementCustomFieldUsage(created.category, customKeys); } catch { /* non-fatal */ }
+        // Phase 4 Cleanup C: log non-fatal failures so they're visible in workflow logs
+        try { await storage.incrementCustomFieldUsage(created.category, customKeys); }
+        catch (e) { console.warn("incrementCustomFieldUsage failed (non-fatal, product create):", e); }
       }
       // Phase 6.5 A2: silent supplier auto-link
       await ensureSupplierLinkFromBrand(created.id, (created as any).brandId, (created as any).distributorPrice);
@@ -1889,7 +1897,9 @@ export async function registerRoutes(
         const beforeKeys = new Set(before?.specs && typeof before.specs === "object" ? Object.keys(before.specs as any) : []);
         const newCustomKeys = customSpecKeysFor(updated.category, updated.specs).filter((k) => !beforeKeys.has(k));
         if (newCustomKeys.length > 0) {
-          try { await storage.incrementCustomFieldUsage(updated.category, newCustomKeys); } catch { /* non-fatal */ }
+          // Phase 4 Cleanup C: log non-fatal failures so they're visible in workflow logs
+          try { await storage.incrementCustomFieldUsage(updated.category, newCustomKeys); }
+          catch (e) { console.warn("incrementCustomFieldUsage failed (non-fatal, product update):", e); }
         }
       }
       // Phase 6.5 A2: if brand was set/changed, ensure supplier link exists

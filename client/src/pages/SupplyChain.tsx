@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus, Sparkles } from "lucide-react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -969,6 +969,10 @@ export default function SupplyChain() {
   const [prForm, setPrForm] = useState({ supplierId: "", priority: "medium", notes: "" });
   const [prApproveMode, setPrApproveMode] = useState(false);
   const [prItemCosts, setPrItemCosts] = useState<Record<string, string>>({});
+  // Phase 4 Cleanup B — track which line items were auto-filled from the supplier
+  // catalog so we can display a "from supplier catalog" indicator next to the row.
+  // Reset when the dialog opens fresh or items change identity.
+  const [prAutoFilledItemIds, setPrAutoFilledItemIds] = useState<Set<string>>(new Set());
   const [prStatusFilter, setPrStatusFilter] = useState("all");
   const [prPriorityFilter, setPrPriorityFilter] = useState("all");
 
@@ -1286,6 +1290,9 @@ export default function SupplyChain() {
         costs[item.id] = item.unitCost && parseFloat(item.unitCost) > 0 ? String(parseFloat(item.unitCost)) : "";
       }
       setPrItemCosts(costs);
+      // Phase 4 Cleanup B — costs loaded from server are not "auto-filled by user action".
+      // Reset the indicator set so old supplier-catalog markers from a prior dialog don't leak.
+      setPrAutoFilledItemIds(new Set());
     }
   }, [prDialogItems?.map(i => i.id).join(",")]);
 
@@ -1295,6 +1302,7 @@ export default function SupplyChain() {
   // (handles case where PR was auto-generated with 0 unit costs but supplier is already known)
   useEffect(() => {
     if (!selectedMatchingSupplier || !prDialogItems) return;
+    const filledIds: string[] = [];
     setPrItemCosts(prev => {
       const updated = { ...prev };
       let changed = false;
@@ -1304,12 +1312,25 @@ export default function SupplyChain() {
           const catalogItem = selectedMatchingSupplier.items.find(i => i.productId === item.productId);
           if (catalogItem && catalogItem.supplierPrice && Number(catalogItem.supplierPrice) > 0) {
             updated[item.id] = String(Number(catalogItem.supplierPrice));
+            filledIds.push(item.id);
             changed = true;
           }
         }
       }
       return changed ? updated : prev;
     });
+    // Phase 4 Cleanup B — record auto-fill markers + notify the user
+    if (filledIds.length > 0) {
+      setPrAutoFilledItemIds(prev => {
+        const next = new Set(prev);
+        filledIds.forEach(id => next.add(id));
+        return next;
+      });
+      toast({
+        title: "Prices auto-filled",
+        description: `${filledIds.length} item${filledIds.length > 1 ? "s" : ""} priced from ${selectedMatchingSupplier.supplierName}'s catalog. Review and edit before approving.`,
+      });
+    }
   }, [selectedMatchingSupplier?.supplierId, prDialogItems?.map(i => i.id).join(",")]);
 
   const openEditPr = (pr: PurchaseRequest, approveMode = false) => {
@@ -2264,19 +2285,33 @@ export default function SupplyChain() {
               ) : matchingSuppliers && matchingSuppliers.length > 0 ? (
                 <Select value={prForm.supplierId} onValueChange={(v) => {
                   setPrForm({ ...prForm, supplierId: v });
-                  // Auto-fill item costs from supplier catalog when supplier is selected
+                  // Auto-fill item costs from supplier catalog when supplier is selected.
+                  // Phase 4 Cleanup B — overwrite ALL items (user explicitly chose a new
+                  // supplier, so prior values are stale), track which were auto-filled,
+                  // and emit a toast so the change is visible.
                   const ms = matchingSuppliers?.find(s => s.supplierId === v);
                   if (ms && prDialogItems) {
+                    const filledIds: string[] = [];
                     setPrItemCosts(prev => {
                       const updated = { ...prev };
                       for (const item of prDialogItems) {
                         const catalogItem = ms.items.find(i => i.productId === item.productId);
                         if (catalogItem && catalogItem.supplierPrice && Number(catalogItem.supplierPrice) > 0) {
                           updated[item.id] = String(Number(catalogItem.supplierPrice));
+                          filledIds.push(item.id);
                         }
                       }
                       return updated;
                     });
+                    if (filledIds.length > 0) {
+                      setPrAutoFilledItemIds(new Set(filledIds));
+                      toast({
+                        title: "Prices auto-filled",
+                        description: `${filledIds.length} item${filledIds.length > 1 ? "s" : ""} priced from ${ms.supplierName}'s catalog. Review and edit before approving.`,
+                      });
+                    } else {
+                      setPrAutoFilledItemIds(new Set());
+                    }
                   }
                 }}>
                   <SelectTrigger data-testid="select-pr-supplier">
@@ -2363,6 +2398,16 @@ export default function SupplyChain() {
                             <td className="px-3 py-1.5 font-medium">
                               {item.description}
                               {missing && <AlertTriangle className="inline w-3 h-3 ml-1 text-amber-500" />}
+                              {!missing && prAutoFilledItemIds.has(item.id) && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 ml-2 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+                                  title="Price auto-filled from supplier catalog. Edit the unit cost field to override."
+                                  data-testid={`badge-pr-autofilled-${item.id}`}
+                                >
+                                  <Sparkles className="w-2.5 h-2.5" />
+                                  from catalog
+                                </span>
+                              )}
                             </td>
                             <td className="px-3 py-1.5 text-center">{item.shortfallQuantity}</td>
                             <td className="px-3 py-1.5 text-right">
@@ -2374,7 +2419,16 @@ export default function SupplyChain() {
                                 placeholder="0.00"
                                 value={cost}
                                 data-testid={`input-pr-item-cost-${item.id}`}
-                                onChange={(e) => setPrItemCosts(prev => ({ ...prev, [item.id]: e.target.value }))}
+                                onChange={(e) => {
+                                  setPrItemCosts(prev => ({ ...prev, [item.id]: e.target.value }));
+                                  // Phase 4 Cleanup B — manual edit clears the auto-filled marker
+                                  setPrAutoFilledItemIds(prev => {
+                                    if (!prev.has(item.id)) return prev;
+                                    const next = new Set(prev);
+                                    next.delete(item.id);
+                                    return next;
+                                  });
+                                }}
                               />
                             </td>
                           </tr>

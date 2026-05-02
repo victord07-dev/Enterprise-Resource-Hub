@@ -1175,6 +1175,13 @@ function CustomerOutstandingInline({ customerId }: { customerId: string }) {
 export default function Sales() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  // Phase 4 Cleanup F — controlled top-level tabs with URL persistence
+  // (?tab=orders|quotations|customers). Default tab is "orders".
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (typeof window === "undefined") return "orders";
+    const t = new URLSearchParams(window.location.search).get("tab");
+    return t === "quotations" || t === "customers" ? t : "orders";
+  });
   const { data: currentUser } = useCurrentUser();
   const isReadOnly = currentUser?.role === "accountant";
   const canSeePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
@@ -2293,7 +2300,18 @@ export default function Sales() {
         </Card>
       </div>
 
-      <Tabs defaultValue="orders" className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          setActiveTab(v);
+          // Phase 4 Cleanup F — persist tab in URL; drop ?tab when on default ("orders")
+          const params = new URLSearchParams(window.location.search);
+          if (v === "orders") params.delete("tab"); else params.set("tab", v);
+          const qs = params.toString();
+          window.history.replaceState({}, "", `/sales${qs ? `?${qs}` : ""}`);
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="orders" data-testid="tab-orders">Orders</TabsTrigger>
           <TabsTrigger value="quotations" data-testid="tab-quotations">Quotations</TabsTrigger>

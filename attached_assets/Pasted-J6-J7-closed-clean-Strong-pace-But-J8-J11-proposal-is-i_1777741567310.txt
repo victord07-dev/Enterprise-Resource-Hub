@@ -1,0 +1,222 @@
+J6 + J7 closed clean. Strong pace.
+
+But J8-J11 proposal is incorrect. Cash Accounts CRUD (your J8) 
+was J3. Payment dropdowns (your J9-J11) were J4(n-r) and J4(s).
+
+Actual remaining sections per original spec:
+
+==================================================================
+J8 — ACCOUNT DETAIL PAGE (6 items)
+==================================================================
+
+(mm) Account header on /accounts/cash-accounts/[id]:
+- Account name (large)
+- Type badge (Bank or Cash)
+- Current balance (live, dynamic)
+- Account number (if bank)
+- Opening balance with date
+- Status (Active/Inactive)
+- Action buttons (Edit, Transfer, Adjustment per role)
+Screenshot.
+
+(nn) Date range filter "Today":
+- Apply filter on HDFC detail page
+- Shows only today's transactions
+- Stats cards reflect today only
+Screenshot.
+
+(oo) Date range filter "Year":
+- Shows full year's transactions
+- Pagination at 50 per page (or whatever default)
+- Page navigation controls visible
+Screenshot of page 1.
+
+(pp) Running balance correctness on page 2+ (CRITICAL):
+- This is the window function pagination test
+- On page 2 of paginated history, verify running_balance for 
+  the FIRST row on page 2 = (opening balance) + (sum of all 
+  transaction amounts up to that row's transaction_date)
+- SQL spot-check: pick row with running_balance = X
+  Compute: opening_balance + 
+    sum of all txns where transaction_date < this row's date
+    + this row's signed amount
+- Must match displayed running_balance EXACTLY
+
+This is where SQL window function (SUM() OVER) gets exercised.
+If running balance is wrong on page 2+, there's a serious bug.
+
+(qq) Transaction type filter:
+- Multi-select: Customer Payment | Supplier Payment | Expense | 
+  Transfer In | Transfer Out | Adjustment
+- Select only "Customer Payment" → list filters
+- Select multiple types → list shows union
+Screenshot of filtered state.
+
+(rr) Click any transaction row → drills to underlying entity:
+- Customer payment row → customer payment detail OR sales order
+- Supplier payment row → supplier payment detail OR PO
+- Expense row → expense detail
+- Transfer row → transfer detail OR account_transfers context
+- Adjustment row → adjustment detail OR audit info
+Screenshot of destination page.
+
+==================================================================
+J9 — BALANCE COMPUTATION ACCURACY (1 item)
+==================================================================
+
+(ss) Full SQL audit of computed balance vs storage helper:
+
+SELECT 
+  ca.name,
+  ca.opening_balance::numeric AS opening,
+  
+  -- Inflows
+  (SELECT COALESCE(SUM(amount), 0) FROM customer_payments 
+   WHERE cash_account_id = ca.id) AS customer_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM payments 
+   WHERE cash_account_id = ca.id 
+   AND status = 'completed') AS sales_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM account_transfers 
+   WHERE to_account_id = ca.id) AS transfers_in,
+  
+  -- Outflows
+  (SELECT COALESCE(SUM(amount), 0) FROM supplier_payments 
+   WHERE cash_account_id = ca.id) AS supplier_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM expenses 
+   WHERE cash_account_id = ca.id) AS expenses,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM account_transfers 
+   WHERE from_account_id = ca.id) AS transfers_out,
+  
+  -- Adjustments (signed)
+  (SELECT COALESCE(SUM(adjustment_amount), 0) 
+   FROM balance_adjustments 
+   WHERE cash_account_id = ca.id) AS adjustments,
+  
+  -- Computed balance
+  ca.opening_balance::numeric 
+    + (SELECT COALESCE(SUM(amount),0) FROM customer_payments 
+       WHERE cash_account_id = ca.id)
+    + (SELECT COALESCE(SUM(amount),0) FROM payments 
+       WHERE cash_account_id = ca.id AND status='completed')
+    + (SELECT COALESCE(SUM(amount),0) FROM account_transfers 
+       WHERE to_account_id = ca.id)
+    + (SELECT COALESCE(SUM(adjustment_amount),0) 
+       FROM balance_adjustments WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM supplier_payments 
+       WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM expenses 
+       WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM account_transfers 
+       WHERE from_account_id = ca.id) AS computed_balance
+    
+FROM cash_accounts ca
+ORDER BY name;
+
+Compare each computed_balance against:
+- API GET /api/cash-accounts/[id]/balance response
+- UI displayed balance on Account Detail page
+
+Must match exactly to ₹0.01 for all 4 accounts.
+
+If any account's computed_balance != API response: there's a 
+bug in computeAccountBalance helper. Surface and fix.
+
+==================================================================
+J10 — AUTHORIZATION SPOT CHECKS (4 items)
+==================================================================
+
+(tt) Login as sales_manager:
+- Cash Accounts tab NOT visible in /accounts → confirmed
+- Direct URL /accounts/cash-accounts/[id] → 403 or redirect
+- Direct URL /accounts → can access (Expenses tab, etc.)
+- Record Customer Payment dialog: Cash Account dropdown WORKS 
+  (positive control)
+Screenshots.
+
+(uu) Login as warehouse_manager:
+- Same restrictions as sales_manager
+- Plus: cannot create/edit/deactivate accounts via direct URL
+- Direct POST /api/cash-accounts → 403
+Screenshots.
+
+(vv) Login as field_staff:
+- /accounts entirely blocked (redirected)
+- Or: page loads but tabs are empty/restricted
+Screenshot.
+
+(ww) Login as kiosk:
+- Redirected to /kiosk
+- Cannot access /accounts at all
+Screenshot.
+
+==================================================================
+J11 — REGRESSION (Phase 1, 2, 3, 4A — 11 items)
+==================================================================
+
+(xx) Sales workflow: customer can record payment with account 
+selection. Both Sales.tsx Record Payment AND Accounts.tsx 
+AR Payments Tab. End-to-end: customer → invoice → payment with 
+HDFC selected → SQL verifies cash_account_id stored.
+
+(yy) Purchase workflow: supplier payment recorded with account. 
+Same end-to-end check.
+
+(zz) Expense recording works with account. End-to-end check.
+
+(aaa) GRN auto-supplier-invoice still fires (Phase 4A). 
+Confirm a draft GRN → check supplier_invoices for auto-created 
+row in pending_upload state.
+
+(bbb) Credit override flows still work (Phase 4A):
+- Sales-side: partially-paid SO → admin "Ready (Credit)" works
+- Purchase-side: partially-paid PO → admin/accountant "Create 
+  GRN (Credit)" works
+Both spot-test.
+
+(ccc) Outstanding dues block on SO creation still works 
+(Phase 4A). Pick customer with unpaid invoice, attempt SO 
+creation. Verify block + admin override.
+
+(ddd) PO PDF download still works (Phase 4A + Phase 2). 
+Download PO PDF, verify GST snapshot data + delivery cost line.
+
+(eee) AR/AP aging reports still show credit badges (Phase 4A). 
+- AR Aging: Credit Sale badge visible with tooltip
+- AP Aging: Credit GRN badge visible with tooltip
+
+(fff) Phase 3 5-mandatory-field challan workflow still works. 
+Create new challan, verify all required fields enforced.
+
+(ggg) Phase 3 GRN simplification still works (text-only 
+supplier challan number).
+
+(hhh) Hierarchical picker on Sales + PO still works (Phase 2).
+
+==================================================================
+
+Process flow:
+
+1. Walk J8 (6 items). Pay special attention to (pp) — running 
+   balance pagination is the most architecturally complex test 
+   in the entire walk.
+
+2. Walk J9 (1 item, but heavy — full balance audit across 4 
+   accounts).
+
+3. Walk J10 (4 items) — auth spot checks. These are critical 
+   given Phase 4A's K3 history with silently-broken admin 
+   buttons.
+
+4. Walk J11 (11 items) — regression. Be thorough; this catches 
+   collateral damage.
+
+5. After J11 closes, declare Phase 4B COMPLETE.
+
+Walk one section at a time. Report results section by section. 
+Don't combine.
+
+Standing rules apply.

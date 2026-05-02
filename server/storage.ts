@@ -2740,10 +2740,17 @@ export class DatabaseStorage implements IStorage {
       FROM account_transfers WHERE from_account_id = ${accountId}
         AND transfer_date BETWEEN ${fromDate} AND ${toDate}
     `);
-    const adjRes = await db.execute(sql`
+    const adjCreditRes = await db.execute(sql`
       SELECT COALESCE(SUM(adjustment_amount::numeric), 0) AS total, COUNT(*)::int AS cnt
       FROM balance_adjustments WHERE cash_account_id = ${accountId}
         AND adjustment_date BETWEEN ${fromDate} AND ${toDate}
+        AND adjustment_amount > 0
+    `);
+    const adjDebitRes = await db.execute(sql`
+      SELECT COALESCE(SUM(ABS(adjustment_amount::numeric)), 0) AS total, COUNT(*)::int AS cnt
+      FROM balance_adjustments WHERE cash_account_id = ${accountId}
+        AND adjustment_date BETWEEN ${fromDate} AND ${toDate}
+        AND adjustment_amount < 0
     `);
 
     const cpRow = cpRes.rows[0] as any;
@@ -2751,15 +2758,17 @@ export class DatabaseStorage implements IStorage {
     const expRow = expRes.rows[0] as any;
     const trInRow = trInRes.rows[0] as any;
     const trOutRow = trOutRes.rows[0] as any;
-    const adjRow = adjRes.rows[0] as any;
+    const adjCreditRow = adjCreditRes.rows[0] as any;
+    const adjDebitRow = adjDebitRes.rows[0] as any;
 
-    const adjTotal = Number(adjRow?.total ?? 0);
-    const totalIn = Number(cpRow?.total ?? 0) + Number(trInRow?.total ?? 0) + Math.max(0, adjTotal);
-    const totalOut = Number(spRow?.total ?? 0) + Number(expRow?.total ?? 0) + Number(trOutRow?.total ?? 0) + Math.abs(Math.min(0, adjTotal));
+    const adjCredit = Number(adjCreditRow?.total ?? 0);
+    const adjDebit = Number(adjDebitRow?.total ?? 0);
+    const totalIn = Number(cpRow?.total ?? 0) + Number(trInRow?.total ?? 0) + adjCredit;
+    const totalOut = Number(spRow?.total ?? 0) + Number(expRow?.total ?? 0) + Number(trOutRow?.total ?? 0) + adjDebit;
     const netChange = closingBalance - openingBalance;
     const transactionCount = Number(cpRow?.cnt ?? 0) + Number(spRow?.cnt ?? 0) +
       Number(expRow?.cnt ?? 0) + Number(trInRow?.cnt ?? 0) +
-      Number(trOutRow?.cnt ?? 0) + Number(adjRow?.cnt ?? 0);
+      Number(trOutRow?.cnt ?? 0) + Number(adjCreditRow?.cnt ?? 0) + Number(adjDebitRow?.cnt ?? 0);
 
     return { totalIn, totalOut, netChange, openingBalance, closingBalance, transactionCount };
   }

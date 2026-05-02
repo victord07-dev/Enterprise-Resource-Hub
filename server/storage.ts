@@ -66,6 +66,7 @@ export type AccountTransactionRow = {
   runningBalance: number;
   description: string;
   reference: string | null;
+  counterpartyName: string | null;
   linkedEntityId: string | null;
   linkedEntityType: string | null;
 };
@@ -2785,6 +2786,7 @@ export class DatabaseStorage implements IStorage {
           amount::numeric AS amount,
           COALESCE(reference, 'Customer Payment') AS description,
           reference,
+          NULL::text AS counterparty_name,
           invoice_id AS entity_id,
           'invoice' AS entity_type
         FROM customer_payments
@@ -2800,6 +2802,7 @@ export class DatabaseStorage implements IStorage {
           -(amount::numeric) AS amount,
           COALESCE(reference, 'Supplier Payment') AS description,
           reference,
+          NULL::text AS counterparty_name,
           coalesce(supplier_invoice_id, purchase_order_id) AS entity_id,
           CASE WHEN supplier_invoice_id IS NOT NULL THEN 'supplier_invoice' ELSE 'purchase_order' END AS entity_type
         FROM supplier_payments
@@ -2815,6 +2818,7 @@ export class DatabaseStorage implements IStorage {
           -(amount::numeric) AS amount,
           description,
           NULL AS reference,
+          NULL::text AS counterparty_name,
           id AS entity_id,
           'expense' AS entity_type
         FROM expenses
@@ -2828,8 +2832,9 @@ export class DatabaseStorage implements IStorage {
           transfer_date::date AS tx_date,
           'transfer_in' AS type,
           amount::numeric AS amount,
-          COALESCE('Transfer In: ' || COALESCE(reference, ''), 'Transfer In') AS description,
+          CASE WHEN reference IS NOT NULL AND reference <> '' THEN 'Transfer In: ' || reference ELSE 'Transfer In' END AS description,
           reference,
+          (SELECT name FROM cash_accounts WHERE id = account_transfers.from_account_id) AS counterparty_name,
           id AS entity_id,
           'account_transfer' AS entity_type
         FROM account_transfers
@@ -2843,8 +2848,9 @@ export class DatabaseStorage implements IStorage {
           transfer_date::date AS tx_date,
           'transfer_out' AS type,
           -(amount::numeric) AS amount,
-          COALESCE('Transfer Out: ' || COALESCE(reference, ''), 'Transfer Out') AS description,
+          CASE WHEN reference IS NOT NULL AND reference <> '' THEN 'Transfer Out: ' || reference ELSE 'Transfer Out' END AS description,
           reference,
+          (SELECT name FROM cash_accounts WHERE id = account_transfers.to_account_id) AS counterparty_name,
           id AS entity_id,
           'account_transfer' AS entity_type
         FROM account_transfers
@@ -2860,6 +2866,7 @@ export class DatabaseStorage implements IStorage {
           adjustment_amount::numeric AS amount,
           reason AS description,
           NULL AS reference,
+          NULL::text AS counterparty_name,
           id AS entity_id,
           'balance_adjustment' AS entity_type
         FROM balance_adjustments
@@ -2878,6 +2885,7 @@ export class DatabaseStorage implements IStorage {
           amount,
           description,
           reference,
+          counterparty_name,
           entity_id,
           entity_type,
           (SELECT ob FROM acct) + SUM(amount) OVER (ORDER BY tx_date, id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance,
@@ -2899,6 +2907,7 @@ export class DatabaseStorage implements IStorage {
       runningBalance: Number(r.running_balance),
       description: r.description ?? "",
       reference: r.reference ?? null,
+      counterpartyName: r.counterparty_name ?? null,
       linkedEntityId: r.entity_id ?? null,
       linkedEntityType: r.entity_type ?? null,
     }));

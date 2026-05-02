@@ -20,6 +20,7 @@ interface AccountTransaction {
   type: "customer_payment" | "supplier_payment" | "expense" | "transfer_in" | "transfer_out" | "adjustment";
   description: string;
   reference: string | null;
+  counterpartyName: string | null;
   amount: number;
   runningBalance: number;
   linkedEntityId: string | null;
@@ -279,7 +280,8 @@ export default function CashAccountDetail() {
               <thead>
                 <tr className="border-b bg-muted/40">
                   <th className="text-left p-3 font-medium text-muted-foreground w-28">Date</th>
-                  <th className="text-left p-3 font-medium text-muted-foreground w-28">Module</th>
+                  <th className="text-left p-3 font-medium text-muted-foreground w-24">Module</th>
+                  <th className="text-left p-3 font-medium text-muted-foreground w-36">Counterparty</th>
                   <th className="text-left p-3 font-medium text-muted-foreground">Description</th>
                   <th className="text-left p-3 font-medium text-muted-foreground w-32">Ref.</th>
                   <th className="text-right p-3 font-medium text-green-600 w-28">Credit (+)</th>
@@ -294,6 +296,7 @@ export default function CashAccountDetail() {
                     <td className="p-3">
                       <Badge variant="outline" className="text-xs">{moduleLabel(tx.type)}</Badge>
                     </td>
+                    <td className="p-3 text-sm" data-testid={`text-counterparty-${tx.id}`}>{tx.counterpartyName ?? "—"}</td>
                     <td className="p-3">{tx.description}</td>
                     <td className="p-3 text-muted-foreground text-xs">{tx.reference ?? "—"}</td>
                     <td className="p-3 text-right text-green-600 font-medium">{tx.amount > 0 ? fmt(tx.amount) : ""}</td>
@@ -302,7 +305,7 @@ export default function CashAccountDetail() {
                   </tr>
                 ))}
                 {pagedTxns.length === 0 && (
-                  <tr><td colSpan={7} className="text-center p-8 text-muted-foreground">No transactions in the selected period.</td></tr>
+                  <tr><td colSpan={8} className="text-center p-8 text-muted-foreground">No transactions in the selected period.</td></tr>
                 )}
               </tbody>
             </table>

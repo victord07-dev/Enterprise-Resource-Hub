@@ -10709,15 +10709,36 @@ export async function registerRoutes(
 
   app.post("/api/account-transfers", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
-      const { fromAccountId, toAccountId, amount } = req.body;
+      const { fromAccountId, toAccountId, amount, reference } = req.body;
       if (fromAccountId === toAccountId) {
         return res.status(400).json({ message: "Cannot transfer to the same account" });
       }
       if (Number(amount) <= 0) {
         return res.status(400).json({ message: "Amount must be positive" });
       }
+      const [fromAcct, toAcct] = await Promise.all([
+        storage.getCashAccount(fromAccountId),
+        storage.getCashAccount(toAccountId),
+      ]);
+      if (!fromAcct || !toAcct) {
+        return res.status(404).json({ message: "Source or destination account not found" });
+      }
       const transfer = await storage.createAccountTransfer({ ...req.body, createdBy: req.user.id });
-      await logAction(req.user.id, "create", "account_transfers", JSON.stringify({ id: transfer.id, fromAccountId, toAccountId, amount }));
+      const fromName = fromAcct.name;
+      const toName = toAcct.name;
+      const amountStr = `₹${Number(amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const refClause = reference && String(reference).trim() ? ` Reference: ${String(reference).trim()}` : "";
+      const description = `Transfer of ${amountStr} from ${fromName} to ${toName}.${refClause}`;
+      await logAction(req.user.id, "transfer_recorded", "account_transfers", JSON.stringify({
+        id: transfer.id,
+        fromAccountId,
+        fromAccountName: fromName,
+        toAccountId,
+        toAccountName: toName,
+        amount: Number(amount),
+        reference: reference ?? null,
+        description,
+      }));
       res.status(201).json(transfer);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create transfer" });

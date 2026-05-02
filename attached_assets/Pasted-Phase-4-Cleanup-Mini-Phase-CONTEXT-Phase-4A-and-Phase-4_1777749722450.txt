@@ -1,0 +1,445 @@
+Phase 4 Cleanup Mini-Phase
+
+CONTEXT
+
+Phase 4A and Phase 4B are closed. Their stop gate walks surfaced 
+hygiene debt and small follow-up items that were correctly deferred 
+during the focused walks (per standing rule: don't extend scope 
+mid-walk).
+
+This mini-phase bundles those deferrals into one tight cleanup pass. 
+~2 days of work. ~30 stop gate items.
+
+What this phase delivers:
+- Strict floor → Path B (advisory not hard-block in quotation/SO)
+- PR auto-fill from supplier_products on supplier change
+- Silent-failure hygiene (audit + console.error pass)
+- Inventory.tsx challan 5-field validation parity with Sales.tsx
+- Hooks ordering audit
+- URL persistence audit
+- Documentation notes for known edge cases
+- Cleanup of test data leftover from walks
+
+What this phase does NOT deliver:
+- New features
+- Architectural changes
+- Phase 4C (Financial Dashboard) — separate phase
+- Phase 5 (Multi-company fork)
+- The two pre-existing React warnings (Sales.tsx React.Fragment, 
+  Badge ref) — defer to a future hygiene phase if they ever 
+  manifest functionally
+
+STANDING RULES
+- Before declaring complete, walk every UI path with screenshots 
+  and SQL evidence per affected item.
+- Only operator declares phase closure.
+- Mirror existing patterns. Read existing code first.
+- No unrequested cleanup or refactoring outside listed items.
+- Surface and ask before extending scope.
+- Items are independent — can ship in any order, but bundle into 
+  single phase commit.
+
+CEO POLICY DECISIONS LOCKED
+- Strict floor: advisory with admin override, NOT hard-block
+- 5-field challan validation: enforce on BOTH dispatch paths 
+  (Sales.tsx and Inventory.tsx)
+- Silent-failure pattern: add console.error visibility, don't 
+  change error-swallowing logic
+- Drift documentation acceptable in code comments where data 
+  edge case is intentional (no value mutation needed)
+
+PRE-WORK READING (MANDATORY, BEFORE ANY CODE)
+
+Confirm before writing code:
+
+1. Strict floor current behavior:
+   - Find current implementation of strict floor check on quotation 
+     line items + SO line items
+   - Verify: hard-blocks save, no override path
+   - Locate file + line numbers
+
+2. Pricing-floor-override pattern (reference):
+   - Phase 4A's credit override pattern at Pricing.tsx
+   - inline reason textarea, action button disabled until min 
+     10 chars filled, role-gated server-side
+   - This is the pattern to mirror for strict floor
+
+3. PR approval dialog supplier change:
+   - Locate PR approval dialog in SupplyChain.tsx
+   - Find supplier selection field + line items section
+   - Confirm: supplier change does NOT currently re-fetch 
+     supplier_products prices
+
+4. supplier_products table:
+   - SQL: \d supplier_products
+   - Confirm columns: supplier_id, product_id, supplier_price
+   - GET endpoint: /api/supplier-products?supplier_id=X exists?
+
+5. Inventory.tsx vs Sales.tsx 5-field validation:
+   - Sales.tsx:1325-1329 dispatchFormValid: 5 fields enforced
+   - Inventory.tsx:2372 challan dispatch button: NO 5-field gate
+   - Both write to same endpoint
+   - Confirm exact validation logic in Sales.tsx
+
+6. Silent-failure patterns flagged earlier:
+   - L1849, L1884 in routes.ts (incrementCustomFieldUsage)
+   - K8 K9 patterns from Phase 4A audit
+   - Confirm with grep: any try/catch blocks without console.error
+
+7. Hooks ordering pattern:
+   - CashAccountDetail.tsx had early <Redirect> before hooks 
+     (now fixed)
+   - Audit other pages with conditional returns + hooks
+
+8. URL persistence pattern:
+   - ExpensesTab.tsx had useEffect rebuilding URL from scratch 
+     on mount (now patched to preserve highlight)
+   - Audit other tabs with similar useEffect URL builders
+
+9. Test Account leftover (J3 deactivated test row):
+   - SQL: SELECT * FROM cash_accounts WHERE name='Test Account';
+   - Confirm: is_active=false, opening_balance=50000
+
+Report findings in one message. Await go-ahead before implementation.
+
+==========================================================
+SECTION A — STRICT FLOOR → PATH B (Advisory not Hard-block)
+==========================================================
+
+A1. Current behavior to change:
+    Strict floor check on quotation/SO line items currently 
+    hard-blocks save when unit price is below the floor. Mirror 
+    Phase 4A's credit override pattern: advisory with admin 
+    override.
+
+A2. New behavior:
+    
+    For non-admin user (sales_manager, accountant):
+    - Line item shows red warning if price below floor
+    - Tooltip: "Price ₹X is below floor of ₹Y. Contact admin to 
+      authorize override."
+    - Save button disabled if any line below floor
+    - Server-side enforcement: 400 with floor breach error
+    
+    For admin user:
+    - Same red warning
+    - Save button shows "Save (Override Floor)" with amber 
+      styling when any line below floor
+    - Click → opens "Authorize Below-Floor Pricing" dialog:
+      
+      Title: "Authorize Below-Floor Pricing"
+      Body:
+        "Some line items are priced below the strict floor:
+         
+         [Table: Product | Floor | Your Price | Diff]
+         INV-XXX | ₹100 | ₹85 | -₹15
+         
+         Total below-floor exposure: ₹X
+         
+         [Reason textarea, required, min 10 chars]
+         placeholder: 'e.g., Volume discount approved by CEO; 
+         strategic customer; close-out pricing for slow-moving 
+         inventory'
+         
+         [Cancel] [Authorize and Save]"
+    
+    - Authorize button disabled until reason filled
+    - On save: row record has is_floor_override=true, 
+      floor_override_reason, floor_override_by, floor_override_at
+
+A3. Schema additions:
+    
+    quotation_items: 
+      add is_floor_override (boolean, default false)
+      add floor_override_reason (text, nullable)
+    sales_order_items:
+      add is_floor_override (boolean, default false)
+      add floor_override_reason (text, nullable)
+    quotations:
+      add floor_override_by (uuid FK → users, nullable)
+      add floor_override_at (timestamp, nullable)
+    sales_orders:
+      add floor_override_by (uuid FK → users, nullable)
+      add floor_override_at (timestamp, nullable)
+
+A4. Audit log:
+    On floor override save: action='floor_override_authorized',
+    module='sales' or 'pricing', details with:
+    - document_type ('quotation' | 'sales_order')
+    - document_id
+    - line_count_overridden
+    - total_below_floor_exposure
+    - reason
+
+==========================================================
+SECTION B — PR AUTO-FILL FROM SUPPLIER_PRODUCTS
+==========================================================
+
+B1. Current behavior:
+    In PR approval dialog (SupplyChain.tsx), when user changes 
+    the supplier dropdown selection mid-flow, the line items 
+    keep their previous unit costs. No re-fetch.
+
+B2. New behavior:
+    On supplier change in PR approval dialog:
+    - For each line item:
+      - GET /api/supplier-products?supplier_id=X&product_id=Y
+      - If row exists: auto-update unit_cost from 
+        supplier_products.supplier_price
+      - If no row: keep existing unit_cost (might be from earlier 
+        PR or manual entry)
+    - Show subtle "Prices updated" toast when auto-fill applied
+    - User can still edit manually after auto-fill
+
+B3. UI feedback:
+    Optional: show small icon on auto-filled rows indicating 
+    "from supplier catalog" (e.g., link icon). User clicks to 
+    see source.
+
+==========================================================
+SECTION C — SILENT-FAILURE HYGIENE
+==========================================================
+
+C1. Audit all try/catch blocks across codebase:
+    
+    grep -n "} catch" server/routes.ts server/storage.ts 
+                       client/src/pages/*.tsx
+    
+    For each catch block found:
+    - Does it log the error?
+    - If yes, leave alone
+    - If no (silent swallow), add console.error('[file:line] 
+      operation_name error:', err)
+    
+    Don't change WHAT the catch does (don't make it throw or 
+    fail loudly). Just make sure failures appear in server logs 
+    so operators can diagnose silent issues.
+
+C2. Specific known patterns:
+    - server/routes.ts ~L1849 (incrementCustomFieldUsage)
+    - server/routes.ts ~L1884 (similar pattern)
+    - K8/K9 patterns from Phase 4A audit
+    - Add to all of these
+
+C3. Document the audit:
+    Create a one-page note (e.g., docs/error-handling-audit.md) 
+    listing each catch block visited + status (logged | 
+    not-applicable | added-logging). 
+    Future Phase 5+ can reference this without re-scanning.
+
+==========================================================
+SECTION D — CHALLAN 5-FIELD VALIDATION PARITY
+==========================================================
+
+D1. Current discrepancy:
+    Sales.tsx:1325-1329 dispatchFormValid enforces 5 mandatory 
+    fields with .trim() + INDIAN_MOBILE_RE on driverPhone:
+    - vehicleNumber, driverName, physicalChallanNumber, 
+      vehicleOwnerName, driverPhone
+    
+    Inventory.tsx:2372 challan dispatch button only validates 
+    orderId/sourceId/items. Passes 5 fields as ||null. Allows 
+    dispatch without those fields filled.
+    
+    Both write to the same endpoint.
+
+D2. Fix:
+    Mirror Sales.tsx validation in Inventory.tsx:
+    - Same 5-field check with .trim()
+    - Same INDIAN_MOBILE_RE regex on driverPhone
+    - Disable dispatch button until all 5 fields validate
+    - Don't allow null pass-through
+    
+    Server-side endpoint already enforces (per Phase 3) — this 
+    is closing the UI gap so users can't think their dispatch 
+    will succeed and then get backend error.
+
+D3. Visual feedback:
+    - Required asterisks on all 5 fields
+    - Helper text under driverPhone if regex fails
+    - Disabled button state with tooltip "All 5 fields required"
+
+==========================================================
+SECTION E — HOOKS ORDERING AUDIT
+==========================================================
+
+E1. Audit pattern:
+    For each page in client/src/pages/:
+    - Check for early returns (e.g., if (!user) return ...) 
+      that come BEFORE useState/useQuery/useMutation hooks
+    - Identify violations of React Rules of Hooks
+
+E2. Known fix pattern (from CashAccountDetail.tsx J8 fix):
+    - Move all hooks to top of component
+    - Move conditional return AFTER all hooks
+    - Use enabled: canAccess pattern on useQuery if data shouldn't 
+      load for non-authorized users
+
+E3. Pages to audit:
+    - All client/src/pages/*.tsx that use ProtectedRoute or 
+      conditional <Redirect>
+    - Specifically: Sales.tsx, SupplyChain.tsx, Accounts.tsx, 
+      Inventory.tsx, Pricing.tsx, Reports.tsx, FieldStaff.tsx, 
+      and any others with role-gated content
+
+E4. Don't break working code:
+    If a page has the pattern but isn't currently failing (works 
+    in production despite ordering issue), still fix it 
+    preventively. The bug is latent — it manifests when render 
+    paths change.
+
+==========================================================
+SECTION F — URL PERSISTENCE AUDIT
+==========================================================
+
+F1. Audit pattern:
+    For each tab/page that uses useEffect to sync URL state:
+    - Does it preserve incoming query params?
+    - Or does it rebuild URL from scratch, stripping params 
+      written by other code?
+
+F2. Known fix pattern (from ExpensesTab J8 fix):
+    Preserve incoming query params (especially 'highlight') when 
+    rebuilding URL. ~3 lines per tab.
+
+F3. Tabs to audit:
+    - ExpensesTab.tsx (already fixed — verify)
+    - Supplier Payments tab (Accounts.tsx)
+    - AR Payments tab (Accounts.tsx)
+    - Invoices tab
+    - Sales-related tabs
+    - Any other tabs with URL persistence
+
+F4. Test pattern after fix:
+    - Navigate to tab with ?highlight=X param
+    - Verify highlight persists in URL
+    - Verify highlight applied visually (row scrolled-to or 
+      styled, depending on tab implementation)
+
+==========================================================
+SECTION G — DOCUMENTATION & DATA CLEANUP
+==========================================================
+
+G1. INV-2526-0001 due_date edge case:
+    Add code comment near computeDueDate utility (server/storage.ts 
+    or server/routes.ts):
+    
+    // NOTE: Backfilled due_dates may differ ±1 day from forward-
+    //       going computeDueDate calculation at month boundaries.
+    //       Affects display-only on legacy invoices; aging 
+    //       buckets unaffected. New invoices use computeDueDate 
+    //       utility consistently.
+
+G2. Test Account cleanup:
+    SQL:
+    -- Soft-deactivate option (preserves audit trail):
+    UPDATE cash_accounts SET is_active=false 
+    WHERE name='Test Account';
+    -- Already deactivated per J3, just confirm.
+    
+    -- OR hard delete (cleaner, no transactions linked):
+    -- Verify no transactions linked first:
+    SELECT COUNT(*) FROM customer_payments 
+    WHERE cash_account_id=(SELECT id FROM cash_accounts 
+                            WHERE name='Test Account');
+    -- Same for supplier_payments, expenses, transfers, 
+    -- adjustments, payments
+    -- If all zero: DELETE FROM cash_accounts 
+    --              WHERE name='Test Account';
+    -- If any non-zero: leave deactivated, document
+    
+    Choose: soft (deactivated) or hard (deleted) based on 
+    transaction linkage.
+
+G3. Other follow-up tracker items (from prior phases):
+    Review and either close, defer, or escalate:
+    - K12-B due_date edge case (already documented in G1)
+    - Phase 4A Issue DO + GRN Cancel button history (already 
+      working post-J3 fix, no action)
+    - Cheque clearance lag (deferred to future reconciliation 
+      phase, no action now)
+    - balance_adjustments column rename (done in J1, no action)
+
+==========================================================
+SECTION H — STOP GATE (OPERATOR WALKS)
+==========================================================
+
+H1. Strict floor (Section A):
+    (a) Login as sales_manager. Open quotation. Add line item 
+        with price below floor. Red warning visible. Save 
+        disabled. Tooltip says "Contact admin..."
+    (b) Login as admin. Same line. Save button shows "Save 
+        (Override Floor)" amber. Click → dialog opens.
+    (c) Reason 5 chars: button disabled. 50 chars: enabled.
+    (d) Authorize. Save success. SQL: SELECT is_floor_override, 
+        floor_override_reason, floor_override_by FROM 
+        quotation_items WHERE ... → populated.
+    (e) Audit log: action='floor_override_authorized' present.
+
+H2. PR auto-fill (Section B):
+    (f) Open PR approval dialog with supplier A selected. Note 
+        unit costs.
+    (g) Change supplier to B. Verify line items' unit costs 
+        update from supplier_products. "Prices updated" toast 
+        shown.
+    (h) For products without supplier B price: row stays 
+        unchanged.
+    (i) Manual edit after auto-fill works as before.
+
+H3. Silent-failure hygiene (Section C):
+    (j) Audit doc exists at docs/error-handling-audit.md
+    (k) Spot-check 3 try/catch blocks: each has either pre-
+        existing logging or new console.error
+    (l) Trigger one of the originally-silent patterns (e.g., 
+        force a custom field error). Verify console.error appears 
+        in server logs.
+
+H4. Challan 5-field parity (Section D):
+    (m) Login as warehouse_manager (or whoever uses Inventory 
+        challan flow).
+    (n) Open Inventory challan dispatch. Try to dispatch with 
+        driverPhone empty. Button disabled. Tooltip helpful.
+    (o) Try with bad driverPhone format. Helper text shows.
+    (p) Fill all 5 fields correctly. Dispatch succeeds.
+    (q) Same as Sales.tsx behavior (parity check).
+
+H5. Hooks ordering audit (Section E):
+    (r) Audit completed. Report: list of pages checked, list 
+        of fixes applied (if any).
+    (s) Spot-test 2-3 fixed pages: render correctly for both 
+        admin and non-admin users.
+
+H6. URL persistence audit (Section F):
+    (t) Audit completed. Report: list of tabs checked + fixes.
+    (u) Test highlight param persistence in 3 tabs (e.g., 
+        Expenses already known, plus 2 others).
+
+H7. Documentation & cleanup (Section G):
+    (v) computeDueDate comment present in code.
+    (w) Test Account: SQL confirms either deleted OR documented 
+        as deactivated.
+    (x) Follow-up tracker reviewed, items appropriately closed.
+
+==========================================================
+OUT OF SCOPE FOR THIS PHASE
+==========================================================
+
+- Phase 4C (Financial Dashboard) — separate phase
+- Multi-company fork to Hussain & IT Traders (Phase 5)
+- Sales Invoice detail route (was a Phase 4B drift, defer)
+- React.Fragment warning Sales.tsx (defer if no functional impact)
+- Badge ref warning (defer if no functional impact)
+- Bank statement reconciliation (Cheque clearance lag — future 
+  reconciliation phase)
+- Sales-side cancellation reasons (out of stated scope)
+- New audit log queries beyond what's added by Section A
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Stop after implementation ships and ping me. I will walk H1-H7 
+(~30 items, ~20 min).
+
+Standing rules apply: UI verification with screenshots, backend 
+tests insufficient, no scope drift, only operator declares closure.

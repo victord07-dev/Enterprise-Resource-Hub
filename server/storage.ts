@@ -2563,12 +2563,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createCashAccount(data: InsertCashAccount): Promise<CashAccount> {
-    const [row] = await db.insert(cashAccounts).values(data).returning();
+    const payload: any = { ...data };
+    if (payload.openingBalanceDate && typeof payload.openingBalanceDate === "string") {
+      payload.openingBalanceDate = new Date(payload.openingBalanceDate);
+    }
+    const [row] = await db.insert(cashAccounts).values(payload).returning();
     return row;
   }
 
   async updateCashAccount(id: string, data: Partial<InsertCashAccount>): Promise<CashAccount | undefined> {
-    const [row] = await db.update(cashAccounts).set(data).where(eq(cashAccounts.id, id)).returning();
+    const payload: any = { ...data };
+    if (payload.openingBalanceDate && typeof payload.openingBalanceDate === "string") {
+      payload.openingBalanceDate = new Date(payload.openingBalanceDate);
+    }
+    const [row] = await db.update(cashAccounts).set(payload).where(eq(cashAccounts.id, id)).returning();
     return row;
   }
 
@@ -2602,7 +2610,11 @@ export class DatabaseStorage implements IStorage {
 
   // Account Transfers
   async createAccountTransfer(data: InsertAccountTransfer): Promise<AccountTransfer> {
-    const [row] = await db.insert(accountTransfers).values(data).returning();
+    const payload: any = { ...data };
+    if (payload.transferDate instanceof Date) {
+      payload.transferDate = payload.transferDate.toISOString().slice(0, 10);
+    }
+    const [row] = await db.insert(accountTransfers).values(payload).returning();
     return row;
   }
 
@@ -2622,7 +2634,11 @@ export class DatabaseStorage implements IStorage {
 
   // Balance Adjustments
   async createBalanceAdjustment(data: InsertBalanceAdjustment): Promise<BalanceAdjustment> {
-    const [row] = await db.insert(balanceAdjustments).values(data).returning();
+    const payload: any = { ...data };
+    if (payload.adjustmentDate instanceof Date) {
+      payload.adjustmentDate = payload.adjustmentDate.toISOString().slice(0, 10);
+    }
+    const [row] = await db.insert(balanceAdjustments).values(payload).returning();
     return row;
   }
 

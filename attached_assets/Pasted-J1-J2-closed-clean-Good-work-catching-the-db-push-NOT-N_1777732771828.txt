@@ -1,0 +1,58 @@
+J1+J2 closed clean. Good work catching the db:push NOT NULL revert 
+and self-correcting.
+
+Before proceeding to J3, fix the pre-existing balance adjustment 
+sign bug you flagged. Fix it now while the code is fresh — better 
+than letting J6 catch it after walking other items.
+
+==========================================================
+PRE-J3 FIX — Balance adjustment sign translation
+==========================================================
+
+Current bug:
+- Client sends adjustmentType: "credit"|"debit" + positive 
+  adjustmentAmount
+- Server drops adjustmentType, stores positive value
+- Decrease adjustments are stored as credits (wrong sign)
+
+Fix at server level (cleanest, single source of truth):
+
+In POST /api/balance-adjustments route:
+- Read req.body.adjustmentType (default 'credit' if missing for 
+  backward compat)
+- Read req.body.adjustmentAmount as POSITIVE numeric (validate > 0)
+- Compute signed amount:
+    signedAmount = adjustmentType === 'debit' 
+                     ? -Math.abs(adjustmentAmount) 
+                     : Math.abs(adjustmentAmount)
+- Insert signedAmount into adjustment_amount column
+- Audit log details should mention type + amount:
+  `Balance ${type === 'debit' ? 'decrease' : 'increase'} of 
+   ₹${Math.abs(amount)} on [account]. Reason: ${reason}`
+
+Frontend stays unchanged (sends type + positive amount).
+
+Why server-side translation:
+- Single source of truth
+- Frontend can stay UI-friendly (positive numbers + type label)
+- DB stores signed value cleanly
+- All downstream balance computation already assumes signed value
+  per schema comment
+
+After fix:
+1. Run a test adjustment of "Decrease ₹1000" via POST.
+2. SQL: SELECT adjustment_amount FROM balance_adjustments ORDER 
+   BY created_at DESC LIMIT 1;
+   Verify: stored as -1000 (negative).
+3. Run a test adjustment of "Increase ₹500".
+4. SQL: same. Verify: stored as +500 (positive).
+5. Open HDFC account detail. Verify both adjustments show 
+   correctly in transaction history with correct sign.
+6. Verify account balance reflects net (-1000 + 500 = -500 from
+   adjustments).
+
+After this fix verifies clean, proceed with J3 walk per the 
+6 items I'll send next.
+
+If any other pre-existing bugs surface during this fix, flag 
+them, don't extend scope.

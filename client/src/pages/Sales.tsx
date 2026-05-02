@@ -34,7 +34,8 @@ import {
 type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount } from "@shared/schema";
+import { Banknote, Landmark } from "lucide-react";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
 /** Phase 5 constants */
@@ -1306,7 +1307,7 @@ export default function Sales() {
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
-  const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "" });
+  const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "", cashAccountId: "" });
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
   const [orderDispatchSummaryMap, setOrderDispatchSummaryMap] = useState<Record<string, Array<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }>>>({});
@@ -1619,12 +1620,16 @@ export default function Sales() {
       toast({ title: "Payment recorded" });
       setPaymentDialogOpen(false);
       setPaymentOrderId(null);
-      setPaymentForm({ amount: "", method: "cash", reference: "" });
+      setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  // Phase 4B: cash accounts list for Record Payment dropdown (smart-filtered by method)
+  const { data: cashAccountsForPayment } = useQuery<(CashAccount & { balance?: number })[]>({ queryKey: ["/api/cash-accounts"] });
+  const paymentAccounts = (cashAccountsForPayment ?? []).filter(a => a.isActive && (paymentForm.method === "cash" ? a.type === "cash" : a.type === "bank"));
 
   const generateInvoiceMutation = useMutation({
     mutationFn: async (orderId: string) => {
@@ -1963,7 +1968,7 @@ export default function Sales() {
 
   const openRecordPayment = (orderId: string) => {
     setPaymentOrderId(orderId);
-    setPaymentForm({ amount: "", method: "cash", reference: "" });
+    setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
     setPaymentDialogOpen(true);
   };
 
@@ -3618,7 +3623,7 @@ export default function Sales() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="paymentMethod">Method</Label>
-              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v })}>
+              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v, cashAccountId: "" })}>
                 <SelectTrigger data-testid="select-payment-method">
                   <SelectValue />
                 </SelectTrigger>
@@ -3631,6 +3636,29 @@ export default function Sales() {
               </Select>
             </div>
             <div className="space-y-2">
+              <Label htmlFor="paymentAccount">Account *</Label>
+              <Select value={paymentForm.cashAccountId} onValueChange={(v) => setPaymentForm({ ...paymentForm, cashAccountId: v })}>
+                <SelectTrigger id="paymentAccount" data-testid="select-payment-account">
+                  <SelectValue placeholder="Select account" />
+                </SelectTrigger>
+                <SelectContent>
+                  {paymentAccounts.length === 0 ? (
+                    <SelectItem value="__no_match__" disabled>No active {paymentForm.method === "cash" ? "cash" : "bank"} account — create one in Accounts → Cash Accounts</SelectItem>
+                  ) : (
+                    paymentAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id} data-testid={`option-payment-account-${a.id}`}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
+                      </SelectItem>
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              {!paymentForm.cashAccountId && (
+                <p className="text-xs text-muted-foreground" data-testid="text-payment-account-required">Required — pick the account where this payment was received.</p>
+              )}
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="paymentReference">Reference</Label>
               <Input id="paymentReference" data-testid="input-payment-reference" placeholder="Transaction ID, cheque no., etc." value={paymentForm.reference} onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })} />
             </div>
@@ -3638,12 +3666,16 @@ export default function Sales() {
           <DialogFooter>
             <Button
               data-testid="button-submit-payment"
-              disabled={recordPaymentMutation.isPending || !paymentForm.amount}
+              disabled={recordPaymentMutation.isPending || !paymentForm.amount || !paymentForm.cashAccountId}
               onClick={() => {
+                if (!paymentForm.cashAccountId) {
+                  toast({ title: "Account required", description: "Select the account where this payment was received.", variant: "destructive" });
+                  return;
+                }
                 if (paymentOrderId) {
                   recordPaymentMutation.mutate({
                     orderId: paymentOrderId,
-                    data: { amount: paymentForm.amount, method: paymentForm.method, reference: paymentForm.reference },
+                    data: { amount: paymentForm.amount, method: paymentForm.method, reference: paymentForm.reference, cashAccountId: paymentForm.cashAccountId },
                   });
                 }
               }}

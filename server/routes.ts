@@ -2838,8 +2838,9 @@ export async function registerRoutes(
       const order = await storage.getSalesOrder(req.params.id);
       if (!order) return res.status(404).json({ message: "Order not found" });
 
-      const { amount, method, reference } = req.body;
+      const { amount, method, reference, cashAccountId } = req.body;
       if (!amount || !method) return res.status(400).json({ message: "Amount and method are required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account where this payment was received" });
 
       const paymentAmount = parseFloat(amount);
       if (isNaN(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ message: "Invalid amount" });
@@ -2858,6 +2859,7 @@ export async function registerRoutes(
         status: "completed",
         paymentDate: new Date(),
         reference: reference || `Order ${order.orderNumber}`,
+        cashAccountId,
       });
 
       const updateData: any = { paidAmount: newPaidAmount };
@@ -10577,6 +10579,20 @@ export async function registerRoutes(
       res.json(withBalances);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to fetch accounts" });
+    }
+  });
+
+  // Phase 4B: footnote source for Cash Position page — total of legacy payments not yet attributed to an account
+  app.get("/api/cash-accounts/unattributed-summary", authenticateToken, requireRole("admin"), async (_req, res) => {
+    try {
+      const result = await db.execute(sql`
+        SELECT COUNT(*)::int AS count, COALESCE(SUM(amount::numeric), 0) AS total
+        FROM payments WHERE cash_account_id IS NULL AND status = 'completed'
+      `);
+      const row = result.rows[0] as any;
+      res.json({ count: Number(row?.count ?? 0), totalAmount: Number(row?.total ?? 0) });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to compute unattributed summary" });
     }
   });
 

@@ -271,6 +271,7 @@ export const payments = pgTable("payments", {
   status: text("status").notNull().default("completed"),
   paymentDate: timestamp("payment_date").notNull().defaultNow(),
   reference: text("reference"),
+  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
 });
 
 export const employees = pgTable("employees", {

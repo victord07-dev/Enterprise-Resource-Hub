@@ -2669,6 +2669,14 @@ export class DatabaseStorage implements IStorage {
     `);
     const cpIn = Number((cpResult.rows[0] as any)?.total ?? 0);
 
+    // Phase 4B: legacy sales-order-origin receipts (payments table) — IN direction.
+    // Historic rows with NULL cash_account_id are skipped (Cash Position page shows them in unattributed footnote).
+    const pmtResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS total
+      FROM payments WHERE cash_account_id = ${accountId} AND status = 'completed' ${dateFilter}
+    `);
+    const pmtIn = Number((pmtResult.rows[0] as any)?.total ?? 0);
+
     const spResult = await db.execute(sql`
       SELECT COALESCE(SUM(amount::numeric), 0) AS total
       FROM supplier_payments WHERE cash_account_id = ${accountId} ${dateFilter}
@@ -2699,7 +2707,7 @@ export class DatabaseStorage implements IStorage {
     `);
     const adjNet = Number((adjResult.rows[0] as any)?.total ?? 0);
 
-    return opening + cpIn - spOut - expOut + trIn - trOut + adjNet;
+    return opening + cpIn + pmtIn - spOut - expOut + trIn - trOut + adjNet;
   }
 
   async getAccountStats(accountId: string, fromDate: string, toDate: string): Promise<AccountStats> {

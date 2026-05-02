@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal, Info as InfoIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -86,6 +86,8 @@ export default function Accounts() {
   const { data: supplierInvoices, isLoading: siLoading } = useQuery<SupplierInvoice[]>({ queryKey: ["/api/supplier-invoices"] });
   const { data: supplierPayments, isLoading: spLoading } = useQuery<SupplierPayment[]>({ queryKey: ["/api/supplier-payments"] });
   const { data: cashAccountsData } = useQuery<(CashAccount & { balance: number })[]>({ queryKey: ["/api/cash-accounts"] });
+  // Phase 4B: legacy payments not yet attributed to a specific cash account
+  const { data: unattributedSummary } = useQuery<{ count: number; totalAmount: number }>({ queryKey: ["/api/cash-accounts/unattributed-summary"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
@@ -1013,6 +1015,14 @@ export default function Accounts() {
                 <SlidersHorizontal className="h-4 w-4 mr-2" /> Manage Accounts
               </Button>
             </div>
+            {unattributedSummary && unattributedSummary.count > 0 && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="banner-unattributed-payments">
+                <InfoIcon className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="font-medium">₹{Number(unattributedSummary.totalAmount).toLocaleString()}</span> across <span className="font-medium">{unattributedSummary.count}</span> legacy payment{unattributedSummary.count === 1 ? "" : "s"} not attributed to a specific account. These rows pre-date account tracking and are excluded from the per-account balances above.
+                </div>
+              </div>
+            )}
 
             {cashAccountsData && (() => {
               const totalBank = cashAccountsData.filter(a => a.type === "bank").reduce((s, a) => s + Number(a.balance), 0);

@@ -1,0 +1,331 @@
+Phase 4B implementation acknowledged. Walking J1-J11 stop gate.
+
+Walk all 50 items per spec. For each item, provide:
+- Pass/Fail/Partial verdict
+- For PASS: SQL evidence + screenshot
+- For FAIL: actual vs expected + diagnosis
+- For PARTIAL: what's working vs what's missing
+
+Walk order is sequential J1 → J11. Don't skip ahead.
+
+Standing rules:
+- Operator declares closure, not Replit AI
+- Screenshots for every UI verification (don't trust API tests for 
+  visual elements)
+- Surface bugs honestly; don't try to "fix while walking" without 
+  approval
+- If you find adjacent gaps mid-walk, flag them, don't extend scope
+
+Test data prep before walk:
+- Confirm 4 seed accounts exist with opening_balance = 0
+- Confirm 12 existing payments/expenses backfilled with non-null 
+  cash_account_id
+
+==================================================================
+J1 — SCHEMA AND SEED VERIFICATION
+==================================================================
+
+(a) SQL: \d cash_accounts
+    Verify columns: id, name, type, account_number, opening_balance,
+    opening_balance_date, is_active, notes, created_at, updated_at.
+
+(b) SQL: SELECT name, type, opening_balance FROM cash_accounts;
+    Verify 4 rows: HDFC Bank (bank, 0), ICICI Bank (bank, 0),
+    AXIS Bank (bank, 0), CEO Cash (cash, 0).
+
+(c) SQL: SELECT COUNT(*), COUNT(cash_account_id) FROM 
+    customer_payments;
+    Verify: total count = count of cash_account_id (NOT NULL 
+    constraint applied; no NULL rows).
+
+(d) SQL: same query for supplier_payments and expenses.
+    Verify: NOT NULL constraint applied on both tables.
+
+(e) SQL: \d account_transfers; \d balance_adjustments;
+    Verify: tables exist with correct columns
+    (account_transfers: id, from_account_id, to_account_id, amount,
+     transfer_date, reference, notes, created_by, created_at)
+    (balance_adjustments: id, cash_account_id, adjustment_amount,
+     adjustment_date, reason, adjusted_by, created_at)
+
+==================================================================
+J2 — BACKFILL AUTO-ASSIGNMENT
+==================================================================
+
+(f) SQL: SELECT cash_account_id, ca.name, COUNT(*) 
+    FROM customer_payments cp 
+    JOIN cash_accounts ca ON cp.cash_account_id = ca.id 
+    GROUP BY cash_account_id, ca.name;
+    Verify: All existing customer_payments rows have non-null 
+    cash_account_id, distributed logically by payment method.
+
+(g) Same query for supplier_payments and expenses.
+    Verify: cash payment_method → CEO Cash; bank methods → HDFC.
+
+==================================================================
+J3 — ACCOUNT MANAGEMENT UI (admin-only)
+==================================================================
+
+(h) Login as admin. Open /accounts → Cash Accounts tab.
+    See list of 4 accounts with current balances and opening 
+    balances. Screenshot.
+
+(i) Click "+ New Account". Add "Test Account" (cash type, opening 
+    balance ₹50,000, today). Save. Toast confirms. New account 
+    appears in list. Screenshot before/after.
+
+(j) Edit "Test Account". Change opening balance to ₹1,00,000. Save.
+    SQL: SELECT user_id, action, details FROM audit_logs WHERE 
+    action='cash_account_updated' ORDER BY timestamp DESC LIMIT 1;
+    Verify: audit log entry present.
+
+(k) Deactivate "Test Account" (which has 0 transactions). 
+    Confirmation modal: "Account has 0 transactions. Continue?" 
+    Confirm. Status badge changes to Inactive. Screenshot.
+
+(l) Try to deactivate "HDFC Bank" (which has linked transactions). 
+    Confirmation modal: "Account has X transactions. Deactivating 
+    will hide it from new payment forms but preserve history. 
+    Continue?" Cancel. Status remains Active. Screenshot.
+
+(m) Login as accountant. /accounts page. Cash Accounts tab NOT 
+    visible. Direct URL access /accounts/cash-accounts → 403 OR 
+    redirect. Screenshot.
+
+==================================================================
+J4 — ACCOUNT SELECTION ON PAYMENT FORMS
+==================================================================
+
+(n) Login as admin. Open Sales → existing customer's invoice → 
+    Record Payment dialog. "Cash Account *" dropdown visible. 
+    Required asterisk. Save button disabled until selected. 
+    Screenshot.
+
+(o) Set payment method = bank_transfer. Verify dropdown filters 
+    to ONLY bank-type accounts (HDFC, ICICI, AXIS). Set payment 
+    method = cash. Verify dropdown filters to ONLY cash-type 
+    accounts (CEO Cash). Screenshot both states.
+
+(p) Select HDFC Bank, fill amount, save. SQL: 
+    SELECT cash_account_id FROM customer_payments 
+    ORDER BY created_at DESC LIMIT 1;
+    Verify: HDFC's UUID stored.
+
+(q) Same flow for Supplier Payment in Accounts → Supplier Payments.
+    Cash Account required. Smart dropdown filtering same as (o).
+    Save and verify SQL.
+
+(r) Same for Expense in Accounts → Expenses. Cash payment method 
+    defaults to CEO Cash. Bank method defaults to HDFC. Save and 
+    verify SQL.
+
+==================================================================
+J5 — ACCOUNT-TO-ACCOUNT TRANSFER
+==================================================================
+
+(s) /accounts → Cash Accounts → click an account → "Record Transfer" 
+    button (OR /accounts → Cash Accounts → top "Record Transfer" 
+    button if implemented at list level).
+
+(t) Form: From=HDFC Bank, To=ICICI Bank, Amount=₹50,000, Date=today,
+    Reference="Test transfer for walk J5". Save. Toast confirms.
+    Screenshot.
+
+(u) SQL: SELECT * FROM account_transfers ORDER BY created_at DESC 
+    LIMIT 1;
+    Verify: row inserted with correct from/to/amount/reference.
+
+(v) Audit log: SELECT user_id, action, details FROM audit_logs 
+    WHERE action='transfer_recorded' ORDER BY timestamp DESC 
+    LIMIT 1;
+    Verify: action present with details including amount and 
+    accounts.
+
+(w) Open HDFC Bank account detail. Transaction history shows 
+    outgoing transfer (red, -₹50,000). Screenshot.
+
+(x) Open ICICI Bank account detail. Same transfer shown as 
+    incoming (green, +₹50,000). Screenshot.
+
+(y) Try Transfer From=HDFC, To=HDFC → blocked with validation 
+    error (frontend AND server). Screenshot of error.
+
+==================================================================
+J6 — BALANCE ADJUSTMENT
+==================================================================
+
+(z) Login as accountant. Open HDFC Bank account detail. 
+    "Record Adjustment" button visible. Screenshot.
+
+(aa) Click. Dialog opens with fields: Type (Increase/Decrease), 
+     Amount, Date, Reason (required, min 10 chars). Screenshot.
+
+(bb) Enter reason 5 chars: "Test". Save button disabled. 
+     Enter reason 50 chars: "HDFC quarterly interest credit 
+     received per bank statement." Save button enabled. 
+     Screenshot both states.
+
+(cc) Choose Increase, ₹2,150, today, with the 50-char reason. 
+     Save. Toast confirms.
+
+(dd) SQL: SELECT * FROM balance_adjustments ORDER BY created_at 
+     DESC LIMIT 1;
+     Verify: row inserted with positive ₹2,150, reason, 
+     adjusted_by = accountant user.
+
+(ee) Audit log: SELECT user_id, action, details FROM audit_logs 
+     WHERE action='balance_adjustment_recorded' ORDER BY timestamp 
+     DESC LIMIT 1;
+     Verify: action present with details.
+
+(ff) HDFC Bank current balance reflects the +₹2,150 increase. 
+     Verify both UI display and SQL: 
+     SELECT name, opening_balance + (SELECT 
+       COALESCE(SUM(adjustment_amount),0) FROM balance_adjustments 
+       WHERE cash_account_id = ca.id) FROM cash_accounts ca 
+       WHERE name = 'HDFC Bank';
+
+(gg) Account Detail transaction history shows "Balance Adjustment" 
+     entry with reason in tooltip/detail view. Screenshot.
+
+(hh) Login as field_staff. Try direct URL to record adjustment 
+     on any account → 403 or redirect. Screenshot.
+
+==================================================================
+J7 — CASH POSITION PAGE
+==================================================================
+
+(ii) Open /accounts → Cash Position view (default landing or tab). 
+     See top-level Total Cash Position card + per-account cards.
+     Screenshot.
+
+(jj) Click date range pill "This Month". Cards update to show 
+     month inflows/outflows. Screenshot.
+
+(kk) Click "Custom" date range. Open from/to picker. Select last 
+     7 days. Cards update. Screenshot of picker + updated cards.
+
+(ll) Click HDFC Bank card. Drills to /accounts/cash-accounts/[id] 
+     Account Detail page. Screenshot.
+
+==================================================================
+J8 — ACCOUNT DETAIL PAGE
+==================================================================
+
+(mm) Header shows: account name, type badge, current balance, 
+     opening balance with date, status. Screenshot.
+
+(nn) Date range "Today" filter applied. Shows only today's 
+     transactions. Screenshot.
+
+(oo) Date range "Year" filter. Shows all-year transactions, 
+     paginated (50 per page). Screenshot of page 1.
+
+(pp) On page 2 of paginated history: verify running balance is 
+     correct. SQL spot-check: pick row with running_balance=X, 
+     compute opening_balance + sum of all transaction amounts up 
+     to that row's transaction_date — must match. This tests the 
+     window function pagination logic.
+
+(qq) Transaction type filter: select only "Customer Payment". 
+     List filters to only customer payments in range. Screenshot.
+
+(rr) Click any transaction row → drills to underlying entity 
+     (customer payment detail page, supplier payment, expense, 
+     transfer page, or adjustment detail). Screenshot of 
+     destination page.
+
+==================================================================
+J9 — BALANCE COMPUTATION ACCURACY
+==================================================================
+
+(ss) After all transactions in J3-J6 (test account creation, 
+     transfer, adjustment), compute HDFC Bank balance via SQL:
+     
+     SELECT 
+       (opening_balance 
+        + COALESCE((SELECT SUM(amount) FROM customer_payments 
+                    WHERE cash_account_id = ca.id), 0)
+        + COALESCE((SELECT SUM(amount) FROM account_transfers 
+                    WHERE to_account_id = ca.id), 0)
+        + COALESCE((SELECT SUM(adjustment_amount) FROM 
+                    balance_adjustments WHERE cash_account_id = 
+                    ca.id), 0)
+        - COALESCE((SELECT SUM(amount) FROM supplier_payments 
+                    WHERE cash_account_id = ca.id), 0)
+        - COALESCE((SELECT SUM(amount) FROM expenses 
+                    WHERE cash_account_id = ca.id), 0)
+        - COALESCE((SELECT SUM(amount) FROM account_transfers 
+                    WHERE from_account_id = ca.id), 0)
+       ) AS computed_balance
+     FROM cash_accounts ca WHERE name = 'HDFC Bank';
+     
+     Compare against UI display. Must match exactly to ₹0.01.
+
+==================================================================
+J10 — AUTHORIZATION SPOT CHECKS
+==================================================================
+
+(tt) Login as sales_manager:
+     - Cannot see Cash Accounts management tab (verify by visit)
+     - Cannot record balance adjustment (direct URL → 403/redirect)
+     - CAN record customer payment with account selection 
+       (positive test)
+     Screenshots of all three.
+
+(uu) Login as warehouse_manager:
+     - Same restrictions as sales_manager
+     - Plus: cannot create/edit/deactivate accounts
+     Screenshots.
+
+(vv) Login as field_staff:
+     - Cannot access /accounts at all (redirected away)
+     Screenshot.
+
+(ww) Login as kiosk:
+     - Redirected to /kiosk
+     Screenshot.
+
+==================================================================
+J11 — REGRESSION (Phase 1, 2, 3, 4A)
+==================================================================
+
+(xx) Sales workflow: customer payment recording works (now with 
+     account selection). End-to-end: customer → invoice → record 
+     payment with account → verify SQL.
+
+(yy) Purchase workflow: supplier payment recording works (with 
+     account selection). End-to-end SQL verified.
+
+(zz) Expense recording works (with account selection). End-to-end 
+     SQL verified.
+
+(aaa) GRN auto-supplier-invoice still fires on confirm (Phase 4A). 
+      Confirm a draft GRN → check supplier_invoices for auto-
+      created row.
+
+(bbb) Credit override flows (sales + purchase) still work 
+      (Phase 4A). Spot-test one credit dispatch and one credit GRN.
+
+(ccc) Outstanding dues block on SO creation still works 
+      (Phase 4A). Pick a customer with outstanding dues, attempt 
+      to create SO. Verify block.
+
+(ddd) PO PDF download still works (Phase 4A + Phase 2). Download 
+      a PO PDF, verify GST snapshot data.
+
+(eee) AR/AP aging reports still show credit badges (Phase 4A). 
+      Open /reports → AR Aging → confirm Credit Sale badge. AP 
+      Aging → confirm Credit GRN badge.
+
+(fff) Phase 3 5-mandatory-field challan workflow still works.
+
+(ggg) Phase 3 GRN simplification still works (text-only supplier 
+      challan number).
+
+(hhh) Hierarchical picker on Sales + PO still works (Phase 2).
+
+==================================================================
+
+Begin walk now. Run J1 + J2 (SQL probes) first. Report results 
+before moving to UI walks.

@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import type { DeliveryChallan, DeliveryChallanItem, Customer, Product } from "@shared/schema";
+import { COMPANY } from "@shared/letterhead";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -13,15 +14,6 @@ const COLORS = {
   infoBg:        [248, 250, 252] as [number, number, number],
   draftRed:      [220, 38, 38]  as [number, number, number],
   dividerMid:    [203, 213, 225] as [number, number, number],
-};
-
-const COMPANY = {
-  name:    "IT Futuristic Industries Pvt. Ltd.",
-  gstin:   "18AAICI6408B1ZR",
-  phone:   "+91 80115 35537",
-  email:   "info@itfi.co.in",
-  website: "www.itfi.co.in",
-  address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
 };
 
 function fmt(val: number | string | null | undefined): string {

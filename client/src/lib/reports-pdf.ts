@@ -1,4 +1,5 @@
 import jsPDF from "jspdf";
+import { COMPANY } from "@shared/letterhead";
 
 const C = {
   headerBg: [30, 41, 59] as [number, number, number],
@@ -38,12 +39,12 @@ function drawHeader(doc: jsPDF, title: string, subtitle: string): number {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15);
   doc.setTextColor(...C.headerText);
-  doc.text("ITFI Group", M, 11);
+  doc.text(COMPANY.shortName, M, 11);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.setTextColor(...C.subText);
-  doc.text("Enterprise Resource Planning", M, 17);
+  doc.text(COMPANY.tagline, M, 17);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);

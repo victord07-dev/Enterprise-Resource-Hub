@@ -6,6 +6,7 @@
 
 import { jsPDF } from "jspdf";
 import type { PurchaseOrder, PurchaseOrderItem, Supplier, Product } from "@shared/schema";
+import { COMPANY, SHIP_TO, SIGNATORY } from "@shared/letterhead";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -16,22 +17,6 @@ const COLORS = {
   tableHeader:   [241, 245, 249] as [number, number, number],
   white:         [255, 255, 255] as [number, number, number],
   infoBg:        [248, 250, 252] as [number, number, number],
-};
-
-const COMPANY = {
-  name:    "IT Futuristic Industries Pvt. Ltd.",
-  gstin:   "18AAICI6408B1ZR",
-  phone:   "+91 80115 35537",
-  email:   "info@itfi.co.in",
-  website: "www.itfi.co.in",
-  address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
-};
-
-const SHIP_TO = "IT Futuristic Industries Pvt. Ltd.\nDag No: 471, Goroimaria Pathar Aibheti\nNagaon — 782002, Assam\nGSTIN: 18AAICI6408B1ZR";
-
-const SIGNATORY = {
-  name:        "Authorised Signatory",
-  designation: "For IT Futuristic Industries Pvt. Ltd.",
 };
 
 const PO_TERMS = [

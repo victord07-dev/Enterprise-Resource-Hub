@@ -1376,6 +1376,26 @@ export const debugPayloadCaptures = pgTable("debug_payload_captures", {
 
 export type DebugPayloadCapture = typeof debugPayloadCaptures.$inferSelect;
 
+// ── Phase 4C — Report Generation Log ──────────────────────────────────────────
+// Compliance-grade record of every financial report download. Mirrors a row
+// into audit_logs as well (action='report_generated', module='reports').
+export const reportGenerationLog = pgTable("report_generation_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  reportType: text("report_type").notNull(),
+  generatedBy: varchar("generated_by").notNull(),
+  generatedAt: timestamp("generated_at").notNull().defaultNow(),
+  filters: jsonb("filters"),
+  format: text("format").notNull(), // 'pdf' | 'excel' | 'json'
+  fileSizeBytes: integer("file_size_bytes"),
+}, (t) => [
+  index("idx_report_gen_log_type_at").on(t.reportType, t.generatedAt),
+  index("idx_report_gen_log_user").on(t.generatedBy),
+]);
+
+export const insertReportGenerationLogSchema = createInsertSchema(reportGenerationLog).omit({ id: true, generatedAt: true });
+export type ReportGenerationLog = typeof reportGenerationLog.$inferSelect;
+export type InsertReportGenerationLog = z.infer<typeof insertReportGenerationLogSchema>;
+
 export const insertWhatsappConversationSchema = createInsertSchema(whatsappConversations).omit({ id: true, createdAt: true, lastMessageAt: true });
 export const insertWhatsappMessageSchema = createInsertSchema(whatsappMessages).omit({ id: true, createdAt: true });
 export const insertWhatsappTemplateSchema = createInsertSchema(whatsappTemplates).omit({ id: true, createdAt: true });

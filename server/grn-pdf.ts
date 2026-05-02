@@ -1,4 +1,5 @@
 import { jsPDF } from "jspdf";
+import { COMPANY as SHARED_COMPANY } from "@shared/letterhead";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -12,11 +13,13 @@ const COLORS = {
   watermarkGray: [150, 150, 150] as [number, number, number],
 };
 
+// GRN historically used an em-dash variant of the address. Preserve while
+// pulling the rest from shared so single-source-of-truth holds.
 const COMPANY = {
-  name:    "IT Futuristic Industries Pvt. Ltd.",
-  gstin:   "18AAICI6408B1ZR",
-  phone:   "+91 80115 35537",
-  email:   "info@itfi.co.in",
+  name:    SHARED_COMPANY.name,
+  gstin:   SHARED_COMPANY.gstin,
+  phone:   SHARED_COMPANY.phone,
+  email:   SHARED_COMPANY.email,
   address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon — 782002, Assam",
 };
 

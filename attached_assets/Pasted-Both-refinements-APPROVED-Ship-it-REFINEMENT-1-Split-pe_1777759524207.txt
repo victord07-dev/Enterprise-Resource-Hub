@@ -1,0 +1,47 @@
+Both refinements APPROVED. Ship it.
+
+REFINEMENT 1 — Split pending widget into 2 lines: APPROVED
+- "Supplier invoices awaiting signed-copy upload: 5" 
+  → links to Accounts > Supplier Invoices filtered by 
+    upload_status='pending_upload'
+- "Overdue supplier payments: 0" → links to AP Aging
+- Two distinct CEO actions, deserves separate visibility
+
+REFINEMENT 2 — Excel server-side asymmetry: APPROVED
+- PDFs render client-side via jsPDF (existing pattern)
+- Excel files generated server-side via ExcelJS, streamed as 
+  binary download
+- 2-3s download latency acceptable for accountant workflow
+- Architecturally correct; don't try to force symmetry
+
+NOT IN ('paid','cancelled') correction also approved — catches 
+partial_paid status correctly, more accurate than != 'paid'.
+
+Proceed with execution order as planned:
+1. Install exceljs + report_generation_log schema + indexes + 
+   db:push
+2. Build letterhead.ts + format.ts shared modules
+3. Refactor 6 existing PDFs to use shared letterhead → spot-test 
+   each renders identically → commit BEFORE building new reports
+4. Build DateRangeFilter.tsx + financial-aggregations.ts + 
+   excel-export.ts foundation
+5. Dashboard implementation (combined snapshot endpoint + 
+   widget components split into client/src/components/dashboard/*)
+6. Reports in order: C → D → E/F (extend AR/AP) → G → H → I → 
+   J → K → L → M
+
+Critical checkpoint: after step 3 (letterhead refactor + 
+existing PDF spot-tests), pause and confirm all 6 existing PDFs 
+still render correctly. If any regression: rollback that commit 
+cleanly before proceeding. This protects existing functionality 
+while enabling new reports.
+
+Standing rules apply throughout:
+- UI verification with screenshots, not just backend tests
+- Throwaway-data discipline: NEVER use existing real records 
+  for test writes
+- No scope drift outside Sections A-M
+- Surface gaps mid-build, don't silently extend
+- Only operator declares closure
+
+Ship and ping me when ready for N1-N17 walk (~70 items, ~50 min).

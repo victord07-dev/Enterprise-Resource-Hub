@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import type { Quotation, QuotationItem, Customer, Product } from "@shared/schema";
+import { COMPANY, BANKING } from "@shared/letterhead";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -12,32 +13,6 @@ const COLORS = {
   white:         [255, 255, 255] as [number, number, number],
   infoBg:        [248, 250, 252] as [number, number, number],
 };
-
-const COMPANY = {
-  name:    "IT Futuristic Industries Pvt. Ltd.",
-  gstin:   "18AAICI6408B1ZR",
-  phone:   "+91 80115 35537",
-  email:   "info@itfi.co.in",
-  website: "www.itfi.co.in",
-  address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
-};
-
-const BANKING = [
-  {
-    bank:   "HDFC Bank",
-    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
-    branch: "Haibargaon, Nagaon",
-    acNo:   "99999365647772",
-    ifsc:   "HDFC0002036",
-  },
-  {
-    bank:   "State Bank of India",
-    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
-    branch: "Nagaon",
-    acNo:   "44833748463",
-    ifsc:   "SBIN0000146",
-  },
-];
 
 const TERMS = [
   "All prices are inclusive of 5% GST.",

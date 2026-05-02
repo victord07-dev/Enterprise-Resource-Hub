@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import QRCode from "qrcode";
 import type { Employee } from "@shared/schema";
+import { COMPANY } from "@shared/letterhead";
 
 function getInitials(name: string) {
   return name
@@ -54,7 +55,7 @@ export async function downloadIdCardPDF(employee: Employee) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(7);
   doc.setTextColor(255, 255, 255);
-  doc.text("ITFI Group", 11, 5.7);
+  doc.text(COMPANY.shortName, 11, 5.7);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(5.5);

@@ -8,6 +8,7 @@ import {
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
   debugPayloadCaptures, type DebugPayloadCapture,
+  reportGenerationLog, type ReportGenerationLog, type InsertReportGenerationLog,
   expenseCategories, expenses, type ExpenseCategory, type Expense, type InsertExpense, type InsertExpenseCategory,
   cashAccounts, accountTransfers, balanceAdjustments,
   type CashAccount, type AccountTransfer, type BalanceAdjustment,
@@ -320,6 +321,10 @@ export interface IStorage {
   // Audit Logs
   getAuditLogs(): Promise<AuditLog[]>;
   createAuditLog(log: { userId: string; action: string; module: string; details?: string; ipAddress?: string }): Promise<AuditLog>;
+
+  // Report Generation Log (Phase 4C)
+  createReportGenerationLog(data: InsertReportGenerationLog): Promise<ReportGenerationLog>;
+  listReportGenerationLogs(reportType?: string, limit?: number): Promise<ReportGenerationLog[]>;
 
   // Notifications
   getNotifications(userId: string): Promise<Notification[]>;
@@ -1223,6 +1228,21 @@ export class DatabaseStorage implements IStorage {
   async createAuditLog(log: { userId: string; action: string; module: string; details?: string; ipAddress?: string }): Promise<AuditLog> {
     const [created] = await db.insert(auditLogs).values(log).returning();
     return created;
+  }
+
+  // Report Generation Log (Phase 4C)
+  async createReportGenerationLog(data: InsertReportGenerationLog): Promise<ReportGenerationLog> {
+    const [created] = await db.insert(reportGenerationLog).values(data).returning();
+    return created;
+  }
+
+  async listReportGenerationLogs(reportType?: string, limit = 100): Promise<ReportGenerationLog[]> {
+    const q = db.select().from(reportGenerationLog);
+    if (reportType) {
+      return q.where(eq(reportGenerationLog.reportType, reportType))
+        .orderBy(desc(reportGenerationLog.generatedAt)).limit(limit);
+    }
+    return q.orderBy(desc(reportGenerationLog.generatedAt)).limit(limit);
   }
 
   // Notifications

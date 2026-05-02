@@ -1,14 +1,23 @@
-import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getUser } from "@/lib/auth";
+import { getUser, getToken } from "@/lib/auth";
 import { useQuery } from "@tanstack/react-query";
-import { IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Phone, Mail, MapPin, MessageCircle, Receipt, Plus } from "lucide-react";
-import ExpenseDialog from "@/components/ExpenseDialog";
+import {
+  IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle,
+  ArrowRight, CalendarClock, CheckCircle2,
+} from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
 import type { SalesOrder, AuditLog, PayrollStatus } from "@shared/schema";
+
+import DateRangeFilter, { useDateRange } from "@/components/DateRangeFilter";
+import MetricCardsRow, { type PeriodTotals } from "@/components/dashboard/MetricCardsRow";
+import CashPositionStrip, { type AccountBalance } from "@/components/dashboard/CashPositionStrip";
+import TopCustomersWidget, { type TopCustomer } from "@/components/dashboard/TopCustomersWidget";
+import TopSuppliersWidget, { type TopSupplier } from "@/components/dashboard/TopSuppliersWidget";
+import RecentActivityFeed, { type ActivityEvent } from "@/components/dashboard/RecentActivityFeed";
+import PendingActionsWidget, { type PendingActions } from "@/components/dashboard/PendingActionsWidget";
 
 const revenueData = [
   { day: "Mon", value: 2400 },
@@ -35,12 +44,24 @@ function getRelativeTime(timestamp: string | Date): string {
 
 const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
+interface FinancialSnapshot {
+  period: { from: string | null; to: string | null };
+  periodTotals: PeriodTotals;
+  cashPosition: AccountBalance[];
+  topCustomers: TopCustomer[];
+  topSuppliers: TopSupplier[];
+  recentActivity: ActivityEvent[];
+  pendingActions: PendingActions;
+}
+
+const FINANCE_ROLES = ["admin", "accountant"] as const;
+
 export default function Dashboard() {
   const user = getUser();
   const [, setLocation] = useLocation();
-  const [expenseDialogOpen, setExpenseDialogOpen] = useState(false);
-  const EXPENSE_ALLOWED_ROLES = ["admin", "accountant", "sales_manager", "hr_manager", "warehouse_manager"];
-  const showExpenseCard = !!user && EXPENSE_ALLOWED_ROLES.includes(user.role);
+  const isFinanceUser = !!user && (FINANCE_ROLES as readonly string[]).includes(user.role);
+
+  const dateRange = useDateRange("this_month");
 
   const today = new Date();
   const lastMonth = today.getMonth() === 0 ? 11 : today.getMonth() - 1;
@@ -60,14 +81,23 @@ export default function Dashboard() {
     queryKey: ["/api/followups/today"],
   });
 
-  const { data: todaysExpenses, isLoading: expensesLoading } = useQuery<{ totalAmount: number; count: number; byCategory: Array<{ categoryId: string; categoryName: string; color: string; amount: number; count: number }> }>({
-    queryKey: ["/api/expenses/summary", { scope: "today" }],
+  // Phase 4C — combined financial snapshot (admin/accountant only).
+  // Refetches when date range changes (via query key) and every 60s while
+  // mounted (for recent activity freshness). Also on window focus.
+  const { data: snapshot, isLoading: snapshotLoading } = useQuery<FinancialSnapshot>({
+    queryKey: ["/api/dashboard/snapshot", dateRange.fromIso ?? "", dateRange.toIso ?? ""],
     queryFn: async () => {
-      const res = await fetch("/api/expenses/summary?scope=today", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to load");
+      const params = new URLSearchParams();
+      if (dateRange.fromIso) params.set("from", dateRange.fromIso);
+      if (dateRange.toIso)   params.set("to",   dateRange.toIso);
+      const url = `/api/dashboard/snapshot${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, { credentials: "include", headers: authHeaders() });
+      if (!res.ok) throw new Error("Failed to load snapshot");
       return res.json();
     },
-    enabled: showExpenseCard,
+    enabled: isFinanceUser,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: stats, isLoading } = useQuery<{
@@ -174,6 +204,40 @@ export default function Dashboard() {
         ))}
       </div>
 
+      {/* ────────── Phase 4C — Financial snapshot section (admin / accountant) ────────── */}
+      {isFinanceUser && (
+        <section className="space-y-4 pt-2 border-t" data-testid="section-financial-snapshot">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-lg font-semibold">Financial Snapshot</h2>
+              <p className="text-xs text-muted-foreground">
+                Period totals, cash on hand, and pending actions across accounts.
+              </p>
+            </div>
+            <DateRangeFilter
+              value={{ from: dateRange.from, to: dateRange.to, presetKey: dateRange.presetKey }}
+              onChange={dateRange.setRange}
+              align="end"
+            />
+          </div>
+
+          <MetricCardsRow data={snapshot?.periodTotals} isLoading={snapshotLoading} />
+
+          <CashPositionStrip data={snapshot?.cashPosition} isLoading={snapshotLoading} />
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <TopCustomersWidget data={snapshot?.topCustomers} isLoading={snapshotLoading} />
+            <TopSuppliersWidget data={snapshot?.topSuppliers} isLoading={snapshotLoading} />
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <RecentActivityFeed data={snapshot?.recentActivity} isLoading={snapshotLoading} />
+            <PendingActionsWidget data={snapshot?.pendingActions} isLoading={snapshotLoading} />
+          </div>
+        </section>
+      )}
+
+      {/* ────────── Existing widgets (all roles) ────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
@@ -216,7 +280,7 @@ export default function Dashboard() {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold">Recent Activity</CardTitle>
+            <CardTitle className="text-base font-semibold">Audit Trail</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -312,76 +376,13 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
-
-      {showExpenseCard && (
-        <Card data-testid="card-todays-expenses">
-          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
-            <div className="flex items-center gap-2">
-              <Receipt className="w-4 h-4 text-rose-500" />
-              <CardTitle className="text-base font-semibold">Today's Expenses</CardTitle>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => setLocation("/accounts?tab=expenses")} data-testid="button-view-expenses">
-                View all <ArrowRight className="w-3 h-3 ml-1" />
-              </Button>
-              <Button size="sm" onClick={() => setExpenseDialogOpen(true)} data-testid="button-record-expense">
-                <Plus className="w-4 h-4 mr-1" /> Record Expense
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="rounded-md border p-3" data-testid="kpi-expenses-total">
-                <p className="text-xs text-muted-foreground">Total</p>
-                <p className="text-lg font-semibold tabular-nums">
-                  ₹{(todaysExpenses?.totalAmount ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-                </p>
-              </div>
-              <div className="rounded-md border p-3" data-testid="kpi-expenses-count">
-                <p className="text-xs text-muted-foreground">Count</p>
-                <p className="text-lg font-semibold tabular-nums">{todaysExpenses?.count ?? 0}</p>
-              </div>
-              <div className="rounded-md border p-3" data-testid="kpi-expenses-top-category">
-                <p className="text-xs text-muted-foreground">Top category</p>
-                <p className="text-sm font-semibold truncate">
-                  {todaysExpenses?.byCategory?.[0]?.categoryName ?? "—"}
-                </p>
-              </div>
-            </div>
-            {expensesLoading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-9 w-full" />
-                ))}
-              </div>
-            ) : todaysExpenses && todaysExpenses.byCategory.length > 0 ? (
-              <div className="space-y-2">
-                {todaysExpenses.byCategory.slice(0, 5).map(b => (
-                  <div key={b.categoryId} className="flex items-center justify-between gap-3 p-2 rounded-md hover:bg-muted/40 transition-colors" data-testid={`expense-category-${b.categoryId}`}>
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: b.color }} />
-                      <span className="text-sm font-medium truncate">{b.categoryName}</span>
-                      <span className="text-xs text-muted-foreground">({b.count})</span>
-                    </div>
-                    <span className="text-sm font-semibold tabular-nums">₹{b.amount.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
-                  </div>
-                ))}
-                {todaysExpenses.byCategory.length > 5 && (
-                  <p className="text-xs text-muted-foreground text-center pt-1">+{todaysExpenses.byCategory.length - 5} more categor{todaysExpenses.byCategory.length - 5 > 1 ? "ies" : "y"}</p>
-                )}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-6 text-center" data-testid="expenses-empty">
-                <Receipt className="w-10 h-10 text-muted-foreground/50 mb-2" />
-                <p className="text-sm font-medium text-muted-foreground">No expenses recorded today</p>
-                <p className="text-xs text-muted-foreground mt-0.5">Click "Record Expense" to add one.</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      <ExpenseDialog open={expenseDialogOpen} onOpenChange={setExpenseDialogOpen} />
     </div>
   );
+}
+
+// JWT auth header for fetch() calls (TanStack default fetcher already does this,
+// but our custom queryFn needs it explicitly).
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }

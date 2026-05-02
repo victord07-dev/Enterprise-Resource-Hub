@@ -814,6 +814,56 @@ export async function registerRoutes(
     }
   });
 
+  // Phase 4C — Financial dashboard combined snapshot (admin + accountant only).
+  // Returns all 6 widget feeds in one round-trip, scoped to the requested
+  // date range. Period-independent feeds (cash position, recent activity,
+  // pending actions) ignore from/to; period-dependent feeds (period totals,
+  // top customers, top suppliers) honor it.
+  app.get(
+    "/api/dashboard/snapshot",
+    authenticateToken,
+    requireRole("admin", "accountant"),
+    async (req: any, res) => {
+      try {
+        const fromQ = typeof req.query.from === "string" ? req.query.from : undefined;
+        const toQ   = typeof req.query.to   === "string" ? req.query.to   : undefined;
+        const period = { from: fromQ, to: toQ };
+
+        const {
+          getCashPositionPerAccount,
+          getPeriodTotals,
+          getTopCustomers,
+          getTopSuppliers,
+          getRecentActivity,
+          getPendingActions,
+        } = await import("./lib/financial-aggregations");
+
+        const [cashPosition, periodTotals, topCustomers, topSuppliers, recentActivity, pendingActions] =
+          await Promise.all([
+            getCashPositionPerAccount(),
+            getPeriodTotals(period),
+            getTopCustomers(period, 5),
+            getTopSuppliers(period, 5),
+            getRecentActivity(20),
+            getPendingActions(),
+          ]);
+
+        res.json({
+          period: { from: fromQ ?? null, to: toQ ?? null },
+          periodTotals,
+          cashPosition,
+          topCustomers,
+          topSuppliers,
+          recentActivity,
+          pendingActions,
+        });
+      } catch (error) {
+        console.error("Dashboard snapshot error:", error);
+        res.status(500).json({ message: "Failed to fetch dashboard snapshot" });
+      }
+    },
+  );
+
   // ======================== USERS ========================
   app.get("/api/users", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {

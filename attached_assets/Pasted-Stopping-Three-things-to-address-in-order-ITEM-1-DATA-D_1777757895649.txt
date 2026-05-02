@@ -1,0 +1,95 @@
+Stopping. Three things to address in order:
+
+ITEM 1 — DATA DAMAGE RECOVERY:
+
+Confirm before deletion:
+1. Was QT-2026-002 (SunPeak Energy) status='draft' before damage? 
+   SQL: check the audit_logs for original status when you wrote 
+   the test
+2. Was the SO ('Solar Panel 300W' linked) status='draft'?
+3. Are there any payments, invoices, challans, or other downstream 
+   records linked to either?
+   - SQL: SELECT * FROM sales_invoices WHERE so_id = '87a2955f...'
+   - SQL: SELECT * FROM delivery_challans WHERE order_id = ...
+   - SQL: SELECT * FROM customer_payments WHERE order_id = ...
+   - Same for quotation linkages
+
+If both confirmed drafts AND zero downstream records:
+- Hard delete both records entirely (option D)
+- I'll re-create SunPeak quote from scratch in UI
+- Audit log entry recording the damage + recovery decision
+
+If either has downstream records:
+- STOP. Don't delete. Surface details.
+- I'll evaluate case-by-case.
+
+Do NOT roll back to checkpoint 768203a. That undoes all approved 
+Phase 4 cleanup work. Too expensive.
+
+Don't attempt audit_log reconstruction. Partial reconstruction 
+is worse than clean delete.
+
+ITEM 2 — STANDING RULE BREACH ACKNOWLEDGMENT:
+
+Three unauthorized writes occurred during Phase 4 cleanup:
+1. Backdated MC4 Connector price sheet (2026-12-01 → 2026-05-02)
+2. Restored same sheet (2026-05-02 → 2026-12-01)  
+3. Test POSTs that wiped QT-2026-002 + SO items
+
+Acknowledge these in writing in the project journal/replit.md or 
+wherever standing rules are documented.
+
+Going forward, the rule is non-negotiable:
+- "Test data" means YOU create a throwaway record, then test 
+  against it, then delete it
+- NEVER use existing real records (even drafts) for write tests
+- NEVER modify production data (including price sheets, even 
+  test ones) without operator authorization
+- Even if it's "just dummy data" for now — every record could 
+  become real when CEO does cutover
+
+If this happens again in any future phase, it's an automatic 
+phase reset.
+
+ITEM 3 — FLOOR OVERRIDE END-TO-END VERIFICATION:
+
+The role gate code is correctly ordered (your analysis was right).
+But the override flow has never actually fired because no current 
+price sheet covers the test products.
+
+To verify end-to-end, we need a real floor breach scenario. 
+Authorized approach:
+
+1. Create a NEW throwaway product for testing:
+   - SQL: INSERT INTO products (name, ...) VALUES 
+     ('TEST-FLOOR-PRODUCT', ...)
+2. Create a NEW current-dated price sheet for it with a known 
+   floor:
+   - SQL: INSERT INTO daily_price_sheets WHERE product_id = X, 
+     date = today, strict_floor_price = 100, status = 'confirmed'
+3. Create a NEW throwaway quotation:
+   - Create via UI as admin, customer = a test customer (not 
+     real one)
+4. Add a line item with price below ₹100:
+   - Test 1: As sales_manager via API → expect 403 (role gate)
+   - Test 2: As admin without floor reason → expect 422 (reason 
+     gate)
+   - Test 3: As admin with floor reason ≥10 chars → expect 201 
+     with isFloorOverride=true
+5. Verify SQL: is_floor_override=true, floor_override_reason 
+   present, floor_override_by=admin
+6. Verify audit log entry: action='floor_override_authorized'
+7. After verification: hard delete the test product, test quote, 
+   test price sheet
+8. Report results + cleanup confirmation
+
+Do NOT modify any existing products, sheets, customers, or 
+documents. Only create-then-delete in dedicated scope.
+
+Process flow:
+1. Address Item 1 (recovery)
+2. Acknowledge Item 2 in writing
+3. Execute Item 3 with throwaway data only
+4. Then I authorize H1-H7 walk
+
+Do not skip any of these. Standing rules apply.

@@ -10710,11 +10710,37 @@ export async function registerRoutes(
 
   app.post("/api/balance-adjustments", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
-      if (Number(req.body.adjustmentAmount) === 0) {
-        return res.status(400).json({ message: "Adjustment amount cannot be zero" });
+      const { cashAccountId, adjustmentType, adjustmentAmount, adjustmentDate, reason } = req.body;
+      const rawAmt = Number(adjustmentAmount);
+      if (!Number.isFinite(rawAmt) || rawAmt <= 0) {
+        return res.status(400).json({ message: "Adjustment amount must be a positive number" });
       }
-      const adjustment = await storage.createBalanceAdjustment({ ...req.body, adjustedBy: req.user.id });
-      await logAction(req.user.id, "create", "balance_adjustments", JSON.stringify({ id: adjustment.id, cashAccountId: adjustment.cashAccountId, adjustmentAmount: adjustment.adjustmentAmount }));
+      if (!cashAccountId || !adjustmentDate || !reason || !String(reason).trim()) {
+        return res.status(400).json({ message: "cashAccountId, adjustmentDate, and reason are required" });
+      }
+      const account = await storage.getCashAccount(cashAccountId);
+      if (!account) {
+        return res.status(404).json({ message: "Cash account not found" });
+      }
+      // Sign translation: 'debit' => negative, anything else (incl. default 'credit') => positive.
+      const type: "credit" | "debit" = adjustmentType === "debit" ? "debit" : "credit";
+      const signedAmount = (type === "debit" ? -1 : 1) * Math.abs(rawAmt);
+
+      const adjustment = await storage.createBalanceAdjustment({
+        cashAccountId,
+        adjustmentAmount: signedAmount.toFixed(2),
+        adjustmentDate,
+        reason: String(reason).trim(),
+        adjustedBy: req.user.id,
+      });
+
+      const verb = type === "debit" ? "decrease" : "increase";
+      await logAction(
+        req.user.id,
+        "create",
+        "balance_adjustments",
+        `Balance ${verb} of ₹${Math.abs(rawAmt).toFixed(2)} on ${account.name}. Reason: ${String(reason).trim()}`
+      );
       res.status(201).json(adjustment);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create adjustment" });

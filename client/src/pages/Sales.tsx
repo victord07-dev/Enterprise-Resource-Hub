@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, Fragment } from "react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -63,6 +64,7 @@ interface LineItem {
   gstRate: number;
   hsnCode: string;
   taxAmount: number;
+  customComponents?: Array<{ componentProductId: string; quantity: number; unit: string }> | null;
 }
 
 const ORDER_STATUSES = [
@@ -153,7 +155,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function emptyLineItem(): LineItem {
-  return { itemType: "product", productId: "", description: "", quantity: 1, unitPrice: 0, totalPrice: 0, gstRate: 0, hsnCode: "", taxAmount: 0 };
+  return { itemType: "product", productId: "", description: "", quantity: 1, unitPrice: 0, totalPrice: 0, gstRate: 0, hsnCode: "", taxAmount: 0, customComponents: null };
 }
 
 interface DiscountState {
@@ -364,6 +366,12 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   } | null>(null);
   // Collapsed rows: indices that have been confirmed and show as compact summary
   const [collapsedItems, setCollapsedItems] = useState<Set<number>>(new Set());
+  // Bundle component edit mode state
+  const [bundleEditMode, setBundleEditMode] = useState<Set<number>>(new Set());
+  const [bundleAddSearch, setBundleAddSearch] = useState<Record<number, string>>({});
+  const [bundleAddQty, setBundleAddQty] = useState<Record<number, number>>({});
+  const [bundleAddUnit, setBundleAddUnit] = useState<Record<number, string>>({});
+  const [bundleAddPopover, setBundleAddPopover] = useState<Record<number, boolean>>({});
   const { toast: lineToast } = useToast();
 
   /** Badge label + CSS class for component lifecycle status inside bundle panels. */
@@ -477,9 +485,12 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     }
     updated[index] = item;
     onChange(updated);
-    // Auto-collapse the row once a valid product is confirmed
+    // Auto-collapse the row once a valid product is confirmed — but keep bundle rows expanded so the components panel stays visible
     if (field === "productId" && value) {
-      setCollapsedItems(prev => { const next = new Set(prev); next.add(index); return next; });
+      const selectedProd = products.find(p => p.id === value);
+      if (selectedProd?.type !== "bundle") {
+        setCollapsedItems(prev => { const next = new Set(prev); next.add(index); return next; });
+      }
     }
   };
 
@@ -601,65 +612,170 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               </div>
             );
           })()}
-          {/* Phase 7 — Bundle components panel: lists each component (qty × unit) under the bundle line,
-               with informational stock badges and a per-component lifecycle pill. No prices shown. */}
+          {/* Phase 7/98 — Bundle components panel (editable per-quotation) */}
           {(() => {
             if (!item.productId) return null;
             const prod = products.find(p => p.id === item.productId);
             if (!prod || prod.type !== "bundle") return null;
-            const comps = bundleComponentsMap[prod.id];
-            if (!comps) {
+            const masterComps = bundleComponentsMap[prod.id];
+            const hasCustom = Array.isArray(item.customComponents) && item.customComponents.length > 0;
+            const effectiveComps: BundleItemRow[] = hasCustom
+              ? (item.customComponents as Array<{ componentProductId: string; quantity: number; unit: string }>)
+              : (masterComps ?? []);
+            const isEditing = bundleEditMode.has(i);
+
+            const enterEdit = () => {
+              if (!hasCustom) {
+                const seed = (masterComps ?? []).map(c => ({
+                  componentProductId: c.componentProductId,
+                  quantity: Number(c.quantity) || 1,
+                  unit: c.unit || "pcs",
+                }));
+                updateItem(i, "customComponents", seed);
+              }
+              setBundleEditMode(prev => { const n = new Set(prev); n.add(i); return n; });
+            };
+            const exitEdit = () => setBundleEditMode(prev => { const n = new Set(prev); n.delete(i); return n; });
+
+            if (!masterComps && !hasCustom) {
               return (
                 <div className="text-[11px] text-muted-foreground italic px-2" data-testid={`bundle-loading-${i}`}>
                   Loading bundle components…
                 </div>
               );
             }
-            if (comps.length === 0) {
+
+            if (!isEditing) {
+              if (effectiveComps.length === 0) {
+                return (
+                  <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center justify-between" data-testid={`bundle-empty-${i}`}>
+                    <span>This bundle has no components configured.</span>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
+                      <Pencil className="w-3 h-3 mr-1" /> Customize
+                    </Button>
+                  </div>
+                );
+              }
               return (
-                <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-300" data-testid={`bundle-empty-${i}`}>
-                  This bundle has no components configured.
+                <div className="rounded border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 p-2 space-y-1" data-testid={`bundle-components-${i}`}>
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      <Boxes className="w-3 h-3" /> Bundle components × {item.quantity || 1}
+                      {hasCustom && <Badge variant="outline" className="text-[9px] px-1 py-0 border-blue-400 text-blue-600 dark:text-blue-400">Custom</Badge>}
+                    </div>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-blue-600 dark:text-blue-400" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
+                      <Pencil className="w-3 h-3 mr-1" /> Customize
+                    </Button>
+                  </div>
+                  {effectiveComps.map((row) => {
+                    const comp = products.find(p => p.id === row.componentProductId);
+                    const compLs = (comp as any)?.lifecycleStatus as string | undefined;
+                    const lc = lifecycleLabel(compLs);
+                    const perUnit = Number(row.quantity) || 0;
+                    const totalNeeded = perUnit * (Number(item.quantity) || 0);
+                    const onHand = comp ? (inventoryByProduct.get(comp.id) ?? 0) : 0;
+                    const short = comp ? totalNeeded > onHand : false;
+                    return (
+                      <div key={row.componentProductId} className="flex items-center gap-2 text-[11px] pl-3" data-testid={`bundle-comp-${i}-${row.componentProductId}`}>
+                        <span className="text-muted-foreground">↳</span>
+                        <span className="flex-1 truncate">{comp?.name ?? row.componentProductId}</span>
+                        {lc.text && (
+                          <Badge variant="outline" className={`text-[9px] px-1 py-0 leading-tight ${lc.badgeCls}`}>{lc.text}</Badge>
+                        )}
+                        <span className="text-muted-foreground">{totalNeeded} {row.unit}</span>
+                        {comp && (short ? (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-red-500 text-red-700 dark:text-red-400" data-testid={`bundle-comp-short-${i}-${comp.id}`}>Short ({onHand} on hand)</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-emerald-500 text-emerald-700 dark:text-emerald-400">OK ({onHand})</Badge>
+                        ))}
+                      </div>
+                    );
+                  })}
+                  <div className="text-[10px] text-muted-foreground pl-3 italic">Invoiced as one line at the bundle GST rate.</div>
                 </div>
               );
             }
+
+            // ── Edit mode ──
+            const editComps: Array<{ componentProductId: string; quantity: number; unit: string }> =
+              (item.customComponents && item.customComponents.length > 0)
+                ? (item.customComponents as Array<{ componentProductId: string; quantity: number; unit: string }>)
+                : (masterComps ?? []).map(c => ({ componentProductId: c.componentProductId, quantity: Number(c.quantity) || 1, unit: c.unit || "pcs" }));
+
+            const updateComp = (ci: number, field: "quantity" | "unit", value: any) => {
+              const next = editComps.map((c, idx) => idx === ci ? { ...c, [field]: value } : c);
+              updateItem(i, "customComponents", next);
+            };
+            const removeComp = (ci: number) => {
+              const next = editComps.filter((_, idx) => idx !== ci);
+              updateItem(i, "customComponents", next);
+            };
+
+            const addableProducts = products.filter(p => p.type !== "bundle" && p.type !== "service");
+            const addSearch = bundleAddSearch[i] || "";
+            const addSearchLc = addSearch.trim().toLowerCase();
+            const filteredAddable = addSearchLc
+              ? addableProducts.filter(p => p.name.toLowerCase().includes(addSearchLc) || (p.sku ?? "").toLowerCase().includes(addSearchLc))
+              : addableProducts.slice(0, 30);
+
             return (
-              <div className="rounded border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/20 p-2 space-y-1" data-testid={`bundle-components-${i}`}>
-                <div className="flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-300">
-                  <Boxes className="w-3 h-3" /> Bundle components × {item.quantity || 1}
+              <div className="rounded border border-blue-300 dark:border-blue-700 bg-blue-50/60 dark:bg-blue-950/30 p-2 space-y-1.5" data-testid={`bundle-edit-${i}`}>
+                <div className="flex items-center justify-between gap-1">
+                  <div className="flex items-center gap-1 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                    <Boxes className="w-3 h-3" /> Customize components for this quote
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-emerald-600 dark:text-emerald-400" onClick={exitEdit} data-testid={`button-done-bundle-edit-${i}`}>
+                    Done
+                  </Button>
                 </div>
-                {comps.map((row) => {
-                  const comp = products.find(p => p.id === row.componentProductId);
-                  const compLs = (comp as any)?.lifecycleStatus as string | undefined;
-                  const lc = lifecycleLabel(compLs);
-                  const perUnit = Number(row.quantity) || 0;
-                  const totalNeeded = perUnit * (Number(item.quantity) || 0);
-                  const onHand = comp ? (inventoryByProduct.get(comp.id) ?? 0) : 0;
-                  const short = comp ? totalNeeded > onHand : false;
+                {editComps.map((comp, ci) => {
+                  const compProd = products.find(p => p.id === comp.componentProductId);
                   return (
-                    <div key={row.componentProductId} className="flex items-center gap-2 text-[11px] pl-3" data-testid={`bundle-comp-${i}-${row.componentProductId}`}>
-                      <span className="text-muted-foreground">↳</span>
-                      <span className="flex-1 truncate">{comp?.name ?? row.componentProductId}</span>
-                      {lc.text && (
-                        <Badge variant="outline" className={`text-[9px] px-1 py-0 leading-tight ${lc.badgeCls}`}>
-                          {lc.text}
-                        </Badge>
-                      )}
-                      <span className="text-muted-foreground">{totalNeeded} {row.unit}</span>
-                      {comp && (
-                        short ? (
-                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-red-500 text-red-700 dark:text-red-400" data-testid={`bundle-comp-short-${i}-${comp.id}`}>
-                            Short ({onHand} on hand)
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-[9px] px-1 py-0 border-emerald-500 text-emerald-700 dark:text-emerald-400">
-                            OK ({onHand})
-                          </Badge>
-                        )
-                      )}
+                    <div key={ci} className="flex items-center gap-1.5 pl-2" data-testid={`bundle-edit-comp-${i}-${ci}`}>
+                      <span className="flex-1 truncate text-[11px]">{compProd?.name ?? comp.componentProductId}</span>
+                      <Input type="number" min="0.01" step="0.01" value={comp.quantity} onChange={e => updateComp(ci, "quantity", parseFloat(e.target.value) || 1)} className="h-6 w-16 text-xs px-1" data-testid={`input-bundle-comp-qty-${i}-${ci}`} />
+                      <Input value={comp.unit} onChange={e => updateComp(ci, "unit", e.target.value)} className="h-6 w-14 text-xs px-1" placeholder="unit" data-testid={`input-bundle-comp-unit-${i}-${ci}`} />
+                      <Button type="button" variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-red-600" onClick={() => removeComp(ci)} data-testid={`button-remove-bundle-comp-${i}-${ci}`}>
+                        <X className="w-3 h-3" />
+                      </Button>
                     </div>
                   );
                 })}
-                <div className="text-[10px] text-muted-foreground pl-3 italic">Invoiced as one line at the bundle GST rate.</div>
+                <div className="flex items-center gap-1.5 pl-2 pt-1 border-t border-blue-200 dark:border-blue-800">
+                  <Popover open={!!bundleAddPopover[i]} onOpenChange={o => setBundleAddPopover(prev => ({ ...prev, [i]: o }))}>
+                    <PopoverTrigger asChild>
+                      <Button type="button" variant="outline" size="sm" className="flex-1 h-7 text-xs justify-start font-normal px-2" data-testid={`button-add-comp-picker-${i}`}>
+                        <Plus className="w-3 h-3 mr-1 opacity-50" />
+                        <span className="text-muted-foreground">Add component…</span>
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0 w-64" align="start" onOpenAutoFocus={e => e.preventDefault()}>
+                      <div className="p-2 border-b">
+                        <Input value={addSearch} onChange={e => setBundleAddSearch(prev => ({ ...prev, [i]: e.target.value }))} placeholder="Search products…" className="h-7 text-xs" data-testid={`input-add-comp-search-${i}`} autoFocus />
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {filteredAddable.length === 0 ? (
+                          <div className="px-3 py-2 text-xs text-muted-foreground text-center">No products found</div>
+                        ) : filteredAddable.map(p => (
+                          <button key={p.id} type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground cursor-pointer" data-testid={`option-add-comp-${p.id}`}
+                            onClick={() => {
+                              const qty = bundleAddQty[i] || 1;
+                              const unit = bundleAddUnit[i] || "pcs";
+                              const next = [...editComps, { componentProductId: p.id, quantity: qty, unit }];
+                              updateItem(i, "customComponents", next);
+                              setBundleAddSearch(prev => ({ ...prev, [i]: "" }));
+                              setBundleAddPopover(prev => ({ ...prev, [i]: false }));
+                            }}>
+                            {p.name}{p.sku && <span className="text-muted-foreground ml-1 opacity-60 text-[10px]">{p.sku}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  <Input type="number" min="0.01" step="0.01" value={bundleAddQty[i] ?? 1} onChange={e => setBundleAddQty(prev => ({ ...prev, [i]: parseFloat(e.target.value) || 1 }))} className="h-7 w-16 text-xs px-1" placeholder="qty" data-testid={`input-add-comp-qty-${i}`} />
+                  <Input value={bundleAddUnit[i] ?? "pcs"} onChange={e => setBundleAddUnit(prev => ({ ...prev, [i]: e.target.value }))} className="h-7 w-14 text-xs px-1" placeholder="unit" data-testid={`input-add-comp-unit-${i}`} />
+                </div>
+                <div className="text-[10px] text-muted-foreground pl-2 italic">Invoiced as one line at the bundle GST rate.</div>
               </div>
             );
           })()}
@@ -1379,6 +1495,7 @@ export default function Sales() {
             gstRate: String(it.gstRate || 0),
             hsnCode: it.hsnCode || null,
             taxAmount: String(it.taxAmount || 0),
+            customComponents: it.customComponents || null,
           })),
         });
       }
@@ -1745,6 +1862,7 @@ export default function Sales() {
           gstRate: Number(it.gstRate) || 0,
           hsnCode: it.hsnCode || "",
           taxAmount: Number(it.taxAmount) || 0,
+          customComponents: it.customComponents || null,
         })));
       } else {
         setQuoteItems([emptyLineItem()]);
@@ -1862,24 +1980,27 @@ export default function Sales() {
       const customer = customers?.find(c => c.id === q.customerId);
       // Phase 7 — collect bundle component rows for any bundle line in this quotation,
       // resolving names + GST from the products list. Components are loaded lazily.
+      // Phase 98: per-item custom components keyed by item.id take priority over master bundle
       const bundlePdfMap: Record<string, Array<{ name: string; quantity: number; unit: string; gstRate: number }>> = {};
-      const bundleLineProductIds = Array.from(new Set(
-        (Array.isArray(qItems) ? qItems : [])
-          .map(it => it.productId)
-          .filter((pid): pid is string => !!pid)
-          .filter(pid => products?.find(p => p.id === pid)?.type === "bundle")
-      ));
+      const bundleItems = (Array.isArray(qItems) ? qItems : []).filter(it => it.productId && products?.find(p => p.id === it.productId)?.type === "bundle");
+      const bundleLineProductIds = Array.from(new Set(bundleItems.map(it => it.productId as string)));
+      await Promise.all(bundleItems.map(async (it) => {
+        const cc = (it as any).customComponents as Array<{ componentProductId: string; quantity: number; unit: string }> | null | undefined;
+        if (cc && cc.length > 0) {
+          bundlePdfMap[it.id] = cc.map(c => {
+            const comp = products?.find(p => p.id === c.componentProductId);
+            return { name: comp?.name ?? c.componentProductId, quantity: Number(c.quantity) || 0, unit: c.unit || "pcs", gstRate: Number((comp as any)?.gstRate || 0) };
+          });
+        }
+      }));
       await Promise.all(bundleLineProductIds.map(async (bid) => {
-        const comps = await loadBundleComponents(bid);
-        bundlePdfMap[bid] = comps.map(row => {
-          const comp = products?.find(p => p.id === row.componentProductId);
-          return {
-            name: comp?.name ?? row.componentProductId,
-            quantity: Number(row.quantity) || 0,
-            unit: row.unit || "pcs",
-            gstRate: Number((comp as any)?.gstRate || 0),
-          };
-        });
+        if (!bundlePdfMap[bid]) {
+          const comps = await loadBundleComponents(bid);
+          bundlePdfMap[bid] = comps.map(row => {
+            const comp = products?.find(p => p.id === row.componentProductId);
+            return { name: comp?.name ?? row.componentProductId, quantity: Number(row.quantity) || 0, unit: row.unit || "pcs", gstRate: Number((comp as any)?.gstRate || 0) };
+          });
+        }
       }));
       let logoDataUrl: string | undefined;
       try {

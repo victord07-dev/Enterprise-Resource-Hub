@@ -49,7 +49,8 @@ const TYPE_OPTIONS: { value: AccountTransaction["type"]; label: string }[] = [
 ];
 
 function fmt(n: number) {
-  return `₹${Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const abs = Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n < 0 ? `-₹${abs}` : `₹${abs}`;
 }
 
 function fmtDate(d: string) {

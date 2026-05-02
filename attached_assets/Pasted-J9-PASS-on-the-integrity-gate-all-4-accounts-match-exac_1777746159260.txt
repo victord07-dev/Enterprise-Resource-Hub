@@ -1,0 +1,74 @@
+J9 PASS on the integrity gate (all 4 accounts match exactly).
+Move forward, but fix Drift A first — it's a financial accuracy 
+issue, not just presentation.
+
+DRIFT A FIX — APPROVED, ship now (5 LOC):
+
+Modify fmt() at CashAccountDetail.tsx:51-53:
+- For positive: ₹X,XXX.XX (current behavior)
+- For negative: -₹X,XXX.XX (explicit minus prefix)
+- For zero: ₹0.00
+
+The minus sign goes BEFORE the rupee symbol per Indian accounting 
+convention.
+
+Apply same pattern wherever currency is rendered if other 
+components have the same Math.abs() bug. Quick grep for 
+"Math.abs" in client/src/pages/CashAccountDetail.tsx and any 
+shared currency helpers — fix all instances. ~10 LOC total worst case.
+
+After fix:
+- Re-screenshot CEO Cash account detail
+- Confirm UI shows "-₹30,500.00" (with minus) in red
+- Confirm positive balances still render normally
+
+Drift B (testid name) — accept code, update spec docs to match. 
+No code change.
+
+Drift C (Test Account leftover) — track for post-Phase-4B cleanup. 
+Don't fix in walk scope.
+
+After Drift A ships + screenshot confirms, J9 closes.
+
+Then proceed to J10 (Authorization Spot Checks, 4 items):
+
+==================================================================
+J10 — AUTHORIZATION SPOT CHECKS (4 items)
+==================================================================
+
+(tt) Login as sales_manager:
+- Verify Cash Accounts tab NOT visible in /accounts → screenshot
+- Direct URL /accounts/cash-accounts/[HDFC_id] → 403 or redirect
+  → screenshot
+- Direct URL /accounts → can access (Expenses tab, AR Payments, 
+  AP Payments, Supplier Invoices visible based on standard 
+  permissions)
+- Sales.tsx Record Payment dialog: Cash Account dropdown WORKS 
+  (positive control — confirms basic functionality preserved)
+  → screenshot
+
+(uu) Login as warehouse_manager:
+- Same restrictions as sales_manager (no Cash Accounts tab, 
+  no detail page)
+- Plus: cannot create/edit/deactivate accounts via direct URL
+- Direct POST /api/cash-accounts → 403 (curl test)
+- Direct DELETE /api/cash-accounts/[id] → 403
+→ screenshots + curl evidence
+
+(vv) Login as field_staff:
+- Direct URL /accounts → page loads but RESTRICTED tabs OR 
+  redirect entirely (whichever is the existing pattern)
+- Direct URL /accounts/cash-accounts/[id] → 403 or redirect
+- Direct POST /api/balance-adjustments → 403
+→ screenshots + curl
+
+(ww) Login as kiosk:
+- Redirected to /kiosk
+- Cannot access /accounts even via direct URL
+→ screenshot showing redirect
+
+After all 4 items pass, J10 closes.
+
+Then proceed to J11 (Regression, 11 items).
+
+Standing rules apply.

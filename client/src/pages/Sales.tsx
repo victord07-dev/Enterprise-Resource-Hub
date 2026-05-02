@@ -1907,7 +1907,7 @@ export default function Sales() {
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        setQuoteItems(data.map((it: any) => ({
+        const mapped = data.map((it: any) => ({
           itemType: it.itemType || "product",
           productId: it.productId || "",
           description: it.description || "",
@@ -1918,7 +1918,18 @@ export default function Sales() {
           hsnCode: it.hsnCode || "",
           taxAmount: Number(it.taxAmount) || 0,
           customComponents: it.customComponents || null,
-        })));
+        }));
+        setQuoteItems(mapped);
+        // Preload master bundle components for every bundle line that has no custom override,
+        // so re-opened quotes never get stuck on "Loading bundle components…"
+        mapped.forEach(it => {
+          if (it.productId && it.customComponents === null) {
+            const prod = (products || []).find((p: Product) => p.id === it.productId);
+            if (prod && (prod as any).type === "bundle") {
+              loadBundleComponents(it.productId);
+            }
+          }
+        });
       } else {
         setQuoteItems([emptyLineItem()]);
       }

@@ -1,0 +1,72 @@
+Gaps 1, 2, 3 — APPROVED. Fix immediately:
+
+Gap 1 — POST /api/customer-payments: extract cashAccountId from 
+body, validate non-null (return 400 with clear message if missing),
+pass to storage.createCustomerPayment.
+
+Gap 2 — POST /api/supplier-payments: same pattern. Extract, 
+validate non-null, pass through.
+
+Gap 3 — POST /api/expenses: ExpenseDialog frontend should validate 
+cashAccountId is set BEFORE submit. Disable Save button until 
+cashAccountId selected. Add helpful inline error if user attempts 
+submit without it. Backend should still validate as defense in 
+depth (return 400 if null arrives).
+
+For all 3: check whether the existing Zod insert schemas 
+(insertCustomerPaymentSchema, insertSupplierPaymentSchema, 
+insertExpenseSchema) include cashAccountId as required. If yes, 
+the safeParse should auto-handle validation. If not, add it 
+explicitly.
+
+GAP 4 — DECISION PENDING ON OPTION A
+
+I'm leaning toward Option A (extend payments table + fix Sales.tsx 
+dialog) because Options B and C have unacceptable downsides:
+- Option B breaks user workflow (CEO can't record payments from 
+  Sales order page anymore)
+- Option C silently produces inaccurate cash position reports — 
+  worst outcome for a financial system
+
+But Option A adds ~1 day to Phase 4B. Before committing, I want 
+you to investigate one thing:
+
+PRE-DECISION INVESTIGATION (read-only, ~10 min):
+
+1. How frequently is the Sales.tsx "Record Payment" button used 
+   vs the Accounts.tsx invoice-level payment recording?
+   
+   SQL: SELECT 'order_level' AS source, COUNT(*) FROM payments;
+        SELECT 'invoice_level' AS source, COUNT(*) FROM 
+        customer_payments;
+   
+   Distribution tells us whether Sales.tsx flow is heavily used 
+   or a rare edge case.
+
+2. Is the `payments` table populated for ALL orders (including 
+   those with corresponding customer_payments rows), or only 
+   when Sales.tsx button is clicked specifically?
+   
+   SQL: SELECT 
+          (SELECT COUNT(*) FROM payments) AS payments_count,
+          (SELECT COUNT(*) FROM customer_payments) AS 
+          customer_payments_count,
+          (SELECT COUNT(*) FROM customer_payments cp 
+           WHERE EXISTS (
+             SELECT 1 FROM payments p WHERE p.order_id = 
+             cp.invoice_id::text  -- check FK pattern
+           )) AS overlap;
+
+3. Are there any reports/dashboards/queries that read from the 
+   `payments` table but NOT from `customer_payments`?
+   
+   Grep server/routes.ts and storage.ts for "FROM payments" or 
+   ".from(payments)" — list each query that uses it.
+
+After investigation, report findings. I'll commit to A or 
+revise based on usage data.
+
+Apply Gaps 1-3 fixes IN PARALLEL with this investigation (those 
+are clear-cut). After investigation results, I'll authorize Gap 4.
+
+Standing rules apply.

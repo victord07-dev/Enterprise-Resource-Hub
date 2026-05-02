@@ -372,6 +372,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   const [bundleAddQty, setBundleAddQty] = useState<Record<number, number>>({});
   const [bundleAddUnit, setBundleAddUnit] = useState<Record<number, string>>({});
   const [bundleAddPopover, setBundleAddPopover] = useState<Record<number, boolean>>({});
+  const [bundleAddPending, setBundleAddPending] = useState<Record<number, { productId: string; name: string } | null>>({});
   const { toast: lineToast } = useToast();
 
   /** Badge label + CSS class for component lifecycle status inside bundle panels. */
@@ -505,12 +506,28 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     // New items always start expanded
   };
   const removeItem = (index: number) => {
-    // Shift collapsed indices: remove the deleted index, decrement all above it
-    setCollapsedItems(prev => {
+    // Reindex all per-line-index state: remove the deleted index, decrement all above it
+    const reindexSet = (prev: Set<number>) => {
       const next = new Set<number>();
       prev.forEach(n => { if (n < index) next.add(n); else if (n > index) next.add(n - 1); });
       return next;
-    });
+    };
+    const reindexRecord = <T,>(prev: Record<number, T>) => {
+      const next: Record<number, T> = {};
+      Object.entries(prev).forEach(([k, v]) => {
+        const n = Number(k);
+        if (n < index) next[n] = v;
+        else if (n > index) next[n - 1] = v;
+      });
+      return next;
+    };
+    setCollapsedItems(reindexSet);
+    setBundleEditMode(reindexSet);
+    setBundleAddSearch(reindexRecord);
+    setBundleAddQty(reindexRecord);
+    setBundleAddUnit(reindexRecord);
+    setBundleAddPopover(reindexRecord);
+    setBundleAddPending(reindexRecord);
     onChange(items.filter((_, i) => i !== index));
   };
 
@@ -748,39 +765,63 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                     </div>
                   );
                 })}
-                <div className="flex items-center gap-1.5 pl-2 pt-1 border-t border-blue-200 dark:border-blue-800">
-                  <Popover open={!!bundleAddPopover[i]} onOpenChange={o => setBundleAddPopover(prev => ({ ...prev, [i]: o }))}>
-                    <PopoverTrigger asChild>
-                      <Button type="button" variant="outline" size="sm" className="flex-1 h-7 text-xs justify-start font-normal px-2" data-testid={`button-add-comp-picker-${i}`}>
-                        <Plus className="w-3 h-3 mr-1 opacity-50" />
-                        <span className="text-muted-foreground">Add component…</span>
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0 w-64" align="start" onOpenAutoFocus={e => e.preventDefault()}>
-                      <div className="p-2 border-b">
-                        <Input value={addSearch} onChange={e => setBundleAddSearch(prev => ({ ...prev, [i]: e.target.value }))} placeholder="Search products…" className="h-7 text-xs" data-testid={`input-add-comp-search-${i}`} autoFocus />
-                      </div>
-                      <div className="max-h-48 overflow-y-auto">
-                        {filteredAddable.length === 0 ? (
-                          <div className="px-3 py-2 text-xs text-muted-foreground text-center">No products found</div>
-                        ) : filteredAddable.map(p => (
-                          <button key={p.id} type="button" className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground cursor-pointer" data-testid={`option-add-comp-${p.id}`}
-                            onClick={() => {
-                              const qty = bundleAddQty[i] || 1;
-                              const unit = bundleAddUnit[i] || "pcs";
-                              const next = [...editComps, { componentProductId: p.id, quantity: qty, unit }];
-                              updateItem(i, "customComponents", next);
-                              setBundleAddSearch(prev => ({ ...prev, [i]: "" }));
-                              setBundleAddPopover(prev => ({ ...prev, [i]: false }));
-                            }}>
-                            {p.name}{p.sku && <span className="text-muted-foreground ml-1 opacity-60 text-[10px]">{p.sku}</span>}
-                          </button>
-                        ))}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                  <Input type="number" min="0.01" step="0.01" value={bundleAddQty[i] ?? 1} onChange={e => setBundleAddQty(prev => ({ ...prev, [i]: parseFloat(e.target.value) || 1 }))} className="h-7 w-16 text-xs px-1" placeholder="qty" data-testid={`input-add-comp-qty-${i}`} />
-                  <Input value={bundleAddUnit[i] ?? "pcs"} onChange={e => setBundleAddUnit(prev => ({ ...prev, [i]: e.target.value }))} className="h-7 w-14 text-xs px-1" placeholder="unit" data-testid={`input-add-comp-unit-${i}`} />
+                {/* Add component row: pick product → set qty/unit → click + to confirm */}
+                <div className="space-y-1.5 pl-2 pt-1 border-t border-blue-200 dark:border-blue-800">
+                  <div className="flex items-center gap-1.5">
+                    <Popover open={!!bundleAddPopover[i]} onOpenChange={o => setBundleAddPopover(prev => ({ ...prev, [i]: o }))}>
+                      <PopoverTrigger asChild>
+                        <Button type="button" variant="outline" size="sm" className="flex-1 h-7 text-xs justify-start font-normal px-2" data-testid={`button-add-comp-picker-${i}`}>
+                          {bundleAddPending[i]
+                            ? <span className="truncate">{bundleAddPending[i]!.name}</span>
+                            : <><Plus className="w-3 h-3 mr-1 opacity-50" /><span className="text-muted-foreground">Pick product…</span></>}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="p-0 w-64" align="start" onOpenAutoFocus={e => e.preventDefault()}>
+                        <div className="p-2 border-b">
+                          <Input value={addSearch} onChange={e => setBundleAddSearch(prev => ({ ...prev, [i]: e.target.value }))} placeholder="Search products…" className="h-7 text-xs" data-testid={`input-add-comp-search-${i}`} autoFocus />
+                        </div>
+                        <div className="max-h-48 overflow-y-auto">
+                          {filteredAddable.length === 0 ? (
+                            <div className="px-3 py-2 text-xs text-muted-foreground text-center">No products found</div>
+                          ) : filteredAddable.map(p => (
+                            <button key={p.id} type="button" className={`w-full text-left px-3 py-1.5 text-xs hover:bg-accent hover:text-accent-foreground cursor-pointer ${bundleAddPending[i]?.productId === p.id ? "bg-accent" : ""}`} data-testid={`option-add-comp-${p.id}`}
+                              onClick={() => {
+                                setBundleAddPending(prev => ({ ...prev, [i]: { productId: p.id, name: p.name } }));
+                                setBundleAddSearch(prev => ({ ...prev, [i]: "" }));
+                                setBundleAddPopover(prev => ({ ...prev, [i]: false }));
+                              }}>
+                              {p.name}{p.sku && <span className="text-muted-foreground ml-1 opacity-60 text-[10px]">{p.sku}</span>}
+                            </button>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    <Input type="number" min="0.01" step="0.01" value={bundleAddQty[i] ?? 1} onChange={e => setBundleAddQty(prev => ({ ...prev, [i]: parseFloat(e.target.value) || 1 }))} className="h-7 w-16 text-xs px-1" placeholder="qty" data-testid={`input-add-comp-qty-${i}`} />
+                    <Input value={bundleAddUnit[i] ?? "pcs"} onChange={e => setBundleAddUnit(prev => ({ ...prev, [i]: e.target.value }))} className="h-7 w-14 text-xs px-1" placeholder="unit" data-testid={`input-add-comp-unit-${i}`} />
+                    <Button
+                      type="button"
+                      size="icon"
+                      className="h-7 w-7 shrink-0 bg-blue-600 hover:bg-blue-700 text-white"
+                      disabled={!bundleAddPending[i]}
+                      data-testid={`button-confirm-add-comp-${i}`}
+                      onClick={() => {
+                        const pending = bundleAddPending[i];
+                        if (!pending) return;
+                        const qty = bundleAddQty[i] || 1;
+                        const unit = bundleAddUnit[i] || "pcs";
+                        const next = [...editComps, { componentProductId: pending.productId, quantity: qty, unit }];
+                        updateItem(i, "customComponents", next);
+                        setBundleAddPending(prev => ({ ...prev, [i]: null }));
+                        setBundleAddQty(prev => ({ ...prev, [i]: 1 }));
+                        setBundleAddUnit(prev => ({ ...prev, [i]: "pcs" }));
+                      }}
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                  {!bundleAddPending[i] && (
+                    <p className="text-[10px] text-muted-foreground pl-0.5">Pick a product, set qty/unit, then click + to add</p>
+                  )}
                 </div>
                 <div className="text-[10px] text-muted-foreground pl-2 italic">Invoiced as one line at the bundle GST rate.</div>
               </div>

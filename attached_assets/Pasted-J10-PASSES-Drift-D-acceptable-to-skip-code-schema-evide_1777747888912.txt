@@ -1,0 +1,102 @@
+J10 PASSES.
+
+Drift D acceptable to skip — code/schema evidence sufficient.
+No role gate on the dropdown, just is_active filter. Will work 
+for sales_manager when a payment-recordable order exists.
+
+Drift E (test browser flakiness) — already on follow-up tracker.
+
+Proceed to J11 — Regression — 11 items.
+
+==================================================================
+J11 — REGRESSION (Phase 1, 2, 3, 4A — 11 items)
+==================================================================
+
+Verify earlier phase features still work after Phase 4B changes.
+Surface any regressions immediately. Some items may already be 
+covered by prior walks — note when piggybacking on prior evidence.
+
+(xx) Sales workflow — customer payment recording works with 
+account selection (regression test):
+- Sales.tsx Record Payment dialog: cash account dropdown works
+- Accounts.tsx AR Payments tab: cash account dropdown works  
+- End-to-end: customer → invoice → record payment → SQL verifies 
+  cash_account_id stored
+- Both paths must work
+- Schema/code evidence acceptable if data state limits live tests
+
+(yy) Purchase workflow — supplier payment with account selection:
+- Accounts.tsx Supplier Payments tab cash account dropdown works
+- End-to-end: payment recorded → SQL verifies cash_account_id
+- Smart filter (cash method = CEO Cash, bank methods = bank accounts)
+  still works
+
+(zz) Expense recording with account selection:
+- Accounts.tsx Expenses tab cash account dropdown works
+- End-to-end: expense recorded → SQL verifies cash_account_id
+- Smart filter still works
+
+(aaa) Phase 4A — GRN auto-supplier-invoice still fires on confirm:
+- Confirm any draft GRN
+- Verify supplier_invoices auto-creates row in pending_upload state
+- SQL: SELECT * FROM supplier_invoices ORDER BY created_at DESC 
+  LIMIT 1; → upload_status='pending_upload', linked correctly
+
+(bbb) Phase 4A — Credit override flows still work:
+- Sales-side: pick partially-paid SO. Login as admin. Try Mark 
+  Ready → "Ready (Credit)" amber button visible → reason dialog → 
+  authorize succeeds
+- Purchase-side: pick partially-paid PO. Login as admin or 
+  accountant. Create GRN → "Create GRN (Credit)" amber button → 
+  reason dialog → authorize succeeds
+- Both flows preserved
+
+(ccc) Phase 4A — Outstanding dues block on SO creation still works:
+- Pick customer with unpaid invoices
+- Try to create new SO as sales_manager → red banner blocks save
+- Try as admin → amber banner + "Create SO (Override Dues)" works
+- Spot-test both, no need to fully complete creation
+
+(ddd) Phase 4A + Phase 2 — PO PDF download still works:
+- Download a PO PDF
+- Verify GST snapshot data shown (hsn_code, gst_rate, gst_amount 
+  per line)
+- Verify delivery cost line if PO has it
+- Verify multi-rate breakdown if applicable
+
+(eee) Phase 4A — AR/AP aging credit badges still render:
+- Open /reports → AR Aging
+- Find an invoice from credit-override challan → "Credit Sale" 
+  amber badge visible with tooltip showing reason
+- Open /reports → AP Aging
+- Find supplier_invoice from credit-override GRN → "Credit GRN" 
+  purple badge with tooltip
+
+(fff) Phase 3 — 5-mandatory-field challan workflow still works:
+- Create new challan. All 5 required fields enforced: vehicleNumber,
+  driverName, physicalChallanNumber, vehicleOwnerName, driverPhone
+- Save with any field missing → blocked
+- Save with all fields → success
+
+(ggg) Phase 3 — GRN simplification still works:
+- Create new GRN
+- supplierChallanNumber field is text-only (not file upload)
+- Required field enforcement works
+
+(hhh) Phase 2 — Hierarchical product picker on Sales + PO:
+- Sales: open quotation/SO line items, picker works
+- PO: open PO line items, picker works
+- Multi-tier navigation, search, selection all functional
+
+==================================================================
+
+After all 11 items pass, declare Phase 4B COMPLETE.
+
+If any item fails: surface immediately, don't try to fix. We'll 
+diagnose together.
+
+For items where evidence is acceptable via schema+code+SQL 
+(without live UI), note it. Don't artificially seed test data 
+just for screenshots.
+
+Standing rules apply.

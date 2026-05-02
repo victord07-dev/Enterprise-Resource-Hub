@@ -1,0 +1,56 @@
+Phase 4B COMPLETE. 
+
+J1-J11 walked. ~50 items verified across 11 sections. ~15 bugs 
+caught and fixed during walk. Real architectural work shipped:
+per-account financial visibility, transfers, adjustments, smart 
+dropdowns, date filters, drill-downs, authorization, backfill.
+
+fff drift acknowledged — added to Phase 4 Cleanup queue.
+
+==================================================================
+PHASE 4 CLEANUP MINI-PHASE (queued, ~2 days)
+==================================================================
+
+After this brief sit-confirmation, send the cleanup brief.
+Items to bundle:
+
+PHASE 4A pending items:
+1. Strict floor → Path B (advisory in quotation/SO line items, 
+   not hard-block — mirror credit override pattern with reason 
+   textarea + admin override)
+2. PR auto-fill from supplier_products (when supplier changed 
+   mid-flow in PR approval, re-fetch supplier prices for line 
+   items)
+3. Silent-failure hygiene (audit all try/catch blocks that 
+   swallow errors; add console.error at minimum so failures 
+   appear in logs; specifically L1849, L1884 flagged in K8 audit)
+4. INV-2526-0001 due_date documentation comment (no fix, just 
+   commit-noted edge case)
+
+PHASE 4B drifts surfaced during walks:
+5. Test Account leftover cleanup (J3 leftover, deactivated, 
+   ₹50,000 opening — soft-delete or document)
+6. Inventory.tsx challan 5-field gate — match Sales.tsx:1325-1329 
+   validation (fff drift from J11)
+7. Hooks ordering audit (CashAccountDetail.tsx pattern — does it 
+   exist elsewhere? Audit all pages with conditional <Redirect> 
+   returns)
+8. URL persistence audit (ExpensesTab pattern of stripping query 
+   params on mount — does it exist in other tabs?)
+9. React.Fragment warning in Sales.tsx (pre-existing, low 
+   priority)
+10. Badge ref warning (pre-existing, low priority)
+
+Plus any other small drifts surfaced during walks I haven't 
+listed.
+
+DO NOT IMPLEMENT YET. Awaiting separate brief with full scope 
+and stop gate.
+
+==================================================================
+
+For now: Phase 4B closure ceremony complete. No new work until 
+operator sends Phase 4 Cleanup brief or Phase 4C Financial 
+Dashboard brief.
+
+Standing by.

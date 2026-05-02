@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { useParams, useLocation } from "wouter";
+import { useParams, useLocation, Redirect } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,6 +59,13 @@ export default function CashAccountDetail() {
   const { toast } = useToast();
   const role = getUser()?.role;
   const isAdmin = role === "admin";
+
+  if (!isAdmin) {
+    setTimeout(() => {
+      toast({ title: "Access denied", description: "Admin access required.", variant: "destructive" });
+    }, 0);
+    return <Redirect to="/accounts" />;
+  }
 
   const today = new Date().toISOString().split("T")[0];
   const monthStart = today.slice(0, 7) + "-01";

@@ -1217,7 +1217,7 @@ export default function Accounts() {
                     {arPayAccounts.map(a => (
                       <SelectItem key={a.id} value={a.id}>
                         {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
-                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1649,7 +1649,7 @@ export default function Accounts() {
                     {spAccounts.map(a => (
                       <SelectItem key={a.id} value={a.id}>
                         {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
-                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1758,20 +1758,57 @@ export default function Accounts() {
       </Dialog>
 
       {/* ── Deactivate Confirm Dialog ────────────────────────────────────── */}
-      <Dialog open={!!caDeactivateId} onOpenChange={o => { if (!o) setCaDeactivateId(null); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>Deactivate Account?</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground">This account will be hidden from payment dropdowns. Existing transactions are preserved. You can reactivate it at any time.</p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCaDeactivateId(null)}>Cancel</Button>
-            <Button variant="destructive" data-testid="button-confirm-deactivate-ca"
-              disabled={caDeactivateMutation.isPending}
-              onClick={() => caDeactivateId && caDeactivateMutation.mutate({ id: caDeactivateId, activate: false })}>
-              {caDeactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeactivateAccountDialog
+        accountId={caDeactivateId}
+        onCancel={() => setCaDeactivateId(null)}
+        onConfirm={() => caDeactivateId && caDeactivateMutation.mutate({ id: caDeactivateId, activate: false })}
+        isPending={caDeactivateMutation.isPending}
+      />
     </div>
+  );
+}
+
+function DeactivateAccountDialog({ accountId, onCancel, onConfirm, isPending }: {
+  accountId: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+  isPending: boolean;
+}) {
+  const { data: txCountData, isLoading } = useQuery<{ count: number }>({
+    queryKey: ["/api/cash-accounts", accountId, "tx-count"],
+    queryFn: () => fetch(`/api/cash-accounts/${accountId}/tx-count`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}` },
+    }).then(r => r.json()),
+    enabled: !!accountId,
+    staleTime: 0,
+  });
+
+  const count = txCountData?.count ?? 0;
+
+  return (
+    <Dialog open={!!accountId} onOpenChange={o => { if (!o) onCancel(); }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader><DialogTitle>Deactivate Account?</DialogTitle></DialogHeader>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-deactivate-loading">Checking transaction history…</p>
+        ) : count === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-deactivate-message">
+            Account has 0 transactions. Continue?
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground" data-testid="text-deactivate-message">
+            Account has {count} transaction{count === 1 ? "" : "s"}. Deactivating will hide it from new payment forms but preserve history. Continue?
+          </p>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button variant="destructive" data-testid="button-confirm-deactivate-ca"
+            disabled={isPending || isLoading}
+            onClick={onConfirm}>
+            {isPending ? "Deactivating..." : "Deactivate"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

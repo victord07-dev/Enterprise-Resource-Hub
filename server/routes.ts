@@ -10558,6 +10558,14 @@ export async function registerRoutes(
     try {
       const includeInactive = req.query.includeInactive === "true";
       const accounts = await storage.getCashAccounts(includeInactive);
+      if (req.user.role !== "admin") {
+        return res.json(accounts.map(a => ({
+          id: a.id,
+          name: a.name,
+          type: a.type,
+          isActive: a.isActive,
+        })));
+      }
       const withBalances = await Promise.all(accounts.map(async (a) => ({
         ...a,
         balance: await storage.computeAccountBalance(a.id),
@@ -10568,7 +10576,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id", authenticateToken, async (req, res) => {
+  app.get("/api/cash-accounts/:id", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const account = await storage.getCashAccount(req.params.id);
       if (!account) return res.status(404).json({ message: "Account not found" });
@@ -10622,7 +10630,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/balance", authenticateToken, async (req, res) => {
+  app.get("/api/cash-accounts/:id/balance", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const { asOfDate } = req.query as { asOfDate?: string };
       const balance = await storage.computeAccountBalance(req.params.id, asOfDate);
@@ -10632,7 +10640,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/stats", authenticateToken, async (req, res) => {
+  app.get("/api/cash-accounts/:id/stats", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const { fromDate, toDate } = req.query as { fromDate: string; toDate: string };
       if (!fromDate || !toDate) return res.status(400).json({ message: "fromDate and toDate required" });
@@ -10643,7 +10651,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/transactions", authenticateToken, async (req, res) => {
+  app.get("/api/cash-accounts/:id/transactions", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const { fromDate, toDate, limit, offset } = req.query as Record<string, string>;
       const result = await storage.getAccountTransactions(
@@ -10659,8 +10667,17 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/cash-accounts/:id/tx-count", authenticateToken, requireRole("admin"), async (req, res) => {
+    try {
+      const result = await storage.getAccountTransactions(req.params.id, undefined, undefined, 1, 0);
+      res.json({ count: result.total });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to count transactions" });
+    }
+  });
+
   // Account Transfers
-  app.get("/api/account-transfers", authenticateToken, async (req, res) => {
+  app.get("/api/account-transfers", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const { accountId } = req.query as { accountId?: string };
       const transfers = await storage.getAccountTransfers(accountId);
@@ -10698,7 +10715,7 @@ export async function registerRoutes(
   });
 
   // Balance Adjustments
-  app.get("/api/balance-adjustments", authenticateToken, async (req, res) => {
+  app.get("/api/balance-adjustments", authenticateToken, requireRole("admin"), async (req, res) => {
     try {
       const { accountId } = req.query as { accountId?: string };
       const adjustments = await storage.getBalanceAdjustments(accountId);

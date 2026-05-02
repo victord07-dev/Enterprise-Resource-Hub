@@ -279,7 +279,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
                     {expAccounts.map(a => (
                       <SelectItem key={a.id} value={a.id}>
                         {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
-                        {a.name} — ₹{Number(a.balance).toLocaleString()}
+                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
                       </SelectItem>
                     ))}
                   </SelectContent>

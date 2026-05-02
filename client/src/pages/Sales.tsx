@@ -362,6 +362,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     bundleName: string;
     issues: Array<{ name: string; status: string }>;
   } | null>(null);
+  // Collapsed rows: indices that have been confirmed and show as compact summary
+  const [collapsedItems, setCollapsedItems] = useState<Set<number>>(new Set());
   const { toast: lineToast } = useToast();
 
   /** Badge label + CSS class for component lifecycle status inside bundle panels. */
@@ -475,13 +477,26 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     }
     updated[index] = item;
     onChange(updated);
+    // Auto-collapse the row once a valid product is confirmed
+    if (field === "productId" && value) {
+      setCollapsedItems(prev => { const next = new Set(prev); next.add(index); return next; });
+    }
   };
 
   const addItem = () => {
     onLineTouched(items.length);
     onChange([...items, emptyLineItem()]);
+    // New items always start expanded
   };
-  const removeItem = (index: number) => onChange(items.filter((_, i) => i !== index));
+  const removeItem = (index: number) => {
+    // Shift collapsed indices: remove the deleted index, decrement all above it
+    setCollapsedItems(prev => {
+      const next = new Set<number>();
+      prev.forEach(n => { if (n < index) next.add(n); else if (n > index) next.add(n - 1); });
+      return next;
+    });
+    onChange(items.filter((_, i) => i !== index));
+  };
 
   const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
   const totalTax = items.reduce((sum, it) => sum + (it.taxAmount || 0), 0);
@@ -499,7 +514,50 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       {items.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-4">No items added. Click "Add Item" to start.</p>
       )}
-      {items.map((item, i) => (
+      {items.map((item, i) => {
+        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        if (collapsedItems.has(i)) {
+          return (
+            <div key={i} className="border rounded-lg px-3 py-2 bg-muted/30 flex items-center gap-2" data-testid={`line-item-${i}`}>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-sm font-medium truncate">{item.description || prod?.name || "Item"}</span>
+                  {prod?.type === "bundle" && (
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">Bundle</Badge>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground flex items-center gap-2 mt-0.5 flex-wrap">
+                  <span>{item.quantity} × ₹{item.unitPrice.toLocaleString("en-IN")}</span>
+                  <span>·</span>
+                  <span>GST {item.gstRate}%</span>
+                  <span>·</span>
+                  <span className="font-medium text-foreground">₹{(item.totalPrice + item.taxAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0 h-7 w-7"
+                onClick={() => setCollapsedItems(prev => { const next = new Set(prev); next.delete(i); return next; })}
+                data-testid={`button-expand-item-${i}`}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0 h-7 w-7"
+                onClick={() => removeItem(i)}
+                data-testid={`button-remove-item-${i}`}
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          );
+        }
+        return (
         <div key={i} className="border rounded-lg p-3 space-y-2 bg-muted/30" data-testid={`line-item-${i}`}>
           <div className="flex items-start gap-2">
             <div className="flex-1">
@@ -775,7 +833,12 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             );
           })()}
         </div>
-      ))}
+        );
+      })}
+
+      <Button type="button" variant="outline" size="sm" onClick={addItem} className="w-full mt-1" data-testid="button-add-line-item-bottom">
+        <Plus className="w-3 h-3 mr-1" /> Add Item
+      </Button>
 
       {items.length > 0 && discount && onDiscountChange && (
         <div className="border rounded-lg p-3 space-y-3 bg-muted/10">

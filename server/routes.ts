@@ -10710,11 +10710,11 @@ export async function registerRoutes(
 
   app.post("/api/balance-adjustments", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
-      if (req.body.amount === 0) {
+      if (Number(req.body.adjustmentAmount) === 0) {
         return res.status(400).json({ message: "Adjustment amount cannot be zero" });
       }
-      const adjustment = await storage.createBalanceAdjustment({ ...req.body, createdBy: req.user.id });
-      await logAction(req.user.id, "create", "balance_adjustments", JSON.stringify({ id: adjustment.id, accountId: adjustment.accountId, amount: adjustment.amount }));
+      const adjustment = await storage.createBalanceAdjustment({ ...req.body, adjustedBy: req.user.id });
+      await logAction(req.user.id, "create", "balance_adjustments", JSON.stringify({ id: adjustment.id, cashAccountId: adjustment.cashAccountId, adjustmentAmount: adjustment.adjustmentAmount }));
       res.status(201).json(adjustment);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create adjustment" });

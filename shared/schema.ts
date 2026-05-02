@@ -662,8 +662,11 @@ export const cashAccounts = pgTable("cash_accounts", {
   accountNumber: varchar("account_number", { length: 50 }),
   ifscCode: varchar("ifsc_code", { length: 20 }),
   openingBalance: decimal("opening_balance", { precision: 12, scale: 2 }).notNull().default("0"),
+  openingBalanceDate: timestamp("opening_balance_date").notNull().defaultNow(),
+  notes: text("notes"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export const supplierPayments = pgTable("supplier_payments", {
@@ -676,7 +679,7 @@ export const supplierPayments = pgTable("supplier_payments", {
   paymentMethod: text("payment_method").notNull().default("bank_transfer"),
   paymentDate: timestamp("payment_date").notNull().defaultNow(),
   reference: text("reference"),
-  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
+  cashAccountId: varchar("cash_account_id").notNull().references(() => cashAccounts.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -800,7 +803,7 @@ export const customerPayments = pgTable("customer_payments", {
   reference: text("reference"),
   notes: text("notes"),
   createdBy: varchar("created_by"),
-  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
+  cashAccountId: varchar("cash_account_id").notNull().references(() => cashAccounts.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -1053,7 +1056,7 @@ export const expenses = pgTable("expenses", {
   linkedEntityType: text("linked_entity_type"),
   linkedEntityId: varchar("linked_entity_id"),
   notes: text("notes"),
-  cashAccountId: varchar("cash_account_id").references(() => cashAccounts.id),
+  cashAccountId: varchar("cash_account_id").notNull().references(() => cashAccounts.id),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -1123,18 +1126,18 @@ export const accountTransfers = pgTable("account_transfers", {
 // Positive amount = credit to account; negative = debit.
 export const balanceAdjustments = pgTable("balance_adjustments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  accountId: varchar("account_id").notNull().references(() => cashAccounts.id),
-  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(), // may be negative
+  cashAccountId: varchar("cash_account_id").notNull().references(() => cashAccounts.id),
+  adjustmentAmount: decimal("adjustment_amount", { precision: 12, scale: 2 }).notNull(), // may be negative
   adjustmentDate: date("adjustment_date").notNull(),
   reason: text("reason").notNull(),
-  createdBy: varchar("created_by").notNull().references(() => users.id),
+  adjustedBy: varchar("adjusted_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
-  index("idx_balance_adjustments_account").on(t.accountId),
+  index("idx_balance_adjustments_account").on(t.cashAccountId),
   index("idx_balance_adjustments_date").on(t.adjustmentDate),
 ]);
 
-export const insertCashAccountSchema = createInsertSchema(cashAccounts).omit({ id: true, createdAt: true });
+export const insertCashAccountSchema = createInsertSchema(cashAccounts).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAccountTransferSchema = createInsertSchema(accountTransfers).omit({ id: true, createdAt: true });
 export const insertBalanceAdjustmentSchema = createInsertSchema(balanceAdjustments).omit({ id: true, createdAt: true });
 

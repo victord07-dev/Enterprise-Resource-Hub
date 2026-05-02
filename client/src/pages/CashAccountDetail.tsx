@@ -133,9 +133,9 @@ export default function CashAccountDetail() {
   const adjustMutation = useMutation({
     mutationFn: async (d: typeof adjForm) => {
       const res = await apiRequest("POST", "/api/balance-adjustments", {
-        accountId: id,
+        cashAccountId: id,
         adjustmentType: d.type,
-        amount: d.amount,
+        adjustmentAmount: d.amount,
         reason: d.reason,
         adjustmentDate: d.adjustmentDate,
       });

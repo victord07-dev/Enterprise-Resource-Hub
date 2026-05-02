@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { useLocation } from "wouter";
@@ -183,7 +184,7 @@ export default function Accounts() {
   // ── Cash Accounts CRUD state (Phase 4B) ─────────────────────────────────
   const [caDialogOpen, setCaDialogOpen] = useState(false);
   const [caEditing, setCaEditing] = useState<CashAccount | null>(null);
-  const [caForm, setCaForm] = useState({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" });
+  const [caForm, setCaForm] = useState({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0", openingBalanceDate: new Date().toISOString().split("T")[0], notes: "" });
   const [caDeactivateId, setCaDeactivateId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
 
@@ -411,7 +412,7 @@ export default function Accounts() {
       toast({ title: caEditing ? "Account updated" : "Account created" });
       setCaDialogOpen(false);
       setCaEditing(null);
-      setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" });
+      setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0", openingBalanceDate: new Date().toISOString().split("T")[0], notes: "" });
     },
     onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
@@ -1095,7 +1096,7 @@ export default function Accounts() {
           <TabsContent value="cash-accounts" className="space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-sm text-muted-foreground">{cashAccountsData?.length ?? 0} account(s). Manage cash drawers and bank accounts.</p>
-              <Button size="sm" onClick={() => { setCaEditing(null); setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0" }); setCaDialogOpen(true); }} data-testid="button-new-cash-account">
+              <Button size="sm" onClick={() => { setCaEditing(null); setCaForm({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0", openingBalanceDate: new Date().toISOString().split("T")[0], notes: "" }); setCaDialogOpen(true); }} data-testid="button-new-cash-account">
                 <Plus className="h-4 w-4 mr-2" /> New Account
               </Button>
             </div>
@@ -1130,7 +1131,7 @@ export default function Accounts() {
                         <td className="p-3 text-right" onClick={e => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1">
                             <Button size="icon" variant="ghost" title="Edit" data-testid={`button-edit-ca-${acct.id}`}
-                              onClick={(e) => { e.stopPropagation(); setCaEditing(acct); setCaForm({ name: acct.name, type: acct.type, bankName: acct.bankName ?? "", accountNumber: acct.accountNumber ?? "", ifscCode: acct.ifscCode ?? "", openingBalance: String(acct.openingBalance ?? "0") }); setCaDialogOpen(true); }}>
+                              onClick={(e) => { e.stopPropagation(); setCaEditing(acct); setCaForm({ name: acct.name, type: acct.type, bankName: acct.bankName ?? "", accountNumber: acct.accountNumber ?? "", ifscCode: acct.ifscCode ?? "", openingBalance: String(acct.openingBalance ?? "0"), openingBalanceDate: (acct as any).openingBalanceDate ? new Date((acct as any).openingBalanceDate).toISOString().split("T")[0] : new Date().toISOString().split("T")[0], notes: (acct as any).notes ?? "" }); setCaDialogOpen(true); }}>
                               <Pencil className="h-4 w-4" />
                             </Button>
                             <Button size="icon" variant="ghost" title={acct.isActive ? "Deactivate" : "Reactivate"} data-testid={`button-toggle-ca-${acct.id}`}
@@ -1730,16 +1731,26 @@ export default function Accounts() {
                 </div>
               </>
             )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Opening Balance (₹)</Label>
+                <Input type="number" data-testid="input-ca-opening-balance" value={caForm.openingBalance} onChange={e => setCaForm({ ...caForm, openingBalance: e.target.value })} placeholder="0" />
+              </div>
+              <div className="space-y-2">
+                <Label>As of Date</Label>
+                <Input type="date" data-testid="input-ca-opening-balance-date" value={caForm.openingBalanceDate} onChange={e => setCaForm({ ...caForm, openingBalanceDate: e.target.value })} />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground -mt-2">Balance at the time of first use. Use 0 if unknown. The "as of date" can be edited later for go-live reconciliation.</p>
             <div className="space-y-2">
-              <Label>Opening Balance (₹)</Label>
-              <Input type="number" data-testid="input-ca-opening-balance" value={caForm.openingBalance} onChange={e => setCaForm({ ...caForm, openingBalance: e.target.value })} placeholder="0" />
-              <p className="text-xs text-muted-foreground">Balance at the time of first use. Use 0 if unknown.</p>
+              <Label>Notes</Label>
+              <Textarea data-testid="textarea-ca-notes" value={caForm.notes} onChange={e => setCaForm({ ...caForm, notes: e.target.value })} placeholder="Optional notes about this account (e.g. signatory, branch, purpose)" rows={2} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCaDialogOpen(false)}>Cancel</Button>
             <Button data-testid="button-submit-ca" disabled={caMutation.isPending || !caForm.name || !caForm.type}
-              onClick={() => caMutation.mutate({ name: caForm.name, type: caForm.type, bankName: caForm.bankName || null, accountNumber: caForm.accountNumber || null, ifscCode: caForm.ifscCode || null, openingBalance: caForm.openingBalance || "0" })}>
+              onClick={() => caMutation.mutate({ name: caForm.name, type: caForm.type, bankName: caForm.bankName || null, accountNumber: caForm.accountNumber || null, ifscCode: caForm.ifscCode || null, openingBalance: caForm.openingBalance || "0", openingBalanceDate: caForm.openingBalanceDate, notes: caForm.notes || null })}>
               {caMutation.isPending ? "Saving..." : caEditing ? "Save Changes" : "Create Account"}
             </Button>
           </DialogFooter>

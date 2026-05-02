@@ -2629,7 +2629,7 @@ export class DatabaseStorage implements IStorage {
   async getBalanceAdjustments(accountId?: string): Promise<BalanceAdjustment[]> {
     if (accountId) {
       return await db.select().from(balanceAdjustments)
-        .where(eq(balanceAdjustments.accountId, accountId))
+        .where(eq(balanceAdjustments.cashAccountId, accountId))
         .orderBy(desc(balanceAdjustments.adjustmentDate), desc(balanceAdjustments.createdAt));
     }
     return await db.select().from(balanceAdjustments).orderBy(desc(balanceAdjustments.adjustmentDate), desc(balanceAdjustments.createdAt));
@@ -2678,8 +2678,8 @@ export class DatabaseStorage implements IStorage {
     const trOut = Number((trOutResult.rows[0] as any)?.total ?? 0);
 
     const adjResult = await db.execute(sql`
-      SELECT COALESCE(SUM(amount::numeric), 0) AS total
-      FROM balance_adjustments WHERE account_id = ${accountId} ${adjDateFilter}
+      SELECT COALESCE(SUM(adjustment_amount::numeric), 0) AS total
+      FROM balance_adjustments WHERE cash_account_id = ${accountId} ${adjDateFilter}
     `);
     const adjNet = Number((adjResult.rows[0] as any)?.total ?? 0);
 
@@ -2716,8 +2716,8 @@ export class DatabaseStorage implements IStorage {
         AND transfer_date BETWEEN ${fromDate} AND ${toDate}
     `);
     const adjRes = await db.execute(sql`
-      SELECT COALESCE(SUM(amount::numeric), 0) AS total, COUNT(*)::int AS cnt
-      FROM balance_adjustments WHERE account_id = ${accountId}
+      SELECT COALESCE(SUM(adjustment_amount::numeric), 0) AS total, COUNT(*)::int AS cnt
+      FROM balance_adjustments WHERE cash_account_id = ${accountId}
         AND adjustment_date BETWEEN ${fromDate} AND ${toDate}
     `);
 
@@ -2833,13 +2833,13 @@ export class DatabaseStorage implements IStorage {
           id,
           adjustment_date::date AS tx_date,
           'adjustment' AS type,
-          amount::numeric AS amount,
+          adjustment_amount::numeric AS amount,
           reason AS description,
           NULL AS reference,
           id AS entity_id,
           'balance_adjustment' AS entity_type
         FROM balance_adjustments
-        WHERE account_id = ${accountId}
+        WHERE cash_account_id = ${accountId}
       ),
       acct AS (SELECT opening_balance::numeric AS ob FROM cash_accounts WHERE id = ${accountId}),
       dated AS (

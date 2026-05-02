@@ -168,6 +168,9 @@ export const salesOrders = pgTable("sales_orders", {
   duesOverrideBy: varchar("dues_override_by"),
   duesOverrideAt: timestamp("dues_override_at"),
   duesOverrideReason: text("dues_override_reason"),
+  // Phase 4 Cleanup A — strict floor override audit (parent-level)
+  floorOverrideBy: varchar("floor_override_by"),
+  floorOverrideAt: timestamp("floor_override_at"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -182,6 +185,9 @@ export const salesOrderItems = pgTable("sales_order_items", {
   hsnCode: text("hsn_code"),
   gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
   taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Phase 4 Cleanup A — strict floor override (per-line)
+  isFloorOverride: boolean("is_floor_override").notNull().default(false),
+  floorOverrideReason: text("floor_override_reason"),
 });
 
 export const quotations = pgTable("quotations", {
@@ -199,6 +205,9 @@ export const quotations = pgTable("quotations", {
   deliveryMethod: text("delivery_method"),
   deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
   deliveryAddress: text("delivery_address"),
+  // Phase 4 Cleanup A — strict floor override audit (parent-level)
+  floorOverrideBy: varchar("floor_override_by"),
+  floorOverrideAt: timestamp("floor_override_at"),
 });
 
 export const quotationItems = pgTable("quotation_items", {
@@ -215,6 +224,9 @@ export const quotationItems = pgTable("quotation_items", {
   taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   customComponents: jsonb("custom_components")
     .$type<Array<{ componentProductId: string; quantity: number; unit: string }>>(),
+  // Phase 4 Cleanup A — strict floor override (per-line)
+  isFloorOverride: boolean("is_floor_override").notNull().default(false),
+  floorOverrideReason: text("floor_override_reason"),
 });
 
 export const projects = pgTable("projects", {

@@ -2391,17 +2391,43 @@ export async function registerRoutes(
           products: offenders,
         });
       }
+
+      // Phase 4 Cleanup A: floor-price advisory + admin override gate
+      const floorOverrideReason: string = typeof req.body.floorOverrideReason === "string" ? req.body.floorOverrideReason.trim() : "";
+      const breaches = await findFloorBreaches(items);
+      const breachIdxSet = new Set(breaches.map(b => b.idx));
+      if (breaches.length > 0) {
+        if (req.user.role !== "admin") {
+          return res.status(403).json({
+            code: "floor_breach_no_admin",
+            message: "Only admin can save lines below floor price. Adjust prices at or above floor before saving.",
+            breaches,
+          });
+        }
+        if (!floorOverrideReason || floorOverrideReason.length < 10) {
+          return res.status(422).json({
+            code: "floor_override_required",
+            message: "Floor override reason is required (minimum 10 characters) for lines below floor price.",
+            breaches,
+          });
+        }
+      }
+
       await storage.deleteSalesOrderItems(req.params.id);
       const created = [];
-      for (const item of items) {
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
         const qty = Number(item.quantity) || 0;
         const unitPrice = Number(item.unitPrice) || 0;
         const gstRate = Number(item.gstRate) || 0;
         const serverTaxAmount = parseFloat((qty * unitPrice * gstRate / 100).toFixed(2));
+        const isBreach = breachIdxSet.has(idx);
         const parsed = insertSalesOrderItemSchema.parse({
           ...item,
           orderId: req.params.id,
           taxAmount: serverTaxAmount.toString(),
+          isFloorOverride: isBreach,
+          floorOverrideReason: isBreach ? floorOverrideReason : null,
         });
         const c = await storage.createSalesOrderItem(parsed);
         created.push(c);
@@ -2421,11 +2447,23 @@ export async function registerRoutes(
           : 0;
         const deliveryCost = Number(order.deliveryCost) || 0;
         const totalAmount = subtotal - discount + totalTax + deliveryCost;
-        await storage.updateSalesOrder(req.params.id, {
+        const totalsPatch: any = {
           subtotal: subtotal.toFixed(2),
           totalTax: totalTax.toFixed(2),
           totalAmount: totalAmount.toFixed(2),
-        } as any);
+        };
+        if (breaches.length > 0) {
+          totalsPatch.floorOverrideBy = req.user.id;
+          totalsPatch.floorOverrideAt = new Date();
+        }
+        await storage.updateSalesOrder(req.params.id, totalsPatch);
+      }
+
+      // Phase 4 Cleanup A4: audit-log floor override authorisation
+      if (breaches.length > 0) {
+        const summary = breaches.map(b => `${b.productName}: ₹${b.unitPrice.toFixed(2)} < floor ₹${b.floorPrice.toFixed(2)}`).join("; ");
+        await logAction(req.user.id, "floor_override_authorized", "sales",
+          `SO ${order?.orderNumber || req.params.id} saved with ${breaches.length} below-floor line(s). ${summary}. Reason: ${floorOverrideReason}`);
       }
 
       res.status(201).json(created);
@@ -2459,13 +2497,54 @@ export async function registerRoutes(
           products: offenders,
         });
       }
+
+      // Phase 4 Cleanup A: floor-price advisory + admin override gate
+      const floorOverrideReason: string = typeof req.body.floorOverrideReason === "string" ? req.body.floorOverrideReason.trim() : "";
+      const breaches = await findFloorBreaches(items);
+      const breachIdxSet = new Set(breaches.map(b => b.idx));
+      if (breaches.length > 0) {
+        if (req.user.role !== "admin") {
+          return res.status(403).json({
+            code: "floor_breach_no_admin",
+            message: "Only admin can save lines below floor price. Adjust prices at or above floor before saving.",
+            breaches,
+          });
+        }
+        if (!floorOverrideReason || floorOverrideReason.length < 10) {
+          return res.status(422).json({
+            code: "floor_override_required",
+            message: "Floor override reason is required (minimum 10 characters) for lines below floor price.",
+            breaches,
+          });
+        }
+      }
+
       await storage.deleteQuotationItems(req.params.id);
       const created = [];
-      for (const item of items) {
-        const parsed = insertQuotationItemSchema.parse({ ...item, quotationId: req.params.id });
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
+        const isBreach = breachIdxSet.has(idx);
+        const parsed = insertQuotationItemSchema.parse({
+          ...item,
+          quotationId: req.params.id,
+          isFloorOverride: isBreach,
+          floorOverrideReason: isBreach ? floorOverrideReason : null,
+        });
         const c = await storage.createQuotationItem(parsed);
         created.push(c);
       }
+
+      if (breaches.length > 0) {
+        await storage.updateQuotation(req.params.id, {
+          floorOverrideBy: req.user.id,
+          floorOverrideAt: new Date(),
+        } as any);
+        const quote = await storage.getQuotation(req.params.id);
+        const summary = breaches.map(b => `${b.productName}: ₹${b.unitPrice.toFixed(2)} < floor ₹${b.floorPrice.toFixed(2)}`).join("; ");
+        await logAction(req.user.id, "floor_override_authorized", "sales",
+          `Quotation ${quote?.quoteNumber || req.params.id} saved with ${breaches.length} below-floor line(s). ${summary}. Reason: ${floorOverrideReason}`);
+      }
+
       res.status(201).json(created);
     } catch (error: any) {
       if (error?.name === "ZodError") return res.status(400).json({ message: "Invalid item data", errors: error.errors });
@@ -2505,6 +2584,13 @@ export async function registerRoutes(
         convDuesOverrideFields.duesOverrideReason = convDuesReason.trim();
       }
 
+      // Phase 4 Cleanup A C2: propagate floor-override metadata from quotation to SO
+      const quoteFloorFields: any = {};
+      if ((quotation as any).floorOverrideBy) {
+        quoteFloorFields.floorOverrideBy = (quotation as any).floorOverrideBy;
+        quoteFloorFields.floorOverrideAt = (quotation as any).floorOverrideAt || new Date();
+      }
+
       const orderNumber = `SO-${Date.now().toString(36).toUpperCase()}`;
       const order = await storage.createSalesOrder({
         orderNumber,
@@ -2523,6 +2609,7 @@ export async function registerRoutes(
         deliveryCost: (quotation as any).deliveryCost || null,
         deliveryAddress: (quotation as any).deliveryAddress || null,
         ...convDuesOverrideFields,
+        ...quoteFloorFields,
       } as any);
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
@@ -2538,6 +2625,9 @@ export async function registerRoutes(
           hsnCode: (qi as any).hsnCode ?? null,
           gstRate: (qi as any).gstRate ?? "0",
           taxAmount: (qi as any).taxAmount ?? "0",
+          // Phase 4 Cleanup A C2: per-line override flag + reason
+          isFloorOverride: (qi as any).isFloorOverride ?? false,
+          floorOverrideReason: (qi as any).floorOverrideReason ?? null,
         });
       }
 
@@ -3012,6 +3102,45 @@ export async function registerRoutes(
       }
     }
     return offenders;
+  }
+
+  // Phase 4 Cleanup A: helper — for a list of items, find lines whose unitPrice is below the
+  // strict floor price (from today's confirmed daily_price_sheets, falling back to last 7 days).
+  // Returns indices + breach details. Lines with no productId or no confirmed sheet are exempt.
+  async function findFloorBreaches(items: any[]): Promise<Array<{ idx: number; productId: string; productName: string; unitPrice: number; floorPrice: number }>> {
+    const today = new Date().toISOString().slice(0, 10);
+    const productIds = Array.from(new Set(items.filter(i => i?.productId).map(i => String(i.productId))));
+    if (productIds.length === 0) return [];
+    const rows = (await db.execute(sql`
+      SELECT DISTINCT ON (dps.product_id)
+        dps.product_id, dps.strict_floor_price, p.name
+      FROM daily_price_sheets dps
+      JOIN products p ON p.id = dps.product_id
+      WHERE dps.status = 'confirmed'
+        AND dps.strict_floor_price IS NOT NULL
+        AND dps.sheet_date::date >= (${today}::date - INTERVAL '6 days')
+        AND dps.sheet_date::date <= ${today}::date
+        AND dps.product_id IN (${sql.join(productIds.map(i => sql`${i}`), sql`, `)})
+      ORDER BY dps.product_id, dps.sheet_date DESC
+    `)).rows as any[];
+    const floorMap = new Map<string, { floor: number; name: string }>();
+    for (const r of rows) {
+      const f = Number(r.strict_floor_price);
+      if (!isNaN(f) && f > 0) floorMap.set(r.product_id, { floor: f, name: r.name });
+    }
+    const breaches: Array<{ idx: number; productId: string; productName: string; unitPrice: number; floorPrice: number }> = [];
+    items.forEach((it, idx) => {
+      if (!it?.productId) return;
+      const pid = String(it.productId);
+      const meta = floorMap.get(pid);
+      if (!meta) return; // no confirmed sheet → exempt (matches client behaviour)
+      const up = Number(it.unitPrice);
+      if (isNaN(up)) return;
+      if (up < meta.floor) {
+        breaches.push({ idx, productId: pid, productName: meta.name, unitPrice: up, floorPrice: meta.floor });
+      }
+    });
+    return breaches;
   }
 
   // Phase 6.5 C2: helper — does this supplier have GST + phone + address?
@@ -4199,6 +4328,28 @@ export async function registerRoutes(
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ message: "At least one item is required" });
       }
+
+      // Phase 4 Cleanup D — mirror create-from-so 5-field transport gate so direct
+      // challan creation cannot bypass the dispatch-fields enforcement.
+      const physicalChallanNumber = (challanData.physicalChallanNumber ?? "").toString().trim();
+      const vehicleNumber = (challanData.vehicleNumber ?? "").toString().trim();
+      const vehicleOwnerName = (challanData.vehicleOwnerName ?? "").toString().trim();
+      const driverName = (challanData.driverName ?? "").toString().trim();
+      const driverPhone = (challanData.driverPhone ?? "").toString().trim();
+      if (!physicalChallanNumber || !vehicleNumber || !vehicleOwnerName || !driverName || !driverPhone) {
+        return res.status(400).json({
+          message: "All transport fields are required: Real Challan No., Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone",
+        });
+      }
+      const indianMobileRe = /^(\+91)?[6-9]\d{9}$/;
+      if (!indianMobileRe.test(driverPhone)) {
+        return res.status(400).json({ message: "Driver Phone must be a valid Indian mobile number" });
+      }
+      challanData.physicalChallanNumber = physicalChallanNumber;
+      challanData.vehicleNumber = vehicleNumber;
+      challanData.vehicleOwnerName = vehicleOwnerName;
+      challanData.driverName = driverName;
+      challanData.driverPhone = driverPhone;
 
       const remaining = await getRemainingOrderItemQuantities(challanData.orderId);
       for (const item of items) {

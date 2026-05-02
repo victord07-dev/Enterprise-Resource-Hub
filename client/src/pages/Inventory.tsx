@@ -244,6 +244,16 @@ export default function Inventory() {
 
   const [challanDialogOpen, setChallanDialogOpen] = useState(false);
   const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+  const [challanPhoneError, setChallanPhoneError] = useState("");
+  const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
+  const challanFormValid =
+    !!challanForm.orderId &&
+    !!challanForm.sourceId &&
+    !!challanForm.physicalChallanNumber.trim() &&
+    !!challanForm.vehicleNumber.trim() &&
+    !!challanForm.vehicleOwnerName.trim() &&
+    !!challanForm.driverName.trim() &&
+    INDIAN_MOBILE_RE.test(challanForm.driverPhone.trim());
   const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
   const [challanStockAvailability, setChallanStockAvailability] = useState<Record<string, InventoryStock[]>>({});
   const [challanFilterStatus, setChallanFilterStatus] = useState("all");
@@ -325,6 +335,7 @@ export default function Inventory() {
 
   const openCreateChallan = () => {
     setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+    setChallanPhoneError("");
     setChallanItems([]);
     setChallanStockAvailability({});
     setChallanDialogOpen(true);
@@ -2284,26 +2295,42 @@ export default function Inventory() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Vehicle Number</Label>
+                <Label>Vehicle Number <span className="text-red-500">*</span></Label>
                 <Input data-testid="input-challan-vehicle" placeholder="e.g. AS-01-AB-1234" value={challanForm.vehicleNumber} onChange={(e) => setChallanForm({ ...challanForm, vehicleNumber: e.target.value })} />
               </div>
               <div className="space-y-2">
-                <Label>Vehicle Owner Name</Label>
+                <Label>Vehicle Owner Name <span className="text-red-500">*</span></Label>
                 <Input data-testid="input-challan-vehicle-owner" placeholder="Owner name" value={challanForm.vehicleOwnerName} onChange={(e) => setChallanForm({ ...challanForm, vehicleOwnerName: e.target.value })} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Driver Name</Label>
+                <Label>Driver Name <span className="text-red-500">*</span></Label>
                 <Input data-testid="input-challan-driver" placeholder="Driver name" value={challanForm.driverName} onChange={(e) => setChallanForm({ ...challanForm, driverName: e.target.value })} />
               </div>
               <div className="space-y-2">
-                <Label>Driver Phone</Label>
-                <Input data-testid="input-challan-driver-phone" placeholder="e.g. 98XXXXXXXX" value={challanForm.driverPhone} onChange={(e) => setChallanForm({ ...challanForm, driverPhone: e.target.value })} />
+                <Label>Driver Phone <span className="text-red-500">*</span></Label>
+                <Input
+                  data-testid="input-challan-driver-phone"
+                  placeholder="e.g. 9876543210"
+                  value={challanForm.driverPhone}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setChallanForm({ ...challanForm, driverPhone: val });
+                    if (val && !INDIAN_MOBILE_RE.test(val.trim())) {
+                      setChallanPhoneError("Enter a valid Indian mobile number");
+                    } else {
+                      setChallanPhoneError("");
+                    }
+                  }}
+                />
+                {challanPhoneError && (
+                  <p className="text-xs text-red-500 mt-0.5" data-testid="text-challan-phone-error">{challanPhoneError}</p>
+                )}
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Physical Challan Number <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Label>Physical Challan Number <span className="text-red-500">*</span></Label>
               <Input data-testid="input-challan-physical-number" placeholder="Transporter's own challan no." value={challanForm.physicalChallanNumber} onChange={(e) => setChallanForm({ ...challanForm, physicalChallanNumber: e.target.value })} />
             </div>
             <div className="space-y-2">
@@ -2367,31 +2394,52 @@ export default function Inventory() {
             </div>
           </div>
           <DialogFooter>
-            <Button
-              data-testid="button-submit-challan"
-              disabled={createChallanMutation.isPending || !challanForm.orderId || !challanForm.sourceId || challanItems.length === 0}
-              onClick={() => {
-                createChallanMutation.mutate({
-                  orderId: challanForm.orderId,
-                  sourceType: challanForm.sourceType,
-                  sourceId: challanForm.sourceId,
-                  vehicleNumber: challanForm.vehicleNumber || null,
-                  driverName: challanForm.driverName || null,
-                  physicalChallanNumber: challanForm.physicalChallanNumber || null,
-                  vehicleOwnerName: challanForm.vehicleOwnerName || null,
-                  driverPhone: challanForm.driverPhone || null,
-                  notes: challanForm.notes || null,
-                  items: challanItems.filter(it => it.quantity > 0).map(it => ({
-                    productId: it.productId,
-                    description: it.description,
-                    quantity: it.quantity,
-                    unitPrice: String(it.unitPrice),
-                  })),
-                });
-              }}
-            >
-              {createChallanMutation.isPending ? "Creating..." : "Create Challan"}
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={0}>
+                    <Button
+                      data-testid="button-submit-challan"
+                      disabled={createChallanMutation.isPending || !challanFormValid || challanItems.length === 0}
+                      onClick={() => {
+                        createChallanMutation.mutate({
+                          orderId: challanForm.orderId,
+                          sourceType: challanForm.sourceType,
+                          sourceId: challanForm.sourceId,
+                          vehicleNumber: challanForm.vehicleNumber.trim(),
+                          driverName: challanForm.driverName.trim(),
+                          physicalChallanNumber: challanForm.physicalChallanNumber.trim(),
+                          vehicleOwnerName: challanForm.vehicleOwnerName.trim(),
+                          driverPhone: challanForm.driverPhone.trim(),
+                          notes: challanForm.notes || null,
+                          items: challanItems.filter(it => it.quantity > 0).map(it => ({
+                            productId: it.productId,
+                            description: it.description,
+                            quantity: it.quantity,
+                            unitPrice: String(it.unitPrice),
+                          })),
+                        });
+                      }}
+                    >
+                      {createChallanMutation.isPending ? "Creating..." : "Create Challan"}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {!createChallanMutation.isPending && (!challanFormValid || challanItems.length === 0) && (
+                  <TooltipContent side="top">
+                    <p className="text-xs" data-testid="tooltip-challan-disabled-reason">
+                      {!challanForm.orderId
+                        ? "Select a sales order"
+                        : !challanForm.sourceId
+                        ? `Select a ${challanForm.sourceType}`
+                        : challanItems.length === 0
+                        ? "Order has no remaining items to dispatch"
+                        : "Fill all required transport fields (Real Challan No., Vehicle No., Owner, Driver, valid phone)"}
+                    </p>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
           </DialogFooter>
         </DialogContent>
       </Dialog>

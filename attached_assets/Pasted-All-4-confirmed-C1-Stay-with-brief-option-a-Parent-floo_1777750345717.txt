@@ -1,0 +1,53 @@
+All 4 confirmed:
+
+C1 — Stay with brief (option a):
+- Parent: floor_override_by, floor_override_at on quotations + 
+  sales_orders
+- Per-line: is_floor_override, floor_override_reason on 
+  quotation_items + sales_order_items
+- audit_logs captures full payload including line breach details
+- If quote edited later with new floor breach: new override required, 
+  parent's override_by/at refreshed, new audit log entry
+- Document-level timestamp is semantically correct
+
+C2 — Convert-to-order propagation APPROVED:
+- Add to Section A scope (+15min)
+- When converting quote → SO at /api/quotations/:id/convert-to-order:
+  * Copy is_floor_override + floor_override_reason from quote_items 
+    to sales_order_items (per line)
+  * Copy floor_override_by + floor_override_at from quotation → 
+    sales_order (parent level)
+- Verify SO save doesn't re-block on the same floor breach 
+  post-conversion
+
+C3 — Server challan gate verification APPROVED:
+- Pre-flight: read POST /api/delivery-challans (or whichever 
+  endpoint Mark Ready hits)
+- If 5-field validation absent: add server-side enforcement 
+  (mirror Sales.tsx Phase 3 logic)
+- Stays within ~45min D budget
+- Don't ship Inventory.tsx UI gate without confirming server gate 
+  exists OR adding it
+
+C4 — Sales.tsx URL audit expansion APPROVED:
+- Add to Section F scope (+30min)
+- Audit Sales.tsx tabs (Quotations / Orders / Customers / Leads) 
+  for URL-rebuild gaps
+- Same pattern: ensure highlight, search, filter params persist 
+  across tab changes
+- Cheap insurance against future fff-style discovery
+
+REVISED TOTAL SCOPE: ~11-12h (was 10-11h)
+
+Ship in approved order:
+1. D first (Inventory 5-field parity + server check)
+2. A next (heavy lift, schema + dialogs + server gates + 
+   conversion propagation)
+3. B + C + G in parallel (small items)
+4. E + F audits last (read-heavy, can run concurrently with 
+   each other)
+
+After all sections complete: ping for H1-H7 walk (~30 items, 
+~20-30 min).
+
+Standing rules apply.

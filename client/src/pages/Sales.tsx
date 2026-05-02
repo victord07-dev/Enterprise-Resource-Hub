@@ -1253,6 +1253,9 @@ export default function Sales() {
     newOrderTotal?: number;
   } | null>(null);
   const [duesOverrideReason, setDuesOverrideReason] = useState("");
+  // Phase 4 Cleanup A — floor-price admin override reasons (advisory + override pattern)
+  const [orderFloorOverrideReason, setOrderFloorOverrideReason] = useState("");
+  const [quoteFloorOverrideReason, setQuoteFloorOverrideReason] = useState("");
 
   // E4-proactive: fetch outstanding for selected customer when SO dialog is open (new orders only)
   const { data: orderCustomerOutstanding } = useQuery<{
@@ -1460,6 +1463,8 @@ export default function Sales() {
             hsnCode: it.hsnCode || null,
             taxAmount: String(it.taxAmount || 0),
           })),
+          // Phase 4 Cleanup A — admin override reason for below-floor lines (server validates)
+          ...(orderFloorOverrideReason.trim().length >= 10 ? { floorOverrideReason: orderFloorOverrideReason.trim() } : {}),
         });
       }
     },
@@ -1472,6 +1477,7 @@ export default function Sales() {
       setEditingOrder(null);
       setDuesOverrideDialog(null);
       setDuesOverrideReason("");
+      setOrderFloorOverrideReason("");
     },
     onError: (error: any, variables: any) => {
       if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
@@ -1553,6 +1559,8 @@ export default function Sales() {
             taxAmount: String(it.taxAmount || 0),
             customComponents: it.customComponents || null,
           })),
+          // Phase 4 Cleanup A — admin override reason for below-floor lines (server validates)
+          ...(quoteFloorOverrideReason.trim().length >= 10 ? { floorOverrideReason: quoteFloorOverrideReason.trim() } : {}),
         });
       }
     },
@@ -1561,6 +1569,7 @@ export default function Sales() {
       toast({ title: editingQuote ? "Quotation updated" : "Quotation created" });
       setQuoteDialogOpen(false);
       setEditingQuote(null);
+      setQuoteFloorOverrideReason("");
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -3339,7 +3348,11 @@ export default function Sales() {
           {(() => {
             const almmBlocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
             const floorBlocked = findBelowFloorBlockIndices(orderItems, effectivePrices, orderTouchedLines);
-            const anySaveBlocked = almmBlocked.length > 0 || floorBlocked.length > 0;
+            // Phase 4 Cleanup A — Path B: admin can override below-floor lines with a reason (≥10 chars)
+            const floorReasonOk = orderFloorOverrideReason.trim().length >= 10;
+            const adminCanOverrideFloor = isAdmin && floorReasonOk;
+            const floorBlocksSave = floorBlocked.length > 0 && !adminCanOverrideFloor;
+            const anySaveBlocked = almmBlocked.length > 0 || floorBlocksSave;
 
             // E4: dues gate — only for new orders (not edits)
             const duesAmt = !editingOrder ? (orderCustomerOutstanding?.outstanding ?? 0) : 0;
@@ -3357,17 +3370,43 @@ export default function Sales() {
                   </div>
                 )}
                 {floorBlocked.length > 0 && (
-                  <div className="mt-2 flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-order-floor-block">
-                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div className="space-y-0.5">
-                      <span className="font-semibold">Cannot save: some lines are below floor price.</span>
-                      {floorBlocked.map(b => (
-                        <div key={b.idx}>
-                          • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
-                        </div>
-                      ))}
-                      <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving.</div>
+                  <div
+                    className={`mt-2 rounded border px-3 py-2 text-xs ${isAdmin
+                      ? "bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+                      : "bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800 text-red-800 dark:text-red-300"}`}
+                    data-testid="banner-order-floor-block"
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5 flex-1">
+                        <span className="font-semibold">
+                          {isAdmin
+                            ? `${floorBlocked.length} line${floorBlocked.length > 1 ? "s" : ""} below floor — admin override required.`
+                            : "Cannot save: some lines are below floor price."}
+                        </span>
+                        {floorBlocked.map(b => (
+                          <div key={b.idx}>
+                            • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
+                          </div>
+                        ))}
+                        {!isAdmin && (
+                          <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving, or contact admin to override.</div>
+                        )}
+                      </div>
                     </div>
+                    {isAdmin && (
+                      <div className="mt-2 space-y-1">
+                        <Label className="text-xs font-semibold">Override Reason <span className="font-normal opacity-75">(min 10 chars, required to save)</span></Label>
+                        <Textarea
+                          value={orderFloorOverrideReason}
+                          onChange={(e) => setOrderFloorOverrideReason(e.target.value)}
+                          placeholder="Explain why these lines are priced below floor (e.g. strategic loss-leader, customer-specific deal, clearance)..."
+                          rows={2}
+                          className="text-xs bg-white dark:bg-background"
+                          data-testid="input-order-floor-override-reason"
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3546,22 +3585,48 @@ export default function Sales() {
               allowBundleCustomization={true}
             />
           </div>
-          {/* Phase 5.5 — Below-floor hard-block for quotations */}
+          {/* Phase 4 Cleanup A — Below-floor advisory + admin override for quotations */}
           {(() => {
             const floorBlocked = findBelowFloorBlockIndices(quoteItems, effectivePrices, quoteTouchedLines);
             if (floorBlocked.length === 0) return null;
             return (
-              <div className="flex items-start gap-2 text-xs bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 rounded px-3 py-2 text-red-800 dark:text-red-300" data-testid="banner-quote-floor-block">
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <div className="space-y-0.5">
-                  <span className="font-semibold">Cannot save: some lines are below floor price.</span>
-                  {floorBlocked.map(b => (
-                    <div key={b.idx}>
-                      • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
-                    </div>
-                  ))}
-                  <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving.</div>
+              <div
+                className={`rounded border px-3 py-2 text-xs ${isAdmin
+                  ? "bg-amber-50 dark:bg-amber-950/20 border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-300"
+                  : "bg-red-50 dark:bg-red-950/30 border-red-300 dark:border-red-800 text-red-800 dark:text-red-300"}`}
+                data-testid="banner-quote-floor-block"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5 flex-1">
+                    <span className="font-semibold">
+                      {isAdmin
+                        ? `${floorBlocked.length} line${floorBlocked.length > 1 ? "s" : ""} below floor — admin override required.`
+                        : "Cannot save: some lines are below floor price."}
+                    </span>
+                    {floorBlocked.map(b => (
+                      <div key={b.idx}>
+                        • {b.productName}: ₹{b.unitPrice.toLocaleString("en-IN")} (floor ₹{b.floorPrice.toLocaleString("en-IN")} — short by ₹{Math.round(b.floorPrice - b.unitPrice).toLocaleString("en-IN")})
+                      </div>
+                    ))}
+                    {!isAdmin && (
+                      <div className="mt-0.5 opacity-80">Adjust prices at or above floor before saving, or contact admin to override.</div>
+                    )}
+                  </div>
                 </div>
+                {isAdmin && (
+                  <div className="mt-2 space-y-1">
+                    <Label className="text-xs font-semibold">Override Reason <span className="font-normal opacity-75">(min 10 chars, required to save)</span></Label>
+                    <Textarea
+                      value={quoteFloorOverrideReason}
+                      onChange={(e) => setQuoteFloorOverrideReason(e.target.value)}
+                      placeholder="Explain why these lines are priced below floor..."
+                      rows={2}
+                      className="text-xs bg-white dark:bg-background"
+                      data-testid="input-quote-floor-override-reason"
+                    />
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -3600,8 +3665,11 @@ export default function Sales() {
           <DialogFooter>
             {(() => {
               const floorBlocked = findBelowFloorBlockIndices(quoteItems, effectivePrices, quoteTouchedLines);
+              // Phase 4 Cleanup A — admin with valid reason can save despite breaches
+              const quoteFloorReasonOk = quoteFloorOverrideReason.trim().length >= 10;
+              const quoteFloorBlocksSave = floorBlocked.length > 0 && !(isAdmin && quoteFloorReasonOk);
               return (
-                <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending || floorBlocked.length > 0} onClick={() => quoteMutation.mutate(quoteForm)}>
+                <Button data-testid="button-submit-quote" disabled={quoteMutation.isPending || quoteFloorBlocksSave} onClick={() => quoteMutation.mutate(quoteForm)}>
                   {quoteMutation.isPending ? "Saving..." : editingQuote ? "Update Quotation" : "Create Quotation"}
                 </Button>
               );

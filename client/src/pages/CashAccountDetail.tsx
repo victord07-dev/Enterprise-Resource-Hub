@@ -77,13 +77,6 @@ export default function CashAccountDetail() {
   const canAdjust = role === "admin" || role === "accountant";
   const canAccess = role === "admin" || role === "accountant";
 
-  if (!canAccess) {
-    setTimeout(() => {
-      toast({ title: "Access denied", description: "Admin or Accountant access required.", variant: "destructive" });
-    }, 0);
-    return <Redirect to="/accounts" />;
-  }
-
   const today = new Date().toISOString().split("T")[0];
   const monthStart = today.slice(0, 7) + "-01";
   const [fromDate, setFromDate] = useState(monthStart);
@@ -93,7 +86,10 @@ export default function CashAccountDetail() {
   const [adjustOpen, setAdjustOpen] = useState(false);
   const [typeFilter, setTypeFilter] = useState<Set<AccountTransaction["type"]>>(new Set());
 
-  const { data: allAccounts } = useQuery<(CashAccount & { balance: number })[]>({ queryKey: ["/api/cash-accounts"] });
+  const { data: allAccounts } = useQuery<(CashAccount & { balance: number })[]>({
+    queryKey: ["/api/cash-accounts"],
+    enabled: canAccess,
+  });
 
   const fetchAuth = async (url: string) => {
     const token = localStorage.getItem("token");
@@ -105,19 +101,19 @@ export default function CashAccountDetail() {
   const { data: acctData, isLoading: acctLoading } = useQuery<CashAccount & { balance: number }>({
     queryKey: ["/api/cash-accounts", id],
     queryFn: () => fetchAuth(`/api/cash-accounts/${id}`),
-    enabled: !!id,
+    enabled: !!id && canAccess,
   });
 
   const { data: statsData, isLoading: statsLoading } = useQuery<AccountStats>({
     queryKey: ["/api/cash-accounts", id, "stats", fromDate, toDate],
     queryFn: () => fetchAuth(`/api/cash-accounts/${id}/stats?fromDate=${fromDate}&toDate=${toDate}`),
-    enabled: !!id,
+    enabled: !!id && canAccess,
   });
 
   const { data: txData, isLoading: txLoading } = useQuery<{ rows: AccountTransaction[]; total: number }>({
     queryKey: ["/api/cash-accounts", id, "transactions", fromDate, toDate],
     queryFn: () => fetchAuth(`/api/cash-accounts/${id}/transactions?fromDate=${fromDate}&toDate=${toDate}&limit=1000`),
-    enabled: !!id,
+    enabled: !!id && canAccess,
   });
 
   const isLoading = acctLoading || statsLoading || txLoading;
@@ -189,6 +185,10 @@ export default function CashAccountDetail() {
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
+
+  if (!canAccess) {
+    return <Redirect to="/accounts" />;
+  }
 
   if (isLoading || !data) {
     return (

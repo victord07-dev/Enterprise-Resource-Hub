@@ -1,0 +1,95 @@
+Both notes accepted:
+
+1. /sales-invoices drift APPROVED. Use ?highlight=<id> query 
+   param pattern for consistency. Document in commit message: 
+   "Customer payment drill uses /sales-invoices?highlight=<id> 
+   pattern (no detail route exists). Sales Invoice detail page 
+   is potential follow-up scope."
+
+2. Run the Playwright walkthrough now. Visual confirmation 
+   matters for the 4 J8 UI builds:
+   
+   (mm) — Type badge visible, opening balance line displayed, 
+          Edit button visible (admin) and triggers navigation 
+          + dialog open
+   (nn) — Today preset button works, sets correct date range
+   (qq) — Chips selectable, "Clear (N active)" shown correctly, 
+          list filters as chips toggle
+   (rr) — Drill behaviors visible:
+          * Customer payment row click → highlight on 
+            /sales-invoices
+          * Supplier payment row click → highlight on AP tab
+          * Expense row click → highlight on Expenses tab
+          * Transfer row click → toast appears with details
+          * Adjustment row click → toast appears with details
+   
+   Take screenshots for each. ~10 min Playwright time.
+
+After visual confirmation, J8 closes.
+
+Then proceed to J9 (Balance Computation Accuracy):
+
+==================================================================
+J9 — BALANCE COMPUTATION ACCURACY (1 item)
+==================================================================
+
+(ss) Run the full SQL audit query (per spec) across all 4 
+     accounts:
+
+SELECT 
+  ca.name,
+  ca.opening_balance::numeric AS opening,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM customer_payments 
+   WHERE cash_account_id = ca.id) AS customer_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM payments 
+   WHERE cash_account_id = ca.id 
+   AND status = 'completed') AS sales_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM account_transfers 
+   WHERE to_account_id = ca.id) AS transfers_in,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM supplier_payments 
+   WHERE cash_account_id = ca.id) AS supplier_payments,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM expenses 
+   WHERE cash_account_id = ca.id) AS expenses,
+  
+  (SELECT COALESCE(SUM(amount), 0) FROM account_transfers 
+   WHERE from_account_id = ca.id) AS transfers_out,
+  
+  (SELECT COALESCE(SUM(adjustment_amount), 0) 
+   FROM balance_adjustments 
+   WHERE cash_account_id = ca.id) AS adjustments,
+  
+  ca.opening_balance::numeric 
+    + (SELECT COALESCE(SUM(amount),0) FROM customer_payments 
+       WHERE cash_account_id = ca.id)
+    + (SELECT COALESCE(SUM(amount),0) FROM payments 
+       WHERE cash_account_id = ca.id AND status='completed')
+    + (SELECT COALESCE(SUM(amount),0) FROM account_transfers 
+       WHERE to_account_id = ca.id)
+    + (SELECT COALESCE(SUM(adjustment_amount),0) 
+       FROM balance_adjustments WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM supplier_payments 
+       WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM expenses 
+       WHERE cash_account_id = ca.id)
+    - (SELECT COALESCE(SUM(amount),0) FROM account_transfers 
+       WHERE from_account_id = ca.id) AS computed_balance
+    
+FROM cash_accounts ca
+ORDER BY name;
+
+For each of the 4 accounts:
+- Compare computed_balance against:
+  (a) GET /api/cash-accounts/[id]/balance API response
+  (b) UI displayed balance on Account Detail page
+
+Must match EXACTLY to ₹0.01 across all 4 accounts.
+
+If any mismatch: stop and surface immediately. Don't proceed 
+to J10 until balance integrity confirmed.
+
+Standing rules apply.

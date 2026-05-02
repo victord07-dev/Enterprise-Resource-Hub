@@ -82,6 +82,10 @@ export default function ExpensesTab() {
     if (methods.length) params.set("paymentMethod", methods.join(","));
     if (search.trim()) params.set("search", search.trim());
     if (subTab !== "list") params.set("sub", subTab);
+    // Preserve drill-through params written by other pages (e.g. CashAccountDetail)
+    const incoming = new URLSearchParams(window.location.search);
+    const highlight = incoming.get("highlight");
+    if (highlight) params.set("highlight", highlight);
     const next = `/accounts?${params.toString()}`;
     if (next !== location + window.location.search) {
       window.history.replaceState({}, "", next);

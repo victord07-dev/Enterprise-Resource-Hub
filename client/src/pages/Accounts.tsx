@@ -76,35 +76,6 @@ export default function Accounts() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  // Phase 4B (mm): auto-open Edit dialog when navigated from CashAccountDetail with ?editId=<id>
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const editId = params.get("editId");
-    if (!editId || !cashAccountsData) return;
-    const acct = cashAccountsData.find(a => a.id === editId);
-    if (!acct) return;
-    setActiveAccountsTab("cash-accounts");
-    setCaEditing(acct);
-    setCaForm({
-      name: acct.name,
-      type: acct.type,
-      bankName: acct.bankName ?? "",
-      accountNumber: acct.accountNumber ?? "",
-      ifscCode: acct.ifscCode ?? "",
-      openingBalance: String(acct.openingBalance ?? "0"),
-      openingBalanceDate: (acct as any).openingBalanceDate
-        ? new Date((acct as any).openingBalanceDate).toISOString().split("T")[0]
-        : new Date().toISOString().split("T")[0],
-      notes: (acct as any).notes ?? "",
-    });
-    setCaDialogOpen(true);
-    // Strip the editId param so refresh / dialog-close won't re-open
-    params.delete("editId");
-    const newSearch = params.toString();
-    const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "") + window.location.hash;
-    window.history.replaceState(null, "", newUrl);
-  }, [cashAccountsData]);
-
   // ── AR Queries ────────────────────────────────────────────────────────────
   const { data: salesInvoices, isLoading: invoicesLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customerPayments, isLoading: paymentsLoading } = useQuery<CustomerPayment[]>({ queryKey: ["/api/customer-payments"] });
@@ -218,6 +189,35 @@ export default function Accounts() {
   const [caForm, setCaForm] = useState({ name: "", type: "bank", bankName: "", accountNumber: "", ifscCode: "", openingBalance: "0", openingBalanceDate: new Date().toISOString().split("T")[0], notes: "" });
   const [caDeactivateId, setCaDeactivateId] = useState<string | null>(null);
   const [, setLocation] = useLocation();
+
+  // Phase 4B (mm): auto-open Edit dialog when navigated from CashAccountDetail with ?editId=<id>
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get("editId");
+    if (!editId || !cashAccountsData) return;
+    const acct = cashAccountsData.find(a => a.id === editId);
+    if (!acct) return;
+    setActiveAccountsTab("cash-accounts");
+    setCaEditing(acct);
+    setCaForm({
+      name: acct.name,
+      type: acct.type,
+      bankName: acct.bankName ?? "",
+      accountNumber: acct.accountNumber ?? "",
+      ifscCode: acct.ifscCode ?? "",
+      openingBalance: String(acct.openingBalance ?? "0"),
+      openingBalanceDate: (acct as any).openingBalanceDate
+        ? new Date((acct as any).openingBalanceDate).toISOString().split("T")[0]
+        : new Date().toISOString().split("T")[0],
+      notes: (acct as any).notes ?? "",
+    });
+    setCaDialogOpen(true);
+    // Strip the editId param so refresh / dialog-close won't re-open
+    params.delete("editId");
+    const newSearch = params.toString();
+    const newUrl = window.location.pathname + (newSearch ? `?${newSearch}` : "") + window.location.hash;
+    window.history.replaceState(null, "", newUrl);
+  }, [cashAccountsData]);
 
   // ── AR Computed helpers ───────────────────────────────────────────────────
   const siDueDate = useMemo(() => {

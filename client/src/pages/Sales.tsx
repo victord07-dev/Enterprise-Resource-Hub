@@ -482,6 +482,11 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       item.gstRate = 0;
       item.hsnCode = "";
       item.taxAmount = 0;
+      item.customComponents = null;
+    }
+    // Reset custom components when the bundle selection changes (prevents stale components leaking to a different bundle)
+    if (field === "productId") {
+      item.customComponents = null;
     }
     updated[index] = item;
     onChange(updated);
@@ -618,7 +623,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             const prod = products.find(p => p.id === item.productId);
             if (!prod || prod.type !== "bundle") return null;
             const masterComps = bundleComponentsMap[prod.id];
-            const hasCustom = Array.isArray(item.customComponents) && item.customComponents.length > 0;
+            // A custom override exists when customComponents is a non-null array (including empty = "all removed")
+            const hasCustom = Array.isArray(item.customComponents);
             const effectiveComps: BundleItemRow[] = hasCustom
               ? (item.customComponents as Array<{ componentProductId: string; quantity: number; unit: string }>)
               : (masterComps ?? []);
@@ -697,8 +703,9 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             }
 
             // ── Edit mode ──
+            // editComps: use custom override if it exists (including empty = "all removed"), else seed from master
             const editComps: Array<{ componentProductId: string; quantity: number; unit: string }> =
-              (item.customComponents && item.customComponents.length > 0)
+              hasCustom
                 ? (item.customComponents as Array<{ componentProductId: string; quantity: number; unit: string }>)
                 : (masterComps ?? []).map(c => ({ componentProductId: c.componentProductId, quantity: Number(c.quantity) || 1, unit: c.unit || "pcs" }));
 
@@ -1985,8 +1992,9 @@ export default function Sales() {
       const bundleItems = (Array.isArray(qItems) ? qItems : []).filter(it => it.productId && products?.find(p => p.id === it.productId)?.type === "bundle");
       const bundleLineProductIds = Array.from(new Set(bundleItems.map(it => it.productId as string)));
       await Promise.all(bundleItems.map(async (it) => {
-        const cc = (it as any).customComponents as Array<{ componentProductId: string; quantity: number; unit: string }> | null | undefined;
-        if (cc && cc.length > 0) {
+        // Use per-item custom override when it is a non-null array (including empty = "no components")
+        const cc = it.customComponents;
+        if (Array.isArray(cc)) {
           bundlePdfMap[it.id] = cc.map(c => {
             const comp = products?.find(p => p.id === c.componentProductId);
             return { name: comp?.name ?? c.componentProductId, quantity: Number(c.quantity) || 0, unit: c.unit || "pcs", gstRate: Number((comp as any)?.gstRate || 0) };

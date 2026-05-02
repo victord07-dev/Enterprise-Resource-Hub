@@ -308,7 +308,7 @@ export function generateQuotationPDF(
     const isBundle    = prod?.type === "bundle";
     // Phase 98: per-item custom components (keyed by item.id) take priority over master bundle (keyed by productId)
     const bundleComps = isBundle && item.productId
-      ? (bundleItemsMap?.[(item as any).id] ?? bundleItemsMap?.[item.productId] ?? []) : [];
+      ? (bundleItemsMap?.[item.id] ?? bundleItemsMap?.[item.productId] ?? []) : [];
     const bundleSubH = isBundle ? (bundleComps.length * 4) : 0;
     const rowH = (warranty ? 12 : 7) + bundleSubH;
 

@@ -523,7 +523,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span className="text-sm font-medium truncate">{item.description || prod?.name || "Item"}</span>
                   {prod?.type === "bundle" && (
-                    <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">Bundle</Badge>
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">[Bundle]</Badge>
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground flex items-center gap-2 mt-0.5 flex-wrap">

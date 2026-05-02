@@ -1,0 +1,73 @@
+J4 closed clean. All items + bonus (s) Sales.tsx integration verified.
+
+Note: J4 used letter (s) for the Sales.tsx integration item. J5 
+walk items below are renumbered to (t1) through (z1) to avoid 
+collision.
+
+==================================================================
+J5 — ACCOUNT-TO-ACCOUNT TRANSFER (7 items)
+==================================================================
+
+(t1) /accounts → Cash Accounts → click an account → "Record 
+     Transfer" button visible (OR /accounts → Cash Accounts → 
+     top-level "Record Transfer" button if implemented at list 
+     level).
+     Screenshot.
+
+(t2) Form fields visible: From Account (dropdown), To Account 
+     (dropdown), Amount (numeric), Transfer Date (date), Reference 
+     (optional text), Notes (optional textarea).
+     Form: From=HDFC Bank, To=ICICI Bank, Amount=₹50,000, Date=today,
+     Reference="Test transfer for walk J5".
+     Save. Toast confirms "Transfer recorded".
+     Screenshot.
+
+(u1) SQL verification: SELECT * FROM account_transfers ORDER BY 
+     created_at DESC LIMIT 1;
+     Verify: row inserted with from_account_id=HDFC's UUID, 
+     to_account_id=ICICI's UUID, amount=50000, reference='Test 
+     transfer for walk J5', created_by=admin's user ID.
+
+(v1) Audit log verification: 
+     SELECT user_id, action, module, details FROM audit_logs 
+     WHERE action='transfer_recorded' ORDER BY timestamp DESC 
+     LIMIT 1;
+     Verify: action='transfer_recorded' present with details 
+     including amount and from/to account NAMES (not just IDs).
+
+(w1) Open HDFC Bank account detail page (/accounts/cash-accounts/
+     [HDFC_id]). Transaction history shows outgoing transfer 
+     entry: type="Transfer Out", counterparty="ICICI Bank", 
+     amount=-₹50,000 (red), running balance reduced by ₹50,000.
+     Screenshot.
+
+(x1) Open ICICI Bank account detail page. Same transfer shown 
+     as incoming: type="Transfer In", counterparty="HDFC Bank", 
+     amount=+₹50,000 (green), running balance increased by ₹50,000.
+     Screenshot.
+
+(y1) Try Transfer From=HDFC, To=HDFC → blocked with validation 
+     error.
+     Verify: BOTH frontend (Save button disabled OR error message) 
+     AND server (POST returns 400 with clear message).
+     Screenshot of error.
+
+(z1) Verify HDFC balance reflects the -₹50,000 transfer outflow. 
+     SQL spot-check the computeAccountBalance helper integrates 
+     transfers correctly:
+     - Pre-transfer HDFC balance: ₹38,35,000 (after J4's bonus item)
+     - Post-transfer HDFC balance: ₹38,35,000 - ₹50,000 = ₹37,85,000
+     - ICICI balance: ₹0 + ₹50,000 = ₹50,000
+     Confirm both via UI display + SQL.
+
+==================================================================
+
+After all 8 items pass:
+1. Clean up test transfer (DELETE FROM account_transfers WHERE id=X)
+2. Restore HDFC and ICICI balances to baseline
+3. Report J5 closed clean
+
+Then proceed to J6 (Balance Adjustment, 9 items).
+
+Standing rules apply: screenshots for UI, SQL for data, surface 
+bugs honestly, no unilateral scope extension.

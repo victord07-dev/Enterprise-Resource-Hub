@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Landmark, Banknote, ArrowLeft, ArrowLeftRight, SlidersHorizontal, TrendingUp, TrendingDown, IndianRupee, ChevronLeft, ChevronRight } from "lucide-react";
+import { Landmark, Banknote, ArrowLeft, ArrowLeftRight, SlidersHorizontal, TrendingUp, TrendingDown, IndianRupee, ChevronLeft, ChevronRight, Pencil, Filter, X } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { getUser } from "@/lib/auth";
@@ -25,6 +25,7 @@ interface AccountTransaction {
   runningBalance: number;
   linkedEntityId: string | null;
   linkedEntityType: string | null;
+  adjustedByName: string | null;
 }
 
 interface AccountStats {
@@ -38,8 +39,21 @@ interface AccountStats {
 
 const PAGE_SIZE = 25;
 
+const TYPE_OPTIONS: { value: AccountTransaction["type"]; label: string }[] = [
+  { value: "customer_payment", label: "Customer Payment" },
+  { value: "supplier_payment", label: "Supplier Payment" },
+  { value: "expense", label: "Expense" },
+  { value: "transfer_in", label: "Transfer In" },
+  { value: "transfer_out", label: "Transfer Out" },
+  { value: "adjustment", label: "Adjustment" },
+];
+
 function fmt(n: number) {
   return `₹${Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtDate(d: string) {
+  return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function moduleLabel(m: string) {
@@ -77,6 +91,7 @@ export default function CashAccountDetail() {
   const [page, setPage] = useState(1);
   const [transferOpen, setTransferOpen] = useState(false);
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<Set<AccountTransaction["type"]>>(new Set());
 
   const { data: allAccounts } = useQuery<(CashAccount & { balance: number })[]>({ queryKey: ["/api/cash-accounts"] });
 
@@ -108,11 +123,26 @@ export default function CashAccountDetail() {
   const isLoading = acctLoading || statsLoading || txLoading;
   const data = acctData ? { ...acctData, stats: statsData ?? { totalIn: 0, totalOut: 0, transactionCount: 0, netChange: 0, openingBalance: 0, closingBalance: 0 }, transactions: txData?.rows ?? [] } : null;
 
-  const pagedTxns = useMemo(() => {
+  // (qq) Apply type filter client-side. Empty set OR all 6 selected = show all.
+  const filteredTxns = useMemo(() => {
     if (!data?.transactions) return [];
-    return data.transactions.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  }, [data?.transactions, page]);
-  const totalPages = Math.max(1, Math.ceil((data?.transactions?.length ?? 0) / PAGE_SIZE));
+    if (typeFilter.size === 0 || typeFilter.size === TYPE_OPTIONS.length) return data.transactions;
+    return data.transactions.filter(tx => typeFilter.has(tx.type));
+  }, [data?.transactions, typeFilter]);
+
+  const pagedTxns = useMemo(() => {
+    return filteredTxns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  }, [filteredTxns, page]);
+  const totalPages = Math.max(1, Math.ceil(filteredTxns.length / PAGE_SIZE));
+
+  const toggleTypeFilter = (t: AccountTransaction["type"]) => {
+    setTypeFilter(prev => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t); else next.add(t);
+      return next;
+    });
+    setPage(1);
+  };
 
   // ── Transfer Dialog ─────────────────────────────────────────────────────
   const [tfForm, setTfForm] = useState({ toAccountId: "", amount: "", reference: "", transferDate: today, notes: "" });
@@ -170,6 +200,62 @@ export default function CashAccountDetail() {
   }
 
   const otherAccounts = (allAccounts ?? []).filter(a => a.id !== id && a.isActive);
+  const openingDateStr = (data as any).openingBalanceDate ? fmtDate((data as any).openingBalanceDate) : "—";
+
+  // (rr) Row drill handler
+  const handleRowClick = (tx: AccountTransaction) => {
+    switch (tx.type) {
+      case "customer_payment":
+        if (tx.linkedEntityId) {
+          setLocation(`/sales-invoices?highlight=${tx.linkedEntityId}`);
+        } else {
+          setLocation("/sales");
+        }
+        break;
+      case "supplier_payment":
+        setLocation(`/accounts?tab=supplier-payments${tx.linkedEntityId ? `&highlight=${tx.linkedEntityId}` : ""}`);
+        break;
+      case "expense":
+        setLocation(`/accounts?tab=expenses${tx.linkedEntityId ? `&highlight=${tx.linkedEntityId}` : ""}`);
+        break;
+      case "transfer_in": {
+        // counterpartyName is the FROM account; current is the TO account
+        const lines = [
+          `Transfer of ${fmt(tx.amount)}`,
+          `From: ${tx.counterpartyName ?? "—"}`,
+          `To: ${data.name}`,
+          `Date: ${fmtDate(tx.transactionDate)}`,
+          `Reference: ${tx.reference ?? "N/A"}`,
+        ];
+        toast({ title: "Transfer In", description: lines.join("\n") });
+        break;
+      }
+      case "transfer_out": {
+        // counterpartyName is the TO account; current is the FROM account
+        const lines = [
+          `Transfer of ${fmt(tx.amount)}`,
+          `From: ${data.name}`,
+          `To: ${tx.counterpartyName ?? "—"}`,
+          `Date: ${fmtDate(tx.transactionDate)}`,
+          `Reference: ${tx.reference ?? "N/A"}`,
+        ];
+        toast({ title: "Transfer Out", description: lines.join("\n") });
+        break;
+      }
+      case "adjustment": {
+        const direction = tx.amount >= 0 ? "Increase" : "Decrease";
+        const lines = [
+          `Balance ${direction} of ${fmt(tx.amount)}`,
+          `On: ${data.name}`,
+          `Date: ${fmtDate(tx.transactionDate)}`,
+          `Reason: ${tx.description}`,
+          `By: ${tx.adjustedByName ?? "—"}`,
+        ];
+        toast({ title: "Balance Adjustment", description: lines.join("\n") });
+        break;
+      }
+    }
+  };
 
   return (
     <div className="p-4 md:p-6 space-y-5 max-w-5xl mx-auto">
@@ -184,23 +270,50 @@ export default function CashAccountDetail() {
         <span className="text-foreground font-medium">{data.name}</span>
       </div>
 
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+      {/* (mm) Header */}
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
           <div className={`h-12 w-12 rounded-full flex items-center justify-center ${data.type === "bank" ? "bg-blue-100 dark:bg-blue-950/40" : "bg-emerald-100 dark:bg-emerald-950/40"}`}>
             {data.type === "bank" ? <Landmark className="h-6 w-6 text-blue-600 dark:text-blue-400" /> : <Banknote className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />}
           </div>
-          <div>
-            <h1 className="text-xl font-bold">{data.name}</h1>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold" data-testid="text-account-name">{data.name}</h1>
+              <Badge
+                variant="outline"
+                className={data.type === "bank"
+                  ? "border-blue-300 text-blue-700 bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:bg-blue-950/30"
+                  : "border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:bg-emerald-950/30"
+                }
+                data-testid="badge-account-type"
+              >
+                {data.type === "bank" ? "Bank" : "Cash"}
+              </Badge>
+              <Badge variant={data.isActive ? "default" : "secondary"} data-testid="badge-account-status">
+                {data.isActive ? "Active" : "Inactive"}
+              </Badge>
+            </div>
             <p className="text-sm text-muted-foreground">
               {data.type === "bank" ? data.bankName ?? "Bank Account" : "Cash Drawer"}
               {data.accountNumber ? ` · ****${data.accountNumber.slice(-4)}` : ""}
               {data.ifscCode ? ` · ${data.ifscCode}` : ""}
             </p>
+            <p className="text-xs text-muted-foreground" data-testid="text-opening-balance">
+              Opening: <span className="font-medium text-foreground">₹{Number(data.openingBalance ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span> on <span className="font-medium text-foreground">{openingDateStr}</span>
+            </p>
           </div>
-          <Badge variant={data.isActive ? "default" : "secondary"}>{data.isActive ? "Active" : "Inactive"}</Badge>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setLocation(`/accounts?tab=cash-accounts&editId=${id}`)}
+              data-testid="button-edit-account"
+            >
+              <Pencil className="h-4 w-4 mr-2" /> Edit
+            </Button>
+          )}
           {isAdmin && (
             <Button size="sm" variant="outline" onClick={() => { setTfForm({ toAccountId: "", amount: "", reference: "", transferDate: today, notes: "" }); setTransferOpen(true); }} data-testid="button-new-transfer">
               <ArrowLeftRight className="h-4 w-4 mr-2" /> Transfer
@@ -219,7 +332,7 @@ export default function CashAccountDetail() {
         <Card className="col-span-2 sm:col-span-1">
           <CardContent className="pt-5">
             <p className="text-xs text-muted-foreground uppercase tracking-wide">Current Balance</p>
-            <p className={`text-2xl font-bold mt-1 ${Number(data.balance) < 0 ? "text-red-600" : ""}`}>{fmt(data.balance)}</p>
+            <p className={`text-2xl font-bold mt-1 ${Number(data.balance) < 0 ? "text-red-600" : ""}`} data-testid="text-current-balance">{fmt(data.balance)}</p>
           </CardContent>
         </Card>
         <Card>
@@ -254,7 +367,7 @@ export default function CashAccountDetail() {
         </Card>
       </div>
 
-      {/* Date filter */}
+      {/* (nn) Date filter with Today/MTD/YTD/All presets */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="text-xs">From</Label>
@@ -264,16 +377,60 @@ export default function CashAccountDetail() {
           <Label className="text-xs">To</Label>
           <Input type="date" value={toDate} onChange={e => { setToDate(e.target.value); setPage(1); }} className="h-8 w-36 text-xs" data-testid="input-to-date" />
         </div>
-        {["MTD", "YTD", "All"].map(label => (
-          <Button key={label} size="sm" variant="outline" className="h-8 text-xs" onClick={() => {
-            const y = new Date().getFullYear();
-            const m = String(new Date().getMonth() + 1).padStart(2, "0");
-            if (label === "MTD") { setFromDate(`${y}-${m}-01`); setToDate(today); }
-            else if (label === "YTD") { setFromDate(`${y}-01-01`); setToDate(today); }
-            else { setFromDate("2020-01-01"); setToDate(today); }
-            setPage(1);
-          }}>{label}</Button>
+        {["Today", "MTD", "YTD", "All"].map(label => (
+          <Button
+            key={label}
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            data-testid={`button-preset-${label.toLowerCase()}`}
+            onClick={() => {
+              const y = new Date().getFullYear();
+              const m = String(new Date().getMonth() + 1).padStart(2, "0");
+              if (label === "Today") { setFromDate(today); setToDate(today); }
+              else if (label === "MTD") { setFromDate(`${y}-${m}-01`); setToDate(today); }
+              else if (label === "YTD") { setFromDate(`${y}-01-01`); setToDate(today); }
+              else { setFromDate("2020-01-01"); setToDate(today); }
+              setPage(1);
+            }}
+          >
+            {label}
+          </Button>
         ))}
+      </div>
+
+      {/* (qq) Type filter chips */}
+      <div className="flex items-start gap-3 flex-wrap" data-testid="filter-type-chips">
+        <div className="flex items-center gap-1.5 pt-1.5">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs text-muted-foreground">Type:</span>
+        </div>
+        {TYPE_OPTIONS.map(opt => {
+          const active = typeFilter.has(opt.value);
+          return (
+            <Button
+              key={opt.value}
+              size="sm"
+              variant={active ? "default" : "outline"}
+              className="h-7 text-xs"
+              data-testid={`chip-type-${opt.value}`}
+              onClick={() => toggleTypeFilter(opt.value)}
+            >
+              {opt.label}
+            </Button>
+          );
+        })}
+        {typeFilter.size > 0 && typeFilter.size < TYPE_OPTIONS.length && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs"
+            data-testid="button-clear-type-filter"
+            onClick={() => { setTypeFilter(new Set()); setPage(1); }}
+          >
+            <X className="h-3 w-3 mr-1" /> Clear ({typeFilter.size} active)
+          </Button>
+        )}
       </div>
 
       {/* Ledger table */}
@@ -295,7 +452,13 @@ export default function CashAccountDetail() {
               </thead>
               <tbody>
                 {pagedTxns.map((tx) => (
-                  <tr key={tx.id} className="border-b hover:bg-muted/20" data-testid={`row-txn-${tx.id}`}>
+                  <tr
+                    key={tx.id}
+                    className="border-b hover:bg-muted/30 cursor-pointer transition-colors"
+                    data-testid={`row-txn-${tx.id}`}
+                    onClick={() => handleRowClick(tx)}
+                    title="Click to view details"
+                  >
                     <td className="p-3 text-muted-foreground">{new Date(tx.transactionDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" })}</td>
                     <td className="p-3">
                       <Badge variant="outline" className="text-xs">{moduleLabel(tx.type)}</Badge>
@@ -309,19 +472,19 @@ export default function CashAccountDetail() {
                   </tr>
                 ))}
                 {pagedTxns.length === 0 && (
-                  <tr><td colSpan={8} className="text-center p-8 text-muted-foreground">No transactions in the selected period.</td></tr>
+                  <tr><td colSpan={8} className="text-center p-8 text-muted-foreground">No transactions in the selected period{typeFilter.size > 0 && typeFilter.size < TYPE_OPTIONS.length ? " matching the active type filter" : ""}.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3 border-t">
-              <p className="text-xs text-muted-foreground">Page {page} of {totalPages} · {data.transactions.length} rows</p>
+              <p className="text-xs text-muted-foreground" data-testid="text-pagination-info">Page {page} of {totalPages} · {filteredTxns.length} rows</p>
               <div className="flex items-center gap-2">
-                <Button size="icon" variant="outline" className="h-7 w-7" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+                <Button size="icon" variant="outline" className="h-7 w-7" disabled={page <= 1} onClick={() => setPage(p => p - 1)} data-testid="button-prev-page">
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
-                <Button size="icon" variant="outline" className="h-7 w-7" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>
+                <Button size="icon" variant="outline" className="h-7 w-7" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} data-testid="button-next-page">
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>

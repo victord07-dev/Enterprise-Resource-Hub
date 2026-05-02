@@ -1,0 +1,75 @@
+All 4 builds APPROVED with refined drill destinations.
+
+(mm) — Header completion APPROVED:
+- Type badge: "Bank" or "Cash" pill next to account name
+- Opening balance + date row in header section: 
+  "Opening: ₹X on [DD-MMM-YYYY]"
+- Edit button (admin only): opens same edit dialog used in 
+  Cash Accounts CRUD tab. Reuse the existing dialog component, 
+  don't duplicate.
+
+(nn) — "Today" preset APPROVED:
+- New button alongside existing MTD/YTD/All
+- Sets fromDate=today, toDate=today
+
+(qq) — Transaction type filter APPROVED:
+- 6-type multi-select: Customer Payment, Supplier Payment, 
+  Expense, Transfer In, Transfer Out, Adjustment
+- Display as chips/badges (selectable, multiple OK)
+- Client-side filter after fetch (data already in memory)
+- Selecting none OR all = show all
+- Visual indicator showing active filters
+
+(rr) — Row drill destinations APPROVED:
+
+customer_payment row:
+- If linkedEntityId points to an invoice: navigate to 
+  /sales-invoices/[invoice_id]
+- Else: navigate to /sales with the order/invoice context
+
+supplier_payment row:
+- Navigate to /accounts?tab=supplier-payments
+- Optionally pass a query param to highlight the specific row
+
+expense row:
+- Navigate to /accounts?tab=expenses
+- Optionally pass a query param to highlight the specific row
+
+transfer_in or transfer_out row:
+- Show toast popup with details:
+  "Transfer of ₹X
+   From: [from_account_name]
+   To: [to_account_name]
+   Date: [transfer_date]
+   Reference: [reference or 'N/A']"
+- No navigation. Toast dismisses after click or auto-timeout.
+
+adjustment row:
+- Show toast popup with details:
+  "Balance [Increase/Decrease] of ₹X
+   On: [account_name]
+   Date: [adjustment_date]
+   Reason: [reason]
+   By: [adjusted_by user name]"
+- No navigation. Toast dismisses after click or auto-timeout.
+
+For toasts (transfer + adjustment): use existing shadcn Toast 
+component or whatever pattern is used elsewhere in the app. 
+Don't introduce new dependencies.
+
+ARCHITECTURE NOTE (no action):
+The frontend's 1000-row baked-balance approach is fine for 
+ITFI scale (~5,400 txns/year). Note for future Phase 4 successors: 
+if account history exceeds 1000 rows, switch to server-side 
+pagination with window function. Not a current issue.
+
+Process flow:
+
+1. Ship all 4 builds
+2. Re-walk J8 items (mm)(nn)(qq)(rr) end-to-end with screenshots
+3. Confirm (oo) and (pp) still pass (no regression)
+4. Cleanup any test data created during walk
+5. Report J8 closed clean
+6. Then proceed to J9 (Balance Computation Accuracy, 1 item)
+
+Standing rules apply.

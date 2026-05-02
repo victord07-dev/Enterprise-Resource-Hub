@@ -69,6 +69,7 @@ export type AccountTransactionRow = {
   counterpartyName: string | null;
   linkedEntityId: string | null;
   linkedEntityType: string | null;
+  adjustedByName: string | null;
 };
 
 export type AccountStats = {
@@ -2797,7 +2798,8 @@ export class DatabaseStorage implements IStorage {
           reference,
           NULL::text AS counterparty_name,
           invoice_id AS entity_id,
-          'invoice' AS entity_type
+          'invoice' AS entity_type,
+          NULL::text AS adjusted_by_name
         FROM customer_payments
         WHERE cash_account_id = ${accountId}
 
@@ -2813,7 +2815,8 @@ export class DatabaseStorage implements IStorage {
           reference,
           NULL::text AS counterparty_name,
           coalesce(supplier_invoice_id, purchase_order_id) AS entity_id,
-          CASE WHEN supplier_invoice_id IS NOT NULL THEN 'supplier_invoice' ELSE 'purchase_order' END AS entity_type
+          CASE WHEN supplier_invoice_id IS NOT NULL THEN 'supplier_invoice' ELSE 'purchase_order' END AS entity_type,
+          NULL::text AS adjusted_by_name
         FROM supplier_payments
         WHERE cash_account_id = ${accountId}
 
@@ -2829,7 +2832,8 @@ export class DatabaseStorage implements IStorage {
           NULL AS reference,
           NULL::text AS counterparty_name,
           id AS entity_id,
-          'expense' AS entity_type
+          'expense' AS entity_type,
+          NULL::text AS adjusted_by_name
         FROM expenses
         WHERE cash_account_id = ${accountId}
 
@@ -2845,7 +2849,8 @@ export class DatabaseStorage implements IStorage {
           reference,
           (SELECT name FROM cash_accounts WHERE id = account_transfers.from_account_id) AS counterparty_name,
           id AS entity_id,
-          'account_transfer' AS entity_type
+          'account_transfer' AS entity_type,
+          NULL::text AS adjusted_by_name
         FROM account_transfers
         WHERE to_account_id = ${accountId}
 
@@ -2861,7 +2866,8 @@ export class DatabaseStorage implements IStorage {
           reference,
           (SELECT name FROM cash_accounts WHERE id = account_transfers.to_account_id) AS counterparty_name,
           id AS entity_id,
-          'account_transfer' AS entity_type
+          'account_transfer' AS entity_type,
+          NULL::text AS adjusted_by_name
         FROM account_transfers
         WHERE from_account_id = ${accountId}
 
@@ -2877,7 +2883,8 @@ export class DatabaseStorage implements IStorage {
           NULL AS reference,
           NULL::text AS counterparty_name,
           id AS entity_id,
-          'balance_adjustment' AS entity_type
+          'balance_adjustment' AS entity_type,
+          (SELECT username FROM users WHERE id = balance_adjustments.adjusted_by) AS adjusted_by_name
         FROM balance_adjustments
         WHERE cash_account_id = ${accountId}
       ),
@@ -2897,6 +2904,7 @@ export class DatabaseStorage implements IStorage {
           counterparty_name,
           entity_id,
           entity_type,
+          adjusted_by_name,
           (SELECT ob FROM acct) + SUM(amount) OVER (ORDER BY tx_date, id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance,
           COUNT(*) OVER () AS total_count
         FROM dated
@@ -2919,6 +2927,7 @@ export class DatabaseStorage implements IStorage {
       counterpartyName: r.counterparty_name ?? null,
       linkedEntityId: r.entity_id ?? null,
       linkedEntityType: r.entity_type ?? null,
+      adjustedByName: r.adjusted_by_name ?? null,
     }));
 
     return { rows, total };

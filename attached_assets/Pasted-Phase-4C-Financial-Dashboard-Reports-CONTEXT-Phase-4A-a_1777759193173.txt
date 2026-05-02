@@ -1,0 +1,748 @@
+Phase 4C: Financial Dashboard + Reports
+
+CONTEXT
+
+Phase 4A and 4B closed cleanly. Phase 4 Cleanup closed. ITFI ERP 
+now has full transactional integrity (credit overrides, supplier 
+invoices, dues blocks, PO GST, cash accounts, transfers, 
+adjustments) but the financial visibility layer is fake.
+
+The current home dashboard shows hardcoded widgets. There are no 
+downloadable reports for CEO month-end review or accountant Tally 
+reconciliation. Everything happens at row-level — no aggregate 
+visibility.
+
+This phase ships:
+- Live dashboard with real cross-account financial widgets
+- 11 downloadable financial reports (PDF + Excel)
+- Common date-range filtering infrastructure
+- Pending Actions widget for CEO operational awareness
+
+After this phase, ITFI is genuinely production-ready. CEO can run 
+the business from the dashboard. Accountant can export reports for 
+Tally entry. Audit trail supports both views.
+
+What this phase does NOT deliver (deferred):
+- Period comparisons (vs Last Month, vs Last Year) — not enough 
+  historical data yet
+- Live forecasting / cash flow projections
+- Budget vs actual reports
+- Bank statement reconciliation (separate future phase)
+- Email scheduled reports
+- GSTR filing automation (Tally handles)
+- Multi-currency
+
+STANDING RULES
+- Before declaring complete, walk every UI path with screenshots 
+  and SQL evidence per affected item.
+- Only operator declares phase closure.
+- Mirror existing patterns. Read existing code first.
+- No unrequested cleanup or refactoring outside listed items.
+- Surface and ask before extending scope.
+- Throwaway-data discipline: NEVER use existing real records for 
+  test writes. Create dedicated test data → test → cleanup.
+- All audit log entries use semantic action names + structured 
+  details (mirror Phase 4A/4B patterns).
+
+CEO POLICY DECISIONS LOCKED
+- 11 reports total (10 mandatory + 1 ok-to-have)
+- Both PDF and Excel exports for ALL reports
+- Pending Actions widget required (CEO operational awareness)
+- Period comparisons SKIPPED in this phase
+- Authorization: Dashboard visible to admin + accountant; Reports 
+  generation admin + accountant only
+- Each report exports include ITFI letterhead + period + 
+  generated-by user + timestamp + page numbers
+
+PRE-WORK READING (MANDATORY, BEFORE ANY CODE)
+
+Confirm before writing code:
+
+1. Current dashboard implementation:
+   - Locate /home or /dashboard page
+   - Identify all current widgets (likely fake/hardcoded)
+   - List each widget's data source (none vs real)
+
+2. Existing report infrastructure:
+   - Locate /reports page
+   - Current tabs (AR Aging, AP Aging from Phase 4A, others?)
+   - PDF generation patterns: 
+     * Phase 2 PO PDF (server/po-pdf.ts)
+     * Phase 4A GRN PDF (server/grn-pdf.ts)
+     * Reuse same pattern — same library (likely PDFKit or jsPDF)
+   - Excel generation: confirm if any exists. If not, will use 
+     ExcelJS server-side (no client-side spreadsheet libs)
+
+3. Existing data sources for aggregations:
+   - SQL: \d sales_invoices, supplier_invoices, expenses, 
+     customer_payments, supplier_payments, account_transfers, 
+     balance_adjustments, payments
+   - Confirm column names for date fields (some use 
+     created_at, some payment_date, some invoice_date, etc.)
+   - These are the source-of-truth for all aggregations
+
+4. Existing date filter patterns:
+   - Accounts.tsx Expenses tab uses URL-persisted date inputs
+   - CashAccountDetail.tsx uses Today/MTD/YTD/All preset buttons
+   - Pick one canonical pattern, reuse across all 11 reports + 
+     dashboard widgets
+
+5. Authorization patterns:
+   - app-sidebar.tsx ROLE_NAV: confirm /reports already visible 
+     to admin + accountant
+   - server-side: requireRole("admin", "accountant") on report 
+     endpoints
+   - Existing /reports page admin-only or admin+accountant?
+
+6. Letterhead pattern:
+   - Phase 2 PO PDF uses hardcoded letterhead at top
+   - Locate the letterhead constants (likely 
+     client/src/lib/purchase-order-pdf.ts ITFI letterhead block)
+   - Reuse same letterhead for all 11 PDF reports
+
+7. Currency formatting:
+   - Existing fmt() patterns across pages
+   - Indian numbering (lakhs/crores) vs international comma format
+   - Reuse same format helper everywhere
+
+8. ExcelJS or alternative library:
+   - Check package.json for existing Excel library
+   - If none: install ExcelJS (npm install exceljs)
+   - Test simple write to confirm it works in environment
+
+Report findings in one message. Await go-ahead before implementation.
+
+==========================================================
+SECTION A — DATABASE & INFRASTRUCTURE FOUNDATION
+==========================================================
+
+A1. Schema additions (minimal):
+    
+    report_generation_log (audit table for compliance tracking):
+      id (uuid PK)
+      report_type (text, NOT NULL)  -- 'pl_statement' | 'cash_flow' | etc.
+      generated_by (uuid FK → users, NOT NULL)
+      generated_at (timestamp, NOT NULL, default now())
+      filters (jsonb)  -- date range, account selection, etc.
+      format (text, NOT NULL)  -- 'pdf' | 'excel'
+      file_size_bytes (integer)
+      
+    No other schema changes needed. All aggregations work off 
+    existing tables.
+
+A2. Indexes for performance:
+    
+    Add indexes if not present:
+    - sales_invoices(invoice_date) for P&L period queries
+    - supplier_invoices(invoice_date) for purchase aggregations
+    - expenses(expense_date) for category rollups
+    - customer_payments(payment_date) for cash flow
+    - supplier_payments(payment_date) same
+    - account_transfers(transfer_date) same
+    - balance_adjustments(adjustment_date) same
+    
+    Run db:push.
+
+A3. Reusable helper modules (server-side):
+    
+    server/lib/financial-aggregations.ts — central aggregation 
+    helpers used by both dashboard and reports:
+    - getRevenueForPeriod(fromDate, toDate)
+    - getExpensesForPeriod(fromDate, toDate, byCategory?)
+    - getCashFlowForPeriod(fromDate, toDate)
+    - getCustomerAging(asOfDate)
+    - getSupplierAging(asOfDate)
+    - getAccountStatement(accountId, fromDate, toDate)
+    - getConsolidatedStatement(fromDate, toDate)
+    - getTaxSummary(fromDate, toDate)
+    - getTopCustomers(period, limit)
+    - getTopSuppliers(period, limit)
+    - getPendingActions(userId)
+    
+    These return structured data. PDF/Excel exporters call them.
+
+A4. Reusable date filter component (client-side):
+    
+    client/src/components/DateRangeFilter.tsx — preset pills + 
+    custom range picker.
+    Presets: Today / Yesterday / Last 7 Days / Last 30 Days / 
+              This Month / Last Month / This Quarter / This FY / 
+              Last FY / Custom
+    Custom: from/to date pickers
+    
+    Reused in all dashboard widgets + every report.
+
+A5. Reusable PDF export module:
+    
+    server/lib/pdf-export.ts — wraps the existing Phase 2 PO PDF 
+    library with consistent header/footer for financial reports:
+    - ITFI letterhead at top
+    - Report title + period + generated-by + timestamp
+    - Page numbers at bottom
+    - "Generated from ITFI ERP" footer
+    
+    Used by all 11 report PDF exports.
+
+A6. Reusable Excel export module:
+    
+    server/lib/excel-export.ts — ExcelJS-based:
+    - Header rows with letterhead info
+    - Data rows with proper number formatting (Indian currency)
+    - Auto-width columns
+    - Bold totals row
+    - Optional second sheet for supplementary data
+    
+    Used by all 11 report Excel exports.
+
+==========================================================
+SECTION B — DASHBOARD (Live Operational View)
+==========================================================
+
+B1. Replace existing fake home page with real dashboard.
+    Route: / (home page when logged in)
+    Visible to: admin + accountant (others see role-specific 
+    landing page per existing patterns)
+
+B2. Top-level metric cards (live, refreshes on load):
+    Row 1 (Cash & Receivables):
+    - Total Cash Position (sum of all active cash account balances)
+    - Outstanding Receivables (sum of unpaid sales invoices)
+    - Outstanding Payables (sum of unpaid supplier invoices)
+    - Net Working Capital (Cash + AR - AP)
+    
+    Row 2 (Today + This Month):
+    - Today's Money In (all inflows today)
+    - Today's Money Out (all outflows today)
+    - This Month Revenue (sales invoices issued this month)
+    - This Month Expenses (expenses recorded this month)
+    
+    Each card: large number, small subtitle context, color-coded
+    (positive green, negative red, neutral gray)
+    Click any card → drills to source detail page
+
+B3. Cross-account cash position widget:
+    - Mini-cards for each active cash account
+    - Account name + current balance + type icon
+    - Click → drills to Account Detail page (Phase 4B)
+    - Inactive accounts not shown
+
+B4. Top 5 Customers by Volume widget:
+    - Period selector dropdown: This Month / This Quarter / This 
+      FY / All-time
+    - Customer name + total purchase amount + percentage of total
+    - Bar chart or progress bar visual
+    - Click customer → customer detail page
+
+B5. Top 5 Suppliers by Spend widget:
+    - Same pattern as B4, supplier-side
+
+B6. Recent Activity Feed:
+    - Last 20 transactions across all types (customer payments, 
+      supplier payments, expenses, transfers, adjustments)
+    - Format: 
+      [time] [type icon] [action description] [amount] [actor]
+      e.g., "10:45 AM 💰 Customer payment received: ₹50,000 from 
+             SunPeak Energy via HDFC (sales_manager: jane_doe)"
+    - Click any row → drills to underlying entity
+    - Auto-refreshes every 60 seconds OR manual refresh button
+
+B7. Pending Actions widget:
+    - List of items requiring attention:
+      * GRN drafts awaiting confirmation (count + click → 
+        Inventory page filtered)
+      * Supplier invoices in pending_upload state (count + click 
+        → Accounts > Supplier Invoices filtered)
+      * Overdue customer invoices (count + total amount + click 
+        → AR Aging report)
+      * Overdue supplier invoices (count + total amount + click 
+        → AP Aging report)
+      * Quotations expiring this week (if applicable)
+    - Each action shows count + brief context
+    - Click → routes to filtered relevant page with action
+
+B8. Dashboard refresh:
+    - All widgets fetch on mount
+    - Activity Feed auto-refresh (60s interval)
+    - Other widgets: manual refresh button OR refresh on tab focus
+    - No real-time websocket needed
+
+==========================================================
+SECTION C — REPORT 1: P&L STATEMENT
+==========================================================
+
+C1. Page: /reports → Financial Reports tab → P&L Statement subtab
+    OR /reports/pl-statement (whichever pattern exists)
+    
+    Authorization: admin + accountant only
+
+C2. Filters:
+    - Date Range Filter component (Section A4)
+    - Default: This Month
+
+C3. P&L structure:
+    
+    REVENUE
+      Sales Revenue (from sales_invoices.grand_total in period)
+        - Less: Discounts (if tracked)
+        - Less: Returns (if tracked)
+      Net Revenue: ₹X
+    
+    COST OF GOODS SOLD
+      Material costs (from products purchased + dispatched in period)
+        - For each dispatched item: quantity × FIFO buying_price
+      Direct logistics (purchase delivery_cost portion)
+      Total COGS: ₹Y
+    
+    GROSS PROFIT: ₹(X - Y)
+    Gross Margin: ((X-Y)/X) × 100 = Z%
+    
+    OPERATING EXPENSES (categorized from expenses table)
+      Rent: ₹A
+      Salaries: ₹B
+      Utilities: ₹C
+      Transportation: ₹D
+      Marketing: ₹E
+      Office Supplies: ₹F
+      Other: ₹G
+      Total Operating Expenses: ₹H
+    
+    NET PROFIT: ₹(X - Y - H)
+    Net Margin: ((X-Y-H)/X) × 100 = K%
+
+C4. Display:
+    On-page table with collapsible sections
+    Numbers right-aligned, Indian comma format (12,34,567.89)
+    Negative values in red
+    Bold for major totals (Net Revenue, Gross Profit, Net Profit)
+
+C5. Export buttons:
+    - "Download PDF" button → generates PDF via Section A5
+    - "Download Excel" button → generates Excel via Section A6
+    - Each download logs to report_generation_log
+
+C6. PDF format:
+    ITFI letterhead (top)
+    "Profit & Loss Statement"
+    "Period: [from] to [to]"
+    "Generated: [timestamp] by [user]"
+    Full P&L table
+    Page numbers
+    "Generated from ITFI ERP" footer
+
+C7. Excel format:
+    Sheet 1: P&L summary (same as PDF)
+    Sheet 2: Detailed line items (every sales invoice + every 
+             expense in period for accountant verification)
+
+==========================================================
+SECTION D — REPORT 2: CASH FLOW STATEMENT
+==========================================================
+
+D1. Page + filters: same pattern as C, default This Month
+
+D2. Cash Flow structure:
+    
+    OPENING CASH POSITION (as of start of period)
+      Per-account breakdown:
+        HDFC Bank: ₹X
+        ICICI Bank: ₹Y
+        AXIS Bank: ₹Z
+        CEO Cash: ₹W
+        Total Opening: ₹(X+Y+Z+W)
+    
+    INFLOWS (during period)
+      Customer Payments by Method:
+        - Bank Transfer: ₹A
+        - RTGS: ₹B
+        - UPI: ₹C
+        - Cash: ₹D
+        - Cheque: ₹E
+      Other Inflows:
+        - Transfers In: ₹F
+        - Balance Adjustments (positive): ₹G
+      Total Inflows: ₹SUM
+    
+    OUTFLOWS (during period)
+      Supplier Payments by Method:
+        - Bank Transfer: ₹A
+        - RTGS: ₹B
+        - UPI: ₹C
+        - Cash: ₹D
+        - Cheque: ₹E
+      Expenses by Category:
+        - Rent: ₹X
+        - Salaries: ₹Y
+        - (etc.)
+      Other Outflows:
+        - Transfers Out: ₹F
+        - Balance Adjustments (negative): ₹G
+      Total Outflows: ₹SUM
+    
+    NET CASH FLOW: ₹(Inflows - Outflows)
+    
+    CLOSING CASH POSITION (as of end of period)
+      Per-account breakdown
+      Total Closing: ₹(...)
+
+D3. PDF + Excel exports same pattern as C5-C7
+    Excel Sheet 2: Per-account transaction-level detail
+
+==========================================================
+SECTION E — REPORT 3: CUSTOMER AGING REPORT
+==========================================================
+
+E1. Page + filters: 
+    - As-of date selector (default: today)
+    - Optional customer filter (defaults to all)
+    - Authorization: admin + accountant
+
+E2. Aging structure:
+    
+    Customer-wise table:
+    | Customer | Current | 1-30 days | 31-60 | 61-90 | 90+ | Total |
+    | XYZ Corp | ₹X      | ₹A        | ₹B    | ₹C    | ₹D  | ₹E    |
+    
+    Bottom row: TOTAL across all customers
+    
+    Aging buckets computed from invoice due_date vs as-of date
+
+E3. Display:
+    Sortable columns (descending by Total default)
+    Click customer row → expands to show individual invoices
+    Color coding: red for 90+, amber for 61-90, yellow for 31-60
+
+E4. PDF + Excel exports
+    Excel Sheet 2: Invoice-level detail per customer
+
+==========================================================
+SECTION F — REPORT 4: SUPPLIER AGING REPORT
+==========================================================
+
+F1. Same structure as E, supplier-side
+
+==========================================================
+SECTION G — REPORT 5: TAX SUMMARY (GST) — OK-TO-HAVE
+==========================================================
+
+G1. Page + filters: typical monthly default (current month)
+
+G2. Tax Summary structure:
+    
+    GST COLLECTED (output tax — from sales)
+      CGST: ₹X
+      SGST: ₹Y
+      IGST: ₹Z
+      Total Output Tax: ₹(X+Y+Z)
+    
+    GST PAID (input tax — from purchases)
+      Note: From supplier_invoices.tax_amount (header-only per 
+      Phase 4A decision; no CGST/SGST/IGST split on supplier side)
+      Total Input Tax: ₹A
+    
+    NET GST PAYABLE: ₹((X+Y+Z) - A)
+    
+    HSN-wise breakdown (for GSTR-1 awareness):
+    | HSN Code | Taxable Value | CGST | SGST | IGST | Total Tax |
+    
+G3. Note at bottom of report:
+    "This is a CEO awareness summary. Official GSTR filings 
+    handled in Tally. Always verify against Tally records before 
+    filing."
+
+G4. PDF + Excel exports
+
+==========================================================
+SECTION H — REPORT 6: SALES REGISTER
+==========================================================
+
+H1. Page + filters:
+    - Date range
+    - Customer filter (optional)
+    - Status filter (paid / unpaid / partial / all)
+
+H2. Sales Register table:
+    | Date | Invoice # | Customer | Subtotal | GST | Total | Status | Paid | Balance |
+    
+    All sales invoices in period
+    Sortable, filterable
+    Bottom row: column totals
+
+H3. PDF + Excel exports
+
+==========================================================
+SECTION I — REPORT 7: PURCHASE REGISTER
+==========================================================
+
+I1. Same as H, supplier-side
+    
+    Columns: 
+    | Date | Supplier Invoice # | Supplier | Amount | Status | 
+      Linked PO | Linked GRN | Paid | Balance |
+
+I2. PDF + Excel exports
+
+==========================================================
+SECTION J — REPORT 8: EXPENSE REPORT
+==========================================================
+
+J1. Page + filters:
+    - Date range
+    - Category filter (optional, multi-select)
+    - Cash account filter (optional)
+
+J2. Expense Report structure:
+    
+    Top: Summary by category
+    | Category | Total | % of Total |
+    | Rent     | ₹X    | Y%         |
+    
+    Bottom: Transaction-level detail
+    | Date | Description | Category | Amount | Account | Recorded By |
+
+J3. PDF + Excel exports
+    Excel Sheet 1: Summary
+    Excel Sheet 2: Transactions
+
+==========================================================
+SECTION K — REPORT 9: CASH POSITION REPORT
+==========================================================
+
+K1. Page + filters:
+    - As-of date (default: today)
+    - No date range — point-in-time snapshot
+
+K2. Cash Position structure:
+    
+    | Account | Type | Account # | Opening (FY start) | Period Activity | Current Balance |
+    | HDFC    | Bank | XXX1234   | ₹X                 | +₹Y / -₹Z       | ₹W              |
+    
+    Bottom row: TOTAL
+    
+    Plus a small comment if any account is inactive or has 
+    pending unattributed payments (the Phase 4B legacy issue)
+
+K3. PDF + Excel exports
+
+==========================================================
+SECTION L — REPORT 10A: ACCOUNT STATEMENT (per-account)
+==========================================================
+
+L1. Page + filters:
+    - Account selector (dropdown of all active accounts)
+    - Date range (default: This Month)
+
+L2. Account Statement structure:
+    
+    Header:
+      Account: HDFC Bank
+      Account Number: XXX
+      Opening Balance (period start): ₹X
+      Period: from to
+    
+    Transactions table (chronological):
+    | Date | Type | Description | Counterparty | Reference | 
+      Debit | Credit | Running Balance |
+    
+    Footer:
+      Closing Balance (period end): ₹Y
+      Net Movement: ₹(Y-X)
+
+L3. Mirrors the Account Detail page (Phase 4B) but as exportable 
+    document.
+
+L4. PDF + Excel exports
+
+==========================================================
+SECTION M — REPORT 10B: CONSOLIDATED CASH STATEMENT
+==========================================================
+
+M1. Page + filters:
+    - Date range only (no account selector — covers ALL accounts)
+
+M2. Consolidated Statement structure:
+    
+    Header:
+      All Accounts Consolidated
+      Period: from to
+    
+    Opening Balances:
+      | Account | Opening Balance |
+      | HDFC    | ₹X              |
+      | ICICI   | ₹Y              |
+      | AXIS    | ₹Z              |
+      | CEO Cash| ₹W              |
+      | TOTAL   | ₹(X+Y+Z+W)      |
+    
+    Transactions table (chronological across all accounts):
+    | Date | Account | Type | Description | Counterparty | 
+      Reference | Debit | Credit | Running Total |
+    
+    Important: Inter-account transfers shown clearly with both 
+    legs visible (or netted out) so they don't double-count
+    
+    Closing Balances:
+      | Account | Closing Balance |
+      | HDFC    | ₹X'             |
+      | ICICI   | ₹Y'             |
+      | AXIS    | ₹Z'             |
+      | CEO Cash| ₹W'             |
+      | TOTAL   | ₹(X'+Y'+Z'+W')  |
+    
+    Net Movement: ₹(Total Closing - Total Opening)
+
+M3. PDF + Excel exports
+
+==========================================================
+SECTION N — STOP GATE (OPERATOR WALKS)
+==========================================================
+
+N1. Schema and infrastructure (5 items):
+    (a) report_generation_log table exists with all columns
+    (b) Date filter component renders with all 10 presets + custom
+    (c) PDF export module produces consistent letterhead/footer
+    (d) Excel export module produces formatted output with totals
+    (e) Indexes added on date columns for performance
+
+N2. Dashboard widgets (8 items):
+    (f) Top-level metric cards display real numbers (verify each 
+        against SQL: SELECT SUM where ...)
+    (g) Cross-account cash position cards show all 4 accounts 
+        with current balances matching Phase 4B
+    (h) Top 5 Customers widget shows real top 5 with 
+        period-correct amounts
+    (i) Top 5 Suppliers widget same pattern
+    (j) Recent Activity feed shows last 20 actual transactions 
+        chronologically (not hardcoded)
+    (k) Pending Actions widget shows accurate counts (verify 
+        against SQL: SELECT COUNT where status=...)
+    (l) Click any widget → drills to correct detail page
+    (m) Auth: sales_manager / warehouse_manager see role-
+        specific landing, not the dashboard
+
+N3. P&L Statement (5 items):
+    (n) Open report. Default period This Month. Numbers populate.
+    (o) Change period to Last Quarter. Numbers update.
+    (p) Custom range from FY start to today. Numbers reflect.
+    (q) Download PDF. Verify: letterhead, period header, all 
+        sections present, page numbers, footer.
+    (r) Download Excel. Verify: Sheet 1 summary, Sheet 2 detail, 
+        Indian number format, totals row bold.
+
+N4. Cash Flow Statement (4 items):
+    (s) Same flow as P&L: filter, view, PDF, Excel
+    (t) Verify: Per-account opening balances match Cash Position
+    (u) Verify: Inflows + Outflows aggregate correctly per method
+    (v) Verify: Closing position reconciles (Opening + Inflows - 
+        Outflows = Closing)
+
+N5. Customer Aging Report (4 items):
+    (w) As-of today. Verify: matches existing AR Aging from 
+        Phase 4A (Reports tab)
+    (x) Filter by single customer. Other customers hidden.
+    (y) PDF: bucket totals + per-customer rows + grand total
+    (z) Excel: Sheet 1 summary, Sheet 2 invoice-level detail
+
+N6. Supplier Aging Report (4 items):
+    (aa) Same pattern as N5 for supplier-side
+
+N7. Tax Summary GST (3 items):
+    (ee) Date range = current month
+    (ff) Verify: CGST + SGST + IGST sums match SQL aggregations 
+         from sales_invoices
+    (gg) PDF + Excel: HSN breakdown present, footer note about 
+         Tally visible
+
+N8. Sales Register (3 items):
+    (hh) All sales invoices in period visible
+    (ii) Filter by status. Subset shown.
+    (jj) PDF + Excel exports
+
+N9. Purchase Register (3 items):
+    (kk-mm) Same pattern as N8 for supplier-side
+
+N10. Expense Report (4 items):
+    (nn) Default period. All expenses visible categorized
+    (oo) Filter by category. Filtered correctly.
+    (pp) Filter by cash account. Filtered correctly.
+    (qq) PDF + Excel exports
+
+N11. Cash Position Report (3 items):
+    (rr) As-of today. All 4 accounts visible with balances
+    (ss) As-of yesterday. Balances reflect prior day state
+    (tt) PDF + Excel exports
+
+N12. Account Statement per-account (4 items):
+    (uu) Pick HDFC + This Month. Opening + transactions + 
+         closing render correctly
+    (vv) Verify: Matches Account Detail page (Phase 4B) for 
+         same account + period
+    (ww) PDF + Excel exports
+    (xx) Pick ICICI. Switch loads new data.
+
+N13. Consolidated Cash Statement (4 items):
+    (yy) This Month. All accounts opening + transactions + closing
+    (zz) Verify: Inter-account transfers don't double-count 
+         (both legs visible OR netted in summary)
+    (aaa) Total opening + total movement = total closing 
+          (mathematical reconcile)
+    (bbb) PDF + Excel exports
+
+N14. Authorization (4 items):
+    (ccc) Login as accountant: dashboard accessible, all reports 
+          accessible, all downloads work
+    (ddd) Login as sales_manager: dashboard NOT accessible 
+          (redirected to role-specific landing), reports NOT 
+          accessible (or limited per existing patterns)
+    (eee) Login as warehouse_manager: same as sales_manager
+    (fff) Login as field_staff: dashboard not accessible
+
+N15. Performance (3 items):
+    (ggg) Year-long P&L generation: completes in <3 seconds
+    (hhh) Year-long Cash Flow: completes in <3 seconds
+    (iii) Dashboard initial load: <2 seconds total
+
+N16. Audit log (2 items):
+    (jjj) Each report download writes row to 
+          report_generation_log
+    (kkk) Audit log entry: action='report_generated', module=
+          'reports', details with report_type and filters
+
+N17. Regression — Phase 1, 2, 3, 4A, 4B, 4 Cleanup (5 items):
+    (lll) Sales workflow + payment recording (still works)
+    (mmm) Purchase workflow + GRN auto-supplier-invoice (still 
+          works)
+    (nnn) Cash account transfers + adjustments (still work)
+    (ooo) Floor override (Phase 4 Cleanup) still works
+    (ppp) AR/AP Aging existing reports still render correctly
+
+==========================================================
+OUT OF SCOPE FOR THIS PHASE
+==========================================================
+
+- Period comparisons (vs Last Month, vs Last Year) — not enough 
+  historical data yet, defer
+- Live forecasting / cash flow projections
+- Budget vs actual reports
+- Bank statement reconciliation (separate future phase)
+- Email scheduled reports (e.g., weekly auto-email to CEO)
+- Scheduled report generation (cron-based)
+- Custom report builder
+- Multi-currency support
+- Real-time websocket updates (60s refresh sufficient)
+- Drill-down to individual line items from P&L
+- GSTR filing automation (Tally handles)
+- Phase 5 fork (separate phase)
+
+==========================================================
+DELIVERABLE
+==========================================================
+
+Stop after implementation ships and ping me. I will walk N1-N17 
+(~70 items, ~50 min).
+
+Standing rules apply: UI verification with screenshots, backend 
+tests insufficient, no scope drift, only operator declares closure.
+
+Throwaway-data discipline: NEVER use existing real records for 
+test writes. Create dedicated test data → test → cleanup with 
+audit log entry.

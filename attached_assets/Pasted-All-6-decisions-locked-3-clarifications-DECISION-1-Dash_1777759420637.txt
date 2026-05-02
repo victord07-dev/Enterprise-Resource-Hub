@@ -1,0 +1,90 @@
+All 6 decisions locked + 3 clarifications:
+
+DECISION 1 — Dashboard scope:
+- KEEP: follow-ups summary, payroll status
+- REMOVE: today's-expenses (subsumed by B2 Today's Money Out)
+- ADD: B2-B7 widgets ABOVE existing widgets
+- Layout suggestion (Replit AI's call):
+  Top: B2 metric cards row(s), B3 cash position
+  Middle: B4 top customers, B5 top suppliers, existing follow-ups, 
+          existing payroll
+  Bottom: B6 recent activity feed
+  Sticky/top-right: B7 pending actions
+- Use your design judgment on exact layout
+
+DECISION 2 — Authorization:
+- Existing /reports tabs (overview, ap-aging, ar-aging, daily-
+  pricing): NO CHANGE — 5 roles keep access
+- NEW financial report tabs (11 new reports): admin + accountant 
+  ONLY
+- Implementation: gate visibility per tab in Reports.tsx, gate 
+  endpoint access on backend per route
+
+DECISION 3 — PDF library:
+- Client-side jsPDF for all 11 reports
+- Mirror existing pattern (purchase-order-pdf.ts, etc.)
+- Server returns aggregated JSON, client renders PDF
+- Server logs to report_generation_log + audit_logs (per N16)
+
+DECISION 4 — Excel library:
+- Install ExcelJS: npm install exceljs
+- Add to package.json
+- Use for all 11 report Excel exports
+- Test simple write before broader use
+
+DECISION 5 — Pending Actions data sources:
+- Confirmed scope: GRN drafts, pending_upload supplier invoices, 
+  overdue customer invoices, overdue supplier invoices
+- Verify field existence in pre-work continuation:
+  * goods_receipt_notes.status='draft' (count)
+  * supplier_invoices.upload_status='pending_upload' (count)
+  * sales_invoices.due_date < today AND status != 'paid' 
+    (count + sum)
+  * supplier_invoices.due_date < today AND status != 'paid' 
+    (count + sum)
+
+DECISION 6 — Quotations expiring this week:
+- Check usage: SQL: SELECT COUNT(*), COUNT(valid_until) FROM 
+  quotations;
+- If valid_until is mostly NULL (>50% null): SKIP this widget item
+- If meaningfully populated (>50% non-null): INCLUDE
+- Report decision based on actual data
+
+CLARIFICATION 1 — Letterhead extraction (your Risk Flag #5):
+- APPROVED. Extract letterhead constants into 
+  client/src/lib/letterhead.ts at start of phase
+- Refactor existing PDFs (PO, GRN, challan, quotation, ID card, 
+  reports) to use shared constants
+- SPOT-TEST all existing PDFs render correctly after extraction 
+  BEFORE building new financial report PDFs
+- ~half day cross-cutting work. Justified for consistency.
+
+CLARIFICATION 2 — Dashboard performance (your Risk Flag #4):
+- Build single combined endpoint: GET /api/dashboard/snapshot
+- Server runs aggregations in parallel via Promise.all
+- Returns all widget data in one response payload
+- Dashboard fetches once, splits per widget client-side
+- Avoids 7 separate HTTP roundtrips
+
+CLARIFICATION 3 — Audit logging (resolves N16 contradiction):
+- Write to BOTH tables on each report generation:
+  * report_generation_log: report_type, generated_by, generated_at, 
+    filters (jsonb), format, file_size_bytes
+  * audit_logs: action='report_generated', module='reports', 
+    details with report_type and filters
+- Same data, two destinations. report_generation_log for 
+  compliance analytics, audit_logs for general action trail.
+
+Process flow for implementation:
+1. Pre-work continuation: verify Decision 5 + 6 field existence + 
+   data state. Report findings.
+2. Section A foundation (schema + indexes + helpers + components 
+   + letterhead extraction)
+3. Existing PDF regression test after letterhead extraction
+4. Sections B-M in any order (dashboard, then 11 reports)
+5. Stop gate N1-N17 walk
+
+Don't start implementation until field-existence verification 
+complete (Decisions 5+6).
+
+Standing rules apply.

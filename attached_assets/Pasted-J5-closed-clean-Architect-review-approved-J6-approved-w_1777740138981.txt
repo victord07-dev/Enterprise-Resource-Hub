@@ -1,0 +1,82 @@
+J5 closed clean. Architect review approved. J6 approved with 
+2 additions.
+
+ALL 4 J6 APPROVALS:
+
+1. Gap A audit log fix — APPROVED (mirror of J5 transfer_recorded 
+   pattern):
+   - action='adjustment_recorded'
+   - Structured details: { id, cashAccountId, accountName, type 
+     ('credit'|'debit'), amount (positive raw), signedAmount, 
+     reason, adjustmentDate, description (human-readable string) }
+
+2. 9-item walk — APPROVED, EXPANDED to 11 items (additions below)
+
+3. Item count: 11 (a1, a2, b1, c1, d1, e1, f1, g1, g2, g3, h1)
+
+4. Test data — APPROVED:
+   - HDFC: +₹2,000 credit "Test J6 credit"
+   - HDFC: -₹3,000 debit "Test J6 debit"
+
+ADDITIONS:
+
+(g2) — Authorization spot check (3 sub-tests):
+
+Login as accountant:
+- Open HDFC detail page
+- "Record Adjustment" button visible
+- Click → dialog opens
+- Submit valid adjustment → HTTP 201
+- Verify SQL: row inserted with adjusted_by=accountant's user ID
+- Cleanup test row before next sub-test
+Screenshot dialog rendering.
+
+Login as sales_manager:
+- Open HDFC detail page (or attempt to — also test if access 
+  blocked at page level per J3 m gate)
+- "Record Adjustment" button NOT visible OR direct POST to 
+  /api/balance-adjustments → 403
+- Verify both frontend gate AND backend gate
+
+Login as field_staff:
+- Direct URL /accounts/cash-accounts/[id] → 403 or redirect
+  (already verified in J3, just confirm field_staff equally 
+  blocked from adjustment endpoint)
+- Direct POST → 403
+
+Screenshot all three role states.
+
+(g3) — Reason min 10 chars validation:
+
+Brief Section F2 specified "Reason min 10 chars". Verify the 
+boundary explicitly:
+
+Frontend test:
+- Open Record Adjustment dialog
+- Fill all required fields, reason = "Test1234" (8 chars)
+- Save button: disabled? Or enabled with submit blocked?
+- Reason = "Test12345" (9 chars): same check
+- Reason = "Test123456" (10 chars exactly): Save enables / 
+  submit allowed
+
+Backend test:
+- POST with reason = "Test1234" (8 chars) → 400 with clear 
+  error message
+- POST with reason = "Test123456" (10 chars) → 201
+
+Confirm consistent enforcement front + back.
+
+Process flow:
+
+1. Ship Gap A fix (audit log)
+2. Walk all 11 items end-to-end
+3. SQL evidence + screenshots per item
+4. Cleanup test rows after walk:
+   DELETE FROM balance_adjustments 
+   WHERE reason IN ('Test J6 credit','Test J6 debit');
+   Plus any g2/g3 test rows
+5. Verify HDFC restored to ₹38,34,500 baseline
+6. Report J6 closed
+7. Then proceed to J7 (Cash Position page, 4 items)
+
+Standing rules apply.

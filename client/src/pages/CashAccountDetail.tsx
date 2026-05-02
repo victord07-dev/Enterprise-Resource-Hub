@@ -60,10 +60,12 @@ export default function CashAccountDetail() {
   const { toast } = useToast();
   const role = getUser()?.role;
   const isAdmin = role === "admin";
+  const canAdjust = role === "admin" || role === "accountant";
+  const canAccess = role === "admin" || role === "accountant";
 
-  if (!isAdmin) {
+  if (!canAccess) {
     setTimeout(() => {
-      toast({ title: "Access denied", description: "Admin access required.", variant: "destructive" });
+      toast({ title: "Access denied", description: "Admin or Accountant access required.", variant: "destructive" });
     }, 0);
     return <Redirect to="/accounts" />;
   }
@@ -198,16 +200,18 @@ export default function CashAccountDetail() {
           </div>
           <Badge variant={data.isActive ? "default" : "secondary"}>{data.isActive ? "Active" : "Inactive"}</Badge>
         </div>
-        {isAdmin && (
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
+          {isAdmin && (
             <Button size="sm" variant="outline" onClick={() => { setTfForm({ toAccountId: "", amount: "", reference: "", transferDate: today, notes: "" }); setTransferOpen(true); }} data-testid="button-new-transfer">
               <ArrowLeftRight className="h-4 w-4 mr-2" /> Transfer
             </Button>
+          )}
+          {canAdjust && (
             <Button size="sm" variant="outline" onClick={() => { setAdjForm({ type: "credit", amount: "", reason: "", adjustmentDate: today }); setAdjustOpen(true); }} data-testid="button-new-adjustment">
               <SlidersHorizontal className="h-4 w-4 mr-2" /> Adjustment
             </Button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Balance + Stats */}
@@ -406,7 +410,7 @@ export default function CashAccountDetail() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setAdjustOpen(false)}>Cancel</Button>
             <Button data-testid="button-submit-adjustment"
-              disabled={adjustMutation.isPending || !adjForm.amount || Number(adjForm.amount) <= 0 || !adjForm.reason.trim()}
+              disabled={adjustMutation.isPending || !adjForm.amount || Number(adjForm.amount) <= 0 || adjForm.reason.trim().length < 10}
               onClick={() => adjustMutation.mutate(adjForm)}>
               {adjustMutation.isPending ? "Saving..." : "Record Adjustment"}
             </Button>

@@ -10596,7 +10596,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id", authenticateToken, requireRole("admin"), async (req, res) => {
+  app.get("/api/cash-accounts/:id", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const account = await storage.getCashAccount(req.params.id);
       if (!account) return res.status(404).json({ message: "Account not found" });
@@ -10650,7 +10650,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/balance", authenticateToken, requireRole("admin"), async (req, res) => {
+  app.get("/api/cash-accounts/:id/balance", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const { asOfDate } = req.query as { asOfDate?: string };
       const balance = await storage.computeAccountBalance(req.params.id, asOfDate);
@@ -10660,7 +10660,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/stats", authenticateToken, requireRole("admin"), async (req, res) => {
+  app.get("/api/cash-accounts/:id/stats", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const { fromDate, toDate } = req.query as { fromDate: string; toDate: string };
       if (!fromDate || !toDate) return res.status(400).json({ message: "fromDate and toDate required" });
@@ -10671,7 +10671,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/transactions", authenticateToken, requireRole("admin"), async (req, res) => {
+  app.get("/api/cash-accounts/:id/transactions", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const { fromDate, toDate, limit, offset } = req.query as Record<string, string>;
       const result = await storage.getAccountTransactions(
@@ -10687,7 +10687,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/cash-accounts/:id/tx-count", authenticateToken, requireRole("admin"), async (req, res) => {
+  app.get("/api/cash-accounts/:id/tx-count", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const result = await storage.getAccountTransactions(req.params.id, undefined, undefined, 1, 0);
       res.json({ count: result.total });
@@ -10766,7 +10766,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/balance-adjustments", authenticateToken, requireRole("admin"), async (req: any, res) => {
+  app.post("/api/balance-adjustments", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
       const { cashAccountId, adjustmentType, adjustmentAmount, adjustmentDate, reason } = req.body;
       const rawAmt = Number(adjustmentAmount);
@@ -10775,6 +10775,9 @@ export async function registerRoutes(
       }
       if (!cashAccountId || !adjustmentDate || !reason || !String(reason).trim()) {
         return res.status(400).json({ message: "cashAccountId, adjustmentDate, and reason are required" });
+      }
+      if (String(reason).trim().length < 10) {
+        return res.status(400).json({ message: "Reason must be at least 10 characters" });
       }
       const account = await storage.getCashAccount(cashAccountId);
       if (!account) {
@@ -10793,12 +10796,19 @@ export async function registerRoutes(
       });
 
       const verb = type === "debit" ? "decrease" : "increase";
-      await logAction(
-        req.user.id,
-        "create",
-        "balance_adjustments",
-        `Balance ${verb} of ₹${Math.abs(rawAmt).toFixed(2)} on ${account.name}. Reason: ${String(reason).trim()}`
-      );
+      const amtStr = `₹${Math.abs(rawAmt).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const description = `Balance ${verb} of ${amtStr} on ${account.name}. Reason: ${String(reason).trim()}`;
+      await logAction(req.user.id, "adjustment_recorded", "balance_adjustments", JSON.stringify({
+        id: adjustment.id,
+        cashAccountId,
+        accountName: account.name,
+        type,
+        amount: Math.abs(rawAmt),
+        signedAmount,
+        reason: String(reason).trim(),
+        adjustmentDate,
+        description,
+      }));
       res.status(201).json(adjustment);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to create adjustment" });

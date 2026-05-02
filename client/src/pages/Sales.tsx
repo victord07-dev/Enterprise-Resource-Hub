@@ -335,7 +335,7 @@ function FloorPriceRefPanel({ item, ep, touched }: { item: LineItem; ep: Effecti
   );
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct, deliveryCost }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct, deliveryCost, allowBundleCustomization = false }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
@@ -356,6 +356,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   inventoryByProduct: Map<string, number>;
   /** Delivery / logistics cost to include in Grand Total display */
   deliveryCost?: number;
+  /** Phase 98 — enable per-line bundle component customization (quotations only; deferred for orders) */
+  allowBundleCustomization?: boolean;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
   // Phase 7 — discontinued-component confirm dialog (when a bundle has a non-active component)
@@ -648,6 +650,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             const isEditing = bundleEditMode.has(i);
 
             const enterEdit = () => {
+              if (!allowBundleCustomization) return;
               if (!hasCustom) {
                 const seed = (masterComps ?? []).map(c => ({
                   componentProductId: c.componentProductId,
@@ -673,9 +676,11 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                 return (
                   <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/30 px-2 py-1.5 text-[11px] text-amber-800 dark:text-amber-300 flex items-center justify-between" data-testid={`bundle-empty-${i}`}>
                     <span>This bundle has no components configured.</span>
-                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
-                      <Pencil className="w-3 h-3 mr-1" /> Customize
-                    </Button>
+                    {allowBundleCustomization && (
+                      <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
+                        <Pencil className="w-3 h-3 mr-1" /> Customize
+                      </Button>
+                    )}
                   </div>
                 );
               }
@@ -686,9 +691,11 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                       <Boxes className="w-3 h-3" /> Bundle components × {item.quantity || 1}
                       {hasCustom && <Badge variant="outline" className="text-[9px] px-1 py-0 border-blue-400 text-blue-600 dark:text-blue-400">Custom</Badge>}
                     </div>
-                    <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-blue-600 dark:text-blue-400" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
-                      <Pencil className="w-3 h-3 mr-1" /> Customize
-                    </Button>
+                    {allowBundleCustomization && (
+                      <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px] text-blue-600 dark:text-blue-400" onClick={enterEdit} data-testid={`button-customize-bundle-${i}`}>
+                        <Pencil className="w-3 h-3 mr-1" /> Customize
+                      </Button>
+                    )}
                   </div>
                   {effectiveComps.map((row) => {
                     const comp = products.find(p => p.id === row.componentProductId);
@@ -3520,6 +3527,7 @@ export default function Sales() {
               loadBundleComponents={loadBundleComponents}
               inventoryByProduct={inventoryByProduct}
               deliveryCost={quoteForm.deliveryMethod === "delivery" && quoteForm.deliveryCost ? Number(quoteForm.deliveryCost) : 0}
+              allowBundleCustomization={true}
             />
           </div>
           {/* Phase 5.5 — Below-floor hard-block for quotations */}

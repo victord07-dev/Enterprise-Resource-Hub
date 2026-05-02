@@ -7411,11 +7411,12 @@ export async function registerRoutes(
 
   app.post("/api/supplier-payments", authenticateToken, async (req: any, res) => {
     try {
-      const { supplierInvoiceId, purchaseOrderId, supplierId, amount, paymentType, paymentMethod, paymentDate, reference } = req.body;
+      const { supplierInvoiceId, purchaseOrderId, supplierId, amount, paymentType, paymentMethod, paymentDate, reference, cashAccountId } = req.body;
 
       // Required fields
       if (!supplierId) return res.status(400).json({ message: "supplierId is required" });
       if (!amount) return res.status(400).json({ message: "amount is required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account this payment was made from" });
       if (!paymentType || !["advance", "regular"].includes(paymentType)) {
         return res.status(400).json({ message: "paymentType must be 'advance' or 'regular'" });
       }
@@ -7463,6 +7464,7 @@ export async function registerRoutes(
         paymentMethod: paymentMethod || "bank_transfer",
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         reference: reference || null,
+        cashAccountId,
       });
 
       // Update PO advancePaid and recompute linked invoices
@@ -8324,8 +8326,9 @@ export async function registerRoutes(
   // POST record a customer payment
   app.post("/api/customer-payments", authenticateToken, async (req: any, res) => {
     try {
-      const { invoiceId, customerId, amount, paymentDate, method, reference, notes } = req.body;
+      const { invoiceId, customerId, amount, paymentDate, method, reference, notes, cashAccountId } = req.body;
       if (!invoiceId || !amount) return res.status(400).json({ message: "invoiceId and amount are required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account where this payment was received" });
 
       const inv = await storage.getSalesInvoice(invoiceId);
       if (!inv) return res.status(404).json({ message: "Invoice not found" });
@@ -8339,6 +8342,7 @@ export async function registerRoutes(
         reference: reference ?? null,
         notes: notes ?? null,
         createdBy: req.user.id,
+        cashAccountId,
       });
 
       // Recompute invoice status accounting for both payments and credit notes

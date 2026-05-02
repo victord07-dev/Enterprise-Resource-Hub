@@ -1237,15 +1237,21 @@ export default function Accounts() {
             <Button variant="outline" onClick={() => setArPayDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-ar-payment"
-              disabled={arPayMutation.isPending || !arPayForm.invoiceId || !arPayForm.amount || (arPayAccounts.length > 0 && !arPayForm.cashAccountId)}
-              onClick={() => arPayMutation.mutate({
-                invoiceId: arPayForm.invoiceId,
-                amount: arPayForm.amount,
-                method: arPayForm.method,
-                paymentDate: arPayForm.paymentDate,
-                reference: arPayForm.reference || null,
-                cashAccountId: arPayForm.cashAccountId || null,
-              })}
+              disabled={arPayMutation.isPending || !arPayForm.invoiceId || !arPayForm.amount || !arPayForm.cashAccountId}
+              onClick={() => {
+                if (!arPayForm.cashAccountId) {
+                  toast({ title: "Account required", description: "Select the account where this payment was received.", variant: "destructive" });
+                  return;
+                }
+                arPayMutation.mutate({
+                  invoiceId: arPayForm.invoiceId,
+                  amount: arPayForm.amount,
+                  method: arPayForm.method,
+                  paymentDate: arPayForm.paymentDate,
+                  reference: arPayForm.reference || null,
+                  cashAccountId: arPayForm.cashAccountId,
+                });
+              }}
             >
               {arPayMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
@@ -1672,18 +1678,24 @@ export default function Accounts() {
               disabled={spMutation.isPending || !spForm.supplierId || !spForm.amount ||
                 (spForm.paymentType === "regular" && !spForm.supplierInvoiceId) ||
                 (spForm.paymentType === "advance" && !spForm.purchaseOrderId) ||
-                (spAccounts.length > 0 && !spForm.cashAccountId)}
-              onClick={() => spMutation.mutate({
-                paymentType: spForm.paymentType,
-                supplierId: spForm.supplierId,
-                supplierInvoiceId: spForm.paymentType === "regular" ? spForm.supplierInvoiceId : null,
-                purchaseOrderId: spForm.paymentType === "advance" ? spForm.purchaseOrderId : null,
-                amount: spForm.amount,
-                paymentMethod: spForm.paymentMethod,
-                paymentDate: spForm.paymentDate,
-                reference: spForm.reference || null,
-                cashAccountId: spForm.cashAccountId || null,
-              })}
+                !spForm.cashAccountId}
+              onClick={() => {
+                if (!spForm.cashAccountId) {
+                  toast({ title: "Account required", description: "Select the account this payment was made from.", variant: "destructive" });
+                  return;
+                }
+                spMutation.mutate({
+                  paymentType: spForm.paymentType,
+                  supplierId: spForm.supplierId,
+                  supplierInvoiceId: spForm.paymentType === "regular" ? spForm.supplierInvoiceId : null,
+                  purchaseOrderId: spForm.paymentType === "advance" ? spForm.purchaseOrderId : null,
+                  amount: spForm.amount,
+                  paymentMethod: spForm.paymentMethod,
+                  paymentDate: spForm.paymentDate,
+                  reference: spForm.reference || null,
+                  cashAccountId: spForm.cashAccountId,
+                });
+              }}
             >
               {spMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>

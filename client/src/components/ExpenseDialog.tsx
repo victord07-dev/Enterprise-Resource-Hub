@@ -183,6 +183,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
     if (!form.amount || Number(form.amount) <= 0) { toast({ title: "Enter a valid amount", variant: "destructive" }); return; }
     if (!form.description.trim()) { toast({ title: "Description is required", variant: "destructive" }); return; }
     if (!form.paidByUserId) { toast({ title: "Select who paid this expense", variant: "destructive" }); return; }
+    if (!form.cashAccountId) { toast({ title: "Account required", description: "Select the account this expense was paid from.", variant: "destructive" }); return; }
     const payload: ExpensePayload = {
       categoryId: form.categoryId,
       amount: form.amount,
@@ -194,7 +195,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
       notes: form.notes.trim() || null,
       linkedEntityType: form.linkedEntityType === "none" ? null : form.linkedEntityType,
       linkedEntityId: form.linkedEntityType === "none" || !form.linkedEntityId ? null : form.linkedEntityId,
-      cashAccountId: form.cashAccountId || null,
+      cashAccountId: form.cashAccountId,
     };
     mutation.mutate(payload);
   };
@@ -269,23 +270,27 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
                 <Input id="exp-date" type="date" value={form.expenseDate} onChange={e => setForm({ ...form, expenseDate: e.target.value })} data-testid="input-expense-date" required />
               </div>
             </div>
-            {expAccounts.length > 0 && (
-              <div>
-                <Label htmlFor="exp-account">Account <span className="text-muted-foreground text-xs">(optional)</span></Label>
-                <Select value={form.cashAccountId} onValueChange={(v) => setForm({ ...form, cashAccountId: v === "__none__" ? "" : v })}>
-                  <SelectTrigger id="exp-account" data-testid="select-expense-account"><SelectValue placeholder="Select account" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">— Not specified —</SelectItem>
-                    {expAccounts.map(a => (
+            <div>
+              <Label htmlFor="exp-account">Account *</Label>
+              <Select value={form.cashAccountId} onValueChange={(v) => setForm({ ...form, cashAccountId: v })}>
+                <SelectTrigger id="exp-account" data-testid="select-expense-account"><SelectValue placeholder="Select account" /></SelectTrigger>
+                <SelectContent>
+                  {expAccounts.length === 0 ? (
+                    <SelectItem value="__no_match__" disabled>No active {form.paymentMethod === "cash" ? "cash" : "bank"} account — create one in Accounts → Cash Accounts</SelectItem>
+                  ) : (
+                    expAccounts.map(a => (
                       <SelectItem key={a.id} value={a.id}>
                         {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
                         {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
                       </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+                    ))
+                  )}
+                </SelectContent>
+              </Select>
+              {!form.cashAccountId && (
+                <p className="text-xs text-muted-foreground mt-1" data-testid="text-account-required-hint">Required — pick the cash drawer or bank account this expense was paid from.</p>
+              )}
+            </div>
             <div>
               <Label htmlFor="exp-paid-by">Paid By *</Label>
               {isPrivileged ? (
@@ -369,7 +374,7 @@ export default function ExpenseDialog({ open, onOpenChange, expense, defaultLink
             ) : (
               <>
                 <Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-expense">Cancel</Button>
-                <Button type="submit" disabled={mutation.isPending} data-testid="button-save-expense">
+                <Button type="submit" disabled={mutation.isPending || !form.cashAccountId} data-testid="button-save-expense">
                   {mutation.isPending ? "Saving..." : editingExpense ? "Update Expense" : "Record Expense"}
                 </Button>
               </>

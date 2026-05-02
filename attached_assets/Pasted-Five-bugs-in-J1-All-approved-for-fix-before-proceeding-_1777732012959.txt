@@ -1,0 +1,104 @@
+Five bugs in J1. All approved for fix before proceeding to J3.
+
+Don't proceed to J3 walk until ALL fixes verified clean via re-running 
+J1 SQL probes.
+
+==========================================================
+FIX 1 — Add missing columns to cash_accounts
+==========================================================
+
+ALTER TABLE cash_accounts ADD COLUMN opening_balance_date 
+  TIMESTAMP NOT NULL DEFAULT now();
+ALTER TABLE cash_accounts ADD COLUMN notes TEXT;
+ALTER TABLE cash_accounts ADD COLUMN updated_at TIMESTAMP NOT NULL 
+  DEFAULT now();
+
+Backfill opening_balance_date for the 4 seed accounts:
+UPDATE cash_accounts SET opening_balance_date = created_at 
+  WHERE opening_balance_date IS NULL OR opening_balance_date = now();
+
+Update Drizzle schema in shared/schema.ts to reflect these 3 new 
+columns. Re-run db:push.
+
+Update Account create/edit form (Section C3) to expose:
+- opening_balance_date (date picker, defaults to today)  
+- notes (textarea)
+
+This unblocks CEO's "edit opening balance later for go-live" 
+requirement.
+
+==========================================================
+FIX 2 — Apply NOT NULL constraint per Section B3
+==========================================================
+
+ALTER TABLE customer_payments ALTER COLUMN cash_account_id 
+  SET NOT NULL;
+ALTER TABLE supplier_payments ALTER COLUMN cash_account_id 
+  SET NOT NULL;
+ALTER TABLE expenses ALTER COLUMN cash_account_id SET NOT NULL;
+
+Verify post-fix: re-run J1(c) and J1(d) SQL — is_nullable should 
+be 'NO' on all three.
+
+This was explicitly required by Section B3 of the brief but was 
+skipped. Critical for data integrity going forward.
+
+==========================================================
+FIX 3 — Rename balance_adjustments columns to match spec
+==========================================================
+
+ALTER TABLE balance_adjustments RENAME COLUMN account_id TO 
+  cash_account_id;
+ALTER TABLE balance_adjustments RENAME COLUMN amount TO 
+  adjustment_amount;
+ALTER TABLE balance_adjustments RENAME COLUMN created_by TO 
+  adjusted_by;
+
+Update Drizzle schema in shared/schema.ts to match new column names.
+Re-run db:push.
+
+Search codebase for ALL references to the old column names:
+- balance_adjustments.account_id → balance_adjustments.cash_account_id
+- balance_adjustments.amount → balance_adjustments.adjustment_amount
+- balance_adjustments.created_by → balance_adjustments.adjusted_by
+
+Update server/routes.ts, server/storage.ts, client/src/pages/
+Accounts.tsx, client/src/pages/CashAccountDetail.tsx, and any 
+other file referencing these columns.
+
+==========================================================
+FIX 4 — Verify post-fix
+==========================================================
+
+Re-run J1 verification SQL:
+(a) \d cash_accounts → all 11 columns present including new ones
+(c) is_nullable = 'NO' on cash_account_id in all 3 tables
+(e) \d balance_adjustments → cash_account_id, adjustment_amount, 
+    adjusted_by present
+
+Re-run J2 verification (already passed, just confirm nothing 
+broke during fixes).
+
+Report ALL J1+J2 PASS before requesting approval to proceed 
+to J3.
+
+==========================================================
+PROCESS NOTE (no code change)
+==========================================================
+
+These 5 bugs slipped past your own implementation testing. The 
+brief explicitly listed:
+- opening_balance_date in Section A1
+- notes in Section A1
+- updated_at in Section A1
+- NOT NULL constraint in Section B3
+- balance_adjustments column names in Section A3
+
+Going forward: when implementation is complete, run a column-by-
+column comparison between your built schema and the spec's Section A 
+schema BEFORE declaring "implementation complete." Same for any 
+"after backfill, apply NOT NULL" patterns — these are binary checks, 
+easy to miss if you don't explicitly verify.
+
+This is process feedback for future phases. Apply to remaining 
+sections of Phase 4B walk (J3 onwards).

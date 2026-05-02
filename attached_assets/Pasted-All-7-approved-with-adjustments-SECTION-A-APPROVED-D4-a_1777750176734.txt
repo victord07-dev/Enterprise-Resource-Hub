@@ -1,0 +1,88 @@
+All 7 approved with adjustments:
+
+SECTION A — APPROVED + D4 addition (CRITICAL):
+- Client + server + override fields persistence per original
+- D4: Server-side floor enforcement on POST /api/quotations/:id/items
+  AND POST /api/sales-orders/:id/items is MANDATORY
+- Returns 422 unless floorOverrideReason provided AND user role 
+  is admin
+- Mirror Phase 4A's credit override pattern: both client AND 
+  server gates required
+- Scope: ~6h as proposed
+- Without server gate, override is client-only and bypassable. 
+  Don't ship that.
+
+SECTION B — APPROVED scope-down (D1):
+- Auto-fill already works via matchingSuppliers aggregate
+- Add: "Prices updated" toast notification on supplier change
+- Add: small "from supplier catalog" icon on auto-filled rows 
+  (reuse any existing icon library, no new deps)
+- Don't rebuild as fresh GET per line — N HTTP calls is worse 
+  than existing approach
+- Scope: ~30min
+
+SECTION C — APPROVED scope-down (D2) + D6 investigation:
+- 3 confirmed silent catches: routes.ts:1857, 1892, 9816
+- Investigate routes.ts:9816 first before proceeding:
+  * What's the surrounding code context?
+  * What error could be silently swallowed there?
+  * If it's catching expected non-error condition (like JSON 
+    parse fallback): document with comment, leave alone
+  * If it's catching real errors: add console.error
+- For 1857 and 1892 (incrementCustomFieldUsage): add 
+  console.error('[customField] increment failed (non-fatal):', err)
+- Audit doc at docs/error-handling-audit.md with:
+  * Patterns visited
+  * Status per pattern (logged | not-applicable | added-logging)
+  * Notes on truly silent vs HTTP-500-surfaced patterns
+- Scope: ~45min
+
+SECTION D — APPROVED as proposed:
+- Mirror Sales.tsx:1325-1329 dispatchFormValid in Inventory.tsx:2372
+- Same .trim() + INDIAN_MOBILE_RE checks
+- Asterisks on all 5 fields
+- Helper text under driverPhone if regex fails
+- Disabled button with tooltip when validation fails
+- Scope: ~45min
+
+SECTION E — APPROVED scope-down (D3):
+- Zero real violations confirmed post-J8 fix
+- Deliver: docs/hooks-ordering-audit.md with:
+  * List of pages audited
+  * Each marked clean
+  * Note on CashAccountDetail.tsx as the only fix needed (already 
+    shipped in J8)
+- No code changes
+- Scope: ~30min
+
+SECTION F — APPROVED with D5 expansion:
+- Original scope: Accounts.tsx tab onValueChange + audit doc
+- D5 addition: Inventory.tsx:529-538 URL persistence gap (loses 
+  highlight on tab change, not just initial mount)
+- Both fixes: preserve incoming query params (especially highlight, 
+  challanId, etc.) on URL rebuilds
+- Test pattern after fix: navigate with ?highlight=X, verify 
+  persistence after tab clicks
+- Audit doc at docs/url-persistence-audit.md
+- Scope: ~1.5h (was 1h, +0.5h for Inventory.tsx)
+
+SECTION G — APPROVED:
+- G1: code comment near computeDueDate as specified
+- G2: HARD DELETE Test Account (0 linked transactions confirmed)
+- G3: Review follow-up tracker, close appropriate items
+- Scope: ~15min
+
+TOTAL APPROVED SCOPE: ~10-11h (one focused day)
+
+Process flow:
+1. Investigate routes.ts:9816 first (D6) — report context before 
+   deciding C action
+2. Ship in suggested order: D → A → B+C+G in parallel → E+F audits 
+   last
+3. Report each section as done so operator can spot-check 
+   incrementally if desired
+4. After all sections complete, ping for full H1-H7 walk
+
+Standing rules apply: UI verification with screenshots, no 
+unilateral scope drift beyond approved adjustments, surface 
+unexpected gaps not silently extend.

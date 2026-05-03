@@ -36,6 +36,7 @@ import Inbox from "@/pages/Inbox";
 import Campaigns from "@/pages/Campaigns";
 import WhatsAppTemplates from "@/pages/WhatsAppTemplates";
 import CashAccountDetail from "@/pages/CashAccountDetail";
+import SpikeSvg from "@/pages/SpikeSvg";
 
 interface NotificationBellProps {
   open: boolean;
@@ -202,6 +203,7 @@ function Router() {
       <Route path="/campaigns" component={() => <ProtectedRoute component={Campaigns} path="/campaigns" />} />
       <Route path="/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/whatsapp-templates" />} />
       <Route path="/settings/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/settings/whatsapp-templates" />} />
+      <Route path="/spike-svg" component={SpikeSvg} />
       <Route component={NotFound} />
     </Switch>
   );

@@ -1,0 +1,85 @@
+T4 + T5 acknowledged. Three architect-caught bugs in newly-
+written T5 code is concerning but they were properly fixed in 
+scope. Numbers reconcile.
+
+Three actions before T6:
+
+ACTION 1 — Walk dashboard subset now:
+
+Don't proceed to T6 until I walk the dashboard. Will run a 
+focused subset of N1-N17:
+- N1 (foundation, 5 items): schema + indexes + helpers + 
+  components + letterhead — most already verified, just SQL spot-
+  check
+- N2 (dashboard widgets, 8 items): full walk
+- N14 dashboard auth (1 item subset): admin sees, accountant 
+  sees, others don't
+- N15 dashboard performance (1 item): <2s load
+
+~15 items, ~20 min.
+
+I'll send the walk shortly. Wait for results.
+
+ACTION 2 — Pattern commitment for T6 onwards:
+
+The 3 architect-caught bugs in T5 were all "didn't use canonical 
+helpers" bugs. Specifically:
+1. Built standalone cash position instead of using 
+   storage.computeAccountBalance
+2. Used 'status' field instead of canonical 'uploadStatus'
+3. Computed gross amount instead of outstanding (didn't subtract 
+   paid_amount + credit notes)
+
+For T6-T16, explicit pattern commitment required:
+- USE storage.computeAccountBalance (Phase 4B helper) for any 
+  account balance calculation
+- USE canonical status fields (uploadStatus for invoices, 
+  status for orders/challans)
+- USE outstanding calculations (gross - paid - credited), never 
+  raw totals when an "outstanding" concept exists
+- REUSE financial-aggregations.ts helpers from T4 for any 
+  aggregation
+- DON'T re-implement what already exists in storage layer or 
+  helpers
+
+If you find yourself writing aggregation logic, ask: "is this 
+already in financial-aggregations.ts or storage.ts?" If yes: 
+use it. If no: add it to financial-aggregations.ts so future 
+reports inherit, don't inline in the report endpoint.
+
+ACTION 3 — T6 scoping decision: BATCH delivery
+
+Don't ship 30+ files in one push. Split into 3 batches with 
+mini-walks between:
+
+BATCH 1 — Critical financial visibility (~3-4 days)
+- Report 1: P&L Statement (Section C)
+- Report 2: Cash Flow Statement (Section D)
+
+These are CEO's top priorities. Mini-walk after batch 1 closes.
+
+BATCH 2 — Operational reports (~3-4 days)
+- Report 3: Customer Aging (extension of existing AR Aging)
+- Report 4: Supplier Aging (extension of existing AP Aging)
+- Report 9: Cash Position
+- Report 10A: Account Statement (per-account)
+- Report 10B: Consolidated Cash Statement
+
+Mini-walk after batch 2 closes.
+
+BATCH 3 — Reference reports (~3-4 days)
+- Report 5: Tax Summary GST (ok-to-have)
+- Report 6: Sales Register
+- Report 7: Purchase Register
+- Report 8: Expense Report
+
+Mini-walk after batch 3 closes.
+
+Then full N1-N17 walk for any remaining items.
+
+After Action 1 closes (dashboard walk), proceed to Batch 1 with 
+pattern commitments from Action 2 in mind.
+
+Ship Batch 1, ping me, I walk, fix cycle, then Batch 2, etc.
+
+Standing rules apply.

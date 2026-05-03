@@ -1,5 +1,7 @@
 import { jsPDF } from "jspdf";
 import { COMPANY as SHARED_COMPANY } from "@shared/letterhead";
+import { drawLetterhead } from "@shared/pdf-letterhead";
+import { ensureNotoSansRegistered } from "./lib/pdf-fonts";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -64,44 +66,22 @@ export interface GrnPdfData {
 
 export function generateGrnPdf(data: GrnPdfData): Buffer {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  ensureNotoSansRegistered(doc);
   const PW = 210;
   const PH = 297;
   const ML = 14;
   const MR = 14;
   const CW = PW - ML - MR;
-  let y = 0;
 
-  // ── Header background ──────────────────────────────────────────────────────
-  doc.setFillColor(...COLORS.headerBg);
-  doc.rect(0, 0, PW, 38, "F");
-
-  doc.setFillColor(...COLORS.accent);
-  doc.rect(0, 38, PW, 2, "F");
-
-  // Company name
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.setTextColor(...COLORS.white);
-  doc.text(COMPANY.name, ML, 13);
-
-  // GSTIN + contact
-  doc.setFontSize(8);
-  doc.setFont("helvetica", "normal");
-  doc.text(`GSTIN: ${COMPANY.gstin}  |  ${COMPANY.phone}  |  ${COMPANY.email}`, ML, 20);
-  doc.text(COMPANY.address, ML, 26);
-
-  // Title
-  doc.setFontSize(16);
-  doc.setFont("helvetica", "bold");
-  const titleX = PW - MR;
-  doc.setTextColor(...COLORS.white);
-  doc.text("GOODS RECEIPT NOTE", titleX, 15, { align: "right" });
-  doc.setFontSize(9);
-  doc.setFont("helvetica", "normal");
-  doc.text(`GRN #: ${data.grnNumber}`, titleX, 22, { align: "right" });
-  doc.text(`Date: ${fmtDate(data.receivedDate)}`, titleX, 28, { align: "right" });
-
-  y = 48;
+  // Phase 4C P6-EXT — canonical letterhead. GRN# + receipt date go in
+  // bannerSubtitle (right-aligned in the blue banner) so the navy band
+  // stays identical to every other PDF.
+  let y = drawLetterhead(doc, {
+    pageWidth: PW,
+    margin: ML,
+    title: "GOODS RECEIPT NOTE",
+    bannerSubtitle: `GRN: ${data.grnNumber} · ${fmtDate(data.receivedDate)}`,
+  });
 
   // ── Info grid ──────────────────────────────────────────────────────────────
   doc.setFillColor(...COLORS.tableHeader);

@@ -1,0 +1,62 @@
+GO. 
+
+One small refinement on stop points — reduce from 4 checkpoints 
+to 2:
+
+CHECKPOINT 1 (after Phase B):
+- 7-PDF regression spot-check with operator
+- Operator confirms letterhead identical across Quotation, PO, 
+  Challan, GRN, ID Card, existing Reports tab, P&L
+- This is the foundation moment — wrong here = polish wasted
+- Worth a stop
+
+SKIP intermediate stops after Phase A (foundation only, no 
+visible change), Phase C (polish — see result in Phase E), 
+Phase D (same)
+
+CHECKPOINT 2 (after Phase E):
+- Full re-capture artifacts presented to operator
+- Both P&L and Cash Flow artifacts (since Cash Flow PDF 
+  pre-existed)
+- Operator final review for approval
+
+Don't stop between Phase A→B or after Phase C→D. Continuous flow 
+to Phase E re-capture.
+
+Sequence confirmed:
+
+Phase A foundation (~25 min): P1 Noto Sans + P6-EXT 
+shared/pdf-letterhead.ts
+Phase B refactor (~30 min): drawLetterhead applied to 4 compact-
+header sites in reports-pdf.ts + 4 client PDFs + 2 server PDFs
+*** STOP — 7-PDF regression spot-check ***
+Phase C polish (~30-45 min): P2/P3/P4/P5 on P&L; P2/P3 on Cash 
+Flow (no charts)
+Phase D Excel polish (~30 min): E1-E4 on both P&L Excel and Cash 
+Flow Excel (verify Cash Flow Excel exists when you reach this 
+phase)
+Phase E re-capture (~30 min): TEST-ARTIFACT throwaway data + 
+audit log + capture both P&L and Cash Flow artifacts (UI + CSV 
++ PDF + Excel for each) + hard-delete + audit log close
+*** PING OPERATOR with re-captured artifacts ***
+
+Total: ~3-4 hours
+
+Standing rules apply. Throwaway-data discipline mandatory for 
+Phase E.
+
+Acknowledgments on your two observations:
+- Obs 1 (legacy receipts ⚠): Resolved automatically by P1 font 
+  embedding. No separate action.
+- Obs 2 (Cash Flow title overflow): Auto-shrink fontSize in 
+  drawLetterhead is correct. Good defensive coding.
+
+Server-side PDF render route (Option b) stays queued for AFTER 
+visual approval. Don't build it this cycle.
+
+Cash Flow propagation acknowledgment: Cash Flow PDF being already 
+shipped (and broken with same bugs as P&L) saves ~0.5-1 day vs 
+the original "Cash Flow propagation later" estimate. Treat as 
+foundation cleanup, not new work.
+
+GO. Ping at Checkpoint 1 (after Phase B regression check).

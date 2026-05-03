@@ -7,6 +7,7 @@ async function loadJsPDF() {
   return mod.default || (mod as any).jsPDF;
 }
 import { COMPANY } from "@shared/letterhead";
+import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -295,6 +296,7 @@ export async function generateChallanPDF(
   logoDataUrl?: string,
 ) {
   const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
+  await ensureNotoSansRegistered(doc);
   const pageHeight = doc.internal.pageSize.getHeight();
   const halfH      = pageHeight / 2 - 2;
   const isDraft    = ["draft", "ready", "do_issued"].includes(challan.status);

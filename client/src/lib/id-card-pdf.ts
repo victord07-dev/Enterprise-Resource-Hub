@@ -11,6 +11,7 @@ async function loadQRCode() {
   return (await import("qrcode")).default;
 }
 import { COMPANY } from "@shared/letterhead";
+import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
 
 function getInitials(name: string) {
   return name
@@ -33,6 +34,7 @@ export async function downloadIdCardPDF(employee: Employee) {
   const W = 86;
   const H = 54;
   const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: [H, W] });
+  await ensureNotoSansRegistered(doc);
 
   const empCode = employee.qrCode
     ? employee.qrCode.replace("NEXERP-EMP-", "").slice(0, 8).toUpperCase()

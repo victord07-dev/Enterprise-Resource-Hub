@@ -7,6 +7,8 @@ async function loadJsPDF() {
   return mod.default || (mod as any).jsPDF;
 }
 import { COMPANY, BANKING } from "@shared/letterhead";
+import { drawLetterhead } from "@shared/pdf-letterhead";
+import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -51,67 +53,19 @@ export async function generateQuotationPDF(
   logoDataUrl?: string,
 ) {
   const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
+  await ensureNotoSansRegistered(doc);
   const pageWidth  = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin       = 15;
   const contentWidth = pageWidth - margin * 2;
-  let y = 0;
 
-  // ── Header — navy band (30 mm tall) ──────────────────────────────────────────
-  const headerH = 30;
-  doc.setFillColor(...COLORS.headerBg);
-  doc.rect(0, 0, pageWidth, headerH, "F");
-
-  // Logo — 73 × 16 mm + 12% = 82 × 18 mm, vertically centred in header
-  const logoW = 82;
-  const logoH = 18;
-  const logoY = (headerH - logoH) / 2;   // = 6 mm
-
-  if (logoDataUrl) {
-    try {
-      doc.addImage(logoDataUrl, "PNG", margin, logoY, logoW, logoH);
-    } catch {
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.setTextColor(...COLORS.headerText);
-      doc.text(COMPANY.name, margin, headerH / 2 + 2);
-    }
-  } else {
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.setTextColor(...COLORS.headerText);
-    doc.text(COMPANY.name, margin, headerH / 2 + 2);
-  }
-
-  // Right column — Company Name, Address, Phone, Email, Website, GSTIN
-  const rx = pageWidth - margin;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(220, 230, 248);
-  doc.text(COMPANY.name, rx, 5.5, { align: "right" });
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.5);
-  doc.setTextColor(180, 190, 210);
-  const addrLines = doc.splitTextToSize(COMPANY.address, 82);
-  doc.text(addrLines[0], rx, 9.5, { align: "right" });
-
-  doc.setFontSize(6);
-  doc.text(`Phone: ${COMPANY.phone}`, rx, 14, { align: "right" });
-  doc.text(COMPANY.email,             rx, 18, { align: "right" });
-  doc.text(COMPANY.website,           rx, 22, { align: "right" });
-  doc.text(`GSTIN: ${COMPANY.gstin}`, rx, 26, { align: "right" });
-
-  // Blue QUOTATION banner — compact (8 mm tall)
-  const bannerY = headerH;
-  doc.setFillColor(...COLORS.accent);
-  doc.rect(0, bannerY, pageWidth, 8, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(...COLORS.white);
-  doc.text("QUOTATION", pageWidth / 2, bannerY + 5.5, { align: "center" });
-
-  y = bannerY + 8 + 5;   // small padding after banner, no address strip
+  // Phase 4C P6-EXT — canonical letterhead (returns body-start y = 43)
+  let y = drawLetterhead(doc, {
+    pageWidth,
+    margin,
+    title: "QUOTATION",
+    logoDataUrl,
+  });
 
   // ── Meta / Customer box ───────────────────────────────────────────────────────
   const hasDelivery = (quotation as any).deliveryMethod === "delivery";

@@ -1,0 +1,12 @@
+Section,Label,Amount
+REVENUE,Sales Revenue (ex-GST),5937372.88
+REVENUE,Sales Returns,-37500
+REVENUE,Net Revenue,5899872.88
+COGS,Purchases,-1594900
+GROSS_PROFIT,Gross Profit,4304972.88
+OPEX,Employee Welfare,-50000
+OPEX,Utilities,-45000
+OPEX,Office Supplies,-23050
+OPEX,Loading / Unloading,-1000
+OPEX,Total Operating Expenses,-119050
+NET_PROFIT,Net Profit Before Tax,4185922.88

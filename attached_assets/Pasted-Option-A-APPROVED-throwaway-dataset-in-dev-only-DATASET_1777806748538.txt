@@ -1,0 +1,69 @@
+Option A APPROVED — throwaway dataset in dev only.
+
+DATASET SCOPE (slightly larger than your suggestion for better 
+chart visibility):
+
+Sales invoices (5-7 across 3 customers):
+- Spread invoice_date across last 3-4 months
+- Mix of paid/partial/unpaid statuses
+- Mix of B2B/B2C
+- Total ₹value range ₹50K-₹5L per invoice (realistic SMB scale)
+- Use clearly-marked test customers: 
+  "TEST-ARTIFACT-CUSTOMER-1/2/3"
+
+Expenses (3-4 across 3 categories):
+- Rent, Salaries, Office Supplies (3 different categories so 
+  donut chart shows multiple slices)
+- Spread expense_date across last 3 months
+- ₹value range ₹5K-₹50K per expense
+- Use clearly-marked test descriptions: 
+  "TEST-ARTIFACT-EXPENSE-N"
+
+Sales return (1):
+- Issue 1 credit note against one of the test invoices
+- Validates "Less: Sales Returns" line renders non-zero
+- Use clearly-marked: "TEST-ARTIFACT-CREDIT-NOTE-1"
+
+Total: ~10-12 throwaway records.
+
+DISCIPLINE:
+1. Create all records with TEST-ARTIFACT prefix in 
+   names/descriptions for easy identification
+2. Audit log entry: action='test_data_created', 
+   module='phase_4c_artifact_capture'
+3. Capture artifacts (#1 screenshot + #4 CSV inline + #2/#3 
+   binary files saved for operator)
+4. SQL hard-delete all TEST-ARTIFACT records
+5. Audit log entry: action='test_data_cleanup', 
+   module='phase_4c_artifact_capture'
+6. Verify zero remaining: 
+   SELECT COUNT(*) FROM sales_invoices WHERE customer_name LIKE 
+   'TEST-ARTIFACT%';
+   Same for expenses, credit_notes.
+
+ARTIFACT HANDOFF:
+
+You produce:
+- Artifact #1: P&L tab screenshot (admin view)
+- Artifact #4: CSV contents pasted inline
+- Artifact #2 binary: Save PDF to attached_assets/pl-artifacts/
+- Artifact #3 binary: Save Excel to attached_assets/pl-artifacts/
+
+Operator produces:
+- Artifact #2: Opens PDF, screenshots first 2 pages
+- Artifact #3: Opens Excel, screenshots Summary + Detail sheets
+
+Process flow:
+1. Create test data with audit log entry
+2. Login as admin, navigate to /reports → P&L tab
+3. Take screenshot #1 with charts visible
+4. Curl CSV endpoint, capture contents for #4
+5. Curl PDF endpoint, save binary to 
+   attached_assets/pl-artifacts/pl-statement.pdf
+6. Curl Excel endpoint, save binary to 
+   attached_assets/pl-artifacts/pl-statement.xlsx
+7. SQL hard-delete all test data with audit log entry
+8. Ping operator with: #1 screenshot + #4 CSV text + paths to 
+   #2/#3 binary files for download
+
+Standing rules apply throughout. Don't skip cleanup step.

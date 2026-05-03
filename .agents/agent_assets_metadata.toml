@@ -1,0 +1,14 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "OewUVXL6DpozRldm_yFLL"
+uri = "file://attached_assets/pl-artifacts/pl-statement.xlsx"
+type = "table"
+title = "Artifact #3 binary — P&L Statement (Excel)"
+
+[[outputs]]
+id = "mtTlUioSau_OG8olpGCWA"
+uri = "file://attached_assets/pl-artifacts/pl-statement.csv"
+type = "table"
+title = "Artifact #4 file — P&L Statement (CSV)"

@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Download, FileSpreadsheet, AlertTriangle, ArrowUpRight, ArrowDownRight, Wallet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { generateCashFlowStatementPDF } from "@/lib/reports-pdf";
 
 interface CashFlowAccountLine {
@@ -74,10 +75,7 @@ export default function CashFlowStatement() {
   const { data, isLoading, error } = useQuery<CashFlowStatementData>({
     queryKey: ["/api/reports/cash-flow", from, to],
     queryFn: async () => {
-      const res = await fetch(`/api/reports/cash-flow?from=${from}&to=${to}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await apiRequest("GET", `/api/reports/cash-flow?from=${from}&to=${to}`);
       return res.json();
     },
   });
@@ -100,10 +98,7 @@ export default function CashFlowStatement() {
   const handleExcel = async () => {
     setDownloadingExcel(true);
     try {
-      const res = await fetch(`/api/reports/cash-flow/excel?from=${from}&to=${to}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await apiRequest("GET", `/api/reports/cash-flow/excel?from=${from}&to=${to}`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

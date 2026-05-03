@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Download, FileSpreadsheet, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
 import { generatePLStatementPDF } from "@/lib/reports-pdf";
 
 interface PLOpexLine {
@@ -61,10 +62,7 @@ export default function PLStatement() {
   const { data, isLoading, error } = useQuery<PLStatementData>({
     queryKey: ["/api/reports/pl-statement", from, to],
     queryFn: async () => {
-      const res = await fetch(`/api/reports/pl-statement?from=${from}&to=${to}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await apiRequest("GET", `/api/reports/pl-statement?from=${from}&to=${to}`);
       return res.json();
     },
   });
@@ -87,10 +85,7 @@ export default function PLStatement() {
   const handleExcel = async () => {
     setDownloadingExcel(true);
     try {
-      const res = await fetch(`/api/reports/pl-statement/excel?from=${from}&to=${to}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await apiRequest("GET", `/api/reports/pl-statement/excel?from=${from}&to=${to}`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

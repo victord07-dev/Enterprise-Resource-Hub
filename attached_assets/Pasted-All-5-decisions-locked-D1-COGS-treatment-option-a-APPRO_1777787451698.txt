@@ -1,0 +1,98 @@
+All 5 decisions locked:
+
+D1 — COGS treatment: option (a) APPROVED
+- Label: "Purchases (proxy for COGS)" — explicit, not just "COGS"
+- Caveat note in PDF/Excel header: 
+  "Purchases shown as proxy for Cost of Goods Sold. True FIFO 
+   COGS based on stock dispatch tracing requires further cost 
+   accounting work. Use this figure for trend analysis; verify 
+   against year-end stock counts for accurate gross margin."
+
+D2 — Sales Returns / Credit Notes: APPROVED YES
+- Include as "Less: Sales Returns" line under Revenue
+- Net Revenue = Sales Revenue - Sales Returns
+- Anchor by credit_notes period date — verify which column is 
+  usable:
+  * Check if created_at, issued_date, or similar column exists
+  * If none usable: surface and we discuss before building
+
+D3 — Tax line: APPROVED YES
+- P&L net of GST throughout
+- Revenue = subtotal excl GST
+- Purchases = subtotal excl GST  
+- GST omitted from P&L (Balance Sheet item)
+- Income tax not modeled
+- Net Profit shown is "Before Income Tax"
+
+D4 — Cash Flow Structure:
+
+D4(i) Sections APPROVED with refinement:
+  OPERATING ACTIVITIES
+    Customer Payments Received (IN)
+    Supplier Payments Made (OUT)
+    Operating Expenses (OUT)
+    Net Operating Cash Flow
+  
+  INTERNAL MOVEMENTS  
+    Transfers (gross, both legs visible — should net to ₹0)
+    Balance Adjustments (by reason if categorizable, else lump sum)
+    Net Internal Movement
+  
+  NET CHANGE IN CASH = Operating + Internal
+  
+  PER-ACCOUNT RECONCILIATION
+    [Account | Opening | Inflows | Outflows | Closing]
+
+Refinement: Show transfers' net = ₹0 explicitly. Makes inter-
+account vs real movement obvious.
+
+D4(ii) Direct method APPROVED
+- More useful than indirect for SMB
+- We have transaction-level data anyway
+
+D4(iii) Both per-account AND consolidated APPROVED
+- Per-account breakdown table
+- TOTAL row matching canonical Cash Position from Phase 4B
+
+D5 — T6 minimal expansion APPROVED option (a)
+- Add 2 tabs: pl-statement, cash-flow
+- Gated to admin+accountant
+- Defer parent group / dropdown UX until 4-5 reports exist
+- No premature structure
+
+PDF library: Acknowledged. Continue manual-jsPDF primitive style 
+matching existing 8 generators. Don't install jspdf-autotable.
+
+Process flow:
+
+1. Verify credit_notes date column (D2 prerequisite)
+2. Build helpers in financial-aggregations.ts:
+   - getPLStatement (full implementation, not stub)
+   - getCashFlowStatement (full implementation)
+   - Unit test for reconciliation: closing = opening + net change
+3. Routes (admin+accountant guarded)
+4. Excel exporters using exceljs + shared excel-export.ts patterns
+5. 2 frontend components (P&L view, Cash Flow view)
+6. 2 PDF generators (manual jsPDF, mirror existing patterns)
+7. Wire to Reports.tsx tabs
+8. Smoke test
+9. Architect review
+10. Ping me for Batch 1 mini-walk
+
+Standing rules + pattern commitments locked.
+
+CRITICAL pattern reminder:
+- Every aggregation goes through canonical helpers in 
+  financial-aggregations.ts
+- Outstanding math (if any) goes through computeCustomerInvoice 
+  Outstanding / computeSupplierInvoiceOutstanding helpers from 
+  storage.ts
+- Period totals reuse getPeriodTotals where applicable
+- Don't reinvent Cash Position — use computeAccountBalance
+- Date filter component reused from /components/DateRangeFilter.tsx
+- Excel + PDF share letterhead from shared/letterhead.ts
+
+If any helper doesn't exist for a needed calculation: build it 
+in financial-aggregations.ts FIRST, expose via route SECOND. 
+Never inline complex math in route handlers, components, or 
+PDF generators.

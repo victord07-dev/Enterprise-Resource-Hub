@@ -1,0 +1,61 @@
+All 3 confirmed:
+
+(a) 20-min SVG spike: YES
+- Test option β (XMLSerializer + offscreen canvas) FIRST
+- Test option α (html2canvas) only if β fails
+- If β works: zero new dependencies. Best outcome.
+- If β fails but α works: install html2canvas (~50KB)
+- If both fail: surface and we discuss Chart.js as deliberate 
+  second engine
+- Report which approach won + sample chart in PDF for fidelity 
+  check before proceeding to full P&L build
+
+(b) 5th reconciliation assertion: YES
+- Sum of trend[].revenue over N months === revenue.salesRevenue 
+  for same period (₹0.01 tolerance)
+- Catches month-boundary off-by-one + double-counting
+- Same pattern for Cash Flow trend when that ships
+
+(c) CSV format spec: APPROVED
+
+For statements (P&L, Cash Flow, Tax Summary):
+Section,Label,Amount
+REVENUE,Sales Revenue,4677372.88
+REVENUE,Sales Returns,0.00
+REVENUE,Net Revenue,4677372.88
+COGS,Purchases,1594900.00
+GROSS_PROFIT,Gross Profit,3082472.88
+OPEX,Loading / Unloading,1000.00
+OPEX,Total Operating Expenses,1050.00
+NET_PROFIT,Net Profit Before Tax,3081422.88
+
+For registers (Sales Register, Purchase Register, Expense Report):
+Row-per-transaction dump with all columns, no subtotal rows, 
+no merged cells.
+
+For aging reports (AR Aging, AP Aging, Customer Aging, Supplier 
+Aging):
+Customer,Current,1-30,31-60,61-90,90+,Total
+[per-customer rows]
+TOTAL,X,Y,Z,A,B,C  (final row OK as totals row, single line)
+
+For Cash Position / Account Statement / Consolidated Cash:
+Date,Account,Type,Description,Counterparty,Reference,Debit,
+  Credit,Balance
+[per-transaction rows]
+
+Lock as standard. Apply across all reports.
+
+EXECUTE Steps 1.5 → 7 in continuous pass.
+
+Ping me with 4 artifacts:
+1. On-screen P&L screenshot (charts visible, all 3 download 
+   buttons visible)
+2. Downloaded PDF (open + screenshot first page)
+3. Downloaded Excel (open + screenshot)
+4. Downloaded CSV (open + screenshot or paste contents)
+
+After artifacts approved: Cash Flow gets same treatment.
+
+Standing rules apply. Don't ship until 4 artifacts ready for 
+operator review.

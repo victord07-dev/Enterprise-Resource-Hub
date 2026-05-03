@@ -1,0 +1,180 @@
+Acknowledged on the missing context. Reposting the full adjustment 
+list below + answering your two questions.
+
+ANSWER 1 — Cash Flow PDF verification:
+
+Yes, please verify NOW before sequencing. Read 
+client/src/lib/reports-pdf.ts around line 1000 and confirm:
+- Is that the Cash Flow PDF generator?
+- Does it use the same compact header pattern as P&L?
+- Is it currently wired into the Cash Flow tab UI OR exists but 
+  not yet hooked up?
+
+If Cash Flow PDF code already exists:
+- Fix it in the same P6-EXT retrofit pass (treat as part of 
+  current cycle, not "Cash Flow propagation later")
+- Re-capture artifacts for BOTH P&L AND Cash Flow at re-review
+
+If Cash Flow PDF code doesn't exist yet:
+- P&L only for this cycle as planned
+- Cash Flow PDF will be built fresh after pattern locks
+
+Report back with answer before starting any fixes.
+
+ANSWER 2 — Your P6-EXTENDED diagnosis ACCEPTED:
+
+Option (a) APPROVED with your exact scope. ~70 min budget.
+
+Side-by-side comparison confirms P&L is structurally a different 
+letterhead, not just constants drift. Missing address, phone, 
+email, GSTIN entirely is a serious gap. Foundation fix correct.
+
+Files in order:
+1. shared/pdf-letterhead.ts (new helper module)
+2. reports-pdf.ts (4 inline header blocks → drawLetterhead calls)
+3. quotation-pdf.ts (canonical baseline — output should be byte-
+   identical after refactor)
+4. purchase-order-pdf.ts
+5. challan-pdf.ts (compact variant if needed)
+6. id-card-pdf.ts (verify if it uses letterhead first; skip if 
+   not)
+7. server/po-pdf.ts + server/grn-pdf.ts (use same shared import)
+
+Regression check: download Quotation + PO + Challan + GRN + 
+ID Card + existing Reports tab + P&L = 7 PDFs, all letterheads 
+identical. Operator will spot-check a sample.
+
+==================================================================
+FULL ADJUSTMENT LIST (REPOSTED)
+==================================================================
+
+PDF CRITICAL FIXES:
+
+P1. Broken character rendering throughout PDF (CRITICAL):
+    - ₹ rupee symbol renders as `¹` (superscript 1) in EVERY 
+      currency value: "¹4,35,000.00" instead of "₹4,35,000.00"
+    - Arrows render as `!'` instead of `→`: 
+      "Period: 2026-04-01 !' 2026-05-03"
+    - Same Unicode/font issue from spike report
+    - You committed to "stick to ASCII-only labels" but didn't 
+      apply consistently — ₹ and → still appear in code paths
+    
+    Two fix options:
+    
+    (a) ASCII-only everywhere: Replace ₹ with "Rs." and → with 
+        "to" in PDF text. Functional but loses brand polish.
+    
+    (b) Embed Unicode-supporting font: jsPDF supports custom 
+        fonts via .ttf/.otf embedding. Use Noto Sans (free, 
+        supports ₹, →, all Indian language chars).
+    
+    APPROVED: Option (b) — embed Noto Sans or similar.
+    Reasoning: Branded PDFs need ₹ symbol for production use. 
+    ASCII workaround is a band-aid. ~10-15 min one-time work, 
+    fixes all 11 future reports + dashboard PDF exports + future 
+    invoice PDFs.
+
+P2. Date display in PDF Period header is raw ISO format:
+    Current: "Period: 2026-04-01 !' 2026-05-03"
+    Should be: "Period: 01 Apr 2026 → 03 May 2026"
+    Match Excel header date format style.
+
+P3. Page 1 layout cramped:
+    - Header section compressed (will be solved partly by P6-EXT 
+      shared letterhead which has proper 30mm header band)
+    - Caveat banner wraps awkwardly
+    - Add 8-10mm vertical breathing room between sections
+    - Reduce caveat banner font size OR widen to full page width
+
+P4. Page 2 chart page issues:
+    - Bar chart shows only 2 months of bars + 1 lone red dot
+    - Donut chart has NO LEGEND with category names
+    - Add legend below each chart with category-color mapping
+
+P5. Page 2 has no data context — just floating charts:
+    - Add small data table below each chart showing underlying 
+      numbers (so PDF stands alone without UI reference)
+    - Trend bar table: month + revenue + expense + net profit
+    - Donut table: category + amount + percentage
+
+P6. (See P6-EXTENDED above — shared letterhead refactor)
+
+EXCEL POLISH FIXES:
+
+E1. Title row merging inconsistent:
+    - Currently A1:B1 on 2-column sheets
+    - Opex Detail has 3 columns but title still merges only A1:B1
+    - Fix: merge across all populated columns dynamically per 
+      sheet
+
+E2. Number formatting absent throughout. Apply Indian accounting 
+    format:
+    - Numeric cells: #,##,##0.00 (Indian lakh/crore comma 
+      grouping, e.g., 59,37,372.88)
+    - Negative values: red font OR accounting format with 
+      parentheses: #,##,##0.00;[Red](#,##,##0.00)
+    - Percentage cells (Opex Detail column C): 0.0% format
+
+E3. Trend sheet empty months pollution:
+    Jun 2025 → Jan 2026 all show as zero rows
+    Fix option (a): Filter out months with all-zero values
+    Fix option (b): Add "no_data" boolean column showing TRUE
+    APPROVED: Option (a) for cleaner output.
+
+E4. Negative values lack visual emphasis:
+    Financial statement standard = red font for negative numbers 
+    in OpEx + Net Profit rows
+    Apply via openpyxl conditional formatting OR cell-level font 
+    color when negative
+
+==================================================================
+PROCESS SEQUENCE
+==================================================================
+
+After Cash Flow verification (Answer 1):
+
+Phase A — Foundation (~25 min):
+- P1: Embed Noto Sans font in jsPDF (one-time, fixes everything)
+- P6-EXT: Build shared/pdf-letterhead.ts drawLetterhead helper
+
+Phase B — Refactor existing PDFs (~30 min):
+- Apply drawLetterhead to 6 client + 2 server PDF files
+- Operator regression-check 7 PDFs (Quotation, PO, Challan, GRN, 
+  ID Card, existing Reports tab, P&L) — all letterheads identical
+
+Phase C — P&L PDF polish (~30-45 min):
+- P2: Date format
+- P3: Layout breathing room
+- P4: Chart legends
+- P5: Data tables on chart page
+- (If Cash Flow PDF exists per Answer 1: same fixes applied)
+
+Phase D — Excel polish (~30 min):
+- E1: Dynamic title merge
+- E2: Indian accounting number format
+- E3: Filter empty months from trend sheet
+- E4: Red font for negatives
+
+Phase E — Re-capture artifacts (~30 min):
+- Throwaway test data with audit log entry
+- Capture P&L UI screenshot (Replit AI)
+- Capture P&L CSV inline (Replit AI)
+- Save P&L PDF binary + Excel binary (operator opens + screenshots)
+- If Cash Flow PDF exists: capture Cash Flow artifacts too
+- Hard-delete test data with audit log entry
+- Audit log opened + closed verification
+
+Total estimate: ~3-4 hours
+
+==================================================================
+DO NOT SHIP UNTIL OPERATOR APPROVES RE-REVIEWED ARTIFACTS
+
+Don't propagate to remaining reports yet.
+Don't add server-side PDF route yet (Option b is queued for AFTER 
+visual approval).
+Don't touch any other reports.
+
+Standing rules apply. Throwaway-data discipline mandatory for 
+re-capture.
+
+Confirm Cash Flow PDF status (Answer 1) before starting fixes.

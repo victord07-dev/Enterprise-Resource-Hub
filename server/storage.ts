@@ -555,6 +555,30 @@ export interface IStorage {
   getAccountStats(accountId: string, fromDate: string, toDate: string): Promise<AccountStats>;
   getAccountTransactions(accountId: string, fromDate?: string, toDate?: string, limit?: number, offset?: number): Promise<{ rows: AccountTransactionRow[]; total: number }>;
 
+  // ── Phase 4C — Canonical outstanding helpers (FIX 1) ─────────────────────
+  // Single source of truth for "amount still owed" math, used by:
+  //   • dashboard cards (set-based)        • AR/AP Aging detail rows (per-row)
+  //   • all 11 reports that touch outstandings
+  // Both per-row and set-based variants share the SAME formula via the SQL
+  // fragment OUTSTANDING_SQL_* below. Routes/components MUST NOT inline this
+  // math — it caused B1 (TS2339 paid_amount + Drizzle silently producing
+  // grand_total - -credited ≈ gross+credit) and B2 (gross supplier overdue).
+  //
+  // Formula (operator decision 1):
+  //   customer_outstanding = MAX(0, grand_total - SUM(customer_payments) - credited_amount)
+  //   supplier_outstanding = MAX(0, total_amount - SUM(supplier_payments))
+  // The legacy `payments` table is intentionally NOT joined: verification
+  // showed 0 rows link to current invoices (orphaned post-Phase-4 deletes).
+  // It still contributes to cash position via computeAccountBalance.
+  //
+  // CAVEAT: invoice.status field can drift from this math when records are
+  // imported / status is set without going through recompute*. Helper is
+  // authoritative; status is a stale cache. See breach log 2026-05-02.
+  computeCustomerInvoiceOutstanding(invoiceId: string): Promise<number>;
+  computeSupplierInvoiceOutstanding(invoiceId: string): Promise<number>;
+  sumOpenCustomerOutstanding(opts?: { dueDateBefore?: Date }): Promise<{ count: number; amount: number }>;
+  sumOpenSupplierOutstanding(opts?: { dueDateBefore?: Date }): Promise<{ count: number; amount: number }>;
+
   // Dashboard
   getDashboardStats(): Promise<{
     totalRevenue: number;
@@ -2730,6 +2754,88 @@ export class DatabaseStorage implements IStorage {
     const adjNet = Number((adjResult.rows[0] as any)?.total ?? 0);
 
     return opening + cpIn + pmtIn - spOut - expOut + trIn - trOut + adjNet;
+  }
+
+  // ── Phase 4C — Canonical outstanding helpers (FIX 1) ──────────────────────
+  // See IStorage interface above for design rationale + caveats.
+  // Two consumers of one formula; unit test asserts agreement.
+
+  async computeCustomerInvoiceOutstanding(invoiceId: string): Promise<number> {
+    const r = await db.execute(sql`
+      SELECT GREATEST(
+        si.grand_total::numeric
+        - COALESCE((SELECT SUM(amount::numeric) FROM customer_payments WHERE invoice_id = si.id), 0)
+        - si.credited_amount::numeric,
+        0
+      ) AS outstanding
+      FROM sales_invoices si
+      WHERE si.id = ${invoiceId}
+    `);
+    return Number((r.rows[0] as any)?.outstanding ?? 0);
+  }
+
+  async computeSupplierInvoiceOutstanding(invoiceId: string): Promise<number> {
+    const r = await db.execute(sql`
+      SELECT GREATEST(
+        si.total_amount::numeric
+        - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0),
+        0
+      ) AS outstanding
+      FROM supplier_invoices si
+      WHERE si.id = ${invoiceId}
+    `);
+    return Number((r.rows[0] as any)?.outstanding ?? 0);
+  }
+
+  async sumOpenCustomerOutstanding(opts?: { dueDateBefore?: Date }): Promise<{ count: number; amount: number }> {
+    // Open = status != 'paid' AND uploadStatus != 'cancelled'
+    // (mirrors getPendingActions filter; excludes cancelled invoices)
+    const dueFilter = opts?.dueDateBefore
+      ? sql`AND si.due_date < ${opts.dueDateBefore.toISOString()}`
+      : sql``;
+    const r = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE outstanding > 0)::int AS cnt,
+        COALESCE(SUM(outstanding), 0) AS amt
+      FROM (
+        SELECT GREATEST(
+          si.grand_total::numeric
+          - COALESCE((SELECT SUM(amount::numeric) FROM customer_payments WHERE invoice_id = si.id), 0)
+          - si.credited_amount::numeric,
+          0
+        ) AS outstanding
+        FROM sales_invoices si
+        WHERE si.status <> 'paid'
+          AND si.upload_status <> 'cancelled'
+          ${dueFilter}
+      ) t
+    `);
+    const row: any = r.rows[0] ?? {};
+    return { count: Number(row.cnt ?? 0), amount: Number(row.amt ?? 0) };
+  }
+
+  async sumOpenSupplierOutstanding(opts?: { dueDateBefore?: Date }): Promise<{ count: number; amount: number }> {
+    const dueFilter = opts?.dueDateBefore
+      ? sql`AND si.due_date < ${opts.dueDateBefore.toISOString()}`
+      : sql``;
+    const r = await db.execute(sql`
+      SELECT
+        COUNT(*) FILTER (WHERE outstanding > 0)::int AS cnt,
+        COALESCE(SUM(outstanding), 0) AS amt
+      FROM (
+        SELECT GREATEST(
+          si.total_amount::numeric
+          - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0),
+          0
+        ) AS outstanding
+        FROM supplier_invoices si
+        WHERE si.status <> 'paid'
+          AND si.upload_status <> 'cancelled'
+          ${dueFilter}
+      ) t
+    `);
+    const row: any = r.rows[0] ?? {};
+    return { count: Number(row.cnt ?? 0), amount: Number(row.amt ?? 0) };
   }
 
   async getAccountStats(accountId: string, fromDate: string, toDate: string): Promise<AccountStats> {

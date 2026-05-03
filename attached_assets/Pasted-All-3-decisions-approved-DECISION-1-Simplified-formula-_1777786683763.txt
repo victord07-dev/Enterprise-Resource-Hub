@@ -1,0 +1,64 @@
+All 3 decisions approved.
+
+DECISION 1 — Simplified formula APPROVED:
+- Drop payments table from outstanding math entirely
+- payments stays correctly used in computeAccountBalance (cash 
+  position by account_id) — unchanged
+- customer_outstanding = grand_total - customer_payments.amount 
+  - credited_amount (floor at 0)
+- supplier_outstanding = total_amount - supplier_payments.amount 
+  (floor at 0)
+- Both helpers use this single formula
+
+DECISION 2 — Helper as source of truth, surface drift APPROVED 
+(option a):
+- Build canonical helper that computes truth from payment records
+- Status field treated as stale cache, not authoritative
+- Surface 4-row drift as Audit Trail item: 
+  "Status field on 4 invoices doesn't match payment math. 
+   Helper-computed outstanding is authoritative."
+  - INV-2627-0001 (sales, status=partial_paid, actual paid=0)
+  - INV-2526-0001 (sales, status=paid, over-collected by ₹1)
+  - Supplier 2041c2cb (partial_paid, sp_total=₹100)
+  - Supplier 4f41b08c (partial_paid, sp_total=₹0)
+- No autofix. No reconciliation script. No status updates.
+
+ADDITIONAL — Investigate root cause of status drift:
+- 10-min code search: where does the code that stamps invoice 
+  status='partial_paid' live?
+- For sales side: search server/routes.ts and server/storage.ts 
+  for "partial_paid" assignments
+- For supplier side: same
+- Report findings:
+  * If active code path: track in Phase 4 follow-up tracker for 
+    separate fix
+  * If legacy code only: leave as historical artifact, document 
+    in helper comments
+  * Do NOT fix the active code path now — surface for separate 
+    sprint
+
+DECISION 3 — Add 2 indexes APPROVED:
+- idx_customer_payments_invoice_id
+- idx_supplier_payments_supplier_invoice_id
+- Pure performance, no data risk
+- Run db:push or direct ALTER
+
+Process flow:
+
+1. Add 2 indexes (parallel with everything below)
+2. Brief code search for status drift root cause (10 min, report 
+   only)
+3. Build canonical helpers using simplified formula:
+   - Per-row + set-based variants
+   - Shared SQL fragment for outstanding math
+   - Unit test asserting agreement on test dataset
+4. Wire helpers into pendingActions (B1 + B2 fix)
+5. Build 5 dashboard cards (FIX 2 with transfers/adjustments excluded)
+6. Date preset corrections (FIX 3) - parallel
+7. Test user reseed - parallel
+8. Re-walk failed/partial items + N14 with all 6 roles
+9. After re-walk passes: dashboard subset closes, authorize Batch 1
+
+Pattern commitment locked + reinforced.
+
+Ship per process flow. Standing rules apply.

@@ -325,39 +325,15 @@ export async function getPendingActions(): Promise<PendingActions> {
     .from(supplierInvoices)
     .where(eq(supplierInvoices.uploadStatus, "pending_upload"));
 
-  // Sales-side overdue:
-  //   - status != 'paid' (still owes money, including 'partial_paid')
-  //   - uploadStatus != 'cancelled' (lifecycle cancellation)
-  //   - amount = grand_total - paid_amount - credited_amount (true outstanding,
-  //     not gross — partial-paid invoices were inflated under the old logic)
-  const [overdueCustRow] = await db
-    .select({
-      c: sql<number>`COUNT(*)::int`,
-      a: sql<string>`COALESCE(SUM(GREATEST(${salesInvoices.grandTotal} - ${salesInvoices.paidAmount} - ${salesInvoices.creditedAmount}, 0)),0)`,
-    })
-    .from(salesInvoices)
-    .where(and(
-      lt(salesInvoices.dueDate, today),
-      ne(salesInvoices.status, "paid"),
-      ne(salesInvoices.uploadStatus, "cancelled"),
-    ));
-
-  // Supplier-side overdue:
-  //   - status != 'paid', uploadStatus != 'cancelled'
-  //   - amount stays gross (supplier_invoices has no paid_amount column;
-  //     payment progress is tracked via supplier_payments aggregation, which
-  //     belongs in the AP Aging Report — Phase 4C T9 will deepen this).
-  const [overdueSupRow] = await db
-    .select({
-      c: sql<number>`COUNT(*)::int`,
-      a: sql<string>`COALESCE(SUM(${supplierInvoices.totalAmount}),0)`,
-    })
-    .from(supplierInvoices)
-    .where(and(
-      lt(supplierInvoices.dueDate, today),
-      ne(supplierInvoices.status, "paid"),
-      ne(supplierInvoices.uploadStatus, "cancelled"),
-    ));
+  // Sales + supplier overdue: route through canonical helpers (FIX 1).
+  // Was: inline SUM(grand_total - paid_amount - credited_amount) which
+  //   (a) referenced non-existent paid_amount column (TS2339), AND
+  //   (b) Drizzle silently generated grand_total - -credited (gross+credit).
+  // Was supplier: inline gross totalAmount (B2 — ignored payments).
+  const [overdueCust, overdueSup] = await Promise.all([
+    storage.sumOpenCustomerOutstanding({ dueDateBefore: today }),
+    storage.sumOpenSupplierOutstanding({ dueDateBefore: today }),
+  ]);
 
   const [quoteExpRow] = await db
     .select({ c: sql<number>`COUNT(*)::int` })
@@ -371,9 +347,75 @@ export async function getPendingActions(): Promise<PendingActions> {
   return {
     grnDrafts: grnRow?.c ?? 0,
     supplierInvoicesPendingUpload: supUpRow?.c ?? 0,
-    overdueCustomerInvoices: { count: overdueCustRow?.c ?? 0, amount: Number(overdueCustRow?.a ?? 0) },
-    overdueSupplierInvoices: { count: overdueSupRow?.c ?? 0, amount: Number(overdueSupRow?.a ?? 0) },
+    overdueCustomerInvoices: overdueCust,
+    overdueSupplierInvoices: overdueSup,
     quotationsExpiringThisWeek: quoteExpRow?.c ?? 0,
+  };
+}
+
+// ── Phase 4C — FIX 2: Today snapshot (point-in-time financial position) ─────
+// 5 cards above the existing period-scoped MetricCardsRow. These are NOT
+// period-scoped; they always reflect "right now / today". Operator-locked:
+//   • totalCashPosition skipped (Cash Position strip TOTAL line is canonical)
+//   • todayIn/Out exclude transfers + balance_adjustments (those land on the
+//     Cash Flow Statement T8 under categorised internal-movement sections)
+//   • outstandings sourced from canonical helpers (FIX 1) — drift-proof
+export interface TodaySnapshot {
+  outstandingReceivables: number; // from sumOpenCustomerOutstanding (no due filter)
+  outstandingPayables: number;    // from sumOpenSupplierOutstanding (no due filter)
+  netWorkingCapital: number;      // (cash on hand) + AR - AP
+  todayIn: number;                // customer_payments + legacy payments(completed) dated today
+  todayOut: number;               // supplier_payments + expenses dated today
+}
+
+export async function getTodaySnapshot(): Promise<TodaySnapshot> {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const [ar, ap, cashAccts, cpInRow, legacyInRow, spOutRow, expOutRow] = await Promise.all([
+    storage.sumOpenCustomerOutstanding(),
+    storage.sumOpenSupplierOutstanding(),
+    db.select().from(cashAccounts).where(eq(cashAccounts.isActive, true)),
+    db.select({ s: sql<string>`COALESCE(SUM(${customerPayments.amount}),0)` })
+      .from(customerPayments)
+      .where(and(gte(customerPayments.paymentDate, today), lt(customerPayments.paymentDate, tomorrow))),
+    // Legacy payments table — only completed rows, attributed to a cash account.
+    // Mirrors how computeAccountBalance treats them as inflows.
+    db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS s
+      FROM payments
+      WHERE status = 'completed'
+        AND payment_date >= ${today.toISOString()}
+        AND payment_date <  ${tomorrow.toISOString()}
+    `),
+    db.select({ s: sql<string>`COALESCE(SUM(${supplierPayments.amount}),0)` })
+      .from(supplierPayments)
+      .where(and(gte(supplierPayments.paymentDate, today), lt(supplierPayments.paymentDate, tomorrow))),
+    // expenses.expenseDate is a date (no time component) — compare to ISO date string.
+    db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS s
+      FROM expenses
+      WHERE expense_date = ${today.toISOString().slice(0, 10)}
+    `),
+  ]);
+
+  const cashOnHand = (await Promise.all(
+    cashAccts.map((a) => storage.computeAccountBalance(a.id))
+  )).reduce((s, n) => s + n, 0);
+
+  const todayIn =
+    Number(cpInRow[0]?.s ?? 0) +
+    Number((legacyInRow.rows[0] as any)?.s ?? 0);
+  const todayOut =
+    Number(spOutRow[0]?.s ?? 0) +
+    Number((expOutRow.rows[0] as any)?.s ?? 0);
+
+  return {
+    outstandingReceivables: ar.amount,
+    outstandingPayables: ap.amount,
+    netWorkingCapital: cashOnHand + ar.amount - ap.amount,
+    todayIn,
+    todayOut,
   };
 }
 

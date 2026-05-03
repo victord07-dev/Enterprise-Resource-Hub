@@ -20,13 +20,13 @@ import { fmtDate, toIsoDate } from "@/lib/format";
 export type DateRangePresetKey =
   | "today"
   | "yesterday"
-  | "this_week"
-  | "last_week"
+  | "last_7"
+  | "last_30"
   | "this_month"
   | "last_month"
   | "this_quarter"
-  | "this_year"
-  | "last_year"
+  | "this_fy"
+  | "last_fy"
   | "all_time"
   | "custom";
 
@@ -49,18 +49,13 @@ export function computePresetRange(key: DateRangePresetKey, ref = new Date()): {
       const y = new Date(today); y.setDate(y.getDate() - 1);
       return { from: y, to: endOfDay(y) };
     }
-    case "this_week": {
-      const d = new Date(today);
-      const dow = d.getDay() === 0 ? 6 : d.getDay() - 1; // Mon=0
-      d.setDate(d.getDate() - dow);
+    case "last_7": {
+      const d = new Date(today); d.setDate(d.getDate() - 6); // includes today => 7-day window
       return { from: d, to: endOfDay(today) };
     }
-    case "last_week": {
-      const d = new Date(today);
-      const dow = d.getDay() === 0 ? 6 : d.getDay() - 1;
-      d.setDate(d.getDate() - dow - 7);
-      const e = new Date(d); e.setDate(e.getDate() + 6);
-      return { from: d, to: endOfDay(e) };
+    case "last_30": {
+      const d = new Date(today); d.setDate(d.getDate() - 29); // includes today => 30-day window
+      return { from: d, to: endOfDay(today) };
     }
     case "this_month": {
       const d = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -76,13 +71,16 @@ export function computePresetRange(key: DateRangePresetKey, ref = new Date()): {
       const d = new Date(today.getFullYear(), q * 3, 1);
       return { from: d, to: endOfDay(today) };
     }
-    case "this_year": {
-      const d = new Date(today.getFullYear(), 0, 1);
+    case "this_fy": {
+      // Indian FY: Apr 1 → Mar 31. month index Apr = 3.
+      const fyStart = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+      const d = new Date(fyStart, 3, 1);
       return { from: d, to: endOfDay(today) };
     }
-    case "last_year": {
-      const d = new Date(today.getFullYear() - 1, 0, 1);
-      const e = new Date(today.getFullYear() - 1, 11, 31);
+    case "last_fy": {
+      const fyStart = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1;
+      const d = new Date(fyStart - 1, 3, 1);
+      const e = new Date(fyStart, 2, 31); // Mar 31 of fyStart
       return { from: d, to: endOfDay(e) };
     }
     case "all_time":
@@ -97,21 +95,21 @@ export function computePresetRange(key: DateRangePresetKey, ref = new Date()): {
 const PRESET_LABELS: Record<DateRangePresetKey, string> = {
   today: "Today",
   yesterday: "Yesterday",
-  this_week: "This Week",
-  last_week: "Last Week",
+  last_7: "Last 7 Days",
+  last_30: "Last 30 Days",
   this_month: "This Month",
   last_month: "Last Month",
   this_quarter: "This Quarter",
-  this_year: "This Year",
-  last_year: "Last Year",
+  this_fy: "This FY (Apr–Mar)",
+  last_fy: "Last FY (Apr–Mar)",
   all_time: "All Time",
   custom: "Custom Range",
 };
 
 const PRESET_ORDER: DateRangePresetKey[] = [
-  "today", "yesterday", "this_week", "last_week",
+  "today", "yesterday", "last_7", "last_30",
   "this_month", "last_month", "this_quarter",
-  "this_year", "last_year", "all_time", "custom",
+  "this_fy", "last_fy", "all_time", "custom",
 ];
 
 /**

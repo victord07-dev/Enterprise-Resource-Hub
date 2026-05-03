@@ -836,9 +836,10 @@ export async function registerRoutes(
           getTopSuppliers,
           getRecentActivity,
           getPendingActions,
+          getTodaySnapshot,
         } = await import("./lib/financial-aggregations");
 
-        const [cashPosition, periodTotals, topCustomers, topSuppliers, recentActivity, pendingActions] =
+        const [cashPosition, periodTotals, topCustomers, topSuppliers, recentActivity, pendingActions, todaySnapshot] =
           await Promise.all([
             getCashPositionPerAccount(),
             getPeriodTotals(period),
@@ -846,6 +847,7 @@ export async function registerRoutes(
             getTopSuppliers(period, 5),
             getRecentActivity(20),
             getPendingActions(),
+            getTodaySnapshot(),
           ]);
 
         res.json({
@@ -856,6 +858,7 @@ export async function registerRoutes(
           topSuppliers,
           recentActivity,
           pendingActions,
+          todaySnapshot,
         });
       } catch (error) {
         console.error("Dashboard snapshot error:", error);

@@ -18,6 +18,7 @@ import TopCustomersWidget, { type TopCustomer } from "@/components/dashboard/Top
 import TopSuppliersWidget, { type TopSupplier } from "@/components/dashboard/TopSuppliersWidget";
 import RecentActivityFeed, { type ActivityEvent } from "@/components/dashboard/RecentActivityFeed";
 import PendingActionsWidget, { type PendingActions } from "@/components/dashboard/PendingActionsWidget";
+import TodaySnapshotCards, { type TodaySnapshot } from "@/components/dashboard/TodaySnapshotCards";
 
 const revenueData = [
   { day: "Mon", value: 2400 },
@@ -52,6 +53,7 @@ interface FinancialSnapshot {
   topSuppliers: TopSupplier[];
   recentActivity: ActivityEvent[];
   pendingActions: PendingActions;
+  todaySnapshot: TodaySnapshot;
 }
 
 const FINANCE_ROLES = ["admin", "accountant"] as const;
@@ -220,6 +222,8 @@ export default function Dashboard() {
               align="end"
             />
           </div>
+
+          <TodaySnapshotCards data={snapshot?.todaySnapshot} isLoading={snapshotLoading} />
 
           <MetricCardsRow data={snapshot?.periodTotals} isLoading={snapshotLoading} />
 

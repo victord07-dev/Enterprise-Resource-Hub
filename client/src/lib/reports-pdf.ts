@@ -814,8 +814,9 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
   y += 17;
 
   // Statement table — 2 cols: Label | Amount
-  const drawRow = (label: string, amount: number | null, opts: { bold?: boolean; indent?: number; topBorder?: boolean; muted?: boolean; bg?: [number, number, number] } = {}) => {
-    const rh = 6;
+  // P5: added height opt (section headers use 7mm; data rows stay 6mm)
+  const drawRow = (label: string, amount: number | null, opts: { bold?: boolean; indent?: number; topBorder?: boolean; muted?: boolean; bg?: [number, number, number]; height?: number } = {}) => {
+    const rh = opts.height ?? 6;
     if (opts.bg) {
       doc.setFillColor(...opts.bg);
       doc.rect(mP, y, pwP - mP * 2, rh, "F");
@@ -828,34 +829,37 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
     doc.setFont("helvetica", opts.bold ? "bold" : "normal");
     doc.setFontSize(opts.bold ? 9 : 8);
     doc.setTextColor(...(opts.muted ? C.textMuted : C.textPrimary));
-    doc.text(label, mP + 2 + (opts.indent ?? 0), y + 4);
+    doc.text(label, mP + 2 + (opts.indent ?? 0), y + rh * 0.67);
     if (amount !== null) {
-      doc.text(fmtINR(amount), pwP - mP - 2, y + 4, { align: "right" });
+      doc.text(fmtINR(amount), pwP - mP - 2, y + rh * 0.67, { align: "right" });
     }
     y += rh;
   };
 
-  drawRow("REVENUE", null, { bold: true, bg: C.tableHeaderBg });
+  // P3: taller section headers (height:7) + wider inter-section gaps
+  drawRow("REVENUE", null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   drawRow(`Sales Revenue (ex-GST) — ${d.revenue.salesInvoiceCount} invoices`, d.revenue.salesRevenue, { indent: 3 });
   drawRow(`Less: Sales Returns — ${d.revenue.creditNoteCount} CN`, -d.revenue.salesReturns, { indent: 3, muted: true });
   drawRow("Net Revenue", d.revenue.netRevenue, { bold: true, indent: 3, topBorder: true });
-  y += 1;
+  y += 3;
 
-  drawRow(d.cogs.label.toUpperCase(), null, { bold: true, bg: C.tableHeaderBg });
+  drawRow(d.cogs.label.toUpperCase(), null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   drawRow(`Purchases — ${d.cogs.supplierInvoiceCount} supplier invoices`, -d.cogs.purchases, { indent: 3 });
-  y += 1;
+  y += 3;
 
-  drawRow("GROSS PROFIT", d.grossProfit, { bold: true, bg: C.summaryBg, topBorder: true });
-  y += 1;
+  drawRow("GROSS PROFIT", d.grossProfit, { bold: true, bg: C.summaryBg, topBorder: true, height: 7 });
+  y += 2;
 
-  drawRow("OPERATING EXPENSES", null, { bold: true, bg: C.tableHeaderBg });
+  drawRow("OPERATING EXPENSES", null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   if (d.operatingExpenses.byCategory.length === 0) {
     drawRow("(no expenses in period)", null, { indent: 3, muted: true });
   } else {
-    d.operatingExpenses.byCategory.forEach((c) => drawRow(c.categoryName, -c.total, { indent: 3 }));
+    // P5: alternating row backgrounds for opex section readability
+    d.operatingExpenses.byCategory.forEach((c, i) =>
+      drawRow(c.categoryName, -c.total, { indent: 3, bg: i % 2 !== 0 ? C.tableAltBg : undefined }));
   }
   drawRow("Total Operating Expenses", -d.operatingExpenses.total, { bold: true, indent: 3, topBorder: true });
-  y += 2;
+  y += 5;
 
   // Net Profit highlight
   const positive = d.netProfitBeforeTax >= 0;
@@ -922,6 +926,25 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
       const h = (ei.cssHeight / ei.cssWidth) * w;
       const x = (pwP - w) / 2;
       doc.addImage(ei.dataUrl, ei.format, x, cy, w, h);
+      cy += h + 4;
+      // P4: text-based category legend below the donut (chart canvas legend can be
+      // too small to read at print resolution; this ensures readability)
+      if (d.operatingExpenses.byCategory.length > 0) {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(...C.textPrimary);
+        doc.text("Expense breakdown:", mP, cy);
+        cy += 4;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(...C.textMuted);
+        const totalOpex = d.operatingExpenses.total;
+        d.operatingExpenses.byCategory.forEach((cat) => {
+          const pct = totalOpex > 0 ? ((cat.total / totalOpex) * 100).toFixed(1) + "%" : "0.0%";
+          doc.text(`\u2022 ${cat.categoryName}:  ${fmtINR(cat.total)}  (${pct})`, mP + 4, cy);
+          cy += 4;
+        });
+      }
     }
   }
 
@@ -987,8 +1010,9 @@ export async function generateCashFlowStatementPDF(d: CashFlowStatementPDFData):
     y += 14;
   }
 
-  const drawRow = (label: string, amount: number | null, opts: { bold?: boolean; indent?: number; topBorder?: boolean; bg?: [number, number, number]; muted?: boolean } = {}) => {
-    const rh = 6;
+  // P5: added height opt (section headers use 7mm; data rows stay 6mm)
+  const drawRow = (label: string, amount: number | null, opts: { bold?: boolean; indent?: number; topBorder?: boolean; bg?: [number, number, number]; muted?: boolean; height?: number } = {}) => {
+    const rh = opts.height ?? 6;
     if (opts.bg) {
       doc.setFillColor(...opts.bg);
       doc.rect(mP, y, pwP - mP * 2, rh, "F");
@@ -1001,19 +1025,20 @@ export async function generateCashFlowStatementPDF(d: CashFlowStatementPDFData):
     doc.setFont("helvetica", opts.bold ? "bold" : "normal");
     doc.setFontSize(opts.bold ? 9 : 8);
     doc.setTextColor(...(opts.muted ? C.textMuted : C.textPrimary));
-    doc.text(label, mP + 2 + (opts.indent ?? 0), y + 4);
-    if (amount !== null) doc.text(fmtINR(amount), pwP - mP - 2, y + 4, { align: "right" });
+    doc.text(label, mP + 2 + (opts.indent ?? 0), y + rh * 0.67);
+    if (amount !== null) doc.text(fmtINR(amount), pwP - mP - 2, y + rh * 0.67, { align: "right" });
     y += rh;
   };
 
-  drawRow("OPERATING ACTIVITIES", null, { bold: true, bg: C.tableHeaderBg });
+  // P3: taller section headers (height:7) + wider inter-section gaps
+  drawRow("OPERATING ACTIVITIES", null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   drawRow("Customer Payments Received", d.operating.customerPaymentsReceived, { indent: 3 });
   drawRow("Supplier Payments Made", -d.operating.supplierPaymentsMade, { indent: 3 });
   drawRow("Operating Expenses", -d.operating.operatingExpenses, { indent: 3 });
   drawRow("Net Operating Cash Flow", d.operating.netOperating, { bold: true, indent: 3, topBorder: true });
-  y += 1;
+  y += 3;
 
-  drawRow("INTERNAL MOVEMENTS", null, { bold: true, bg: C.tableHeaderBg });
+  drawRow("INTERNAL MOVEMENTS", null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   drawRow(`Transfers (gross ${fmtINR(d.internal.transfersGross)} both legs — net ₹0)`, d.internal.transfersNet, { indent: 3, muted: true });
   if (d.internal.adjustments.byReason.length === 0) {
     drawRow("(no balance adjustments in period)", null, { indent: 3, muted: true });
@@ -1021,7 +1046,7 @@ export async function generateCashFlowStatementPDF(d: CashFlowStatementPDFData):
     d.internal.adjustments.byReason.forEach((a) => drawRow(`Adjustment: ${a.reason}`, a.amount, { indent: 3 }));
   }
   drawRow("Net Internal Movement", d.internal.netInternal, { bold: true, indent: 3, topBorder: true });
-  y += 2;
+  y += 5;
 
   // Net Change highlight
   const positive = d.netChangeInCash >= 0;

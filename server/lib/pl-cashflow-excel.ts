@@ -19,7 +19,8 @@ import type { PLStatement, CashFlowStatement } from "./financial-aggregations";
 function periodLabel(from: string | null, to: string | null): string {
   const fmt = (d: string) =>
     new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-  return `Period: ${from ? fmt(from) : "—"} → ${to ? fmt(to) : "Today"}`;
+  // P2: use > (ASCII) instead of → so all Excel-consuming apps render consistently
+  return `Period: ${from ? fmt(from) : "\u2014"} > ${to ? fmt(to) : "Today"}`;
 }
 
 // ── P&L Statement Excel ──────────────────────────────────────────────────────
@@ -95,12 +96,16 @@ export async function exportPLStatementExcel(pl: PLStatement): Promise<Buffer> {
       { header: "Expense (₹)", key: "expense", width: 18, type: "currency" },
       { header: "Net Profit (₹)", key: "netProfit", width: 18, type: "currency" },
     ],
-    rows: pl.trend.map((p) => ({
-      month: p.month,
-      revenue: p.revenue,
-      expense: p.expense,
-      netProfit: p.netProfit,
-    })),
+    // E3: filter out months with all-zero data (future months in fiscal year,
+    // or gaps before trading started) so pivot tables stay clean
+    rows: pl.trend
+      .filter((p) => p.revenue !== 0 || p.expense !== 0 || p.netProfit !== 0)
+      .map((p) => ({
+        month: p.month,
+        revenue: p.revenue,
+        expense: p.expense,
+        netProfit: p.netProfit,
+      })),
   };
 
   return buildExcelBuffer({ sheets: [statementSpec, opexSpec, trendSpec] });
@@ -132,7 +137,7 @@ export async function exportCashFlowStatementExcel(cf: CashFlowStatement): Promi
     name: "Statement",
     title: "Cash Flow Statement (Direct Method)",
     subtitle: subtitle + (cf.notes.legacyReceiptsExcluded.count > 0
-      ? `  |  ⚠ ${cf.notes.legacyReceiptsExcluded.count} legacy receipt(s) ₹${cf.notes.legacyReceiptsExcluded.amount.toFixed(2)} excluded (unattributed)`
+      ? `  |  (!) ${cf.notes.legacyReceiptsExcluded.count} legacy receipt(s) excluded (unattributed, \u20b9${cf.notes.legacyReceiptsExcluded.amount.toFixed(2)})`
       : ""),
     columns: [
       { header: "Line Item", key: "label", width: 50, type: "text" },

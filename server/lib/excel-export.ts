@@ -49,12 +49,13 @@ export interface SheetSpec {
 const HEADER_FILL = "FFF1F5F9";
 const TOTAL_FILL = "FFEFF6FF";
 const BORDER_COLOR = "FFCBD5E1";
-const CURRENCY_FMT = "#,##,##0.00";   // Indian lakh/crore grouping
+const CURRENCY_FMT = "#,##,##0.00;[RED]-#,##,##0.00";   // Indian grouping; E4: negatives in red
 const DATE_FMT = "dd-mmm-yyyy";
 const PCT_FMT = "0.00%";
 
-function applyTitleBlock(ws: ExcelJS.Worksheet, title: string, subtitle?: string) {
-  const colSpan = Math.max(4, ws.columnCount || 4);
+// E1: accept explicit column count so merged title rows span exactly the data columns
+function applyTitleBlock(ws: ExcelJS.Worksheet, title: string, subtitle?: string, numCols?: number) {
+  const colSpan = numCols ?? Math.max(2, ws.columnCount || 2);
   ws.mergeCells(1, 1, 1, colSpan);
   const r1 = ws.getCell(1, 1);
   r1.value = COMPANY.name;
@@ -130,8 +131,8 @@ function setCellByType(cell: ExcelJS.Cell, value: unknown, type?: SheetColumn["t
   }
 }
 
-function applyCompactTitleBlock(ws: ExcelJS.Worksheet, title: string, subtitle?: string) {
-  const colSpan = Math.max(2, ws.columnCount || 2);
+function applyCompactTitleBlock(ws: ExcelJS.Worksheet, title: string, subtitle?: string, numCols?: number) {
+  const colSpan = numCols ?? Math.max(2, ws.columnCount || 2);
   ws.mergeCells(1, 1, 1, colSpan);
   const r1 = ws.getCell(1, 1);
   // Hybrid 3-row header (Q2): pack Company + Report Name + Period into row 1.
@@ -161,10 +162,11 @@ function buildSheet(wb: ExcelJS.Workbook, spec: SheetSpec): ExcelJS.Worksheet {
     width: c.width ?? 18,
   }));
 
+  const numCols = spec.columns.length; // E1: pass exact column count for dynamic title merge
   if (compact) {
-    applyCompactTitleBlock(ws, spec.title, spec.subtitle);
+    applyCompactTitleBlock(ws, spec.title, spec.subtitle, numCols);
   } else {
-    applyTitleBlock(ws, spec.title, spec.subtitle);
+    applyTitleBlock(ws, spec.title, spec.subtitle, numCols);
   }
   applyHeaderRow(ws, spec.columns, headerRow);
 

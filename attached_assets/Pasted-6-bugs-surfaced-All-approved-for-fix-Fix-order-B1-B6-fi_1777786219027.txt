@@ -1,0 +1,206 @@
+6 bugs surfaced. All approved for fix. Fix order: B1+B6 first 
+(canonical helper foundation), then B2 (uses same helper pattern), 
+then B3 (preset fix), then test user reseed.
+
+==================================================================
+FIX 1 — Build canonical outstanding helpers (resolves B1 + B2)
+==================================================================
+
+Add to server/storage.ts (mirror computeAccountBalance pattern):
+
+interface ICustomerInvoiceOutstanding {
+  invoiceId: string;
+  grandTotal: number;
+  paidViaCP: number;        // customer_payments
+  paidViaPayments: number;  // legacy payments table
+  creditedAmount: number;
+  outstanding: number;       // floor at 0
+}
+
+async function computeCustomerInvoiceOutstanding(invoiceId: string): 
+  Promise<ICustomerInvoiceOutstanding>
+
+Logic:
+- Get invoice grand_total
+- SUM customer_payments.amount WHERE invoice_id = X
+- SUM payments.amount WHERE invoice_id = X AND status='completed'
+- Get credited_amount (default 0)
+- outstanding = MAX(0, grand_total - cp_total - p_total - credited)
+
+Same for supplier (simpler):
+
+interface ISupplierInvoiceOutstanding {
+  invoiceId: string;
+  totalAmount: number;
+  paidViaSP: number;
+  outstanding: number;
+}
+
+async function computeSupplierInvoiceOutstanding(invoiceId: string)
+
+Logic:
+- Get invoice total_amount
+- SUM supplier_payments.amount WHERE supplier_invoice_id = X
+- outstanding = MAX(0, total_amount - sp_total)
+
+VERIFY first: confirm supplier side has no legacy payments table 
+equivalent. SQL:
+SELECT COUNT(*) FROM payments WHERE invoice_id IS NOT NULL 
+GROUP BY (SELECT 'has_legacy');
+And check if any other tables track supplier payments outside 
+supplier_payments.
+
+After helpers exist:
+- Update financial-aggregations.ts: getPendingActions uses these 
+  for overdue amount calculations
+- Update getCustomerAging to use these
+- Update getSupplierAging to use these  
+- Update any P&L / Cash Flow logic to use these where outstanding 
+  is relevant
+
+==================================================================
+FIX 2 — Add 5 missing dashboard cards (B6)
+==================================================================
+
+Currently delivered: revenue, invoicedSales, expenses, 
+supplierPaid, netCashFlow
+
+ADD via /api/dashboard/snapshot response:
+- totalCashPosition (already in cashPositionStrip — surface as 
+  card too at top)
+- outstandingReceivables (uses computeCustomerInvoiceOutstanding 
+  summed across all open invoices)
+- outstandingPayables (uses computeSupplierInvoiceOutstanding 
+  summed across all open invoices)
+- netWorkingCapital = totalCash + outstandingAR - outstandingAP
+- todayIn (sum of today's customer payments + payments + 
+  transfers in across all accounts)
+- todayOut (sum of today's supplier payments + expenses + 
+  transfers out)
+
+Render in Dashboard.tsx as metric cards above cash position 
+strip.
+
+==================================================================
+FIX 3 — Date preset corrections (B3)
+==================================================================
+
+In client/src/components/DateRangeFilter.tsx and any backend 
+preset normalization:
+
+REMOVE:
+- this_week, last_week (calendar week semantics not Indian-finance-
+  friendly)
+- this_year, last_year (calendar year, wrong for FY reports)
+
+ADD:
+- last_7 — rolling last 7 days from today
+- last_30 — rolling last 30 days from today
+- this_fy — Apr 1 of current Indian FY through today
+  Logic: 
+    if month >= April: fy_start = April 1 of current calendar year
+    else: fy_start = April 1 of previous calendar year
+- last_fy — Apr 1 of (this_fy_start - 1) through Mar 31 of 
+  (this_fy_start)
+
+KEEP:
+- today, yesterday, this_month, last_month, this_quarter, 
+  custom, all_time
+
+Total presets: 9 + custom = 10 ✓
+
+After change: verify each preset produces correct date ranges:
+SQL test: SELECT * FROM (preset_logic) compare to expected 
+boundaries.
+
+==================================================================
+FIX 4 — B5 quotation expiring semantics (clarification)
+==================================================================
+
+Use option (b): due_date >= today_midnight AND due_date <= +7d 
+AND status NOT IN ('expired','converted','cancelled','rejected')
+
+Rationale: CEO wants to see quotes needing attention this week, 
+including those expiring TODAY but not yet status-changed.
+
+Helper code already does this. Update walk spec/comments to match. 
+No code change needed — current behavior IS option (b).
+
+The 1 vs 3 vs 10 discrepancy in your walk: helper returns 3 (option 
+b), DB literal "between NOW() AND +7d" returns 1 (option a, 
+excludes today midnight to NOW gap), all-past-due-too returns 10 
+(option c). Helper is correct per option (b); operator confirms.
+
+==================================================================
+FIX 5 — B4 helper naming variance
+==================================================================
+
+Acceptable as-is. getPeriodTotals returning multiple metrics is 
+functionally equivalent to 3 separate helpers.
+
+Add file-header comment in financial-aggregations.ts mapping 
+spec names to actual implementations:
+
+// SPEC MAPPING:
+// getRevenueForPeriod → use getPeriodTotals().revenue
+// getExpensesForPeriod → use getPeriodTotals().expenses
+// getCashFlowForPeriod → use getPeriodTotals().netCashFlow
+
+No code rename needed.
+
+==================================================================
+TEST USER PASSWORD RESEED
+==================================================================
+
+Reseed test users to <username>123 pattern:
+- sm_test → sm_test123
+- fs_test → fs_test123
+- hrm_test → hrm_test123
+- acc_test → acc_test123
+
+Use bcrypt hash, ~5 min. Required for completing N14 walk.
+
+==================================================================
+PROCESS FLOW
+==================================================================
+
+1. VERIFY first (no fixes yet):
+   - Confirm payments table legacy: SELECT COUNT(*) FROM payments 
+     WHERE invoice_id IS NOT NULL;
+   - Confirm supplier side has no legacy: search for any other 
+     tables tracking supplier payment that aren't supplier_payments
+   - Report findings before building helpers
+
+2. After verification: build canonical helpers (FIX 1)
+
+3. Wire helpers into pendingActions (resolves B1 + B2 outstanding 
+   amounts)
+
+4. Build 5 missing dashboard cards (FIX 2 — depends on FIX 1 helpers)
+
+5. Date preset corrections (FIX 3 — independent, can ship parallel)
+
+6. Reseed test users (independent, can ship parallel)
+
+7. Re-walk all failed/partial items:
+   - N1(d): preset list now matches spec
+   - N2(f): all 7 cards present with correct numbers
+   - N2(k): pending actions overdue amounts use canonical helpers
+   - N14(n): all 6 roles tested with screenshots
+
+8. After re-walk passes: dashboard subset closes. Then authorize 
+   Batch 1 (P&L + Cash Flow).
+
+Standing rules apply. Don't fix mid-walk. Surface and ask before 
+extending scope outside this fix list.
+
+PATTERN COMMITMENT REINFORCEMENT (T6 onwards):
+The B1 bug is exactly the pattern T5 was supposed to avoid — 
+"didn't use canonical helpers." This time, no canonical helper 
+existed yet. Build it now. From this point forward:
+- ANY outstanding/balance/aged calculation MUST use storage.ts 
+  helpers
+- If helper doesn't exist: build it FIRST in storage.ts, THEN 
+  use it
+- Never inline outstanding math in route handlers, components, 
+  or report SQL

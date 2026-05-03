@@ -1,0 +1,76 @@
+All 5 decisions:
+
+1. APPROVED — Two helpers (per-row + set-based)
+   - Single SQL fragment defines outstanding math
+   - Per-row used by AR/AP Aging detail rows
+   - Set-based used by dashboard aggregate
+   - Unit test asserts both return identical results on same data
+   - Architectural insurance against drift
+   - 30 min trade is correct
+
+2. APPROVED — Exclude transfers AND balance adjustments
+   - todayIn = customer_payments + legacy payments (status='completed')
+   - todayOut = supplier_payments + expenses
+   - Transfers/adjustments appear only on Cash Flow Statement 
+     (under categorized internal movements / corrections sections)
+   - Matches existing getPeriodTotals.revenue treatment
+
+3. APPROVED — Skip totalCashPosition card
+   - Cash strip's TOTAL line is canonical cash position display
+   - No duplicate card above
+   - FIX 2 cards reduced from 6 to 5: outstandingReceivables, 
+     outstandingPayables, netWorkingCapital, todayIn, todayOut
+
+4. APPROVED — Keep all_time, 11 presets total
+   - all_time useful for registers + lifetime views + audits
+   - Update spec doc to reflect 11 presets
+   - Total: today, yesterday, last_7, last_30, this_month, 
+     last_month, this_quarter, this_fy, last_fy, all_time, custom
+
+5. APPROVED — Extended verification on payments direction
+   - Add to verification SQL:
+     \d payments;
+     SELECT direction, type, status, COUNT(*) FROM payments 
+     GROUP BY direction, type, status;
+     SELECT * FROM payments LIMIT 5;
+   - If direction column: filter SUM by direction='in' (or 
+     equivalent) for AR helpers
+   - If no direction: investigate via JOIN to sales_invoices vs 
+     supplier_invoices
+   - If purely customer-side: no filter needed
+   - Report findings before building helpers
+
+Process flow updated:
+
+1. VERIFY (extended):
+   - Legacy payments table existence + row counts
+   - Direction/type fields on payments table
+   - Supplier-side legacy table presence
+   - Report findings
+
+2. After verification: build canonical helpers
+   - Shared SQL fragment for outstanding formula
+   - Per-row + set-based variants
+   - Unit test asserting agreement on test dataset
+
+3. Wire helpers into pendingActions
+
+4. Build 5 dashboard cards (FIX 2)
+
+5. Date preset corrections (FIX 3) — parallel ship
+
+6. Test user reseed — parallel ship
+
+7. Re-walk failed/partial items + N14 with all 6 roles
+
+8. After re-walk closes: dashboard subset closes. Authorize Batch 1.
+
+Standing rules + pattern commitment apply.
+
+Pattern reinforcement (locked from Action 2):
+- ALL outstanding/balance/aging math goes through canonical 
+  helpers in storage.ts
+- Any new aggregation pattern: add to financial-aggregations.ts 
+  FIRST, expose via route SECOND
+- Never inline complex math in route handlers or React components
+- B1 was the trap; helpers are the cure

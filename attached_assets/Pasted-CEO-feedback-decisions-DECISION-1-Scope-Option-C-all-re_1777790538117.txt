@@ -1,0 +1,128 @@
+CEO feedback decisions:
+
+DECISION 1 — Scope: Option C (all reports + existing tabs)
+- Apply new standard to all 11 Phase 4C reports
+- Upgrade existing Phase 4A tabs (Overview, AP Aging, AR Aging, 
+  Daily Pricing) to match same standard
+- Deprecate the bare-bones CSV exports operator downloaded — 
+  replace with PDF + Excel using new standard
+- Consistency matters more than scope tightness
+
+DECISION 2 — Charts per report:
+- P&L: Revenue/Expense trend bar (12 months) + Expense breakdown 
+  donut
+- Cash Flow: Per-account opening→closing bar + Inflow vs outflow 
+  comparison
+- Customer Aging: Aging buckets bar + Top 5 outstanding customers 
+  bar
+- Supplier Aging: Same pattern, supplier-side
+- Cash Position: Per-account balance bar
+- Account Statement: Running balance line chart over period
+- Consolidated Cash: Per-account stacked area chart
+- Tax Summary GST: CGST/SGST/IGST donut
+- Sales Register: Top 10 customers bar + status distribution donut
+- Purchase Register: Top 10 suppliers bar + status distribution donut
+- Expense Report: Category pie + Monthly trend bar
+- Existing AR/AP Aging tabs: same chart treatment as new aging 
+  reports
+- Overview tab: revenue/expense summary visuals
+- Daily Pricing: leave as-is (operational tool, not financial 
+  report)
+
+DECISION 3 — Where charts appear:
+- On-screen UI: YES
+- PDF embedded: YES (jsPDF + Chart.js to canvas, then 
+  addImage)
+- Excel embedded: NO (data-only for accountant pivot use)
+
+DECISION 4 — Color/formatting depth:
+- PDF: Letterhead (existing) + section headers in brand color + 
+  status color coding (paid green / partial amber / overdue red) 
+  + totals row highlighted + charts embedded
+- On-screen UI: Same color coding + polished tables + charts 
+  visible
+- Excel: Header rows merged + colored + status color coding + 
+  subtotals bold + NO charts
+
+DECISION 5 — Reference material:
+- No specific CEO sample available
+- Design based on standard Indian SMB accounting report 
+  conventions: Tally, Zoho Books, QuickBooks Online style
+- Brand color: pull from existing letterhead.ts PDF_COLORS
+- Status color palette: 
+  * Paid / Confirmed / Active: green
+  * Partial / Pending: amber
+  * Overdue / Cancelled / Failed: red
+  * Drafts / Inactive: gray
+
+EXECUTION APPROACH:
+
+Don't go wide blindly. Build a reference implementation FIRST, 
+get operator approval, THEN apply pattern to all reports.
+
+Step 1: Pick ONE report (recommend P&L since it just shipped) 
+and upgrade to full new standard:
+  - Add 2 charts on-screen (revenue trend bar + expense donut)
+  - Add color coding to numbers/totals
+  - Embed both charts in PDF
+  - Add color formatting to Excel (header bands, status cells)
+  
+Step 2: Ping operator for review. Operator screenshots the 
+result. Approves OR requests adjustments.
+
+Step 3: After P&L pattern locked, propagate to Cash Flow (same 
+batch). Ping operator for sanity check.
+
+Step 4: Apply pattern to all Batch 2 reports as they're built 
+(don't retrofit later).
+
+Step 5: After Phase 4C reports done, go back and upgrade existing 
+Phase 4A tabs (AR Aging, AP Aging, Overview).
+
+This avoids: shipping 11 reports with the wrong style direction 
+and having to redo all of them.
+
+LIBRARY DECISIONS:
+
+Charts: Chart.js (most common, plays well with both browser and 
+Canvas-to-jsPDF embedding)
+- npm install chart.js
+- npm install chartjs-node-canvas (server-side rendering for PDF 
+  embedding)
+OR
+- Render charts client-side, capture canvas as base64 image, 
+  embed in jsPDF — simpler but report generation must happen 
+  in browser context
+  
+Recommend: client-side Chart.js render + canvas-to-image for 
+jsPDF. Avoids server-side puppeteer/canvas dependencies.
+
+Excel formatting: ExcelJS already installed. Supports cell 
+fills, font colors, merged headers, bold subtotals natively.
+
+REVISED PHASE 4C SCOPE:
+
+Original Phase 4C: ~16-18 days
++ Reference implementation (P&L upgrade): ~1-1.5 days
++ Cash Flow upgrade: ~0.5 day
++ Apply pattern to remaining 9 new reports: ~3-4 days  
++ Upgrade existing Phase 4A tabs: ~1.5-2 days
+NEW TOTAL: ~22-26 days
+
+Worth doing. Reports are CEO-facing.
+
+PROCESS:
+
+1. Install chart.js
+2. Build P&L reference implementation (charts + colors + PDF + 
+   Excel formatting)
+3. Architect review + browser-tested per new process commitment
+4. Ping operator for screenshot review
+5. Operator approves OR requests adjustments
+6. Apply locked pattern to Cash Flow
+7. Ping operator for second sanity check
+8. After both Batch 1 reports look right: continue with Batch 2 
+   reports built to same standard
+9. After Phase 4C reports done: retrofit existing Phase 4A tabs
+
+Standing rules apply throughout.

@@ -1,0 +1,83 @@
+ADDITIONAL CRITICAL ADJUSTMENT — P6 EXPANDED:
+
+P6. Letterhead inconsistency between PDFs (CRITICAL):
+
+Operator confirms: P&L Statement PDF letterhead does NOT match 
+Quotation PDF letterhead.
+
+This violates the entire purpose of T3 (letterhead extraction to 
+shared/letterhead.ts). After T3, ALL PDFs were supposed to render 
+identical letterhead via the shared COMPANY/SHIP_TO/SIGNATORY 
+exports. Operator spot-tested Quotation, PO, Challan, GRN, ID 
+Card, Reports PDFs after T3 refactor and confirmed all looked 
+identical.
+
+P&L PDF was built AFTER T3 — it should have inherited the same 
+shared letterhead automatically.
+
+INVESTIGATE before fixing:
+
+1. Open client/src/pages/PLStatement.tsx PDF generation code
+   (or wherever generatePLStatementPDF lives)
+   - Does it import from shared/letterhead.ts?
+   - Does it call the same letterhead drawing function used by 
+     Quotation PDF?
+
+2. Open client/src/lib/quotation-pdf.ts:
+   - What letterhead drawing logic does it use?
+   - Is there a shared helper (e.g., drawLetterhead(doc) function) 
+     OR does each PDF render its own?
+
+3. Diagnose: 
+   - If P&L doesn't import from shared/letterhead.ts → import it
+   - If shared module exists but no shared draw function → extract 
+     the letterhead drawing into a single helper
+   - If quotation-pdf.ts has its own letterhead logic that wasn't 
+     truly extracted → finish the T3 refactor properly NOW
+
+FIX:
+
+Either approach acceptable:
+
+Option (a) — Single shared draw function:
+- Create client/src/lib/pdf-letterhead.ts (or extend existing 
+  shared module)
+- Export drawLetterhead(doc, options?) that renders identical 
+  letterhead in any jsPDF context
+- Use in: Quotation, PO, Challan, GRN PDF (server-side), ID Card, 
+  Reports, P&L, AND all 10 future Phase 4C report PDFs
+- Single source of truth for letterhead rendering
+
+Option (b) — Standardize on one PDF's letterhead style:
+- Pick which PDF has the "correct" letterhead (Quotation is 
+  likely the canonical brand-approved version since it's most 
+  customer-facing)
+- Refactor P&L PDF letterhead code to match Quotation exactly
+- Document the standard so future reports follow it
+
+RECOMMEND (a) — proper architectural fix, prevents this from 
+recurring across 10 more report PDFs.
+
+REGRESSION TEST after fix:
+
+Spot-test all PDFs to confirm letterhead identical:
+- Download Quotation PDF, P&L PDF, PO PDF side-by-side
+- All three letterheads must look identical (logo position, 
+  company name, address, GSTIN, contact info — all matching)
+- If any differ: shared function isn't being used everywhere
+
+This is a foundation issue. Adding to P1-P6 list. Do not lock 
+pattern OR propagate to Cash Flow until this is fixed.
+
+Process update:
+
+1. P1 (Unicode font embedding) FIRST
+2. P6-EXTENDED (shared letterhead refactor + regression test on 
+   ALL existing PDFs)
+3. P2-P5 (PDF polish)
+4. E1-E4 (Excel polish)
+5. Re-capture artifacts (P&L PDF, Quotation PDF, PO PDF — 
+   operator spot-checks all three letterheads match)
+6. Re-present for re-review
+
+Standing rules apply.

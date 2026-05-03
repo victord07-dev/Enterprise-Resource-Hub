@@ -43,7 +43,8 @@ const ALL_ITEMS: NavItem[] = [
   { title: "Leads", url: "/leads", icon: UserPlus },
   { title: "Sales", url: "/sales", icon: ShoppingCart },
   { title: "Pricing", url: "/pricing", icon: TrendingUp },
-  { title: "Projects", url: "/projects", icon: FolderKanban },
+  // Projects module hidden from sidebar per operator request (route still works via direct URL).
+  // { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Inventory", url: "/inventory", icon: Package },
   { title: "Supply Chain", url: "/supply-chain", icon: Truck },
   { title: "Field Staff", url: "/field-staff", icon: MapPin },

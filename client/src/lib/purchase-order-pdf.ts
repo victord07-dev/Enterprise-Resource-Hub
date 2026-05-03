@@ -1,5 +1,11 @@
-import jsPDF from "jspdf";
+// Dynamic import — jsPDF only loads when the user clicks "Download PDF".
+import type jsPDF from "jspdf";
 import type { PurchaseOrder, PurchaseOrderItem, Supplier, Product } from "@shared/schema";
+
+async function loadJsPDF() {
+  const mod = await import("jspdf");
+  return mod.default || (mod as any).jsPDF;
+}
 import { COMPANY, SHIP_TO, SIGNATORY } from "@shared/letterhead";
 
 const COLORS = {
@@ -31,13 +37,13 @@ function drawRoundedRect(doc: jsPDF, x: number, y: number, w: number, h: number,
   doc.roundedRect(x, y, w, h, r, r, fill);
 }
 
-function buildPdf(
+async function buildPdf(
   po: PurchaseOrder,
   items: PurchaseOrderItem[],
   supplier: Supplier | undefined,
   products?: Product[],
-): jsPDF {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+): Promise<jsPDF> {
+  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth  = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin       = 15;
@@ -463,23 +469,23 @@ function buildPdf(
 }
 
 /** Client-side download (kept for potential fallback use) */
-export function generatePurchaseOrderPDF(
+export async function generatePurchaseOrderPDF(
   po: PurchaseOrder,
   items: PurchaseOrderItem[],
   supplier: Supplier | undefined,
   products?: Product[],
 ) {
-  const doc = buildPdf(po, items, supplier, products);
+  const doc = await buildPdf(po, items, supplier, products);
   doc.save(`${po.poNumber}.pdf`);
 }
 
 /** Returns base64 string for transmission / server-side use */
-export function generatePurchaseOrderPDFBase64(
+export async function generatePurchaseOrderPDFBase64(
   po: PurchaseOrder,
   items: PurchaseOrderItem[],
   supplier: Supplier | undefined,
   products?: Product[],
-): string {
-  const doc = buildPdf(po, items, supplier, products);
+): Promise<string> {
+  const doc = await buildPdf(po, items, supplier, products);
   return doc.output("datauristring");
 }

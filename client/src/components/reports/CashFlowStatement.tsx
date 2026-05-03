@@ -80,10 +80,10 @@ export default function CashFlowStatement() {
     },
   });
 
-  const handlePDF = () => {
+  const handlePDF = async () => {
     if (!data) return;
     try {
-      const blob = generateCashFlowStatementPDF(data);
+      const blob = await generateCashFlowStatementPDF(data);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

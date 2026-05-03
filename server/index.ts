@@ -1,6 +1,8 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
+import compression from "compression";
 import { registerRoutes } from "./routes";
+import { slowRequestLogger } from "./lib/request-logger";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import cron from "node-cron";
@@ -39,6 +41,13 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// gzip API + static responses. Skips already-encoded bodies and small payloads
+// automatically. Mounted before route registration so every handler is covered.
+app.use(compression());
+
+// Log slow API requests (>300ms) so the next round of perf work has data.
+app.use(slowRequestLogger());
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

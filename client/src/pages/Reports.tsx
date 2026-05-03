@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useLocation } from "wouter";
+import { PageLoader } from "@/components/PageLoader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,12 +21,16 @@ import {
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
 import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF, generateInventoryPDF, generateStaffPDF, generateSalesReportPDF, generateFinancialReportPDF } from "@/lib/reports-pdf";
-import PLStatement from "@/components/reports/PLStatement";
-import CashFlowStatement from "@/components/reports/CashFlowStatement";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
 } from "recharts";
+
+// Lazy-loaded so Recharts code in these tabs only downloads when the
+// operator actually clicks them. Other Reports tabs (overview, AR/AP
+// aging, daily-pricing) stay in the main Reports chunk.
+const PLStatement = lazy(() => import("@/components/reports/PLStatement"));
+const CashFlowStatement = lazy(() => import("@/components/reports/CashFlowStatement"));
 
 const salesData = [
   { month: "Jan", sales: 4000 },
@@ -290,8 +295,8 @@ function APAgingTab() {
     );
   };
 
-  const handleExportPDF = () => {
-    const blob = generateAPAgingPDF(filtered, summary, supplierFilter === "all" ? "All Suppliers" : (filtered[0]?.supplierName ?? ""));
+  const handleExportPDF = async () => {
+    const blob = await generateAPAgingPDF(filtered, summary, supplierFilter === "all" ? "All Suppliers" : (filtered[0]?.supplierName ?? ""));
     downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, blob);
   };
 
@@ -536,8 +541,8 @@ function ARAgingTab() {
     );
   };
 
-  const handleExportPDF = () => {
-    const blob = generateARAgingPDF(filtered, summary, customerFilter === "all" ? "All Customers" : (filtered[0]?.customerName ?? ""));
+  const handleExportPDF = async () => {
+    const blob = await generateARAgingPDF(filtered, summary, customerFilter === "all" ? "All Customers" : (filtered[0]?.customerName ?? ""));
     downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, blob);
   };
 
@@ -839,8 +844,8 @@ function DailyPricingTab() {
     );
   };
 
-  const handleExportPDF = () => {
-    const blob = generatePricingPDF(filtered, portfolio, search || category !== "all" || !!activeInsight ? "Filtered view" : "All Products");
+  const handleExportPDF = async () => {
+    const blob = await generatePricingPDF(filtered, portfolio, search || category !== "all" || !!activeInsight ? "Filtered view" : "All Products");
     downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, blob);
   };
 
@@ -1166,7 +1171,7 @@ export default function Reports() {
       { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
     );
 
-  const exportCurrentTab = (format: "csv" | "pdf") => {
+  const exportCurrentTab = async (format: "csv" | "pdf") => {
     const apData = queryClient.getQueryData<APAgingResponse>(["/api/reports/ap-aging"]);
     const arData = queryClient.getQueryData<ARAgingResponse>(["/api/reports/ar-aging"]);
     const pricingData = queryClient.getQueryData<PricingSummary>(["/api/reports/pricing-summary"]);
@@ -1185,7 +1190,7 @@ export default function Reports() {
           outstandingRows.map(r => [r.supplierName, r.invoiceNumber, r.poNumber ?? "", r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
         );
       } else {
-        downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, generateAPAgingPDF(outstandingRows, summary, "All Suppliers"));
+        downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, await generateAPAgingPDF(outstandingRows, summary, "All Suppliers"));
       }
     } else if (activeTab === "ar-aging") {
       if (!arData?.rows?.length) {
@@ -1201,7 +1206,7 @@ export default function Reports() {
           outstandingRows.map(r => [r.customerName, r.customerType, r.customerGSTIN ?? "", r.invoiceNumber, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
         );
       } else {
-        downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, generateARAgingPDF(outstandingRows, summary, "All Customers"));
+        downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, await generateARAgingPDF(outstandingRows, summary, "All Customers"));
       }
     } else if (activeTab === "daily-pricing") {
       if (!pricingData?.products?.length) {
@@ -1216,7 +1221,7 @@ export default function Reports() {
           pricingData.products.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, ps(p), p.sellPriority ? "Yes" : "No"])
         );
       } else {
-        downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, generatePricingPDF(pricingData.products, pricingData.portfolio, "All Products"));
+        downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, await generatePricingPDF(pricingData.products, pricingData.portfolio, "All Products"));
       }
     } else {
       toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
@@ -1252,7 +1257,7 @@ export default function Reports() {
             })
           );
         } else {
-          downloadPDF(`itfi-inventory-${todayISO()}.pdf`, generateInventoryPDF(products, stockMap));
+          downloadPDF(`itfi-inventory-${todayISO()}.pdf`, await generateInventoryPDF(products, stockMap));
         }
 
       } else if (title === "Staff Report") {
@@ -1272,7 +1277,7 @@ export default function Reports() {
             enriched.map(e => [e.name, e.id.slice(0, 8).toUpperCase(), e.department, e.designation, e.role, e.isActive ? "Active" : "Inactive"])
           );
         } else {
-          downloadPDF(`itfi-staff-${todayISO()}.pdf`, generateStaffPDF(enriched));
+          downloadPDF(`itfi-staff-${todayISO()}.pdf`, await generateStaffPDF(enriched));
         }
 
       } else if (title === "Sales Report") {
@@ -1312,7 +1317,7 @@ export default function Reports() {
             bucket: "current",
             status: r.status,
           }));
-          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, generateSalesReportPDF(pdfRows));
+          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, await generateSalesReportPDF(pdfRows));
         }
 
       } else if (title === "Financial Report") {
@@ -1376,7 +1381,7 @@ export default function Reports() {
             totalAmount: Number(r.totalAmount), totalPaid: r.totalPaid, balance: r.balance,
             daysOverdue: 0, bucket: "current", status: r.status,
           }));
-          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, generateFinancialReportPDF(arPdfRows, apPdfRows));
+          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, await generateFinancialReportPDF(arPdfRows, apPdfRows));
         }
 
       } else if (title === "Tax Report") {
@@ -1388,7 +1393,7 @@ export default function Reports() {
         const arOutstanding = (arData?.rows ?? []).filter(r => r.balance > 0);
         const apSummary = buildAPSummary(apOutstanding);
         const arSummary = buildARSummary(arOutstanding);
-        const blob = generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
+        const blob = await generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
         downloadPDF(`itfi-tax-report-${todayISO()}.pdf`, blob);
       }
     } catch {
@@ -1574,13 +1579,17 @@ export default function Reports() {
 
         {isFinanceUser && (
           <TabsContent value="pl-statement" className="mt-4">
-            <PLStatement />
+            <Suspense fallback={<PageLoader />}>
+              <PLStatement />
+            </Suspense>
           </TabsContent>
         )}
 
         {isFinanceUser && (
           <TabsContent value="cash-flow" className="mt-4">
-            <CashFlowStatement />
+            <Suspense fallback={<PageLoader />}>
+              <CashFlowStatement />
+            </Suspense>
           </TabsContent>
         )}
       </Tabs>

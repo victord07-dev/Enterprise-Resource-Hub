@@ -1,5 +1,12 @@
-import jsPDF from "jspdf";
+// jsPDF is loaded lazily inside each generator so the ~400KB library
+// is not in the initial bundle. Only the type is imported eagerly.
+import type jsPDF from "jspdf";
 import { COMPANY } from "@shared/letterhead";
+
+async function loadJsPDF() {
+  const mod = await import("jspdf");
+  return mod.default || (mod as any).jsPDF;
+}
 
 const C = {
   headerBg: [30, 41, 59] as [number, number, number],
@@ -201,8 +208,8 @@ export interface AgingSummaryPDF {
   totalOutstanding: number;
 }
 
-export function generateAPAgingPDF(rows: APAgingRowPDF[], summary: AgingSummaryPDF, filterDesc: string): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateAPAgingPDF(rows: APAgingRowPDF[], summary: AgingSummaryPDF, filterDesc: string): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "AP Aging Report", filterDesc || "Accounts Payable Outstanding");
 
   y = drawSummaryBand(doc, [
@@ -264,8 +271,8 @@ export interface ARAgingRowPDF {
   status: string;
 }
 
-export function generateARAgingPDF(rows: ARAgingRowPDF[], summary: AgingSummaryPDF, filterDesc: string): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateARAgingPDF(rows: ARAgingRowPDF[], summary: AgingSummaryPDF, filterDesc: string): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "AR Aging Report", filterDesc || "Accounts Receivable Outstanding");
 
   y = drawSummaryBand(doc, [
@@ -347,13 +354,13 @@ export interface PortfolioPDF {
 
 // ── Combined Tax Report PDF (AP Aging + AR Aging) ────────────────────────────
 
-export function generateTaxReportPDF(
+export async function generateTaxReportPDF(
   apRows: APAgingRowPDF[],
   apSummary: AgingSummaryPDF,
   arRows: ARAgingRowPDF[],
   arSummary: AgingSummaryPDF
-): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
 
   // ── AP Aging section ──────────────────────────────────────────────────────
   let y = drawHeader(doc, "Tax Report — AP & AR Aging", "Combined GST Compliance & Aging Summary");
@@ -474,8 +481,8 @@ export interface ProductRowPDF {
   unitPrice: string;
 }
 
-export function generateInventoryPDF(products: ProductRowPDF[], stockMap: Map<string, number>): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateInventoryPDF(products: ProductRowPDF[], stockMap: Map<string, number>): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "Inventory Report", `${products.length} products — as of ${todayStr()}`);
 
   const totalCost = products.reduce((sum, p) => {
@@ -526,8 +533,8 @@ export interface EmployeeRowPDF {
   isActive: boolean;
 }
 
-export function generateStaffPDF(employees: EmployeeRowPDF[]): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateStaffPDF(employees: EmployeeRowPDF[]): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   const active = employees.filter(e => e.isActive).length;
   let y = drawHeader(doc, "Staff Report", `${employees.length} employees — ${active} active`);
 
@@ -565,8 +572,8 @@ export function generateStaffPDF(employees: EmployeeRowPDF[]): Blob {
 
 // ── Sales Report PDF ──────────────────────────────────────────────────────────
 
-export function generateSalesReportPDF(rows: ARAgingRowPDF[]): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateSalesReportPDF(rows: ARAgingRowPDF[]): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "Sales Report", `${rows.length} invoices — as of ${todayStr()}`);
 
   const totalRevenue = rows.reduce((s, r) => s + r.grandTotal, 0);
@@ -612,8 +619,8 @@ export function generateSalesReportPDF(rows: ARAgingRowPDF[]): Blob {
 
 // ── Financial Report PDF (Revenue + Payables) ─────────────────────────────────
 
-export function generateFinancialReportPDF(arRows: ARAgingRowPDF[], apRows: APAgingRowPDF[]): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generateFinancialReportPDF(arRows: ARAgingRowPDF[], apRows: APAgingRowPDF[]): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
 
   const totalRevenue = arRows.reduce((s, r) => s + r.grandTotal, 0);
   const totalCollected = arRows.reduce((s, r) => s + r.totalPaid, 0);
@@ -705,8 +712,8 @@ export function generateFinancialReportPDF(arRows: ARAgingRowPDF[], apRows: APAg
   return doc.output("blob");
 }
 
-export function generatePricingPDF(products: PricingProductPDF[], portfolio: PortfolioPDF, filterDesc: string): Blob {
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+export async function generatePricingPDF(products: PricingProductPDF[], portfolio: PortfolioPDF, filterDesc: string): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: "a4" });
   let y = drawHeader(doc, "Daily Pricing Report", filterDesc || "FIFO Pricing & Margin Summary");
 
   y = drawSummaryBand(doc, [
@@ -785,8 +792,8 @@ export interface PLChartImages {
   expenseImage?: { dataUrl: string; cssWidth: number; cssHeight: number; format: "PNG" | "JPEG" };
 }
 
-export function generatePLStatementPDF(d: PLStatementPDFData, charts: PLChartImages = {}): Blob {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLChartImages = {}): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
   const pwP = 210, mP = 12;
   const periodStr = `Period: ${d.period.from ?? "—"} → ${d.period.to ?? "Today"}`;
 
@@ -980,8 +987,8 @@ export interface CashFlowStatementPDFData {
   notes: { legacyReceiptsExcluded: { count: number; amount: number }; info: string[] };
 }
 
-export function generateCashFlowStatementPDF(d: CashFlowStatementPDFData): Blob {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+export async function generateCashFlowStatementPDF(d: CashFlowStatementPDFData): Promise<Blob> {
+  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
   const pwP = 210, mP = 12;
   const periodStr = `Period: ${d.period.from ?? "—"} → ${d.period.to ?? "Today"}`;
 

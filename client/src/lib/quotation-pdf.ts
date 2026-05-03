@@ -1,5 +1,11 @@
-import jsPDF from "jspdf";
+// Dynamic import — jsPDF only loads when the user clicks "Download PDF".
+import type jsPDF from "jspdf";
 import type { Quotation, QuotationItem, Customer, Product } from "@shared/schema";
+
+async function loadJsPDF() {
+  const mod = await import("jspdf");
+  return mod.default || (mod as any).jsPDF;
+}
 import { COMPANY, BANKING } from "@shared/letterhead";
 
 const COLORS = {
@@ -36,7 +42,7 @@ function drawRoundedRect(doc: jsPDF, x: number, y: number, w: number, h: number,
 /** Phase 7 — bundleItemsMap: bundle product id → list of components (name + qty + unit). */
 export type BundlePdfComponent = { name: string; quantity: number; unit: string; gstRate: number };
 
-export function generateQuotationPDF(
+export async function generateQuotationPDF(
   quotation: Quotation,
   items: QuotationItem[],
   customer: Customer | undefined,
@@ -44,7 +50,7 @@ export function generateQuotationPDF(
   bundleItemsMap?: Record<string, BundlePdfComponent[]>,
   logoDataUrl?: string,
 ) {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageWidth  = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin       = 15;

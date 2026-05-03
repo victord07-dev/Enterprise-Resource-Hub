@@ -1,5 +1,11 @@
-import jsPDF from "jspdf";
+// Dynamic import — jsPDF only loads when the user clicks "Download PDF".
+import type jsPDF from "jspdf";
 import type { DeliveryChallan, DeliveryChallanItem, Customer, Product } from "@shared/schema";
+
+async function loadJsPDF() {
+  const mod = await import("jspdf");
+  return mod.default || (mod as any).jsPDF;
+}
 import { COMPANY } from "@shared/letterhead";
 
 const COLORS = {
@@ -281,14 +287,14 @@ function drawOneCopy(
   }
 }
 
-export function generateChallanPDF(
+export async function generateChallanPDF(
   challan: DeliveryChallan,
   items: DeliveryChallanItem[],
   customer: Customer | undefined,
   products: Product[],
   logoDataUrl?: string,
 ) {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
   const pageHeight = doc.internal.pageSize.getHeight();
   const halfH      = pageHeight / 2 - 2;
   const isDraft    = ["draft", "ready", "do_issued"].includes(challan.status);

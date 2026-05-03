@@ -1,6 +1,15 @@
-import jsPDF from "jspdf";
-import QRCode from "qrcode";
+// Dynamic import — jsPDF + QRCode only load when the user clicks the button.
+import type jsPDF from "jspdf";
 import type { Employee } from "@shared/schema";
+
+async function loadJsPDF() {
+  const mod = await import("jspdf");
+  return mod.default || (mod as any).jsPDF;
+}
+
+async function loadQRCode() {
+  return (await import("qrcode")).default;
+}
 import { COMPANY } from "@shared/letterhead";
 
 function getInitials(name: string) {
@@ -16,14 +25,14 @@ export async function downloadIdCardPDF(employee: Employee) {
   let qrDataUrl: string | null = null;
   if (employee.qrCode) {
     try {
-      qrDataUrl = await QRCode.toDataURL(employee.qrCode, { width: 300, margin: 1, color: { dark: "#000000", light: "#ffffff" } });
+      qrDataUrl = await (await loadQRCode()).toDataURL(employee.qrCode, { width: 300, margin: 1, color: { dark: "#000000", light: "#ffffff" } });
     } catch {
     }
   }
 
   const W = 86;
   const H = 54;
-  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: [H, W] });
+  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: [H, W] });
 
   const empCode = employee.qrCode
     ? employee.qrCode.replace("NEXERP-EMP-", "").slice(0, 8).toUpperCase()

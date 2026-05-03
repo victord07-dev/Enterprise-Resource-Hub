@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import { Switch, Route, useLocation, Redirect } from "wouter";
 import { queryClient, apiRequest } from "./lib/queryClient";
 import { QueryClientProvider, useQuery, useMutation } from "@tanstack/react-query";
@@ -16,27 +16,31 @@ import { NotificationContext } from "@/lib/notification-context";
 import type { Notification } from "@shared/schema";
 import NotFound from "@/pages/not-found";
 import Login from "@/pages/Login";
-import Dashboard from "@/pages/Dashboard";
-import Sales from "@/pages/Sales";
-import Projects from "@/pages/Projects";
-import Inventory from "@/pages/Inventory";
-import SupplyChain from "@/pages/SupplyChain";
-import Accounts from "@/pages/Accounts";
-import Employees from "@/pages/Employees";
-import FieldStaff from "@/pages/FieldStaff";
-import Reports from "@/pages/Reports";
-import AuditTrail from "@/pages/AuditTrail";
-import Kiosk from "@/pages/Kiosk";
-import Leads from "@/pages/Leads";
-import Products from "@/pages/Products";
-import MyPortal from "@/pages/MyPortal";
-import SalesInvoices from "@/pages/SalesInvoices";
-import Pricing from "@/pages/Pricing";
-import Inbox from "@/pages/Inbox";
-import Campaigns from "@/pages/Campaigns";
-import WhatsAppTemplates from "@/pages/WhatsAppTemplates";
-import CashAccountDetail from "@/pages/CashAccountDetail";
-import SpikeSvg from "@/pages/SpikeSvg";
+import { PageLoader } from "@/components/PageLoader";
+
+// Route-level code splitting — every non-auth page is lazy-loaded so the
+// initial bundle stays small. Login + NotFound stay eager (no Suspense
+// boundary covers them) so the auth screen and 404 fallback are instant.
+const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const Sales = lazy(() => import("@/pages/Sales"));
+const Projects = lazy(() => import("@/pages/Projects"));
+const Inventory = lazy(() => import("@/pages/Inventory"));
+const SupplyChain = lazy(() => import("@/pages/SupplyChain"));
+const Accounts = lazy(() => import("@/pages/Accounts"));
+const Employees = lazy(() => import("@/pages/Employees"));
+const FieldStaff = lazy(() => import("@/pages/FieldStaff"));
+const Reports = lazy(() => import("@/pages/Reports"));
+const AuditTrail = lazy(() => import("@/pages/AuditTrail"));
+const Kiosk = lazy(() => import("@/pages/Kiosk"));
+const Leads = lazy(() => import("@/pages/Leads"));
+const Products = lazy(() => import("@/pages/Products"));
+const MyPortal = lazy(() => import("@/pages/MyPortal"));
+const SalesInvoices = lazy(() => import("@/pages/SalesInvoices"));
+const Pricing = lazy(() => import("@/pages/Pricing"));
+const Inbox = lazy(() => import("@/pages/Inbox"));
+const Campaigns = lazy(() => import("@/pages/Campaigns"));
+const WhatsAppTemplates = lazy(() => import("@/pages/WhatsAppTemplates"));
+const CashAccountDetail = lazy(() => import("@/pages/CashAccountDetail"));
 
 interface NotificationBellProps {
   open: boolean;
@@ -203,7 +207,6 @@ function Router() {
       <Route path="/campaigns" component={() => <ProtectedRoute component={Campaigns} path="/campaigns" />} />
       <Route path="/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/whatsapp-templates" />} />
       <Route path="/settings/whatsapp-templates" component={() => <ProtectedRoute component={WhatsAppTemplates} path="/settings/whatsapp-templates" />} />
-      <Route path="/spike-svg" component={SpikeSvg} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -240,7 +243,9 @@ function AuthenticatedLayout() {
               <NotificationBell open={bellOpen} onOpenChange={setBellOpen} />
             </header>
             <main className="flex-1 overflow-hidden">
-              <Router />
+              <Suspense fallback={<PageLoader />}>
+                <Router />
+              </Suspense>
             </main>
           </div>
         </div>
@@ -258,7 +263,9 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <Toaster />
-          <Kiosk />
+          <Suspense fallback={<PageLoader />}>
+            <Kiosk />
+          </Suspense>
         </TooltipProvider>
       </QueryClientProvider>
     );

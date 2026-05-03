@@ -62,6 +62,26 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
 - **Frontend Routing:** Wouter.
 - **State Management:** TanStack React Query.
 - **Mapping:** Leaflet.js with OpenStreetMap.
-- **PDF Generation:** jsPDF.
+- **PDF Generation:** jsPDF (loaded lazily per generator to keep initial bundle small).
 - **Object Storage:** Replit Object Storage.
 - **WhatsApp Integration:** Interakt API.
+- **HTTP Compression:** `compression` middleware (gzip on all API + static responses).
+
+## Frontend Performance
+- **Code splitting:** every non-auth page in `client/src/App.tsx` is `lazy()`-loaded
+  inside a `<Suspense>` boundary backed by `client/src/components/PageLoader.tsx`.
+- **Vendor chunking:** `vite.config.ts` `manualChunks` splits `react`, `recharts`,
+  `jspdf`, `exceljs`, `leaflet`, `@radix-ui`, `lucide-react`/`react-icons`,
+  `framer-motion`, `date-fns`, `@tanstack` into named `vendor-*` chunks so updating
+  one page does not bust unrelated vendor caches.
+- **Lazy heavy libs:** all 5 client PDF generators
+  (`reports-pdf`, `quotation-pdf`, `purchase-order-pdf`, `challan-pdf`, `id-card-pdf`)
+  load `jspdf` (and `qrcode` in id-card) via dynamic `import()` inside each
+  `generate*` function — they are now `async` and callers must `await`.
+- **Reports tabs:** `PLStatement` and `CashFlowStatement` are `lazy()`-imported
+  inside `Reports.tsx` so Recharts code only downloads when those tabs open.
+- **Dashboard cache:** `GET /api/dashboard/snapshot` is wrapped with a
+  30s TTL in-memory cache (`server/lib/dashboard-cache.ts`); responses
+  carry `X-Cache: HIT|MISS`.
+- **Slow-request log:** every API request slower than 300 ms is logged via
+  `server/lib/request-logger.ts` for the next round of perf tuning.

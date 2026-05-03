@@ -2101,7 +2101,7 @@ export default function Sales() {
           reader.readAsDataURL(blob);
         });
       } catch { /* proceed without logo */ }
-      generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || [], bundlePdfMap, logoDataUrl);
+      await generateQuotationPDF(q, Array.isArray(qItems) ? qItems : [], customer, products || [], bundlePdfMap, logoDataUrl);
       toast({ title: "PDF downloaded", description: q.quoteNumber });
     } catch {
       toast({ title: "Failed to generate PDF", variant: "destructive" });

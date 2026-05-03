@@ -1525,7 +1525,7 @@ export default function Inventory() {
                                     onClick={async () => {
                                       const items = challanItemsMap[challan.id] || [];
                                       const customer = customers?.find(c => c.id === challan.customerId);
-                                      generateChallanPDF(challan, items, customer, products ?? []);
+                                      await generateChallanPDF(challan, items, customer, products ?? []);
                                     }}
                                   >
                                     <Download className="w-3 h-3" />

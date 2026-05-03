@@ -829,6 +829,18 @@ export async function registerRoutes(
         const toQ   = typeof req.query.to   === "string" ? req.query.to   : undefined;
         const period = { from: fromQ, to: toQ };
 
+        // 30-second in-memory TTL cache. Key includes role so a future
+        // role-scoped variant can diverge cleanly. Snapshot data is a
+        // summary view — small staleness window is acceptable and saves
+        // ~7 SQL roundtrips per dashboard mount.
+        const { getDashboardCache, setDashboardCache } = await import("./lib/dashboard-cache");
+        const cacheKey = `snapshot:${req.user?.role ?? "anon"}:${fromQ ?? ""}:${toQ ?? ""}`;
+        const cached = getDashboardCache<any>(cacheKey);
+        if (cached) {
+          res.setHeader("X-Cache", "HIT");
+          return res.json(cached);
+        }
+
         const {
           getCashPositionPerAccount,
           getPeriodTotals,
@@ -850,7 +862,7 @@ export async function registerRoutes(
             getTodaySnapshot(),
           ]);
 
-        res.json({
+        const payload = {
           period: { from: fromQ ?? null, to: toQ ?? null },
           periodTotals,
           cashPosition,
@@ -859,7 +871,10 @@ export async function registerRoutes(
           recentActivity,
           pendingActions,
           todaySnapshot,
-        });
+        };
+        setDashboardCache(cacheKey, payload);
+        res.setHeader("X-Cache", "MISS");
+        res.json(payload);
       } catch (error) {
         console.error("Dashboard snapshot error:", error);
         res.status(500).json({ message: "Failed to fetch dashboard snapshot" });

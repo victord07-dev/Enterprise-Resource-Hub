@@ -30,6 +30,26 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("scheduler") || id.includes("wouter")) {
+            return "vendor-react";
+          }
+          if (id.includes("recharts") || id.includes("d3-")) return "vendor-recharts";
+          if (id.includes("jspdf") || id.includes("html2canvas") || id.includes("qrcode")) return "vendor-pdf";
+          if (id.includes("exceljs")) return "vendor-excel";
+          if (id.includes("leaflet")) return "vendor-leaflet";
+          if (id.includes("@radix-ui")) return "vendor-radix";
+          if (id.includes("lucide-react") || id.includes("react-icons")) return "vendor-icons";
+          if (id.includes("framer-motion")) return "vendor-motion";
+          if (id.includes("date-fns")) return "vendor-datefns";
+          if (id.includes("@tanstack")) return "vendor-tanstack";
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     fs: {

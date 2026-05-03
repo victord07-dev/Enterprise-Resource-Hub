@@ -120,7 +120,7 @@ export default function PLStatement() {
         captureChart(trendChartRef),
         captureChart(donutChartRef),
       ]);
-      const blob = generatePLStatementPDF(data, { trendImage, expenseImage });
+      const blob = await generatePLStatementPDF(data, { trendImage, expenseImage });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

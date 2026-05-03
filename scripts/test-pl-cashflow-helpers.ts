@@ -1,12 +1,16 @@
 /**
  * Phase 4C T7+T8 — Reconciliation unit test for P&L + Cash Flow helpers.
  *
- * 4 assertions locked by operator:
+ * 5 assertions locked by operator:
  *   1. Per-account: closing - opening === inflows - outflows  (each of N accounts)
  *   2. Consolidated: Σ(per-account net change) === Operating_net + Internal_net
  *   3. Transfers contribution to consolidated total === ₹0 exactly
  *   4. Categorization completeness: sum of source-table values in period
  *      (categorized as Operating + Internal) === sum captured in report sections
+ *   5. P&L trend integrity: when getPLStatement(from=trendWindow.from,
+ *      to=trendWindow.to) is called, sum(trend[].revenue) === salesRevenue
+ *      (and likewise for expense and netProfit). Catches month-boundary
+ *      off-by-one + double-counting bugs in the 12-month bucketer.
  *
  * If any assertion fails: surface, don't paper over. Helper is wrong.
  *
@@ -116,6 +120,47 @@ async function runForPeriod(label: string, from: string, to: string) {
   return failures;
 }
 
+// ── ASSERTION 5: P&L trend integrity ─────────────────────────────────────────
+// Calls getPLStatement once with the period set to its OWN trendWindow
+// (12 calendar months ending at `to`), then asserts:
+//   sum(trend[].revenue)   === pl.revenue.salesRevenue
+//   sum(trend[].expense)   === pl.operatingExpenses.total
+//   sum(trend[].netProfit) === pl.netProfitBeforeTax
+async function runTrendAssertion(label: string, anchorTo: string): Promise<string[]> {
+  console.log(`\n${"─".repeat(78)}`);
+  console.log(`ASSERTION 5: P&L trend integrity  [anchor to=${anchorTo}]  (${label})`);
+  console.log("─".repeat(78));
+  const failures: string[] = [];
+  // First call: any period — we just need the trendWindow it picks based on `to`
+  const probe = await getPLStatement({ to: anchorTo });
+  const win = probe.trendWindow;
+  // Second call: explicitly set period === trendWindow so single-period totals
+  // cover the same 12-month range. Then sum(trend) should reconcile to totals.
+  const fullWindow = await getPLStatement({ from: win.from, to: win.to });
+
+  if (fullWindow.trend.length !== 12) {
+    failures.push(`A5: trend length expected 12, got ${fullWindow.trend.length}`);
+  }
+
+  const sumRev = fullWindow.trend.reduce((s, p) => s + p.revenue, 0);
+  const sumExp = fullWindow.trend.reduce((s, p) => s + p.expense, 0);
+  const sumNet = fullWindow.trend.reduce((s, p) => s + p.netProfit, 0);
+
+  const r5a = approxEq(sumRev, fullWindow.revenue.salesRevenue, "  [5a] Σ(trend.revenue) === salesRevenue");
+  const r5b = approxEq(sumExp, fullWindow.operatingExpenses.total, "  [5b] Σ(trend.expense) === operatingExpenses.total");
+  const r5c = approxEq(sumNet, fullWindow.netProfitBeforeTax, "  [5c] Σ(trend.netProfit) === netProfitBeforeTax");
+
+  console.log(`  trendWindow: [${win.from} → ${win.to}]  (${fullWindow.trend.length} buckets)`);
+  console.log(`  Σ rev=₹${sumRev.toFixed(2)}  vs salesRevenue=₹${fullWindow.revenue.salesRevenue.toFixed(2)}   ${r5a.ok ? "✓" : "✗"}`);
+  console.log(`  Σ exp=₹${sumExp.toFixed(2)}  vs opex.total=₹${fullWindow.operatingExpenses.total.toFixed(2)}   ${r5b.ok ? "✓" : "✗"}`);
+  console.log(`  Σ net=₹${sumNet.toFixed(2)}  vs netProfitBeforeTax=₹${fullWindow.netProfitBeforeTax.toFixed(2)}   ${r5c.ok ? "✓" : "✗"}`);
+
+  if (!r5a.ok) failures.push(`A5a: ${r5a.msg}`);
+  if (!r5b.ok) failures.push(`A5b: ${r5b.msg}`);
+  if (!r5c.ok) failures.push(`A5c: ${r5c.msg}`);
+  return failures;
+}
+
 (async () => {
   const allFailures: string[] = [];
 
@@ -127,9 +172,12 @@ async function runForPeriod(label: string, from: string, to: string) {
   allFailures.push(...await runForPeriod("Last 90 days", fmt(ninety), fmt(today)));
   allFailures.push(...await runForPeriod("All time (1970→today)", "1970-01-01", fmt(today)));
 
+  // Assertion 5 runs once per anchor — covers month-boundary behaviour
+  allFailures.push(...await runTrendAssertion("anchor=today", fmt(today)));
+
   console.log(`\n${"═".repeat(78)}`);
   if (allFailures.length === 0) {
-    console.log("✅ ALL 4 RECONCILIATION ASSERTIONS PASSED ACROSS BOTH PERIODS");
+    console.log("✅ ALL 5 RECONCILIATION ASSERTIONS PASSED");
     console.log("═".repeat(78));
     process.exit(0);
   } else {

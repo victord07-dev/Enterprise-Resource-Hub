@@ -1,18 +1,31 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as ReTooltip, Legend,
+  PieChart, Pie, Cell, ResponsiveContainer,
+} from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Download, FileSpreadsheet, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react";
+import { Download, FileSpreadsheet, FileText, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { generatePLStatementPDF } from "@/lib/reports-pdf";
+import { generatePLStatementCSV, downloadCSV } from "@/lib/reports-csv";
+import { findRechartsSvg, svgNodeToPngDataUrl } from "@/lib/chart-to-image";
 
 interface PLOpexLine {
   categoryId: string | null;
   categoryName: string;
   total: number;
+}
+
+interface PLTrendPoint {
+  month: string;
+  revenue: number;
+  expense: number;
+  netProfit: number;
 }
 
 interface PLStatementData {
@@ -37,11 +50,21 @@ interface PLStatementData {
     expenseCount: number;
   };
   netProfitBeforeTax: number;
+  trend: PLTrendPoint[];
+  trendWindow: { from: string; to: string };
   notes: string[];
 }
 
 const fmt = (n: number) =>
-  "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  "\u20b9" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const fmtCompact = (n: number) => {
+  const abs = Math.abs(n);
+  if (abs >= 10000000) return `\u20b9${(n / 10000000).toFixed(1)}Cr`;
+  if (abs >= 100000) return `\u20b9${(n / 100000).toFixed(1)}L`;
+  if (abs >= 1000) return `\u20b9${(n / 1000).toFixed(0)}k`;
+  return `\u20b9${n.toFixed(0)}`;
+};
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -53,11 +76,17 @@ function fyStart(): string {
   return `${y}-04-01`;
 }
 
+const DONUT_COLORS = ["#1e3a8a", "#0ea5e9", "#10b981", "#f59e0b", "#6366f1", "#ec4899", "#84cc16", "#06b6d4"];
+
 export default function PLStatement() {
   const [from, setFrom] = useState(fyStart());
   const [to, setTo] = useState(todayISO());
   const [downloadingExcel, setDownloadingExcel] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const { toast } = useToast();
+
+  const trendChartRef = useRef<HTMLDivElement>(null);
+  const donutChartRef = useRef<HTMLDivElement>(null);
 
   const { data, isLoading, error } = useQuery<PLStatementData>({
     queryKey: ["/api/reports/pl-statement", from, to],
@@ -67,10 +96,31 @@ export default function PLStatement() {
     },
   });
 
-  const handlePDF = () => {
-    if (!data) return;
+  const captureChart = async (ref: React.RefObject<HTMLDivElement>) => {
+    if (!ref.current) return undefined;
+    const svg = findRechartsSvg(ref.current);
+    if (!svg) return undefined;
     try {
-      const blob = generatePLStatementPDF(data);
+      return await svgNodeToPngDataUrl(svg, { scale: 2, format: "jpeg", quality: 0.92 });
+    } catch (err) {
+      // Architect-flagged HIGH: degrade gracefully — let PDF generate without
+      // this chart instead of hanging the user's PDF button.
+      console.warn("[PL PDF] chart capture failed; PDF will skip this chart:", err);
+      return undefined;
+    }
+  };
+
+  const handlePDF = async () => {
+    if (!data) return;
+    setDownloadingPdf(true);
+    try {
+      // Capture both charts. captureChart absorbs failures, so this Promise.all
+      // can never hang on a stalled SVG load.
+      const [trendImage, expenseImage] = await Promise.all([
+        captureChart(trendChartRef),
+        captureChart(donutChartRef),
+      ]);
+      const blob = generatePLStatementPDF(data, { trendImage, expenseImage });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -79,6 +129,8 @@ export default function PLStatement() {
       URL.revokeObjectURL(url);
     } catch (e: any) {
       toast({ title: "PDF generation failed", description: String(e?.message ?? e), variant: "destructive" });
+    } finally {
+      setDownloadingPdf(false);
     }
   };
 
@@ -97,6 +149,16 @@ export default function PLStatement() {
       toast({ title: "Excel download failed", description: String(e?.message ?? e), variant: "destructive" });
     } finally {
       setDownloadingExcel(false);
+    }
+  };
+
+  const handleCSV = () => {
+    if (!data) return;
+    try {
+      const csv = generatePLStatementCSV(data);
+      downloadCSV(`PL-Statement-${from}-to-${to}.csv`, csv);
+    } catch (e: any) {
+      toast({ title: "CSV download failed", description: String(e?.message ?? e), variant: "destructive" });
     }
   };
 
@@ -119,6 +181,18 @@ export default function PLStatement() {
   }
 
   const isProfitable = data.netProfitBeforeTax >= 0;
+  const trendData = data.trend.map((p) => ({
+    ...p,
+    monthLabel: (() => {
+      const [y, m] = p.month.split("-");
+      const dt = new Date(Number(y), Number(m) - 1, 1);
+      return dt.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
+    })(),
+  }));
+  const donutData = data.operatingExpenses.byCategory.map((c) => ({
+    name: c.categoryName,
+    value: c.total,
+  }));
 
   return (
     <div className="space-y-4" data-testid="pl-statement">
@@ -148,11 +222,14 @@ export default function PLStatement() {
             </div>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={handlePDF} data-testid="button-pl-pdf">
-              <Download className="w-4 h-4 mr-2" /> PDF
+            <Button variant="outline" size="sm" onClick={handleCSV} data-testid="button-pl-csv">
+              <FileText className="w-4 h-4 mr-2" /> CSV
             </Button>
             <Button variant="outline" size="sm" onClick={handleExcel} disabled={downloadingExcel} data-testid="button-pl-excel">
               <FileSpreadsheet className="w-4 h-4 mr-2" /> {downloadingExcel ? "Downloading…" : "Excel"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={handlePDF} disabled={downloadingPdf} data-testid="button-pl-pdf">
+              <Download className="w-4 h-4 mr-2" /> {downloadingPdf ? "Generating…" : "PDF"}
             </Button>
           </div>
         </CardContent>
@@ -218,6 +295,74 @@ export default function PLStatement() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Visual Summary: Trend chart + Expense breakdown ───────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4" data-testid="pl-charts-row">
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">12-Month Trend</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Trend: 12 months ending {data.trendWindow.to}
+              <span className="ml-2 italic">(decoupled from period filter)</span>
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div ref={trendChartRef} style={{ width: "100%", height: 300 }} data-testid="chart-pl-trend">
+              <ResponsiveContainer>
+                <BarChart data={trendData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="monthLabel" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} tickFormatter={fmtCompact} />
+                  <ReTooltip formatter={(v: any) => fmt(Number(v))} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="revenue" fill="#10b981" name="Revenue" />
+                  <Bar dataKey="expense" fill="#ef4444" name="Expense" />
+                  <Bar dataKey="netProfit" fill="#1e3a8a" name="Net Profit" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Operating Expenses by Category</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {data.operatingExpenses.expenseCount} record(s) totalling {fmt(data.operatingExpenses.total)}
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div ref={donutChartRef} style={{ width: "100%", height: 300 }} data-testid="chart-pl-opex-donut">
+              {donutData.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-sm text-muted-foreground italic">
+                  No expense data in period.
+                </div>
+              ) : (
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie
+                      data={donutData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={45}
+                      outerRadius={85}
+                      label={(p: any) => fmtCompact(Number(p.value))}
+                    >
+                      {donutData.map((_, i) => (
+                        <Cell key={i} fill={DONUT_COLORS[i % DONUT_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <ReTooltip formatter={(v: any) => fmt(Number(v))} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Footer notes */}
       {data.notes.length > 0 && (

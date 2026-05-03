@@ -51,6 +51,7 @@ export async function exportPLStatementExcel(pl: PLStatement): Promise<Buffer> {
     name: "Statement",
     title: "Profit & Loss Statement",
     subtitle: `${subtitle}  |  ${pl.cogs.label} — see footer for caveat`,
+    headerStyle: "compact",   // Q2 lock: hybrid 3-row header
     columns: [
       { header: "Line Item", key: "label", width: 50, type: "text" },
       { header: "Amount (₹)", key: "amount", width: 22, type: "currency" },
@@ -69,6 +70,7 @@ export async function exportPLStatementExcel(pl: PLStatement): Promise<Buffer> {
     name: "Opex Detail",
     title: "Operating Expenses by Category",
     subtitle: `${subtitle}  |  ${pl.operatingExpenses.expenseCount} expense records`,
+    headerStyle: "compact",
     columns: [
       { header: "Category", key: "category", width: 40, type: "text" },
       { header: "Amount (₹)", key: "amount", width: 22, type: "currency" },
@@ -78,7 +80,30 @@ export async function exportPLStatementExcel(pl: PLStatement): Promise<Buffer> {
     totals: { category: "TOTAL", amount: pl.operatingExpenses.total, pct: 100 },
   };
 
-  return buildExcelBuffer({ sheets: [statementSpec, opexSpec] });
+  // Sheet 3: Trend (12 months ending at trendWindow.to) — pivot-source clean.
+  // Architect-flagged MEDIUM: NO totals row. Trend sheet is the pivot-source
+  // sheet; appending TOTAL would corrupt SUM aggregates. Operator can use the
+  // Statement sheet for totals or =SUM(B4:B15) at the bottom of their pivot.
+  const trendSpec: SheetSpec = {
+    name: "12-Month Trend",
+    title: "12-Month Trend",
+    subtitle: `Trend window: ${pl.trendWindow.from} → ${pl.trendWindow.to}  (decoupled from period filter)`,
+    headerStyle: "compact",
+    columns: [
+      { header: "Month", key: "month", width: 12, type: "text" },
+      { header: "Revenue (₹)", key: "revenue", width: 18, type: "currency" },
+      { header: "Expense (₹)", key: "expense", width: 18, type: "currency" },
+      { header: "Net Profit (₹)", key: "netProfit", width: 18, type: "currency" },
+    ],
+    rows: pl.trend.map((p) => ({
+      month: p.month,
+      revenue: p.revenue,
+      expense: p.expense,
+      netProfit: p.netProfit,
+    })),
+  };
+
+  return buildExcelBuffer({ sheets: [statementSpec, opexSpec, trendSpec] });
 }
 
 // ── Cash Flow Statement Excel ────────────────────────────────────────────────

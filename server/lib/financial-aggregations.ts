@@ -473,7 +473,24 @@ export interface PLStatement {
     expenseCount: number;
   };
   netProfitBeforeTax: number;
+  /**
+   * 12-month trend ending at the calendar month containing `to`
+   * (or current month if `to` is null). DECOUPLED from period filter
+   * per Q3 lock. Always exactly 12 entries, zero-filled where no data.
+   *   revenue   = sales_invoices.subtotal (ex-GST), excludes cancelled
+   *   expense   = expenses.amount in month
+   *   netProfit = revenue − sales_returns − purchases − expense
+   */
+  trend: PLTrendPoint[];
+  trendWindow: { from: string; to: string };  // ISO yyyy-mm-dd, info for chart annotation
   notes: string[];               // structural notes for header/footer
+}
+
+export interface PLTrendPoint {
+  month: string;     // 'YYYY-MM'
+  revenue: number;
+  expense: number;
+  netProfit: number;
 }
 
 const COGS_LABEL = "Purchases (proxy for COGS)";
@@ -604,7 +621,103 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
       expenseCount: opexCntRow?.cnt ?? 0,
     },
     netProfitBeforeTax,
+    ...(await getPLTrendBlock(p.to)),
     notes,
+  };
+}
+
+// ─── 12-Month Trend (decoupled from period filter) ───────────────────────────
+// Returns the trend[] + trendWindow fields, anchored to the calendar month of
+// the report's `to` date (or today if `to` is null). Always 12 zero-filled points.
+async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[]; trendWindow: { from: string; to: string } }> {
+  const anchor = toIso ? new Date(toIso + "T00:00:00Z") : new Date();
+  const yr = anchor.getUTCFullYear();
+  const mo = anchor.getUTCMonth();
+  // Build 12 month buckets ending at `anchor`'s month
+  const months: { key: string; start: Date; end: Date }[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const start = new Date(Date.UTC(yr, mo - i, 1, 0, 0, 0, 0));
+    const next = new Date(Date.UTC(yr, mo - i + 1, 1, 0, 0, 0, 0));
+    const end = new Date(next.getTime() - 1);
+    const key = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`;
+    months.push({ key, start, end });
+  }
+  const earliest = months[0].start;
+  const latest = months[11].end;
+
+  // Architect-flagged MEDIUM: pass plain date strings (YYYY-MM-DD) — never full
+  // ISO timestamps with Z — so Postgres unambiguously compares date columns
+  // (sales_invoices.invoice_date is `date`, credit_notes.created_at is
+  // `timestamp` but daterange comparison stays TZ-stable when bounds are pure
+  // dates). This eliminates session-TZ drift at month boundaries.
+  const earliestStr = earliest.toISOString().slice(0, 10);   // YYYY-MM-DD (UTC date)
+  const latestStr = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth(), latest.getUTCDate()))
+    .toISOString().slice(0, 10);
+
+  // Run 4 month-bucketed queries in parallel
+  const [revRes, retRes, purchRes, expRes] = await Promise.all([
+    db.execute(sql`
+      SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
+             COALESCE(SUM(subtotal::numeric), 0) AS total
+      FROM sales_invoices
+      WHERE status <> 'cancelled' AND upload_status <> 'cancelled'
+        AND invoice_date >= ${earliestStr}::date AND invoice_date <= ${latestStr}::date
+      GROUP BY 1
+    `),
+    db.execute(sql`
+      SELECT to_char(date_trunc('month', created_at::date), 'YYYY-MM') AS m,
+             COALESCE(SUM(subtotal::numeric), 0) AS total
+      FROM credit_notes
+      WHERE status <> 'cancelled'
+        AND created_at::date >= ${earliestStr}::date AND created_at::date <= ${latestStr}::date
+      GROUP BY 1
+    `),
+    db.execute(sql`
+      SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
+             COALESCE(SUM(COALESCE(subtotal::numeric, total_amount::numeric - COALESCE(tax_amount::numeric, 0))), 0) AS total
+      FROM supplier_invoices
+      WHERE status <> 'cancelled' AND upload_status <> 'cancelled'
+        AND invoice_date >= ${earliestStr}::date AND invoice_date <= ${latestStr}::date
+      GROUP BY 1
+    `),
+    db.execute(sql`
+      SELECT to_char(date_trunc('month', expense_date::date), 'YYYY-MM') AS m,
+             COALESCE(SUM(amount::numeric), 0) AS total
+      FROM expenses
+      WHERE expense_date >= ${earliestStr}::date AND expense_date <= ${latestStr}::date
+      GROUP BY 1
+    `),
+  ]);
+
+  const toMap = (r: any) => {
+    const m = new Map<string, number>();
+    for (const row of r.rows as any[]) m.set(row.m, Number(row.total));
+    return m;
+  };
+  const revMap = toMap(revRes);
+  const retMap = toMap(retRes);
+  const purchMap = toMap(purchRes);
+  const expMap = toMap(expRes);
+
+  const trend: PLTrendPoint[] = months.map(({ key }) => {
+    const revenue = revMap.get(key) ?? 0;
+    const returns = retMap.get(key) ?? 0;
+    const purchases = purchMap.get(key) ?? 0;
+    const expense = expMap.get(key) ?? 0;
+    return {
+      month: key,
+      revenue,
+      expense,
+      netProfit: revenue - returns - purchases - expense,
+    };
+  });
+
+  return {
+    trend,
+    trendWindow: {
+      from: earliest.toISOString().slice(0, 10),
+      to: latest.toISOString().slice(0, 10),
+    },
   };
 }
 

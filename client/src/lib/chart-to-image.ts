@@ -19,14 +19,20 @@ export interface CaptureOptions {
   scale?: number;
   /** Background fill colour for the captured PNG. Default white. */
   background?: string;
+  /** 'png' (lossless, larger) or 'jpeg' (smaller, recommended for charts). Default 'png'. */
+  format?: "png" | "jpeg";
+  /** JPEG quality 0..1, only used when format='jpeg'. Default 0.92. */
+  quality?: number;
 }
 
 export async function svgNodeToPngDataUrl(
   svg: SVGSVGElement,
   opts: CaptureOptions = {}
-): Promise<{ dataUrl: string; cssWidth: number; cssHeight: number }> {
+): Promise<{ dataUrl: string; cssWidth: number; cssHeight: number; format: "PNG" | "JPEG" }> {
   const scale = opts.scale ?? 2;
   const background = opts.background ?? "#ffffff";
+  const format = opts.format ?? "png";
+  const quality = opts.quality ?? 0.92;
 
   // Resolve the rendered CSS dimensions of the SVG (Recharts uses 100% w/h, but
   // the live DOM has computed pixel sizes via getBoundingClientRect).
@@ -62,8 +68,10 @@ export async function svgNodeToPngDataUrl(
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    const dataUrl = canvas.toDataURL("image/png");
-    return { dataUrl, cssWidth, cssHeight };
+    const dataUrl = format === "jpeg"
+      ? canvas.toDataURL("image/jpeg", quality)
+      : canvas.toDataURL("image/png");
+    return { dataUrl, cssWidth, cssHeight, format: format === "jpeg" ? "JPEG" : "PNG" };
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -78,11 +86,31 @@ export function findRechartsSvg(container: HTMLElement): SVGSVGElement | null {
     ?? container.querySelector("svg") as SVGSVGElement | null;
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+function loadImage(src: string, timeoutMs = 8000): Promise<HTMLImageElement> {
+  // Architect-flagged HIGH: capture must never hang. Bound load with timeout
+  // so callers (PDF button) always either get a dataURL or a thrown error to
+  // catch and degrade gracefully (PDF generates without chart image).
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = (e) => reject(new Error(`Image load failed: ${String(e)}`));
+    let settled = false;
+    const t = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Chart image load timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+    img.onload = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      resolve(img);
+    };
+    img.onerror = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      reject(new Error(`Image load failed: ${String(e)}`));
+    };
     img.src = src;
   });
 }

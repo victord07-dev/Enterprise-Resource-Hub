@@ -773,10 +773,19 @@ export interface PLStatementPDFData {
     expenseCount: number;
   };
   netProfitBeforeTax: number;
+  trend?: { month: string; revenue: number; expense: number; netProfit: number }[];
+  trendWindow?: { from: string; to: string };
   notes: string[];
 }
 
-export function generatePLStatementPDF(d: PLStatementPDFData): Blob {
+export interface PLChartImages {
+  /** JPEG/PNG dataURL of the trend bar chart, captured from the on-screen Recharts SVG */
+  trendImage?: { dataUrl: string; cssWidth: number; cssHeight: number; format: "PNG" | "JPEG" };
+  /** JPEG/PNG dataURL of the expense breakdown donut */
+  expenseImage?: { dataUrl: string; cssWidth: number; cssHeight: number; format: "PNG" | "JPEG" };
+}
+
+export function generatePLStatementPDF(d: PLStatementPDFData, charts: PLChartImages = {}): Blob {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const pwP = 210, mP = 12;
   const periodStr = `Period: ${d.period.from ?? "—"} → ${d.period.to ?? "Today"}`;
@@ -878,10 +887,63 @@ export function generatePLStatementPDF(d: PLStatementPDFData): Blob {
     doc.setFontSize(6.5);
     doc.setTextColor(...C.textMuted);
     d.notes.forEach((n) => {
-      const lines = doc.splitTextToSize("• " + n, pwP - mP * 2);
+      const lines = doc.splitTextToSize("- " + n, pwP - mP * 2);
       doc.text(lines, mP, y);
       y += lines.length * 3;
     });
+  }
+
+  // ── Charts page (only if at least one chart image was supplied) ───────────
+  if (charts.trendImage || charts.expenseImage) {
+    doc.addPage();
+    // Re-draw header band (consistent with page 1)
+    doc.setFillColor(...C.headerBg);
+    doc.rect(0, 0, pwP, 24, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(...C.headerText);
+    doc.text(COMPANY.shortName, mP, 10);
+    doc.setFontSize(11);
+    doc.text("P&L Visual Summary", pwP / 2, 10, { align: "center" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(...C.subText);
+    doc.text(periodStr, pwP / 2, 16, { align: "center" });
+    doc.text(todayStr(), pwP - mP, 10, { align: "right" });
+
+    let cy = 30;
+    if (charts.trendImage) {
+      const ti = charts.trendImage;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(...C.textPrimary);
+      doc.text("12-Month Revenue / Expense / Net Profit Trend", mP, cy);
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(7);
+      doc.setTextColor(...C.textMuted);
+      const annot = d.trendWindow
+        ? `Trend: 12 months ending ${d.trendWindow.to}  (decoupled from period filter)`
+        : "Trend: last 12 months";
+      doc.text(annot, mP, cy + 4);
+      cy += 7;
+      const w = pwP - mP * 2;
+      const h = (ti.cssHeight / ti.cssWidth) * w;
+      doc.addImage(ti.dataUrl, ti.format, mP, cy, w, h);
+      cy += h + 8;
+    }
+    if (charts.expenseImage) {
+      const ei = charts.expenseImage;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(...C.textPrimary);
+      doc.text("Operating Expenses by Category", mP, cy);
+      cy += 4;
+      // Donut: render at half-width centred
+      const w = (pwP - mP * 2) * 0.6;
+      const h = (ei.cssHeight / ei.cssWidth) * w;
+      const x = (pwP - w) / 2;
+      doc.addImage(ei.dataUrl, ei.format, x, cy, w, h);
+    }
   }
 
   addPageFooter(doc);

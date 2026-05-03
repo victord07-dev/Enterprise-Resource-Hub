@@ -37,6 +37,13 @@ export interface SheetSpec {
   rows: Array<Record<string, unknown>>;
   /** If supplied, renders as last row in bold with top border. */
   totals?: Record<string, unknown>;
+  /**
+   * Header layout style:
+   *   'full'    — 6-row block: Co name / Title / Subtitle / Generated / blank / column headers (default).
+   *   'compact' — 3-row hybrid (operator-locked Q2): Row1 merged title block (Co + Title + Subtitle on one line),
+   *               Row2 column headers (pivot-friendly), Row3+ data. Use for new Phase 4C reports.
+   */
+  headerStyle?: "full" | "compact";
 }
 
 const HEADER_FILL = "FFF1F5F9";
@@ -123,19 +130,45 @@ function setCellByType(cell: ExcelJS.Cell, value: unknown, type?: SheetColumn["t
   }
 }
 
+function applyCompactTitleBlock(ws: ExcelJS.Worksheet, title: string, subtitle?: string) {
+  const colSpan = Math.max(2, ws.columnCount || 2);
+  ws.mergeCells(1, 1, 1, colSpan);
+  const r1 = ws.getCell(1, 1);
+  // Hybrid 3-row header (Q2): pack Company + Report Name + Period into row 1.
+  // Column headers move to row 2 — pivot tables select from row 2 down cleanly.
+  r1.value = subtitle
+    ? `${COMPANY.name}  •  ${title}  •  ${subtitle}`
+    : `${COMPANY.name}  •  ${title}`;
+  r1.font = { bold: true, size: 12, color: { argb: "FF1E293B" } };
+  r1.alignment = { horizontal: "left", vertical: "middle", wrapText: false };
+  ws.getRow(1).height = 22;
+}
+
 function buildSheet(wb: ExcelJS.Workbook, spec: SheetSpec): ExcelJS.Worksheet {
+  const compact = spec.headerStyle === "compact";
+  // Pivot-safety (architect HIGH): keep a blank row between the merged title
+  // (row 1) and the column headers so Excel's "current region" auto-detect
+  // does not pull the title into pivot source range. Layout in compact mode:
+  //   Row 1 = merged title  |  Row 2 = blank  |  Row 3 = headers  |  Row 4+ = data
+  const headerRow = compact ? 3 : 6;
+  const dataStartRow = compact ? 4 : 7;
+
   const ws = wb.addWorksheet(spec.name, {
-    views: [{ state: "frozen", ySplit: 6 }],
+    views: [{ state: "frozen", ySplit: headerRow }],
   });
   ws.columns = spec.columns.map(c => ({
     key: c.key,
     width: c.width ?? 18,
   }));
 
-  applyTitleBlock(ws, spec.title, spec.subtitle);
-  applyHeaderRow(ws, spec.columns, 6);
+  if (compact) {
+    applyCompactTitleBlock(ws, spec.title, spec.subtitle);
+  } else {
+    applyTitleBlock(ws, spec.title, spec.subtitle);
+  }
+  applyHeaderRow(ws, spec.columns, headerRow);
 
-  let r = 7;
+  let r = dataStartRow;
   spec.rows.forEach((row) => {
     spec.columns.forEach((col, idx) => {
       const cell = ws.getCell(r, idx + 1);

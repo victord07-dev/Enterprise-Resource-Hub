@@ -1,0 +1,90 @@
+All 5 decisions:
+
+Q1 — CSV stays as 3rd button: APPROVED
+- 3 download buttons per report: CSV, Excel, PDF
+- CSV: raw data, no formatting, Tally/pivot-friendly
+- Excel: branded hybrid header + styled cells (pivot-friendly 
+  data section)
+- PDF: full visual report with charts + colors + letterhead
+
+Q2 — Excel hybrid header: APPROVED
+- Row 1: Merged title (company + report name + period) — visual
+- Row 2: Single-cell column headers — pivot-friendly  
+- Row 3+: Data with status color coding on cells, NOT headers
+- Bold subtotals, bold totals row
+- Color coding only on data cells
+
+Q3 — Trend chart decoupled: APPROVED (Option a)
+- Trend = always last 12 months ending at report to-date
+- Annotation under chart: "Trend: 12 months ending [to-date]"
+- Decoupled from main period filter
+- Standard convention (Zoho/Tally/QB)
+
+Q4 — Try Recharts + html2canvas first: APPROVED
+- Build P&L reference using existing Recharts (no new dep)
+- html2canvas to capture SVG → canvas → jsPDF.addImage at 2x DPR 
+  for print quality (per your concern F)
+- Surface fidelity result during P&L review
+- If quality bad: install Chart.js as deliberate second engine
+- Don't install chart.js, react-chartjs-2, chartjs-node-canvas, 
+  recharts (already there), victory, nivo, apexcharts
+- Only install html2canvas if not already present
+
+Q5 — Status colors only on transactional reports: APPROVED
+- Apply: Sales Register, Purchase Register, Customer Aging, 
+  Supplier Aging, Expense Report
+- Skip: P&L, Cash Flow, Tax Summary, Cash Position, Account 
+  Statement, Consolidated Cash
+- During retrofit: AR Aging + AP Aging existing tabs get status 
+  colors too
+- Status palette: paid green, partial amber, overdue red, 
+  cancelled gray, draft gray
+
+Concern handling:
+
+Concern A (CSV deprecation): RESOLVED via Q1
+Concern B (Excel contradictions): RESOLVED via Q2
+Concern C (status applicability): RESOLVED via Q5
+Concern D (trend semantics): RESOLVED via Q3
+Concern E (backend grows ~30-50%): ACCEPTED, helpers grow as 
+  needed, all in financial-aggregations.ts per pattern lock
+Concern F (PDF chart blur): APPROVED — render at 2x DPR via 
+  offscreen canvas, addImage scales down to print mm
+Concern G (chart library): APPROVED — try Recharts first per Q4
+Concern I (download log writes during dev): ACKNOWLEDGED — 
+  acceptable, prune if needed at Batch 1 close
+
+EXECUTION ORDER:
+
+1. Install html2canvas if not present (single new dep, ~50KB)
+2. Verify Recharts is installed and working
+3. Build P&L reference implementation:
+   - Backend: extend getPLStatement with trend[] (last 12 months 
+     ending at to-date)
+   - Frontend: 2 charts on screen (Revenue/Expense trend bar, 
+     Expense breakdown donut)
+   - PDF embed: charts captured at 2x DPR, addImage to jsPDF 
+     with proper mm scaling
+   - Excel: 3-row hybrid header structure + status color cells 
+     (where applicable, P&L doesn't need them) + bold subtotals
+   - CSV: keep simple, raw data
+4. Browser test per new process commitment:
+   - Backend curl ✓
+   - Reconciliation unit test ✓ (already passes for P&L)
+   - runTest() browser pass — verify charts render, all 3 
+     downloads work, no auth issues
+   - Architect review
+5. Ping operator with: screenshot of P&L on screen + downloaded 
+   PDF + downloaded Excel + CSV
+6. Operator reviews, approves OR requests adjustments
+7. After P&L pattern locked: propagate to Cash Flow (~0.5 day)
+8. After Cash Flow locked: continue Batch 2 reports built to 
+   same standard
+9. After all Phase 4C reports done: retrofit existing Phase 4A 
+   tabs
+
+Don't start until you confirm receipt of these 5 decisions. 
+Once confirmed, execute step 1-5 and ping operator with the 4 
+artifacts (screenshot + 3 downloads).
+
+Standing rules apply.

@@ -7926,6 +7926,108 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Phase 4C T7+T8 — Date param validator (post-architect-review fix) ─────
+  // Reject empty/invalid date strings with 400 so reports never silently fall
+  // back. `undefined` (param omitted) is allowed; helpers handle defaults.
+  function validateReportDates(req: any, res: any): { from?: string; to?: string } | null {
+    const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+    const fromQ = req.query.from;
+    const toQ = req.query.to;
+    const from = typeof fromQ === "string" && fromQ.length > 0 ? fromQ.trim() : undefined;
+    const to = typeof toQ === "string" && toQ.length > 0 ? toQ.trim() : undefined;
+    if (from !== undefined && !isoRe.test(from)) {
+      res.status(400).json({ message: `Invalid 'from' date "${fromQ}" — expected YYYY-MM-DD` });
+      return null;
+    }
+    if (to !== undefined && !isoRe.test(to)) {
+      res.status(400).json({ message: `Invalid 'to' date "${toQ}" — expected YYYY-MM-DD` });
+      return null;
+    }
+    if (from && to && from > to) {
+      res.status(400).json({ message: `'from' (${from}) must be ≤ 'to' (${to})` });
+      return null;
+    }
+    return { from, to };
+  }
+
+  // ─── Phase 4C T7 — P&L Statement (JSON) ─────────────────────────────────────
+  app.get(
+    "/api/reports/pl-statement",
+    authenticateToken,
+    requireRole("admin", "accountant"),
+    async (req: any, res) => {
+      try {
+        const dates = validateReportDates(req, res); if (!dates) return;
+        const { getPLStatement } = await import("./lib/financial-aggregations");
+        const data = await getPLStatement(dates);
+        res.json(data);
+      } catch (err: any) {
+        console.error("P&L statement error:", err);
+        res.status(500).json({ message: err.message || "Failed to generate P&L statement" });
+      }
+    },
+  );
+
+  // ─── Phase 4C T7 — P&L Statement (Excel) ────────────────────────────────────
+  app.get(
+    "/api/reports/pl-statement/excel",
+    authenticateToken,
+    requireRole("admin", "accountant"),
+    async (req: any, res) => {
+      try {
+        const dates = validateReportDates(req, res); if (!dates) return;
+        const { getPLStatement } = await import("./lib/financial-aggregations");
+        const { exportPLStatementExcel } = await import("./lib/pl-cashflow-excel");
+        const { sendExcel } = await import("./lib/excel-export");
+        const data = await getPLStatement(dates);
+        const buf = await exportPLStatementExcel(data);
+        sendExcel(res, buf, `PL-Statement-${dates.from ?? "all"}-to-${dates.to ?? "today"}.xlsx`);
+      } catch (err: any) {
+        console.error("P&L Excel error:", err);
+        res.status(500).json({ message: err.message || "Failed to export P&L Excel" });
+      }
+    },
+  );
+
+  // ─── Phase 4C T8 — Cash Flow Statement (JSON) ───────────────────────────────
+  app.get(
+    "/api/reports/cash-flow",
+    authenticateToken,
+    requireRole("admin", "accountant"),
+    async (req: any, res) => {
+      try {
+        const dates = validateReportDates(req, res); if (!dates) return;
+        const { getCashFlowStatement } = await import("./lib/financial-aggregations");
+        const data = await getCashFlowStatement(dates);
+        res.json(data);
+      } catch (err: any) {
+        console.error("Cash flow error:", err);
+        res.status(500).json({ message: err.message || "Failed to generate cash flow statement" });
+      }
+    },
+  );
+
+  // ─── Phase 4C T8 — Cash Flow Statement (Excel) ──────────────────────────────
+  app.get(
+    "/api/reports/cash-flow/excel",
+    authenticateToken,
+    requireRole("admin", "accountant"),
+    async (req: any, res) => {
+      try {
+        const dates = validateReportDates(req, res); if (!dates) return;
+        const { getCashFlowStatement } = await import("./lib/financial-aggregations");
+        const { exportCashFlowStatementExcel } = await import("./lib/pl-cashflow-excel");
+        const { sendExcel } = await import("./lib/excel-export");
+        const data = await getCashFlowStatement(dates);
+        const buf = await exportCashFlowStatementExcel(data);
+        sendExcel(res, buf, `Cash-Flow-${dates.from ?? "all"}-to-${dates.to ?? "today"}.xlsx`);
+      } catch (err: any) {
+        console.error("Cash flow Excel error:", err);
+        res.status(500).json({ message: err.message || "Failed to export cash flow Excel" });
+      }
+    },
+  );
+
   // ─── Pricing Summary Report ─────────────────────────────────────────────────
   app.get("/api/reports/pricing-summary", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {

@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
 import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF, generateInventoryPDF, generateStaffPDF, generateSalesReportPDF, generateFinancialReportPDF } from "@/lib/reports-pdf";
+import PLStatement from "@/components/reports/PLStatement";
+import CashFlowStatement from "@/components/reports/CashFlowStatement";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -1128,6 +1130,7 @@ const cardFormats: Record<string, ("csv" | "pdf")[]> = {
 export default function Reports() {
   const { data: currentUser } = useCurrentUser();
   const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+  const isFinanceUser = ["admin", "accountant"].includes(currentUser?.role ?? "");
   const [activeTab, setActiveTab] = useState("overview");
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -1430,6 +1433,8 @@ export default function Reports() {
           <TabsTrigger value="ap-aging" data-testid="tab-ap-aging">AP Aging</TabsTrigger>
           <TabsTrigger value="ar-aging" data-testid="tab-ar-aging">AR Aging</TabsTrigger>
           {canManagePricing && <TabsTrigger value="daily-pricing" data-testid="tab-daily-pricing">Daily Pricing</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="pl-statement" data-testid="tab-pl-statement">P&amp;L</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="cash-flow" data-testid="tab-cash-flow">Cash Flow</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6 mt-4">
@@ -1564,6 +1569,18 @@ export default function Reports() {
         {canManagePricing && (
           <TabsContent value="daily-pricing" className="mt-4">
             <DailyPricingTab />
+          </TabsContent>
+        )}
+
+        {isFinanceUser && (
+          <TabsContent value="pl-statement" className="mt-4">
+            <PLStatement />
+          </TabsContent>
+        )}
+
+        {isFinanceUser && (
+          <TabsContent value="cash-flow" className="mt-4">
+            <CashFlowStatement />
           </TabsContent>
         )}
       </Tabs>

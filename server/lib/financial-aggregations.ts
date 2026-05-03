@@ -26,14 +26,27 @@ import {
 } from "@shared/schema";
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
+// Normalize empty-string to undefined so callers (UI clearing a date input)
+// behave the same as omitting the parameter — never falls through to SQL.
+function normIso(iso?: string): string | undefined {
+  if (iso === undefined || iso === null) return undefined;
+  const trimmed = String(iso).trim();
+  if (trimmed === "") return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error(`Invalid date "${iso}" — expected YYYY-MM-DD`);
+  }
+  return trimmed;
+}
 function dayStart(iso?: string): Date | null {
-  if (!iso) return null;
-  const d = new Date(iso + "T00:00:00");
+  const n = normIso(iso);
+  if (!n) return null;
+  const d = new Date(n + "T00:00:00");
   return isNaN(d.getTime()) ? null : d;
 }
 function dayEnd(iso?: string): Date | null {
-  if (!iso) return null;
-  const d = new Date(iso + "T23:59:59.999");
+  const n = normIso(iso);
+  if (!n) return null;
+  const d = new Date(n + "T23:59:59.999");
   return isNaN(d.getTime()) ? null : d;
 }
 
@@ -419,15 +432,455 @@ export async function getTodaySnapshot(): Promise<TodaySnapshot> {
   };
 }
 
-// ── 🔧 Per-report helpers — implemented in their respective tasks (T7..T16) ──
-// These signatures are declared here so route handlers can import them later.
-// Each is filled in (with tests) when its report tab is built.
+// ── Phase 4C T7 — P&L Statement ──────────────────────────────────────────────
+// Operator-locked decisions (Batch 1):
+//   D1: COGS = "Purchases (proxy for COGS)" — supplier-invoice ex-GST proxy.
+//       Caveat shipped in helper output so PDF/Excel header can render it.
+//   D2: Sales Returns from credit_notes; period anchor = created_at; structurally
+//       tested only (no real CN data exists yet).
+//   D3: P&L is net-of-GST throughout. Revenue = sales_invoices.subtotal,
+//       Purchases = COALESCE(supplier_invoices.subtotal, total_amount - tax_amount).
+//       Net Profit shown is "Before Income Tax" (income tax not modeled).
+//
+// Filters out cancelled invoices/CNs via status + uploadStatus (matches
+// the convention used in getPendingActions + the canonical outstanding helpers).
 
-export async function getPLStatement(_p: PeriodFilter): Promise<unknown> {
-  throw new Error("getPLStatement not yet implemented (T7)");
+export interface PLOpexCategoryLine {
+  categoryId: string | null;
+  categoryName: string;
+  total: number;
 }
-export async function getCashFlowStatement(_p: PeriodFilter): Promise<unknown> {
-  throw new Error("getCashFlowStatement not yet implemented (T8)");
+
+export interface PLStatement {
+  period: { from: string | null; to: string | null };
+  revenue: {
+    salesRevenue: number;        // sales_invoices.subtotal in period (excl GST)
+    salesReturns: number;        // credit_notes.subtotal (created_at in period)
+    netRevenue: number;          // salesRevenue - salesReturns
+    salesInvoiceCount: number;
+    creditNoteCount: number;
+  };
+  cogs: {
+    purchases: number;           // supplier_invoices ex-GST proxy
+    label: string;               // "Purchases (proxy for COGS)"
+    caveat: string;              // operator-mandated note
+    supplierInvoiceCount: number;
+  };
+  grossProfit: number;
+  operatingExpenses: {
+    byCategory: PLOpexCategoryLine[];
+    total: number;
+    expenseCount: number;
+  };
+  netProfitBeforeTax: number;
+  notes: string[];               // structural notes for header/footer
+}
+
+const COGS_LABEL = "Purchases (proxy for COGS)";
+const COGS_CAVEAT =
+  "Purchases shown as proxy for Cost of Goods Sold. True FIFO COGS based on " +
+  "stock dispatch tracing requires further cost accounting work. Use this " +
+  "figure for trend analysis; verify against year-end stock counts for " +
+  "accurate gross margin.";
+
+export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
+  const from = dayStart(p.from);
+  const to = dayEnd(p.to);
+
+  const buildRange = (col: any) => {
+    const conds: any[] = [];
+    if (from) conds.push(gte(col, from));
+    if (to) conds.push(lte(col, to));
+    return conds.length ? and(...conds) : undefined;
+  };
+
+  // ─── Revenue: sales_invoices.subtotal (ex-GST), exclude cancelled ────────
+  const [salesRow] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(${salesInvoices.subtotal}),0)`,
+      cnt: sql<number>`COUNT(*)::int`,
+    })
+    .from(salesInvoices)
+    .where(and(
+      buildRange(salesInvoices.invoiceDate),
+      ne(salesInvoices.status, "cancelled"),
+      ne(salesInvoices.uploadStatus, "cancelled"),
+    ));
+
+  // ─── Sales Returns: credit_notes.subtotal anchored on created_at ─────────
+  // D2: Sales Returns line tested structurally; first real CN flow needed
+  //     for data verification. Currently 0 CN rows exist.
+  const cnRangeConds: any[] = [ne(sql`status`, sql`'cancelled'`)];
+  if (from) cnRangeConds.push(sql`created_at >= ${from.toISOString()}`);
+  if (to) cnRangeConds.push(sql`created_at <= ${to.toISOString()}`);
+  const cnResult = await db.execute(sql`
+    SELECT
+      COALESCE(SUM(subtotal::numeric), 0) AS total,
+      COUNT(*)::int AS cnt
+    FROM credit_notes
+    WHERE status <> 'cancelled'
+      ${from ? sql`AND created_at >= ${from.toISOString()}` : sql``}
+      ${to ? sql`AND created_at <= ${to.toISOString()}` : sql``}
+  `);
+  const cnRow = cnResult.rows[0] as any;
+
+  // ─── Purchases (proxy for COGS): supplier_invoices ex-GST ────────────────
+  // COALESCE(subtotal, total_amount - tax_amount) — D1 caveat in output.
+  const [purchRow] = await db
+    .select({
+      total: sql<string>`COALESCE(SUM(
+        COALESCE(
+          ${supplierInvoices.subtotal}::numeric,
+          (${supplierInvoices.totalAmount}::numeric - COALESCE(${supplierInvoices.taxAmount}::numeric, 0))
+        )
+      ), 0)`,
+      cnt: sql<number>`COUNT(*)::int`,
+    })
+    .from(supplierInvoices)
+    .where(and(
+      buildRange(supplierInvoices.invoiceDate),
+      ne(supplierInvoices.status, "cancelled"),
+      ne(supplierInvoices.uploadStatus, "cancelled"),
+    ));
+
+  // ─── Operating Expenses by category ──────────────────────────────────────
+  const opexRows = await db
+    .select({
+      categoryId: expenses.categoryId,
+      categoryName: expenseCategories.name,
+      total: sql<string>`COALESCE(SUM(${expenses.amount}),0)`,
+    })
+    .from(expenses)
+    .leftJoin(expenseCategories, eq(expenses.categoryId, expenseCategories.id))
+    .where(buildRange(expenses.expenseDate))
+    .groupBy(expenses.categoryId, expenseCategories.name)
+    .orderBy(sql`SUM(${expenses.amount}) DESC`);
+
+  const [opexCntRow] = await db
+    .select({ cnt: sql<number>`COUNT(*)::int` })
+    .from(expenses)
+    .where(buildRange(expenses.expenseDate));
+
+  const salesRevenue = Number(salesRow?.total ?? 0);
+  const salesReturns = Number(cnRow?.total ?? 0);
+  const netRevenue = salesRevenue - salesReturns;
+  const purchases = Number(purchRow?.total ?? 0);
+  const grossProfit = netRevenue - purchases;
+  const opexByCategory: PLOpexCategoryLine[] = opexRows.map((r) => ({
+    categoryId: r.categoryId ?? null,
+    categoryName: r.categoryName ?? "Uncategorised",
+    total: Number(r.total),
+  }));
+  const opexTotal = opexByCategory.reduce((s, r) => s + r.total, 0);
+  const netProfitBeforeTax = grossProfit - opexTotal;
+
+  const notes: string[] = [
+    "P&L is net-of-GST. Revenue = sales invoice subtotal (ex-GST). Purchases = supplier invoice subtotal (ex-GST proxy).",
+    "Net Profit shown is Before Income Tax. GST and income tax not modelled.",
+  ];
+  if (Number(cnRow?.cnt ?? 0) === 0) {
+    notes.push("No credit notes in period — Sales Returns line is structurally rendered only.");
+  }
+
+  return {
+    period: { from: p.from ?? null, to: p.to ?? null },
+    revenue: {
+      salesRevenue,
+      salesReturns,
+      netRevenue,
+      salesInvoiceCount: salesRow?.cnt ?? 0,
+      creditNoteCount: Number(cnRow?.cnt ?? 0),
+    },
+    cogs: {
+      purchases,
+      label: COGS_LABEL,
+      caveat: COGS_CAVEAT,
+      supplierInvoiceCount: purchRow?.cnt ?? 0,
+    },
+    grossProfit,
+    operatingExpenses: {
+      byCategory: opexByCategory,
+      total: opexTotal,
+      expenseCount: opexCntRow?.cnt ?? 0,
+    },
+    netProfitBeforeTax,
+    notes,
+  };
+}
+
+// ── Phase 4C T8 — Cash Flow Statement (Direct Method) ────────────────────────
+// Operator-locked decisions (Batch 1):
+//   D4(i):   Operating (cust pmts in, supp pmts out, expenses out) | Internal
+//            Movements (transfers gross both legs → net 0; adjustments) |
+//            Net Change | Per-account reconciliation.
+//   D4(ii):  Direct method.
+//   D4(iii): Both per-account AND consolidated TOTAL row.
+//   R2:      Per-account inflows/outflows include ALL movements affecting
+//            that account (operating + internal). Top sectioning is narrative
+//            only. Reconciliation: opening + inflows − outflows = closing
+//            must hold per-account AND for the TOTAL row.
+//   R3:      4 reconciliation assertions live in scripts/test-pl-cashflow-helpers.ts
+//
+// LEGACY PAYMENTS HANDLING: 100% of `payments` table rows currently have
+// NULL cash_account_id (24 rows, all unattributed). They cannot participate
+// in per-account reconciliation. They are EXCLUDED from this report and
+// surfaced under `notes.legacyReceiptsExcluded`. This matches the behaviour
+// of computeAccountBalance which also skips NULL-account legacy rows.
+
+export interface CashFlowAdjustmentLine {
+  reason: string;
+  amount: number;       // signed; + = inflow, − = outflow
+}
+
+export interface CashFlowAccountLine {
+  accountId: string;
+  accountName: string;
+  accountType: "bank" | "cash";
+  opening: number;
+  inflows: number;
+  outflows: number;
+  closing: number;
+  netChange: number;
+}
+
+export interface CashFlowStatement {
+  period: { from: string | null; to: string | null };
+  operating: {
+    customerPaymentsReceived: number;   // customer_payments only (legacy excluded)
+    supplierPaymentsMade: number;
+    operatingExpenses: number;
+    netOperating: number;
+  };
+  internal: {
+    transfersGross: number;             // sum of account_transfers.amount in period
+    transfersNet: number;               // always 0 (both legs cancel) — exposed for D4 visualisation
+    adjustments: {
+      byReason: CashFlowAdjustmentLine[];
+      net: number;                      // signed sum
+    };
+    netInternal: number;                // transfersNet + adjustments.net = adjustments.net
+  };
+  netChangeInCash: number;              // netOperating + netInternal
+  perAccount: CashFlowAccountLine[];
+  totals: {
+    opening: number;
+    inflows: number;
+    outflows: number;
+    closing: number;
+    netChange: number;
+  };
+  notes: {
+    legacyReceiptsExcluded: { count: number; amount: number };
+    info: string[];
+  };
+}
+
+/**
+ * Date helpers:
+ *   - period.from defaults to "1970-01-01" (i.e. "all time" up to `to`)
+ *   - period.to defaults to today
+ *   - opening = computeAccountBalance(acct, fromDate − 1 day) (inclusive ≤)
+ *   - closing = computeAccountBalance(acct, toDate)
+ */
+export async function getCashFlowStatement(p: PeriodFilter): Promise<CashFlowStatement> {
+  // Normalize: empty string → undefined → fallback default. Throws on malformed.
+  const fromIso = normIso(p.from) ?? "1970-01-01";
+  const toIso = normIso(p.to) ?? new Date().toISOString().slice(0, 10);
+  const from = dayStart(fromIso)!;
+  const to = dayEnd(toIso)!;
+
+  // Compute "the day before from" for opening balance asOf parameter.
+  const dayBeforeFrom = new Date(from);
+  dayBeforeFrom.setDate(dayBeforeFrom.getDate() - 1);
+  const dayBeforeFromIso = dayBeforeFrom.toISOString().slice(0, 10);
+
+  const buildTimestampRange = (col: any) => and(gte(col, from), lte(col, to));
+  const dateColumnRangeSql = (colName: string) =>
+    sql`${sql.raw(colName)} >= ${fromIso} AND ${sql.raw(colName)} <= ${toIso}`;
+
+  // ─── Active cash accounts ────────────────────────────────────────────────
+  const accts = await db
+    .select()
+    .from(cashAccounts)
+    .where(eq(cashAccounts.isActive, true))
+    .orderBy(cashAccounts.name);
+
+  // ─── Operating section (consolidated, period-scoped) ─────────────────────
+  // EXCLUDES legacy payments (see top-of-helper comment).
+  const [cpRow, spRow, expRow] = await Promise.all([
+    db.select({ s: sql<string>`COALESCE(SUM(${customerPayments.amount}),0)` })
+      .from(customerPayments)
+      .where(buildTimestampRange(customerPayments.paymentDate)),
+    db.select({ s: sql<string>`COALESCE(SUM(${supplierPayments.amount}),0)` })
+      .from(supplierPayments)
+      .where(buildTimestampRange(supplierPayments.paymentDate)),
+    db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS s
+      FROM expenses
+      WHERE expense_date >= ${fromIso} AND expense_date <= ${toIso}
+    `),
+  ]);
+  const customerPaymentsReceived = Number(cpRow[0]?.s ?? 0);
+  const supplierPaymentsMade = Number(spRow[0]?.s ?? 0);
+  const operatingExpenses = Number((expRow.rows[0] as any)?.s ?? 0);
+  const netOperating = customerPaymentsReceived - supplierPaymentsMade - operatingExpenses;
+
+  // ─── Internal Movements (consolidated) ───────────────────────────────────
+  const trResult = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS gross, COUNT(*)::int AS cnt
+    FROM account_transfers
+    WHERE transfer_date >= ${fromIso} AND transfer_date <= ${toIso}
+  `);
+  const transfersGross = Number((trResult.rows[0] as any)?.gross ?? 0);
+
+  const adjResult = await db.execute(sql`
+    SELECT
+      reason,
+      COALESCE(SUM(adjustment_amount::numeric), 0) AS amount
+    FROM balance_adjustments
+    WHERE adjustment_date >= ${fromIso} AND adjustment_date <= ${toIso}
+    GROUP BY reason
+    ORDER BY ABS(SUM(adjustment_amount::numeric)) DESC
+  `);
+  const adjByReason: CashFlowAdjustmentLine[] = (adjResult.rows as any[]).map(r => ({
+    reason: String(r.reason ?? "—"),
+    amount: Number(r.amount),
+  }));
+  const adjustmentsNet = adjByReason.reduce((s, r) => s + r.amount, 0);
+  const netInternal = 0 + adjustmentsNet; // transfers always net to 0
+
+  const netChangeInCash = netOperating + netInternal;
+
+  // ─── Per-account inflows/outflows + opening/closing ──────────────────────
+  // Per R2: each account sums ALL movements affecting it (including transfer
+  // legs and adjustments). Opening + Inflows − Outflows must equal Closing.
+  const perAccount: CashFlowAccountLine[] = await Promise.all(
+    accts.map(async (acct) => {
+      const aid = acct.id;
+      const [opening, closing, cpIn, spOut, expOut, trIn, trOut, adjPos, adjNeg] = await Promise.all([
+        storage.computeAccountBalance(aid, dayBeforeFromIso),
+        storage.computeAccountBalance(aid, toIso),
+        // Inflows
+        db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS s
+          FROM customer_payments
+          WHERE cash_account_id = ${aid}
+            AND date(payment_date) >= ${fromIso} AND date(payment_date) <= ${toIso}
+        `),
+        // Outflows
+        db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS s
+          FROM supplier_payments
+          WHERE cash_account_id = ${aid}
+            AND date(payment_date) >= ${fromIso} AND date(payment_date) <= ${toIso}
+        `),
+        db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS s
+          FROM expenses
+          WHERE cash_account_id = ${aid}
+            AND expense_date >= ${fromIso} AND expense_date <= ${toIso}
+        `),
+        db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS s
+          FROM account_transfers
+          WHERE to_account_id = ${aid}
+            AND transfer_date >= ${fromIso} AND transfer_date <= ${toIso}
+        `),
+        db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS s
+          FROM account_transfers
+          WHERE from_account_id = ${aid}
+            AND transfer_date >= ${fromIso} AND transfer_date <= ${toIso}
+        `),
+        db.execute(sql`
+          SELECT COALESCE(SUM(adjustment_amount::numeric), 0) AS s
+          FROM balance_adjustments
+          WHERE cash_account_id = ${aid}
+            AND adjustment_amount::numeric > 0
+            AND adjustment_date >= ${fromIso} AND adjustment_date <= ${toIso}
+        `),
+        db.execute(sql`
+          SELECT COALESCE(SUM(adjustment_amount::numeric), 0) AS s
+          FROM balance_adjustments
+          WHERE cash_account_id = ${aid}
+            AND adjustment_amount::numeric < 0
+            AND adjustment_date >= ${fromIso} AND adjustment_date <= ${toIso}
+        `),
+      ]);
+      const inflows =
+        Number((cpIn.rows[0] as any)?.s ?? 0) +
+        Number((trIn.rows[0] as any)?.s ?? 0) +
+        Number((adjPos.rows[0] as any)?.s ?? 0);
+      const outflows =
+        Number((spOut.rows[0] as any)?.s ?? 0) +
+        Number((expOut.rows[0] as any)?.s ?? 0) +
+        Number((trOut.rows[0] as any)?.s ?? 0) +
+        Math.abs(Number((adjNeg.rows[0] as any)?.s ?? 0));
+      return {
+        accountId: aid,
+        accountName: acct.name,
+        accountType: acct.type as "bank" | "cash",
+        opening,
+        inflows,
+        outflows,
+        closing,
+        netChange: closing - opening,
+      };
+    }),
+  );
+
+  const totals = perAccount.reduce(
+    (acc, a) => ({
+      opening: acc.opening + a.opening,
+      inflows: acc.inflows + a.inflows,
+      outflows: acc.outflows + a.outflows,
+      closing: acc.closing + a.closing,
+      netChange: acc.netChange + a.netChange,
+    }),
+    { opening: 0, inflows: 0, outflows: 0, closing: 0, netChange: 0 },
+  );
+
+  // ─── Notes: legacy receipts excluded ─────────────────────────────────────
+  const legacyResult = await db.execute(sql`
+    SELECT COUNT(*)::int AS cnt, COALESCE(SUM(amount::numeric), 0) AS amt
+    FROM payments
+    WHERE status = 'completed'
+      AND cash_account_id IS NULL
+      AND payment_date >= ${from.toISOString()} AND payment_date <= ${to.toISOString()}
+  `);
+  const legacyRow = legacyResult.rows[0] as any;
+  const legacyExcl = {
+    count: Number(legacyRow?.cnt ?? 0),
+    amount: Number(legacyRow?.amt ?? 0),
+  };
+
+  const info: string[] = [
+    "Direct method. Per-account inflows/outflows include ALL movements (operating + internal).",
+    "Transfers shown gross both legs; net contribution to cash = ₹0.",
+  ];
+  if (legacyExcl.count > 0) {
+    info.push(`${legacyExcl.count} legacy receipt(s) totalling ₹${legacyExcl.amount.toLocaleString("en-IN")} excluded — recorded against deprecated payments table without account attribution.`);
+  }
+
+  return {
+    period: { from: p.from ?? null, to: p.to ?? null },
+    operating: {
+      customerPaymentsReceived,
+      supplierPaymentsMade,
+      operatingExpenses,
+      netOperating,
+    },
+    internal: {
+      transfersGross,
+      transfersNet: 0,
+      adjustments: { byReason: adjByReason, net: adjustmentsNet },
+      netInternal,
+    },
+    netChangeInCash,
+    perAccount,
+    totals,
+    notes: { legacyReceiptsExcluded: legacyExcl, info },
+  };
 }
 export async function getCustomerAging(_asOf?: string, _customerId?: string): Promise<unknown> {
   throw new Error("getCustomerAging extension not yet implemented (T9)");

@@ -1314,7 +1314,12 @@ export async function registerRoutes(
           let unitPrice: number;
           const rawUP = (row["unitPrice"] ?? "").trim();
           if (rawUP) {
-            unitPrice = Number(rawUP);
+            const upResult = parseNumericCsv(rawUP, "unitPrice");
+            if (upResult === "error") {
+              errors.push({ row_number: rowNum, sku: rowSkuRaw ?? "", product_name: rowName, error_type: "invalid_number", error_message: `unitPrice "${rawUP}" is not a valid number` });
+              continue;
+            }
+            unitPrice = upResult ?? 0;
           } else if (distributorPrice != null && logisticsCost != null && targetMarginPct != null) {
             unitPrice = (distributorPrice + logisticsCost) * (1 + gstRate / 100) * (1 + targetMarginPct / 100);
           } else if (distributorPrice != null) {

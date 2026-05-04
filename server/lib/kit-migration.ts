@@ -883,15 +883,14 @@ INSERT INTO product_bundle_items (bundle_product_id, component_product_id, quant
   VALUES ('5a268d99-4b9f-45de-a8b0-5f0d6272c1fc', '1e025e51-cbd0-4afd-8469-7e5b6b677e56', 6)
   ON CONFLICT DO NOTHING;
 
--- STEP 4: Audit log entry
-INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, changes, created_at)
+-- STEP 4: Audit log entry (production schema)
+INSERT INTO audit_logs (id, user_id, action, module, details, timestamp)
   VALUES (
     'fed67e39-4a36-4d76-8b90-0b63190cedd6',
     'd23921b0-7ecf-4cf9-8c90-13f46e927d22',
     'production_kit_migration',
     'products',
-    'batch',
-    '{"description":"Migrated 3 missing components + 14 kit/bundle products + 271 bundle links from dev to production","operator_authorized":true,"skus_inserted":["ITFI-LM-550WP","SLX-INV-3KW-1P","TATA-525WP-BI-P","ITFI-ADANI-4KW-FULLKIT","ITFI-ADANI-4KW-HALFKIT","ITFI-ADANI-5KW-FULLKIT","ITFI-ADANI-5KW-HALFKIT","ITFI-EST-3KW-FULL-KIT","ITFI-EST-3KW-HALF-KIT","ITFI-LM-3KW-FULL-KIT","ITFI-LM-3KW-HALF-KIT","ITFI-TATA-3KW-FULL-KIT","ITFI-TATA-3KW-HALF-KIT","ITFI-WAR-3KW-FULL-KIT","ITFI-WAR-3KW-HALF-KIT","ITFI-WEBSL-3KW-FULL-KIT","ITFI-WEBSL-3KW-HALF-KIT"]}'::jsonb,
+    'Migrated 3 missing components + 14 kit/bundle products + 271 bundle links from dev to production. Operator authorized.',
     NOW()
   );
 

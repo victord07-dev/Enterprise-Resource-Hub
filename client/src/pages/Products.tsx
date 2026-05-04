@@ -14,7 +14,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useCurrentUser } from "@/lib/auth";
-import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle, Boxes, Info, ChevronsUpDown } from "lucide-react";
+import { Plus, Search, Package, Wrench, Pencil, Trash2, AlertCircle, Lock, TrendingUp, Calculator, X, AlertTriangle, Settings2, Upload, FileText, Download, CheckCircle2, XCircle, Boxes, Info, ChevronsUpDown, GripVertical } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   type Product,
@@ -621,6 +621,8 @@ export default function Products() {
   // Searchable combobox state for bundle component picker
   const [bundleCompOpenIdx, setBundleCompOpenIdx] = useState<number | null>(null);
   const [bundleCompSearch, setBundleCompSearch] = useState("");
+  const [bundleDragIdx, setBundleDragIdx] = useState<number | null>(null);
+  const [bundleDragOverIdx, setBundleDragOverIdx] = useState<number | null>(null);
 
   // Brand mini-dialog state
   const [brandDialogOpen, setBrandDialogOpen] = useState(false);
@@ -1643,9 +1645,35 @@ export default function Products() {
                   <div className="space-y-2">
                     {bundleItems.map((row, idx) => {
                       const line = bundleAutoPriceClient.lines[idx];
+                      const isDragging = bundleDragIdx === idx;
+                      const isDragOver = bundleDragOverIdx === idx && bundleDragIdx !== idx;
                       return (
-                        <div key={idx} className="grid grid-cols-12 gap-2 items-start" data-testid={`row-bundle-component-${idx}`}>
-                          <div className="col-span-6">
+                        <div
+                          key={idx}
+                          draggable
+                          onDragStart={() => setBundleDragIdx(idx)}
+                          onDragEnd={() => { setBundleDragIdx(null); setBundleDragOverIdx(null); }}
+                          onDragOver={(e) => { e.preventDefault(); setBundleDragOverIdx(idx); }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (bundleDragIdx === null || bundleDragIdx === idx) return;
+                            setBundleItems(prev => {
+                              const next = [...prev];
+                              const [moved] = next.splice(bundleDragIdx, 1);
+                              next.splice(idx, 0, moved);
+                              return next;
+                            });
+                            setBundleDragIdx(null);
+                            setBundleDragOverIdx(null);
+                          }}
+                          className={`grid grid-cols-12 gap-2 items-start rounded transition-all ${isDragging ? "opacity-40" : ""} ${isDragOver ? "ring-2 ring-blue-400 bg-blue-50/40 dark:bg-blue-950/30" : ""}`}
+                          data-testid={`row-bundle-component-${idx}`}
+                        >
+                          {/* Drag handle */}
+                          <div className="col-span-1 flex items-center justify-center h-9 cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground" data-testid={`handle-bundle-component-${idx}`}>
+                            <GripVertical className="w-4 h-4" />
+                          </div>
+                          <div className="col-span-5">
                             {(() => {
                               const selected = row.componentProductId ? productById.get(row.componentProductId) : null;
                               const isOpen = bundleCompOpenIdx === idx;

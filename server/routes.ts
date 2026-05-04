@@ -11146,21 +11146,5 @@ export async function registerRoutes(
     }
   });
 
-  // ── ONE-TIME KIT MIGRATION (admin only, idempotent) ──────────────────────
-  // POST /api/admin/run-kit-migration
-  // Copies 3 missing component products + 14 kit/bundle products + 271 bundle
-  // component links from dev to production. Safe to call multiple times —
-  // exits early if kits are already present. Remove this endpoint after use.
-  app.post("/api/admin/run-kit-migration", authenticateToken, requireRole("admin"), async (req: any, res) => {
-    try {
-      const { runKitMigration } = await import("./lib/kit-migration");
-      const result = await runKitMigration();
-      res.status(200).json(result);
-    } catch (err: any) {
-      console.error("[kit-migration] error:", err);
-      res.status(500).json({ message: err?.message || "Migration failed", stack: err?.stack });
-    }
-  });
-
   return httpServer;
 }

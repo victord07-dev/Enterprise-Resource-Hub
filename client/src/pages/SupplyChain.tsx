@@ -1877,12 +1877,12 @@ export default function SupplyChain() {
                               <td className="p-3 text-muted-foreground">
                                 {po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString() : "—"}
                               </td>
-                              <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number(po.totalAmount).toLocaleString()}</td>
+                              <td className="p-3 text-right font-medium" data-testid={`text-po-amount-${po.id}`}>₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString()}</td>
                               <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center justify-end gap-1">
                                   {(po.status === "approved" || po.status === "shipped" || po.status === "partial") && po.deliveryType !== "direct_delivery" && (() => {
                                     const supplierPaid = Number((po as any).supplierPaidAmount ?? 0);
-                                    const poTotal = Number(po.totalAmount ?? 0);
+                                    const poTotal = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
                                     const paymentComplete = poTotal === 0 || supplierPaid >= poTotal;
                                     const canCreditOverride = currentUser?.role === "admin" || currentUser?.role === "accountant";
 
@@ -2021,7 +2021,7 @@ export default function SupplyChain() {
                                       linkedSalesOrder={linkedSO ? { orderNumber: linkedSO.orderNumber, id: linkedSO.id } : null}
                                       deliveryType={po.deliveryType}
                                       deliveryAddress={po.deliveryAddress}
-                                      poTotal={Number(po.totalAmount ?? 0)}
+                                      poTotal={Number((po as any).grandTotal ?? po.totalAmount ?? 0)}
                                       supplierPaidAmount={Number((po as any).supplierPaidAmount ?? 0)}
                                       poStatus={po.status}
                                       canCreditOverride={currentUser?.role === "admin" || currentUser?.role === "accountant"}

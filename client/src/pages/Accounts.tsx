@@ -1325,7 +1325,7 @@ export default function Accounts() {
                 <SelectContent>
                   {filteredPOs.length === 0
                     ? <SelectItem value="_none" disabled>No POs for this supplier</SelectItem>
-                    : filteredPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)
+                    : filteredPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString()}</SelectItem>)
                   }
                 </SelectContent>
               </Select>
@@ -1637,7 +1637,7 @@ export default function Accounts() {
                     <SelectValue placeholder={spForm.supplierId ? "Select PO" : "Select supplier first"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {supplierPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number(po.totalAmount).toLocaleString()}</SelectItem>)}
+                    {supplierPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString()}</SelectItem>)}
                   </SelectContent>
                 </Select>
                 {spForm.purchaseOrderId && (

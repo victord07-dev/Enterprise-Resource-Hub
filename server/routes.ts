@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage, type ExpenseFilters } from "./storage";
-import { getFinancialYear, nextDocNumberInTx, withDocNumberRetry } from "./lib/doc-numbers";
+import { getFinancialYear, nextDocNumberInTx } from "./lib/doc-numbers";
 import { todayIST } from "@shared/datetime";
 import { db } from "./db";
 import { sql, eq } from "drizzle-orm";
@@ -2159,17 +2159,15 @@ export async function registerRoutes(
       // Validate payload first (with a placeholder) — bad requests never touch the sequence.
       const preCheck = insertSalesOrderSchema.safeParse({ ...body, orderNumber: "PLACEHOLDER" });
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
-      // Allocation + INSERT in one transaction: if INSERT fails the MAX read rolls back → no gap.
-      // Retry on 23505 (concurrent create got the same number first) re-reads MAX and gets next seq.
+      // Allocation + INSERT in one transaction: counter upsert + document insert share the same tx.
+      // If INSERT fails the upsert rolls back → no number is burned → no gap.
       const fyStr = getFinancialYear(new Date());
-      const created = await withDocNumberRetry(async () => {
-        return db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "sales_orders", "order_number", "ITFI-SO", fyStr);
+      const created = await db.transaction(async (tx) => {
+          const orderNumber = await nextDocNumberInTx(tx, "ITFI-SO", fyStr);
           const parsed = insertSalesOrderSchema.parse({ ...body, orderNumber });
           const [row] = await tx.insert(salesOrdersTable).values(parsed as any).returning();
           return row;
         });
-      });
       if ((body as any).isDuesOverride) {
         await logAction(req.user.id, "so_dues_override", "sales",
           `SO ${created.orderNumber} created despite ₹${body.duesOverrideAmount} outstanding from customer. Reason: ${body.duesOverrideReason}`);
@@ -2264,16 +2262,15 @@ export async function registerRoutes(
       // Validate payload first (with a placeholder) — bad requests never touch the sequence.
       const preCheck = insertQuotationSchema.safeParse({ ...body, quoteNumber: "PLACEHOLDER" });
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
-      // Allocation + INSERT in one transaction: if INSERT fails the MAX read rolls back → no gap.
+      // Allocation + INSERT in one transaction: counter upsert + document insert share the same tx.
+      // If INSERT fails the upsert rolls back → no number is burned → no gap.
       const fyStr = getFinancialYear(new Date());
-      const created = await withDocNumberRetry(async () => {
-        return db.transaction(async (tx) => {
-          const quoteNumber = await nextDocNumberInTx(tx, "quotations", "quote_number", "ITFI-Q", fyStr);
+      const created = await db.transaction(async (tx) => {
+          const quoteNumber = await nextDocNumberInTx(tx, "ITFI-Q", fyStr);
           const parsed = insertQuotationSchema.parse({ ...body, quoteNumber });
           const [row] = await tx.insert(quotationsTable).values(parsed as any).returning();
           return row;
         });
-      });
       await logAction(req.user.id, "create", "sales", `Created quotation ${created.quoteNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -2699,9 +2696,8 @@ export async function registerRoutes(
 
       const fyStr = getFinancialYear(new Date());
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
-      const order = await withDocNumberRetry(async () => {
-        return db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "sales_orders", "order_number", "ITFI-SO", fyStr);
+      const order = await db.transaction(async (tx) => {
+          const orderNumber = await nextDocNumberInTx(tx, "ITFI-SO", fyStr);
           const [row] = await tx.insert(salesOrdersTable).values({
             orderNumber,
             customerId: quotation.customerId,
@@ -2723,7 +2719,6 @@ export async function registerRoutes(
           } as any).returning();
           return row;
         });
-      });
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
       for (const qi of quotationItems) {
@@ -2845,9 +2840,8 @@ export async function registerRoutes(
 
       const fyStrQ = getFinancialYear(new Date());
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
-      const quotation = await withDocNumberRetry(async () => {
-        return db.transaction(async (tx) => {
-          const quoteNumber = await nextDocNumberInTx(tx, "quotations", "quote_number", "ITFI-Q", fyStrQ);
+      const quotation = await db.transaction(async (tx) => {
+          const quoteNumber = await nextDocNumberInTx(tx, "ITFI-Q", fyStrQ);
           const [row] = await tx.insert(quotationsTable).values({
             quoteNumber,
             customerId: customer.id,
@@ -2861,14 +2855,13 @@ export async function registerRoutes(
           } as any).returning();
           return row;
         });
-      });
 
       const updatedLead = await storage.updateLead(req.params.id, {
         status: "quotation_sent",
         quotationId: quotation.id,
       });
 
-      await logAction(req.user.id, "create", "leads", `Converted lead ${lead.name} to quotation ${quoteNumber}`);
+      await logAction(req.user.id, "create", "leads", `Converted lead ${lead.name} to quotation ${quotation.quoteNumber}`);
 
       res.status(201).json({ lead: updatedLead, quotation, customer });
     } catch (error) {
@@ -3327,14 +3320,12 @@ export async function registerRoutes(
             const parsed = insertPurchaseOrderSchema.parse({ ...payload, poNumber: manualPoNumber });
             return storage.createPurchaseOrder(parsed as any);
           })()
-        : await withDocNumberRetry(async () => {
-            return db.transaction(async (tx) => {
-              const poNumber = await nextDocNumberInTx(tx, "purchase_orders", "po_number", "ITFI-PO", fyPO);
+        : await db.transaction(async (tx) => {
+              const poNumber = await nextDocNumberInTx(tx, "ITFI-PO", fyPO);
               const parsed = insertPurchaseOrderSchema.parse({ ...payload, poNumber });
               const [row] = await tx.insert(purchaseOrdersTable).values(parsed as any).returning();
               return row;
             });
-          });
       await logAction(req.user.id, "create", "supply_chain", `Created PO ${created.poNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -6437,9 +6428,8 @@ export async function registerRoutes(
 
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const fyPR = getFinancialYear(new Date());
-      const po = await withDocNumberRetry(async () => {
-        return db.transaction(async (tx) => {
-          const poNumber = await nextDocNumberInTx(tx, "purchase_orders", "po_number", "ITFI-PO", fyPR);
+      const po = await db.transaction(async (tx) => {
+          const poNumber = await nextDocNumberInTx(tx, "ITFI-PO", fyPR);
           const [row] = await tx.insert(purchaseOrdersTable).values({
             poNumber,
             supplierId: pr.supplierId,
@@ -6456,7 +6446,6 @@ export async function registerRoutes(
           } as any).returning();
           return row;
         });
-      });
 
       for (const poItem of poItemsData) {
         await storage.createPurchaseOrderItem({

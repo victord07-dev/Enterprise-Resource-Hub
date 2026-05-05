@@ -11,18 +11,23 @@
  *   Sales Order    ITFI-SO/2026-27/0001
  *   Purchase Order ITFI-PO/2026-27/0001
  *
- * Allocation strategy (gap-free):
- *   nextDocNumberInTx() reads MAX(seq) directly from the document table
- *   within the *same* db.transaction() that performs the INSERT.  If the
- *   INSERT fails and the transaction rolls back, the MAX read is also rolled
- *   back — the number is never permanently assigned, so no gap is created.
+ * --- Allocation strategy (gap-free, concurrency-safe) ---
  *
- *   Under concurrent creates two transactions may both read the same MAX
- *   and both attempt to insert the same number.  The UNIQUE constraint on
- *   the document-number column causes one to fail with code 23505.
- *   withDocNumberRetry() catches that and retries the entire transaction
- *   (re-reading MAX from the now-updated table), converging in O(concurrent)
- *   retries — typically 1.
+ * nextDocNumberInTx(tx, prefix, fyStr) increments the counter row in
+ * `doc_number_sequences` using a single atomic upsert, WITHIN the same
+ * db.transaction() that also INSERTs the document.
+ *
+ * If the document INSERT fails and the transaction rolls back, the counter
+ * increment is rolled back too — no number is permanently assigned, so no
+ * gap is created.
+ *
+ * Concurrent transactions are serialised by Postgres implicit row-level
+ * locking on the existing sequence row (the UPDATE step of the upsert
+ * blocks until the first writer commits), so two concurrent requests can
+ * never receive the same sequence number.
+ *
+ * Note: `SELECT MAX(...) FOR UPDATE` is invalid in Postgres with aggregates
+ * and is deliberately NOT used here.
  */
 
 import { db } from "../db";
@@ -52,10 +57,9 @@ export function getFinancialYear(date: Date = new Date()): string {
 }
 
 /**
- * Ensures the doc_number_sequences table exists.
- * The table is no longer used for allocation but is kept for backward
- * compatibility with existing prod data; this guard is a no-op if the table
- * already exists.
+ * Ensures the doc_number_sequences table exists at runtime.
+ * Call once at server startup before any request is served.
+ * This is a no-op if the table was already created by drizzle-kit push.
  */
 export async function initDocNumberTable(): Promise<void> {
   await db.execute(sql`
@@ -69,67 +73,33 @@ export async function initDocNumberTable(): Promise<void> {
 }
 
 /**
- * Computes the next document number by reading MAX(seq) directly from the
- * actual document table.
+ * Atomically increments the counter for (prefix, fyStr) within the provided
+ * Drizzle transaction `tx`, and returns the formatted document number.
  *
- * MUST be called within a db.transaction() whose commit also performs the
- * INSERT.  That way a failed insert rolls the MAX read back too — no gap.
+ * MUST be called inside a db.transaction() whose commit also performs the
+ * document INSERT.  If the INSERT fails and the transaction rolls back, the
+ * counter increment is also rolled back — the number is never permanently
+ * assigned, so no gap is created.
  *
- * Locking: FOR UPDATE locks matching rows so concurrent transactions with
- * existing records serialize.  For the first document in a FY (no rows to
- * lock) two concurrent readers may both get seq=1; the unique constraint
- * on the document-number column rejects the second; withDocNumberRetry()
- * retries, re-reading MAX=1 and returning 2.
+ * The single-statement upsert serialises concurrent writes at the Postgres
+ * row level, so two concurrent requests cannot receive the same number.
  *
- * @param tx          - drizzle transaction (same tx that will INSERT the doc)
- * @param tableName   - raw SQL table name,  e.g. "sales_orders"
- * @param columnName  - raw SQL column name, e.g. "order_number"
- * @param prefix      - document prefix,     e.g. "ITFI-SO"
- * @param fyStr       - FY string,           e.g. "2026-27"
+ * @param tx     - Drizzle transaction (same one that will INSERT the document)
+ * @param prefix - Document prefix, e.g. "ITFI-SO"
+ * @param fyStr  - FY string,       e.g. "2026-27"
  */
 export async function nextDocNumberInTx(
   tx: typeof db,
-  tableName: string,
-  columnName: string,
   prefix: string,
   fyStr: string,
 ): Promise<string> {
-  const likePattern = `${prefix}/${fyStr}/%`;
-  const rows = await tx.execute(sql`
-    SELECT COALESCE(
-      MAX(CAST(SPLIT_PART(${sql.raw(columnName)}, '/', 3) AS INTEGER)),
-      0
-    ) + 1 AS next_seq
-    FROM ${sql.raw(tableName)}
-    WHERE ${sql.raw(columnName)} LIKE ${likePattern}
-    FOR UPDATE
+  const result = await tx.execute(sql`
+    INSERT INTO doc_number_sequences (doc_type, fy_str, last_seq)
+    VALUES (${prefix}, ${fyStr}, 1)
+    ON CONFLICT (doc_type, fy_str)
+    DO UPDATE SET last_seq = doc_number_sequences.last_seq + 1
+    RETURNING last_seq
   `);
-  const seq = (rows.rows[0] as { next_seq: number }).next_seq;
+  const seq = (result.rows[0] as { last_seq: number }).last_seq;
   return `${prefix}/${fyStr}/${String(seq).padStart(4, "0")}`;
-}
-
-/**
- * Retry wrapper for transactional document-number allocation.
- *
- * Retries on Postgres unique-constraint violations (code 23505) which
- * indicate a concurrent transaction committed the same number first.
- * Each retry re-runs fn() so MAX is re-read from the updated table.
- *
- * @param fn         - async function that opens a transaction, allocates a
- *                     number via nextDocNumberInTx, and inserts the document.
- * @param maxRetries - maximum number of additional attempts (default 5).
- */
-export async function withDocNumberRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 5,
-): Promise<T> {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      if (err.code === "23505" && attempt < maxRetries) continue;
-      throw err;
-    }
-  }
-  throw new Error("withDocNumberRetry: unreachable");
 }

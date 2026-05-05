@@ -6332,9 +6332,6 @@ export async function registerRoutes(
       const prItems = await storage.getPurchaseRequestItems(pr.id);
       if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
 
-      const fyPR = getFinancialYear(new Date());
-      const poNumber = await nextDocNumber("ITFI-PO", fyPR);
-
       const supplierProds = await storage.getSupplierProducts(pr.supplierId);
       const allProducts = await storage.getProducts();
       const productMap = new Map(allProducts.map(p => [p.id, p]));
@@ -6353,6 +6350,10 @@ export async function registerRoutes(
         const names = trulyNoCostItems.map(item => productMap.get(item.productId)?.name || item.description || item.productId).join(", ");
         return res.status(400).json({ message: `Cannot convert to PO — no price found for: ${names}. Edit the purchase request to set unit costs, or add these products to the supplier's catalog.` });
       }
+
+      // All validations passed — allocate PO number at the last possible moment before insert.
+      const fyPR = getFinancialYear(new Date());
+      const poNumber = await nextDocNumber("ITFI-PO", fyPR);
 
       // H1: Snapshot GST per item from product catalog
       let poSubtotal = 0;

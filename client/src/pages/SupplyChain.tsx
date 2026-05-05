@@ -214,7 +214,8 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
         item.gstRate = (prod as any).gstRate != null ? Number((prod as any).gstRate) : (item.gstRate ?? 18);
         const sp = spMap.get(value);
         // Phase 6.6 C2: prefer supplier_products.supplierPrice; fallback to products.distributorPrice (NOT costPrice).
-        if (sp) {
+        // Only use supplier price when it is actually set (> 0); a zero-price record means "not yet priced".
+        if (sp && Number(sp.supplierPrice) > 0) {
           item.unitCost = Number(sp.supplierPrice);
           item._priceSource = "supplier";
           item._priceLastUpdated = sp.lastPriceUpdatedAt ? String(sp.lastPriceUpdatedAt) : null;

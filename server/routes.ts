@@ -2743,9 +2743,9 @@ export async function registerRoutes(
       await storage.updateQuotation(req.params.id, { status: "accepted" });
       if (convDuesOverrideFields.isDuesOverride) {
         await logAction(req.user.id, "so_dues_override", "sales",
-          `SO ${orderNumber} (from quotation ${quotation.quoteNumber}) created despite ₹${convDuesOverrideFields.duesOverrideAmount} outstanding. Reason: ${convDuesOverrideFields.duesOverrideReason}`);
+          `SO ${order.orderNumber} (from quotation ${quotation.quoteNumber}) created despite ₹${convDuesOverrideFields.duesOverrideAmount} outstanding. Reason: ${convDuesOverrideFields.duesOverrideReason}`);
       }
-      await logAction(req.user.id, "create", "sales", `Converted quotation ${quotation.quoteNumber} to order ${orderNumber}`);
+      await logAction(req.user.id, "create", "sales", `Converted quotation ${quotation.quoteNumber} to order ${order.orderNumber}`);
 
       res.status(201).json(order);
     } catch (error) {

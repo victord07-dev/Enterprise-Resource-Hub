@@ -2142,13 +2142,21 @@ export default function SupplyChain() {
             />
           </div>
           <DialogFooter>
-            <Button
-              data-testid="button-submit-po"
-              disabled={poMutation.isPending}
-              onClick={() => poMutation.mutate({ ...poForm, lineItems: poLineItems })}
-            >
-              {poMutation.isPending ? "Saving..." : editingPo ? "Update" : "Create"}
-            </Button>
+            {(() => {
+              const sel = poForm.supplierId && suppliers ? suppliers.find((s: Supplier) => s.id === poForm.supplierId) : null;
+              const supplierMissing = sel ? getSupplierMissingFields(sel) : [];
+              const blocked = !editingPo && supplierMissing.length > 0;
+              return (
+                <Button
+                  data-testid="button-submit-po"
+                  disabled={poMutation.isPending || blocked}
+                  title={blocked ? `Complete supplier profile first: missing ${supplierMissing.join(", ")}` : undefined}
+                  onClick={() => poMutation.mutate({ ...poForm, lineItems: poLineItems })}
+                >
+                  {poMutation.isPending ? "Saving..." : editingPo ? "Update" : "Create"}
+                </Button>
+              );
+            })()}
           </DialogFooter>
         </DialogContent>
       </Dialog>

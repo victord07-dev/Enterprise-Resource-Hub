@@ -3274,21 +3274,20 @@ export async function registerRoutes(
 
   app.post("/api/purchase-orders", authenticateToken, async (req: any, res) => {
     try {
-      // C2: block create-and-issue when supplier is incomplete (drafts/pending always allowed)
+      // C2: block ALL PO creation when supplier profile is incomplete (GST, phone, address required)
+      const check = await getSupplierIncompleteness(req.body?.supplierId);
+      if (check.incomplete) {
+        return res.status(422).json({
+          code: "supplier_incomplete",
+          message: "Supplier is missing required details (" + check.missing.join(", ") + "). Complete the supplier profile before creating a purchase order.",
+          missing: check.missing,
+          supplierId: check.supplier?.id || req.body?.supplierId || null,
+          supplierName: check.supplier?.name || null,
+        });
+      }
+      // D2: also block PO issue when any product line refers to a product whose master distributorPrice is null/zero.
       const incomingStatus = (req.body?.status || "pending") as string;
       if (PO_ISSUED_STATUSES.has(incomingStatus)) {
-        const check = await getSupplierIncompleteness(req.body?.supplierId);
-        if (check.incomplete) {
-          return res.status(422).json({
-            code: "supplier_incomplete",
-            message: "Supplier is missing required details (" + check.missing.join(", ") + "). Save as Pending or complete the supplier profile.",
-            missing: check.missing,
-            supplierId: check.supplier?.id || req.body?.supplierId || null,
-            supplierName: check.supplier?.name || null,
-          });
-        }
-        // D2: also block PO issue when any product line refers to a product whose master distributorPrice is null/zero.
-        // (For PO POST, lineItems are typically saved separately, but if the caller sends them inline we check.)
         const inlineItems = Array.isArray((req.body as any)?.lineItems) ? (req.body as any).lineItems : (Array.isArray((req.body as any)?.items) ? (req.body as any).items : []);
         const inlineProductIds = inlineItems.filter((i: any) => i?.productId).map((i: any) => String(i.productId));
         if (inlineProductIds.length > 0) {

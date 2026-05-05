@@ -1055,6 +1055,12 @@ export default function SupplyChain() {
   const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
   const { data: allSupplierProducts } = useQuery<SupplierProduct[]>({ queryKey: ["/api/supplier-products"] });
   const { data: cashAccountsData } = useQuery<CashAccount[]>({ queryKey: ["/api/cash-accounts"] });
+  const { data: allGrns } = useQuery<any[]>({ queryKey: ["/api/grns"] });
+
+  const draftGrnPoIds = useMemo(() =>
+    new Set((allGrns ?? []).filter((g: any) => g.status === "draft").map((g: any) => g.purchaseOrderId).filter(Boolean)),
+    [allGrns]
+  );
 
   const spAccounts = useMemo(() => {
     if (!cashAccountsData) return [];
@@ -1885,6 +1891,23 @@ export default function SupplyChain() {
                                     const poTotal = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
                                     const paymentComplete = poTotal === 0 || supplierPaid >= poTotal;
                                     const canCreditOverride = currentUser?.role === "admin" || currentUser?.role === "accountant";
+
+                                    // Draft GRN already exists → show View Draft button instead
+                                    if (draftGrnPoIds.has(po.id)) {
+                                      const draftGrn = (allGrns ?? []).find((g: any) => g.status === "draft" && g.purchaseOrderId === po.id);
+                                      return (
+                                        <Button
+                                          size="sm"
+                                          variant="link"
+                                          className="text-xs mr-1 p-0 h-auto text-blue-600 dark:text-blue-400"
+                                          data-testid={`button-view-draft-grn-${po.id}`}
+                                          onClick={() => navigate(`/inventory?tab=grn${draftGrn ? `&highlightGrn=${draftGrn.id}` : ""}`)}
+                                        >
+                                          <PackagePlus className="w-3 h-3 mr-1" />
+                                          View Draft GRN
+                                        </Button>
+                                      );
+                                    }
 
                                     // Payment complete → regular Create GRN button for all roles
                                     if (paymentComplete) {

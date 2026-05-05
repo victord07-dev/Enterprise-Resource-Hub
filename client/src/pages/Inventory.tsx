@@ -563,8 +563,12 @@ export default function Inventory() {
     return () => clearTimeout(t);
   }, [highlightedChallanId]);
 
+  const draftGrnPoIds = new Set((grns ?? []).filter(g => g.status === "draft").map(g => g.purchaseOrderId).filter(Boolean));
+
   const warehouseEligiblePOs = (purchaseOrders ?? []).filter(po =>
-    po.deliveryType === "warehouse" && ["approved", "shipped", "partial"].includes(po.status)
+    po.deliveryType === "warehouse" &&
+    ["approved", "shipped", "partial"].includes(po.status) &&
+    !draftGrnPoIds.has(po.id)
   );
 
   const supplierMap = new Map((suppliers ?? []).map(s => [s.id, s]));
@@ -2094,7 +2098,7 @@ export default function Inventory() {
                     const supplier = supplierMap.get(po.supplierId);
                     return (
                       <SelectItem key={po.id} value={po.id}>
-                        {po.poNumber} — {supplier?.name || "Unknown"} (₹{Number(po.totalAmount).toLocaleString("en-IN")})
+                        {po.poNumber} — {supplier?.name || "Unknown"} (₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString("en-IN")})
                       </SelectItem>
                     );
                   })}

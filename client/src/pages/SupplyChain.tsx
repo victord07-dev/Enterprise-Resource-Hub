@@ -2162,66 +2162,75 @@ export default function SupplyChain() {
       </Dialog>
 
       <Dialog open={supplierDialogOpen} onOpenChange={setSupplierDialogOpen}>
-        <DialogContent>
+        <DialogContent className="w-full max-w-[95vw] sm:max-w-lg md:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingSupplier ? "Edit Supplier" : "Add Supplier"}</DialogTitle>
           </DialogHeader>
           {editingSupplier && <SupplierOutstandingInline supplierId={editingSupplier.id} />}
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="supplierName">Name</Label>
-              <Input id="supplierName" data-testid="input-supplier-name" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supplierName">Name <span className="text-red-500">*</span></Label>
+                <Input id="supplierName" data-testid="input-supplier-name" value={supplierForm.name} onChange={(e) => setSupplierForm({ ...supplierForm, name: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="supplierEmail">Email</Label>
+                <Input id="supplierEmail" type="email" data-testid="input-supplier-email" value={supplierForm.email} onChange={(e) => setSupplierForm({ ...supplierForm, email: e.target.value })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supplierPhone">Phone <span className="text-red-500">*</span></Label>
+                <Input id="supplierPhone" data-testid="input-supplier-phone" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} placeholder="+91 XXXXX XXXXX" />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="supplierGst">GST Number <span className="text-red-500">*</span></Label>
+                <Input id="supplierGst" data-testid="input-supplier-gst" value={supplierForm.gstNumber} onChange={(e) => setSupplierForm({ ...supplierForm, gstNumber: e.target.value })} placeholder="22AAAAA0000A1Z5" />
+              </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="supplierEmail">Email</Label>
-              <Input id="supplierEmail" type="email" data-testid="input-supplier-email" value={supplierForm.email} onChange={(e) => setSupplierForm({ ...supplierForm, email: e.target.value })} />
+              <Label htmlFor="supplierAddress">Address <span className="text-red-500">*</span></Label>
+              <Input id="supplierAddress" data-testid="input-supplier-address" value={supplierForm.address} onChange={(e) => setSupplierForm({ ...supplierForm, address: e.target.value })} placeholder="Street, City, State, PIN" />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierPhone">Phone</Label>
-              <Input id="supplierPhone" data-testid="input-supplier-phone" value={supplierForm.phone} onChange={(e) => setSupplierForm({ ...supplierForm, phone: e.target.value })} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supplierContact">Contact Person</Label>
+                <Input id="supplierContact" data-testid="input-supplier-contact-person" value={supplierForm.contactPerson} onChange={(e) => setSupplierForm({ ...supplierForm, contactPerson: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="supplierCategory">Category</Label>
+                <Select value={supplierForm.category} onValueChange={(v) => setSupplierForm({ ...supplierForm, category: v })}>
+                  <SelectTrigger data-testid="select-supplier-category">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {["Solar Panels", "Electronics", "Raw Materials", "Logistics"].map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierAddress">Address</Label>
-              <Input id="supplierAddress" data-testid="input-supplier-address" value={supplierForm.address} onChange={(e) => setSupplierForm({ ...supplierForm, address: e.target.value })} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="supplierPaymentTerms">Payment Terms</Label>
+                <Select value={(supplierForm as any).paymentTerms || "net_30"} onValueChange={(v) => setSupplierForm({ ...supplierForm, paymentTerms: v } as any)}>
+                  <SelectTrigger id="supplierPaymentTerms" data-testid="select-supplier-payment-terms">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="immediate">Immediate</SelectItem>
+                    <SelectItem value="net_7">Net 7 days</SelectItem>
+                    <SelectItem value="net_15">Net 15 days</SelectItem>
+                    <SelectItem value="net_30">Net 30 days</SelectItem>
+                    <SelectItem value="net_45">Net 45 days</SelectItem>
+                    <SelectItem value="net_60">Net 60 days</SelectItem>
+                    <SelectItem value="net_90">Net 90 days</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierGst">GST Number</Label>
-              <Input id="supplierGst" data-testid="input-supplier-gst" value={supplierForm.gstNumber} onChange={(e) => setSupplierForm({ ...supplierForm, gstNumber: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierContact">Contact Person</Label>
-              <Input id="supplierContact" data-testid="input-supplier-contact-person" value={supplierForm.contactPerson} onChange={(e) => setSupplierForm({ ...supplierForm, contactPerson: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierCategory">Category</Label>
-              <Select value={supplierForm.category} onValueChange={(v) => setSupplierForm({ ...supplierForm, category: v })}>
-                <SelectTrigger data-testid="select-supplier-category">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {["Solar Panels", "Electronics", "Raw Materials", "Logistics"].map((c) => (
-                    <SelectItem key={c} value={c}>{c}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="supplierPaymentTerms">Payment Terms</Label>
-              <Select value={(supplierForm as any).paymentTerms || "net_30"} onValueChange={(v) => setSupplierForm({ ...supplierForm, paymentTerms: v } as any)}>
-                <SelectTrigger id="supplierPaymentTerms" data-testid="select-supplier-payment-terms">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="immediate">Immediate</SelectItem>
-                  <SelectItem value="net_7">Net 7 days</SelectItem>
-                  <SelectItem value="net_15">Net 15 days</SelectItem>
-                  <SelectItem value="net_30">Net 30 days</SelectItem>
-                  <SelectItem value="net_45">Net 45 days</SelectItem>
-                  <SelectItem value="net_60">Net 60 days</SelectItem>
-                  <SelectItem value="net_90">Net 90 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <p className="text-xs text-muted-foreground"><span className="text-red-500">*</span> Required to create purchase orders</p>
           </div>
           <DialogFooter>
             <Button data-testid="button-submit-supplier" disabled={supplierMutation.isPending} onClick={() => supplierMutation.mutate(supplierForm)}>

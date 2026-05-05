@@ -2155,12 +2155,13 @@ export async function registerRoutes(
       delete body.subtotal;
       delete body.totalTax;
       delete body.totalAmount;
-      // Always generate orderNumber server-side (server is source of truth)
-      {
-        const fyStr = getFinancialYear(new Date());
-        body.orderNumber = await nextDocNumber("ITFI-SO", fyStr);
-      }
-      const parsed = insertSalesOrderSchema.safeParse(body);
+      // Validate payload first (with a placeholder) so a bad request never burns a sequence number.
+      const preCheck = insertSalesOrderSchema.safeParse({ ...body, orderNumber: "PLACEHOLDER" });
+      if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
+      // Validation passed — allocate sequence number server-side (source of truth).
+      const fyStr = getFinancialYear(new Date());
+      const orderNumber = await nextDocNumber("ITFI-SO", fyStr);
+      const parsed = insertSalesOrderSchema.safeParse({ ...body, orderNumber });
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createSalesOrder(parsed.data as any);
       if ((body as any).isDuesOverride) {
@@ -2254,12 +2255,13 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
-      // Always generate quoteNumber server-side (server is source of truth)
-      {
-        const fyStr = getFinancialYear(new Date());
-        body.quoteNumber = await nextDocNumber("ITFI-Q", fyStr);
-      }
-      const parsed = insertQuotationSchema.safeParse(body);
+      // Validate payload first (with a placeholder) so a bad request never burns a sequence number.
+      const preCheck = insertQuotationSchema.safeParse({ ...body, quoteNumber: "PLACEHOLDER" });
+      if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
+      // Validation passed — allocate sequence number server-side (source of truth).
+      const fyStr = getFinancialYear(new Date());
+      const quoteNum = await nextDocNumber("ITFI-Q", fyStr);
+      const parsed = insertQuotationSchema.safeParse({ ...body, quoteNumber: quoteNum });
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createQuotation(parsed.data as any);
       await logAction(req.user.id, "create", "sales", `Created quotation ${parsed.data.quoteNumber}`);
@@ -3284,19 +3286,21 @@ export async function registerRoutes(
           }
         }
       }
-      let poNumber = req.body.poNumber;
-      if (!poNumber || poNumber.trim() === "") {
-        const fyPO = getFinancialYear(new Date());
-        poNumber = await nextDocNumber("ITFI-PO", fyPO);
-      }
-
+      const manualPoNumber = (req.body.poNumber || "").trim();
       const payload = {
         ...req.body,
-        poNumber,
+        poNumber: manualPoNumber || "PLACEHOLDER",
         expectedDelivery: req.body.expectedDelivery && req.body.expectedDelivery !== "" ? new Date(req.body.expectedDelivery) : null,
       };
 
-      const parsed = insertPurchaseOrderSchema.safeParse(payload);
+      // Validate payload before allocating sequence number so bad requests never burn a number.
+      const preCheck = insertPurchaseOrderSchema.safeParse(payload);
+      if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
+
+      // Allocate PO number only if not manually provided.
+      const poNumber = manualPoNumber || await nextDocNumber("ITFI-PO", getFinancialYear(new Date()));
+
+      const parsed = insertPurchaseOrderSchema.safeParse({ ...payload, poNumber });
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createPurchaseOrder(parsed.data as any);
       await logAction(req.user.id, "create", "supply_chain", `Created PO ${poNumber}`);

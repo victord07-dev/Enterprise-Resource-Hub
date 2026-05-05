@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import compression from "compression";
 import { registerRoutes } from "./routes";
+import { initDocNumberTable } from "./lib/doc-numbers";
 import { slowRequestLogger } from "./lib/request-logger";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -75,6 +76,10 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Ensure the doc_number_sequences table exists before any request is served.
+  // This is a no-op if the table was already created by drizzle-kit push.
+  await initDocNumberTable();
+
   await registerRoutes(httpServer, app);
 
   setupWhatsappWebSocket(httpServer);

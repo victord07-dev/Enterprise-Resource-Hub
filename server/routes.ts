@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage, type ExpenseFilters } from "./storage";
-import { getFinancialYear, nextDocNumber } from "./lib/doc-numbers";
+import { getFinancialYear, nextDocNumberInTx, withDocNumberRetry } from "./lib/doc-numbers";
 import { todayIST } from "@shared/datetime";
 import { db } from "./db";
 import { sql, eq } from "drizzle-orm";
@@ -23,6 +23,7 @@ import {
   insertSalesInvoiceSchema, insertSalesInvoiceItemSchema, insertCustomerPaymentSchema,
   insertAttachmentSchema, attachments as attachmentsTable,
   salesReturns, salesReturnItems, stockMovements, creditNotes, salesInvoices, customers,
+  salesOrders as salesOrdersTable, quotations as quotationsTable, purchaseOrders as purchaseOrdersTable,
   insertWhatsappConversationSchema, insertWhatsappMessageSchema, insertWhatsappTemplateSchema,
   insertExpenseSchema, insertExpenseCategorySchema, EXPENSE_LINKED_ENTITY_TYPES, type Expense,
   insertBrandSchema, COST_VISIBLE_ROLES, COST_FIELDS_TO_REDACT,
@@ -2155,20 +2156,25 @@ export async function registerRoutes(
       delete body.subtotal;
       delete body.totalTax;
       delete body.totalAmount;
-      // Validate payload first (with a placeholder) so a bad request never burns a sequence number.
+      // Validate payload first (with a placeholder) — bad requests never touch the sequence.
       const preCheck = insertSalesOrderSchema.safeParse({ ...body, orderNumber: "PLACEHOLDER" });
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
-      // Validation passed — allocate sequence number server-side (source of truth).
+      // Allocation + INSERT in one transaction: if INSERT fails the MAX read rolls back → no gap.
+      // Retry on 23505 (concurrent create got the same number first) re-reads MAX and gets next seq.
       const fyStr = getFinancialYear(new Date());
-      const orderNumber = await nextDocNumber("ITFI-SO", fyStr);
-      const parsed = insertSalesOrderSchema.safeParse({ ...body, orderNumber });
-      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createSalesOrder(parsed.data as any);
+      const created = await withDocNumberRetry(async () => {
+        return db.transaction(async (tx) => {
+          const orderNumber = await nextDocNumberInTx(tx, "sales_orders", "order_number", "ITFI-SO", fyStr);
+          const parsed = insertSalesOrderSchema.parse({ ...body, orderNumber });
+          const [row] = await tx.insert(salesOrdersTable).values(parsed as any).returning();
+          return row;
+        });
+      });
       if ((body as any).isDuesOverride) {
         await logAction(req.user.id, "so_dues_override", "sales",
-          `SO ${parsed.data.orderNumber} created despite ₹${body.duesOverrideAmount} outstanding from customer. Reason: ${body.duesOverrideReason}`);
+          `SO ${created.orderNumber} created despite ₹${body.duesOverrideAmount} outstanding from customer. Reason: ${body.duesOverrideReason}`);
       }
-      await logAction(req.user.id, "create", "sales", `Created sales order ${parsed.data.orderNumber}`);
+      await logAction(req.user.id, "create", "sales", `Created sales order ${created.orderNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
       if (error.code === "23505") return res.status(409).json({ message: "Order number already exists" });
@@ -2255,16 +2261,20 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
-      // Validate payload first (with a placeholder) so a bad request never burns a sequence number.
+      // Validate payload first (with a placeholder) — bad requests never touch the sequence.
       const preCheck = insertQuotationSchema.safeParse({ ...body, quoteNumber: "PLACEHOLDER" });
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
-      // Validation passed — allocate sequence number server-side (source of truth).
+      // Allocation + INSERT in one transaction: if INSERT fails the MAX read rolls back → no gap.
       const fyStr = getFinancialYear(new Date());
-      const quoteNum = await nextDocNumber("ITFI-Q", fyStr);
-      const parsed = insertQuotationSchema.safeParse({ ...body, quoteNumber: quoteNum });
-      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createQuotation(parsed.data as any);
-      await logAction(req.user.id, "create", "sales", `Created quotation ${parsed.data.quoteNumber}`);
+      const created = await withDocNumberRetry(async () => {
+        return db.transaction(async (tx) => {
+          const quoteNumber = await nextDocNumberInTx(tx, "quotations", "quote_number", "ITFI-Q", fyStr);
+          const parsed = insertQuotationSchema.parse({ ...body, quoteNumber });
+          const [row] = await tx.insert(quotationsTable).values(parsed as any).returning();
+          return row;
+        });
+      });
+      await logAction(req.user.id, "create", "sales", `Created quotation ${created.quoteNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
       if (error.code === "23505") return res.status(409).json({ message: "Quote number already exists" });
@@ -2688,26 +2698,32 @@ export async function registerRoutes(
       }
 
       const fyStr = getFinancialYear(new Date());
-      const orderNumber = await nextDocNumber("ITFI-SO", fyStr);
-      const order = await storage.createSalesOrder({
-        orderNumber,
-        customerId: quotation.customerId,
-        status: "pending",
-        totalAmount: quotation.totalAmount,
-        orderDate: new Date(),
-        notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
-        discountType: quotation.discountType,
-        discountValue: quotation.discountValue,
-        paymentTerms: null,
-        advanceAmount: null,
-        paidAmount: "0",
-        expectedDeliveryDate: quotation.expectedDeliveryDate || null,
-        deliveryMethod: (quotation as any).deliveryMethod || null,
-        deliveryCost: (quotation as any).deliveryCost || null,
-        deliveryAddress: (quotation as any).deliveryAddress || null,
-        ...convDuesOverrideFields,
-        ...quoteFloorFields,
-      } as any);
+      // Allocation + INSERT in one transaction so a failed insert never burns a number.
+      const order = await withDocNumberRetry(async () => {
+        return db.transaction(async (tx) => {
+          const orderNumber = await nextDocNumberInTx(tx, "sales_orders", "order_number", "ITFI-SO", fyStr);
+          const [row] = await tx.insert(salesOrdersTable).values({
+            orderNumber,
+            customerId: quotation.customerId,
+            status: "pending",
+            totalAmount: quotation.totalAmount,
+            orderDate: new Date(),
+            notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
+            discountType: quotation.discountType,
+            discountValue: quotation.discountValue,
+            paymentTerms: null,
+            advanceAmount: null,
+            paidAmount: "0",
+            expectedDeliveryDate: quotation.expectedDeliveryDate || null,
+            deliveryMethod: (quotation as any).deliveryMethod || null,
+            deliveryCost: (quotation as any).deliveryCost || null,
+            deliveryAddress: (quotation as any).deliveryAddress || null,
+            ...convDuesOverrideFields,
+            ...quoteFloorFields,
+          } as any).returning();
+          return row;
+        });
+      });
 
       const quotationItems = await storage.getQuotationItems(req.params.id);
       for (const qi of quotationItems) {
@@ -2828,17 +2844,23 @@ export async function registerRoutes(
       }
 
       const fyStrQ = getFinancialYear(new Date());
-      const quoteNumber = await nextDocNumber("ITFI-Q", fyStrQ);
-      const quotation = await storage.createQuotation({
-        quoteNumber,
-        customerId: customer.id,
-        status: "draft",
-        totalAmount: lead.estimatedValue || "0",
-        validUntil: null,
-        createdAt: new Date(),
-        notes: lead.requirement || null,
-        discountType: null,
-        discountValue: null,
+      // Allocation + INSERT in one transaction so a failed insert never burns a number.
+      const quotation = await withDocNumberRetry(async () => {
+        return db.transaction(async (tx) => {
+          const quoteNumber = await nextDocNumberInTx(tx, "quotations", "quote_number", "ITFI-Q", fyStrQ);
+          const [row] = await tx.insert(quotationsTable).values({
+            quoteNumber,
+            customerId: customer.id,
+            status: "draft",
+            totalAmount: lead.estimatedValue || "0",
+            validUntil: null,
+            createdAt: new Date(),
+            notes: lead.requirement || null,
+            discountType: null,
+            discountValue: null,
+          } as any).returning();
+          return row;
+        });
       });
 
       const updatedLead = await storage.updateLead(req.params.id, {
@@ -3297,13 +3319,23 @@ export async function registerRoutes(
       const preCheck = insertPurchaseOrderSchema.safeParse(payload);
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
 
-      // Allocate PO number only if not manually provided.
-      const poNumber = manualPoNumber || await nextDocNumber("ITFI-PO", getFinancialYear(new Date()));
-
-      const parsed = insertPurchaseOrderSchema.safeParse({ ...payload, poNumber });
-      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
-      const created = await storage.createPurchaseOrder(parsed.data as any);
-      await logAction(req.user.id, "create", "supply_chain", `Created PO ${poNumber}`);
+      // Allocation + INSERT in one transaction so a failed insert never burns a number.
+      // If user provided a manual PO number, use it directly (no sequence allocation).
+      const fyPO = getFinancialYear(new Date());
+      const created = manualPoNumber
+        ? await (async () => {
+            const parsed = insertPurchaseOrderSchema.parse({ ...payload, poNumber: manualPoNumber });
+            return storage.createPurchaseOrder(parsed as any);
+          })()
+        : await withDocNumberRetry(async () => {
+            return db.transaction(async (tx) => {
+              const poNumber = await nextDocNumberInTx(tx, "purchase_orders", "po_number", "ITFI-PO", fyPO);
+              const parsed = insertPurchaseOrderSchema.parse({ ...payload, poNumber });
+              const [row] = await tx.insert(purchaseOrdersTable).values(parsed as any).returning();
+              return row;
+            });
+          });
+      await logAction(req.user.id, "create", "supply_chain", `Created PO ${created.poNumber}`);
       res.status(201).json(created);
     } catch (error: any) {
       if (error.code === "23505") return res.status(409).json({ message: "PO number already exists" });
@@ -6351,11 +6383,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: `Cannot convert to PO — no price found for: ${names}. Edit the purchase request to set unit costs, or add these products to the supplier's catalog.` });
       }
 
-      // All validations passed — allocate PO number at the last possible moment before insert.
-      const fyPR = getFinancialYear(new Date());
-      const poNumber = await nextDocNumber("ITFI-PO", fyPR);
-
-      // H1: Snapshot GST per item from product catalog
+      // H1: Snapshot GST per item from product catalog (pure computation — no DB writes)
       let poSubtotal = 0;
       let poTotalTax = 0;
       const poItemsData = prItems.map(item => {
@@ -6407,20 +6435,28 @@ export async function registerRoutes(
         }
       }
 
-      const po = await storage.createPurchaseOrder({
-        poNumber,
-        supplierId: pr.supplierId,
-        status: "pending",
-        deliveryType,
-        totalAmount: poSubtotal.toFixed(2),
-        expectedDelivery,
-        notes: `Generated from purchase request ${pr.requestNumber}`,
-        deliveryAddress,
-        subtotal: poSubtotal.toFixed(2),
-        totalTax: poTotalTax.toFixed(2),
-        deliveryCost: "0",
-        grandTotal: poGrandTotal.toFixed(2),
-      } as any);
+      // Allocation + INSERT in one transaction so a failed insert never burns a number.
+      const fyPR = getFinancialYear(new Date());
+      const po = await withDocNumberRetry(async () => {
+        return db.transaction(async (tx) => {
+          const poNumber = await nextDocNumberInTx(tx, "purchase_orders", "po_number", "ITFI-PO", fyPR);
+          const [row] = await tx.insert(purchaseOrdersTable).values({
+            poNumber,
+            supplierId: pr.supplierId,
+            status: "pending",
+            deliveryType,
+            totalAmount: poSubtotal.toFixed(2),
+            expectedDelivery,
+            notes: `Generated from purchase request ${pr.requestNumber}`,
+            deliveryAddress,
+            subtotal: poSubtotal.toFixed(2),
+            totalTax: poTotalTax.toFixed(2),
+            deliveryCost: "0",
+            grandTotal: poGrandTotal.toFixed(2),
+          } as any).returning();
+          return row;
+        });
+      });
 
       for (const poItem of poItemsData) {
         await storage.createPurchaseOrderItem({
@@ -6434,7 +6470,7 @@ export async function registerRoutes(
         purchaseOrderId: po.id,
       });
 
-      await logAction(req.user.id, "create", "supply_chain", `Converted purchase request ${pr.requestNumber} to PO ${poNumber}`);
+      await logAction(req.user.id, "create", "supply_chain", `Converted purchase request ${pr.requestNumber} to PO ${po.poNumber}`);
       res.json({ purchaseOrder: po, requestUpdated: true });
     } catch (error) {
       console.error("Failed to convert purchase request to PO:", error);

@@ -2155,11 +2155,10 @@ export async function registerRoutes(
       delete body.subtotal;
       delete body.totalTax;
       delete body.totalAmount;
-      // Auto-generate orderNumber in ITFI FY scheme if client did not provide one
-      if (!body.orderNumber || !body.orderNumber.trim()) {
+      // Always generate orderNumber server-side (server is source of truth)
+      {
         const fyStr = getFinancialYear(new Date());
-        const allOrders = await storage.getSalesOrders();
-        body.orderNumber = nextDocNumber("ITFI-SO", fyStr, allOrders.map((o: any) => o.orderNumber));
+        body.orderNumber = await nextDocNumber("ITFI-SO", fyStr);
       }
       const parsed = insertSalesOrderSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
@@ -2255,11 +2254,10 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
-      // Auto-generate quoteNumber in ITFI FY scheme if client did not provide one
-      if (!body.quoteNumber || !body.quoteNumber.trim()) {
+      // Always generate quoteNumber server-side (server is source of truth)
+      {
         const fyStr = getFinancialYear(new Date());
-        const allQuotes = await storage.getQuotations();
-        body.quoteNumber = nextDocNumber("ITFI-Q", fyStr, allQuotes.map((q: any) => q.quoteNumber));
+        body.quoteNumber = await nextDocNumber("ITFI-Q", fyStr);
       }
       const parsed = insertQuotationSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
@@ -2688,8 +2686,7 @@ export async function registerRoutes(
       }
 
       const fyStr = getFinancialYear(new Date());
-      const allOrdersForNum = await storage.getSalesOrders();
-      const orderNumber = nextDocNumber("ITFI-SO", fyStr, allOrdersForNum.map((o: any) => o.orderNumber));
+      const orderNumber = await nextDocNumber("ITFI-SO", fyStr);
       const order = await storage.createSalesOrder({
         orderNumber,
         customerId: quotation.customerId,
@@ -2829,8 +2826,7 @@ export async function registerRoutes(
       }
 
       const fyStrQ = getFinancialYear(new Date());
-      const allQuotesForNum = await storage.getQuotations();
-      const quoteNumber = nextDocNumber("ITFI-Q", fyStrQ, allQuotesForNum.map((q: any) => q.quoteNumber));
+      const quoteNumber = await nextDocNumber("ITFI-Q", fyStrQ);
       const quotation = await storage.createQuotation({
         quoteNumber,
         customerId: customer.id,
@@ -3290,9 +3286,8 @@ export async function registerRoutes(
       }
       let poNumber = req.body.poNumber;
       if (!poNumber || poNumber.trim() === "") {
-        const allPOs = await storage.getPurchaseOrders();
         const fyPO = getFinancialYear(new Date());
-        poNumber = nextDocNumber("ITFI-PO", fyPO, allPOs.map((po: any) => po.poNumber));
+        poNumber = await nextDocNumber("ITFI-PO", fyPO);
       }
 
       const payload = {
@@ -6333,9 +6328,8 @@ export async function registerRoutes(
       const prItems = await storage.getPurchaseRequestItems(pr.id);
       if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
 
-      const allPOs = await storage.getPurchaseOrders();
       const fyPR = getFinancialYear(new Date());
-      const poNumber = nextDocNumber("ITFI-PO", fyPR, allPOs.map((po: any) => po.poNumber));
+      const poNumber = await nextDocNumber("ITFI-PO", fyPR);
 
       const supplierProds = await storage.getSupplierProducts(pr.supplierId);
       const allProducts = await storage.getProducts();

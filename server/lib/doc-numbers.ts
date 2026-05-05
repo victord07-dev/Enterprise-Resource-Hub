@@ -1,51 +1,63 @@
 /**
  * ITFI financial-year document numbering helpers.
  *
- * India FY: April 1 – March 31.
+ * India FY: April 1 – March 31 (evaluated in IST, UTC+5:30).
  *   May 2026  → "2026-27"
  *   Feb 2027  → "2026-27"
  *   April 2027 → "2027-28"
  *
  * Formats:
- *   Quotation    ITFI-Q/2026-27/0001
- *   Sales Order  ITFI-SO/2026-27/0001
+ *   Quotation      ITFI-Q/2026-27/0001
+ *   Sales Order    ITFI-SO/2026-27/0001
  *   Purchase Order ITFI-PO/2026-27/0001
+ *
+ * Concurrency: uses an atomic PostgreSQL upsert
+ *   INSERT … ON CONFLICT DO UPDATE SET last_seq = last_seq + 1 RETURNING last_seq
+ * so two concurrent requests can never get the same sequence number.
  */
 
-/** Returns the India financial-year string for a given date, e.g. "2026-27". */
+import { db } from "../db";
+import { sql } from "drizzle-orm";
+
+const IST_TZ = "Asia/Kolkata";
+
+/**
+ * Returns the India financial-year string for a given UTC instant,
+ * evaluating date parts in IST (Asia/Kolkata, UTC+5:30).
+ * e.g. new Date("2026-05-05T00:00:00Z") → "2026-27"
+ *      new Date("2027-03-31T22:00:00Z") → "2026-27" (still Mar 31 IST)
+ *      new Date("2027-03-31T18:31:00Z") → "2027-28" (Apr 1 IST)
+ */
 export function getFinancialYear(date: Date = new Date()): string {
-  const month = date.getMonth() + 1; // 1 = Jan
-  const year = date.getFullYear();
-  if (month >= 4) {
-    return `${year}-${String(year + 1).slice(-2)}`;
-  }
-  return `${year - 1}-${String(year).slice(-2)}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TZ,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const year = parseInt(parts.find((p) => p.type === "year")!.value, 10);
+  const month = parseInt(parts.find((p) => p.type === "month")!.value, 10);
+  // April (4) onwards is the new FY
+  const fyStart = month >= 4 ? year : year - 1;
+  return `${fyStart}-${String(fyStart + 1).slice(-2)}`;
 }
 
 /**
- * Given a list of existing document numbers and a prefix + FY string,
- * returns the next zero-padded 4-digit sequence number.
+ * Atomically allocates the next sequence number for (prefix, fyStr) and
+ * returns the formatted document number.
  *
- * Example: prefix="ITFI-Q", fyStr="2026-27"
- *   Matches strings like "ITFI-Q/2026-27/0042"
- *   Returns "ITFI-Q/2026-27/0043"
+ * Uses a single SQL upsert so concurrent calls are serialised by Postgres
+ * without application-level locking or read-then-write races.
+ *
+ * The doc_number_sequences table must exist (see shared/schema.ts).
  */
-export function nextDocNumber(
-  prefix: string,
-  fyStr: string,
-  existingNumbers: (string | null | undefined)[],
-): string {
-  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const escapedFy = fyStr.replace(/-/g, "\\-");
-  const pattern = new RegExp(`^${escapedPrefix}\\/${escapedFy}\\/(\\d+)$`);
-  let max = 0;
-  for (const num of existingNumbers) {
-    if (!num) continue;
-    const m = num.match(pattern);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n > max) max = n;
-    }
-  }
-  return `${prefix}/${fyStr}/${String(max + 1).padStart(4, "0")}`;
+export async function nextDocNumber(prefix: string, fyStr: string): Promise<string> {
+  const result = await db.execute(sql`
+    INSERT INTO doc_number_sequences (doc_type, fy_str, last_seq)
+    VALUES (${prefix}, ${fyStr}, 1)
+    ON CONFLICT (doc_type, fy_str)
+    DO UPDATE SET last_seq = doc_number_sequences.last_seq + 1
+    RETURNING last_seq
+  `);
+  const seq = (result.rows[0] as { last_seq: number }).last_seq;
+  return `${prefix}/${fyStr}/${String(seq).padStart(4, "0")}`;
 }

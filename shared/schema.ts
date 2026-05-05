@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb, date } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, decimal, timestamp, boolean, pgEnum, uniqueIndex, index, jsonb, date, primaryKey } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -1412,4 +1412,22 @@ export type InsertWhatsappMessage = z.infer<typeof insertWhatsappMessageSchema>;
 export type InsertWhatsappTemplate = z.infer<typeof insertWhatsappTemplateSchema>;
 export type InsertWhatsappTemplateStatusHistory = z.infer<typeof insertWhatsappTemplateStatusHistorySchema>;
 export type InsertWhatsappTemplateSyncLog = z.infer<typeof insertWhatsappTemplateSyncLogSchema>;
+
+/**
+ * Atomic sequence counters for ITFI FY document numbering.
+ * Keyed by (doc_type, fy_str). Each row is upserted atomically so
+ * concurrent requests never receive the same sequence number.
+ *
+ * doc_type examples: "ITFI-Q", "ITFI-SO", "ITFI-PO"
+ * fy_str  examples: "2026-27", "2027-28"
+ */
+export const docNumberSequences = pgTable(
+  "doc_number_sequences",
+  {
+    docType: text("doc_type").notNull(),
+    fyStr:   text("fy_str").notNull(),
+    lastSeq: integer("last_seq").notNull().default(0),
+  },
+  (t) => [primaryKey({ columns: [t.docType, t.fyStr] })],
+);
 

@@ -1031,7 +1031,7 @@ export default function SupplyChain() {
             quantity: item.quantity,
             unitCost: String(item.unitCost),
             hsnCode: item.hsnCode || null,
-            gstRate: item.gstRate ?? 18,
+            gstRate: String(item.gstRate ?? 18),
             taxableAmount: String(item.taxableAmount ?? item.totalCost),
             gstAmount: String(item.gstAmount ?? 0),
           })),
@@ -2111,6 +2111,26 @@ export default function SupplyChain() {
               </div>
             </div>
 
+            {(() => {
+              if (!poForm.supplierId || !suppliers) return null;
+              const sel = suppliers.find((s: Supplier) => s.id === poForm.supplierId);
+              if (!sel) return null;
+              const missing = getSupplierMissingFields(sel);
+              if (missing.length === 0) return null;
+              return (
+                <div
+                  className="flex items-start gap-2 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 text-sm"
+                  data-testid="banner-po-supplier-incomplete"
+                >
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                  <div>
+                    <span className="font-medium text-amber-900 dark:text-amber-200">Supplier profile incomplete — </span>
+                    <span className="text-amber-800 dark:text-amber-300">missing {missing.join(", ")}.</span>
+                    <span className="text-amber-700 dark:text-amber-400"> You can save as Pending, but this PO cannot be approved or issued until the supplier profile is completed.</span>
+                  </div>
+                </div>
+              );
+            })()}
             <POLineItemsEditor
               items={poLineItems}
               onChange={setPoLineItems}

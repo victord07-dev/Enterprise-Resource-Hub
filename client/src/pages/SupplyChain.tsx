@@ -13,11 +13,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus, Sparkles } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus, Sparkles, CreditCard, Banknote, Landmark } from "lucide-react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder, GoodsReceiptNote, GoodsReceiptNoteItem } from "@shared/schema";
+import type { Supplier, PurchaseOrder, Product, SupplierProduct, PurchaseOrderItem, Warehouse as WarehouseType, PurchaseRequest, PurchaseRequestItem, SalesOrder, GoodsReceiptNote, GoodsReceiptNoteItem, CashAccount } from "@shared/schema";
 
 interface POLineItem {
   productId: string;
@@ -712,7 +712,7 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
   );
 }
 
-function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string; deliveryAddress?: string | null }) {
+function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress, poTotal, supplierPaidAmount, poStatus, canCreditOverride, onCreateGrn, onRecordPayment }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string; deliveryAddress?: string | null; poTotal: number; supplierPaidAmount: number; poStatus: string; canCreditOverride: boolean; onCreateGrn: () => void; onRecordPayment: () => void }) {
   const { data: items, isLoading } = useQuery<PurchaseOrderItem[]>({
     queryKey: ["/api/purchase-orders", poId, "items"],
     queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
@@ -828,6 +828,61 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
           </tfoot>
         </table>
       </div>
+      {!["cancelled", "received"].includes(poStatus) && (() => {
+        const balance = Math.max(0, poTotal - supplierPaidAmount);
+        const paymentComplete = poTotal === 0 || supplierPaidAmount >= poTotal;
+        const grnEligible = deliveryType !== "direct_delivery" && ["approved", "shipped", "partial"].includes(poStatus);
+        return (
+          <div className="mt-3 pt-3 border-t flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-4 text-xs">
+              <span className="font-semibold" data-testid={`text-po-expanded-total-${poId}`}>Total: ₹{poTotal.toLocaleString()}</span>
+              <span className="text-green-600 dark:text-green-400 font-medium" data-testid={`text-po-expanded-paid-${poId}`}>Paid: ₹{supplierPaidAmount.toLocaleString()}</span>
+              <span className={`font-medium ${balance > 0 ? "text-amber-600 dark:text-amber-400" : "text-green-600 dark:text-green-400"}`} data-testid={`text-po-expanded-balance-${poId}`}>
+                Balance: ₹{balance.toLocaleString()}
+              </span>
+            </div>
+            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <Button
+                size="sm"
+                variant="outline"
+                data-testid={`button-expanded-record-payment-${poId}`}
+                onClick={onRecordPayment}
+              >
+                <CreditCard className="w-3 h-3 mr-1" /> Record Payment
+              </Button>
+              {grnEligible && (
+                paymentComplete ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-emerald-400 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
+                    data-testid={`button-expanded-create-grn-${poId}`}
+                    onClick={onCreateGrn}
+                  >
+                    <PackagePlus className="w-3 h-3 mr-1" /> Create GRN
+                  </Button>
+                ) : canCreditOverride ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                    data-testid={`button-expanded-create-grn-credit-${poId}`}
+                    onClick={onCreateGrn}
+                  >
+                    <PackagePlus className="w-3 h-3 mr-1" /> Create GRN (Credit)
+                  </Button>
+                ) : (
+                  <span title={`Full supplier payment required (paid ₹${supplierPaidAmount.toLocaleString()} of ₹${poTotal.toLocaleString()})`}>
+                    <Button size="sm" variant="outline" disabled className="opacity-50 cursor-not-allowed" data-testid={`button-expanded-create-grn-disabled-${poId}`}>
+                      <PackagePlus className="w-3 h-3 mr-1" /> Create GRN
+                    </Button>
+                  </span>
+                )
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -962,6 +1017,10 @@ export default function SupplyChain() {
 
   const [expandedPoId, setExpandedPoId] = useState<string | null>(null);
   const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
+
+  const [spDialogPoId, setSpDialogPoId] = useState<string | null>(null);
+  const [spDialogSupplierId, setSpDialogSupplierId] = useState<string | null>(null);
+  const [spForm, setSpForm] = useState({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
   const [expandedPrId, setExpandedPrId] = useState<string | null>(null);
   const [poSearch, setPoSearch] = useState("");
 
@@ -995,6 +1054,33 @@ export default function SupplyChain() {
 
   const { data: warehouses } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
   const { data: allSupplierProducts } = useQuery<SupplierProduct[]>({ queryKey: ["/api/supplier-products"] });
+  const { data: cashAccountsData } = useQuery<CashAccount[]>({ queryKey: ["/api/cash-accounts"] });
+
+  const spAccounts = useMemo(() => {
+    if (!cashAccountsData) return [];
+    if (spForm.paymentMethod === "cash") return cashAccountsData.filter(a => a.type === "cash");
+    return cashAccountsData.filter(a => a.type === "bank");
+  }, [cashAccountsData, spForm.paymentMethod]);
+
+  const recordSpMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const res = await apiRequest("POST", "/api/supplier-payments", data);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to record payment"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      toast({ title: "Payment recorded successfully" });
+      setSpDialogPoId(null);
+      setSpDialogSupplierId(null);
+      setSpForm({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
 
   const selectedSupplierId = poForm.supplierId;
   const { data: supplierCatalog, isLoading: supplierCatalogLoading, isFetching: supplierCatalogFetching } = useQuery<SupplierProduct[]>({
@@ -1093,6 +1179,26 @@ export default function SupplyChain() {
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const approvePoMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("PATCH", `/api/purchase-orders/${id}`, { status: "approved" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Failed to approve PO");
+      return data;
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
+      toast({ title: "PO approved", description: `${data.poNumber} has been issued to the supplier.` });
+    },
+    onError: (error: Error) => {
+      if (error.message.includes("supplier_incomplete") || error.message.includes("missing required")) {
+        toast({ title: "Supplier profile incomplete", description: error.message, variant: "destructive" });
+      } else {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -1853,6 +1959,19 @@ export default function SupplyChain() {
                                   )}
                                   {po.status === "pending" && (
                                     <>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="text-blue-600 border-blue-300 dark:text-blue-400 dark:border-blue-700 hover:bg-blue-50 dark:hover:bg-blue-950/20"
+                                        data-testid={`button-approve-po-${po.id}`}
+                                        disabled={approvePoMutation.isPending}
+                                        onClick={() => {
+                                          if (confirm(`Issue "${po.poNumber}" to the supplier? Status will change to Approved.`))
+                                            approvePoMutation.mutate(po.id);
+                                        }}
+                                      >
+                                        <Check className="w-3 h-3 mr-1" /> Approve
+                                      </Button>
                                       <Button size="icon" variant="ghost" data-testid={`button-edit-po-${po.id}`} onClick={() => openEditPo(po)}>
                                         <Pencil className="w-4 h-4" />
                                       </Button>
@@ -1902,6 +2021,20 @@ export default function SupplyChain() {
                                       linkedSalesOrder={linkedSO ? { orderNumber: linkedSO.orderNumber, id: linkedSO.id } : null}
                                       deliveryType={po.deliveryType}
                                       deliveryAddress={po.deliveryAddress}
+                                      poTotal={Number(po.totalAmount ?? 0)}
+                                      supplierPaidAmount={Number((po as any).supplierPaidAmount ?? 0)}
+                                      poStatus={po.status}
+                                      canCreditOverride={currentUser?.role === "admin" || currentUser?.role === "accountant"}
+                                      onCreateGrn={() => {
+                                        setGrnWarehouseDialogPoId(po.id);
+                                        setGrnSelectedWarehouseId(warehouses?.[0]?.id || "");
+                                        setGrnSupplierChallan("");
+                                      }}
+                                      onRecordPayment={() => {
+                                        setSpDialogPoId(po.id);
+                                        setSpDialogSupplierId(po.supplierId);
+                                        setSpForm({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
+                                      }}
                                     />
                                   </td>
                                 </tr>
@@ -2683,6 +2816,112 @@ export default function SupplyChain() {
               }}
             >
               {createGrnFromPoMutation.isPending ? "Creating..." : "Create Draft GRN"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Record Supplier Payment dialog — opened from expanded PO row */}
+      <Dialog open={!!spDialogPoId} onOpenChange={(open) => { if (!open) { setSpDialogPoId(null); setSpDialogSupplierId(null); } }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record Supplier Payment</DialogTitle>
+            <DialogDescription>
+              Advance payment against{" "}
+              {spDialogPoId ? (() => { const po = purchaseOrders?.find(p => p.id === spDialogPoId); return po ? <strong>{po.poNumber}</strong> : "this PO"; })() : "this PO"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Supplier</Label>
+              <p className="text-sm font-medium">
+                {spDialogSupplierId ? (suppliers?.find(s => s.id === spDialogSupplierId)?.name ?? "—") : "—"}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Amount (₹) <span className="text-red-500">*</span></Label>
+              <Input
+                type="number"
+                data-testid="input-sp-expanded-amount"
+                value={spForm.amount}
+                onChange={e => setSpForm({ ...spForm, amount: e.target.value })}
+                placeholder="0"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Payment Method</Label>
+              <Select value={spForm.paymentMethod} onValueChange={v => setSpForm({ ...spForm, paymentMethod: v, cashAccountId: "" })}>
+                <SelectTrigger data-testid="select-sp-expanded-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["bank_transfer", "cash", "cheque", "upi", "card"].map(m => (
+                    <SelectItem key={m} value={m}>{m.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase())}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {spAccounts.length > 0 && (
+              <div className="space-y-2">
+                <Label>Account <span className="text-red-500">*</span></Label>
+                <Select value={spForm.cashAccountId} onValueChange={v => setSpForm({ ...spForm, cashAccountId: v })}>
+                  <SelectTrigger data-testid="select-sp-expanded-account">
+                    <SelectValue placeholder="Select account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {spAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name}{(a as any).balance !== undefined ? ` — ₹${Number((a as any).balance).toLocaleString()}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>Payment Date</Label>
+              <Input
+                type="date"
+                data-testid="input-sp-expanded-date"
+                value={spForm.paymentDate}
+                onChange={e => setSpForm({ ...spForm, paymentDate: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Reference</Label>
+              <Input
+                data-testid="input-sp-expanded-reference"
+                value={spForm.reference}
+                onChange={e => setSpForm({ ...spForm, reference: e.target.value })}
+                placeholder="NEFT/Cheque number, etc."
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setSpDialogPoId(null); setSpDialogSupplierId(null); }}>Cancel</Button>
+            <Button
+              data-testid="button-submit-sp-expanded"
+              disabled={recordSpMutation.isPending || !spForm.amount || !spForm.cashAccountId}
+              onClick={() => {
+                if (!spForm.cashAccountId) {
+                  toast({ title: "Account required", description: "Select the account this payment was made from.", variant: "destructive" });
+                  return;
+                }
+                recordSpMutation.mutate({
+                  paymentType: "advance",
+                  supplierId: spDialogSupplierId,
+                  purchaseOrderId: spDialogPoId,
+                  supplierInvoiceId: null,
+                  amount: spForm.amount,
+                  paymentMethod: spForm.paymentMethod,
+                  paymentDate: spForm.paymentDate,
+                  reference: spForm.reference || null,
+                  cashAccountId: spForm.cashAccountId,
+                });
+              }}
+            >
+              {recordSpMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>

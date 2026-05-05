@@ -55,6 +55,7 @@ The ERP system is built on a modern web stack, emphasizing a responsive and inte
     - **Operational Refinements:** Enhanced delivery challan workflow (`ready → do_issued → dispatched → delivered`), simplified GRN process, and redesigned sales invoices page.
     - **Product Grid Type:** Products include a `gridType` field for categorization, influencing product picker filters and display.
     - **Cash & Bank Account Ledger:** Management of `cash_accounts` (bank|cash), `account_transfers`, and `balance_adjustments`, with real-time balance computation and integration into payment dialogs.
+    - **PO Workflow Action Buttons:** Expanded PO row now shows a footer bar with Total/Paid/Balance summary + "Record Payment" (inline advance payment dialog, pre-filled supplier+PO) + "Create GRN" (mirrors action-column logic with credit override for admin/accountant). Pending PO rows have a dedicated "Approve" button that issues the PO to the supplier (PATCH status→approved), surfacing the previously buried edit-dialog workflow step.
 
 ## External Dependencies
 - **Database:** PostgreSQL.

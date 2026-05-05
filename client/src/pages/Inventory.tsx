@@ -56,6 +56,7 @@ export default function Inventory() {
   const isAdmin = user?.role === "admin";
   const [location, navigate] = useLocation();
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  const [productSearch, setProductSearch] = useState("");
   const { data: warehouses, isLoading: warehousesLoading } = useQuery<WarehouseType[]>({ queryKey: ["/api/warehouses"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
@@ -922,7 +923,7 @@ export default function Inventory() {
           <div className="flex items-center gap-2">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input placeholder="Search products & services..." className="pl-9" data-testid="input-search-products" />
+              <Input placeholder="Search products & services..." className="pl-9" data-testid="input-search-products" value={productSearch} onChange={(e) => setProductSearch(e.target.value)} />
             </div>
           </div>
           <Card>
@@ -956,8 +957,20 @@ export default function Inventory() {
                           ))}
                         </tr>
                       ))
-                    ) : products && products.length > 0 ? (
-                      products.map((product) => {
+                    ) : (() => {
+                      const filtered = (products ?? []).filter(p => {
+                        if (!productSearch.trim()) return true;
+                        const q = productSearch.toLowerCase();
+                        return p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q);
+                      });
+                      if (filtered.length === 0) return (
+                        <tr>
+                          <td colSpan={14} className="p-8 text-center text-muted-foreground">
+                            {productSearch.trim() ? `No results for "${productSearch}"` : "No products or services found. Add your first item."}
+                          </td>
+                        </tr>
+                      );
+                      return filtered.map((product) => {
                         const isProduct = product.type !== "service";
                         const totalStock = isProduct ? getProductTotalStock(product.id) : null;
                         const reservedInfo = isProduct ? reservedStockData?.[product.id] : null;
@@ -1139,14 +1152,8 @@ export default function Inventory() {
                             )}
                           </Fragment>
                         );
-                      })
-                    ) : (
-                      <tr>
-                        <td colSpan={14} className="p-8 text-center text-muted-foreground">
-                          No products or services found. Add your first item.
-                        </td>
-                      </tr>
-                    )}
+                      });
+                    })()}
                   </tbody>
                 </table>
               </div>

@@ -1394,7 +1394,8 @@ export async function registerRoutes(
           const rowType = (row["type"] ?? "").trim().toLowerCase();
           const productType = ["product", "service", "bundle"].includes(rowType) ? rowType : "product";
           // Ticket #78 Phase B: gridType column — valid values or default 'others'
-          const rawGridType = (row["gridType"] ?? "").trim().toLowerCase();
+          // CSV may use spaces ("on Grid", "off grid") — normalise to underscores before matching.
+          const rawGridType = (row["gridType"] ?? "").trim().toLowerCase().replace(/\s+/g, "_");
           const gridType = ["off_grid", "on_grid", "hybrid", "others"].includes(rawGridType) ? rawGridType : "others";
           const plv = (row["priceListVersion"] ?? "").trim();
           const priceListVersion = plv || priceListVersionGlobal || null;

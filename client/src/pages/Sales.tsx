@@ -3509,15 +3509,11 @@ export default function Sales() {
       <Dialog open={quoteDialogOpen} onOpenChange={setQuoteDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editingQuote ? "Edit Quotation" : "New Quotation"}</DialogTitle>
-            <DialogDescription>Add products and services to this quotation</DialogDescription>
+            <DialogTitle>{editingQuote ? `Edit Quotation — ${(editingQuote as any).quoteNumber}` : "New Quotation"}</DialogTitle>
+            <DialogDescription>{editingQuote ? "Update the details of this quotation" : "Quote number is auto-assigned on save"}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="quoteNumber">Quote Number</Label>
-                <Input id="quoteNumber" data-testid="input-quote-number" value={quoteForm.quoteNumber} onChange={(e) => setQuoteForm({ ...quoteForm, quoteNumber: e.target.value })} />
-              </div>
               <div className="space-y-2">
                 <Label htmlFor="quoteCustomerId">Customer</Label>
                 <Select value={quoteForm.customerId} onValueChange={(v) => setQuoteForm({ ...quoteForm, customerId: v })}>

@@ -494,19 +494,20 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
     }
     updated[index] = item;
     onChange(updated);
-    // Auto-collapse the row once a valid product is confirmed — but keep bundle rows expanded so the components panel stays visible
-    if (field === "productId" && value) {
-      const selectedProd = products.find(p => p.id === value);
-      if (selectedProd?.type !== "bundle") {
-        setCollapsedItems(prev => { const next = new Set(prev); next.add(index); return next; });
-      }
-    }
   };
 
   const addItem = () => {
+    // Collapse all existing non-bundle rows before opening the new blank one
+    setCollapsedItems(prev => {
+      const next = new Set(prev);
+      items.forEach((item, i) => {
+        const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        if (prod?.type !== "bundle") next.add(i);
+      });
+      return next;
+    });
     onLineTouched(items.length);
     onChange([...items, emptyLineItem()]);
-    // New items always start expanded
   };
   const removeItem = (index: number) => {
     // Reindex all per-line-index state: remove the deleted index, decrement all above it

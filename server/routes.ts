@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage, IStorage, type ExpenseFilters } from "./storage";
+import { getFinancialYear, nextDocNumber } from "./lib/doc-numbers";
 import { todayIST } from "@shared/datetime";
 import { db } from "./db";
 import { sql, eq } from "drizzle-orm";
@@ -2154,6 +2155,12 @@ export async function registerRoutes(
       delete body.subtotal;
       delete body.totalTax;
       delete body.totalAmount;
+      // Auto-generate orderNumber in ITFI FY scheme if client did not provide one
+      if (!body.orderNumber || !body.orderNumber.trim()) {
+        const fyStr = getFinancialYear(new Date());
+        const allOrders = await storage.getSalesOrders();
+        body.orderNumber = nextDocNumber("ITFI-SO", fyStr, allOrders.map((o: any) => o.orderNumber));
+      }
       const parsed = insertSalesOrderSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
       const created = await storage.createSalesOrder(parsed.data as any);
@@ -2247,6 +2254,12 @@ export async function registerRoutes(
       }
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
+      }
+      // Auto-generate quoteNumber in ITFI FY scheme if client did not provide one
+      if (!body.quoteNumber || !body.quoteNumber.trim()) {
+        const fyStr = getFinancialYear(new Date());
+        const allQuotes = await storage.getQuotations();
+        body.quoteNumber = nextDocNumber("ITFI-Q", fyStr, allQuotes.map((q: any) => q.quoteNumber));
       }
       const parsed = insertQuotationSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
@@ -2674,7 +2687,9 @@ export async function registerRoutes(
         quoteFloorFields.floorOverrideAt = (quotation as any).floorOverrideAt || new Date();
       }
 
-      const orderNumber = `SO-${Date.now().toString(36).toUpperCase()}`;
+      const fyStr = getFinancialYear(new Date());
+      const allOrdersForNum = await storage.getSalesOrders();
+      const orderNumber = nextDocNumber("ITFI-SO", fyStr, allOrdersForNum.map((o: any) => o.orderNumber));
       const order = await storage.createSalesOrder({
         orderNumber,
         customerId: quotation.customerId,
@@ -2813,7 +2828,9 @@ export async function registerRoutes(
         });
       }
 
-      const quoteNumber = `QT-${Date.now().toString(36).toUpperCase()}`;
+      const fyStrQ = getFinancialYear(new Date());
+      const allQuotesForNum = await storage.getQuotations();
+      const quoteNumber = nextDocNumber("ITFI-Q", fyStrQ, allQuotesForNum.map((q: any) => q.quoteNumber));
       const quotation = await storage.createQuotation({
         quoteNumber,
         customerId: customer.id,
@@ -3274,13 +3291,8 @@ export async function registerRoutes(
       let poNumber = req.body.poNumber;
       if (!poNumber || poNumber.trim() === "") {
         const allPOs = await storage.getPurchaseOrders();
-        const year = new Date().getFullYear();
-        const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
-        const maxNum = yearPOs.reduce((max: number, po: any) => {
-          const num = parseInt(po.poNumber.split("-").pop() || "0", 10);
-          return num > max ? num : max;
-        }, 0);
-        poNumber = `PO-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+        const fyPO = getFinancialYear(new Date());
+        poNumber = nextDocNumber("ITFI-PO", fyPO, allPOs.map((po: any) => po.poNumber));
       }
 
       const payload = {
@@ -6321,14 +6333,9 @@ export async function registerRoutes(
       const prItems = await storage.getPurchaseRequestItems(pr.id);
       if (prItems.length === 0) return res.status(400).json({ message: "No items in purchase request" });
 
-      const year = new Date().getFullYear();
       const allPOs = await storage.getPurchaseOrders();
-      const yearPOs = allPOs.filter((po: any) => po.poNumber?.startsWith(`PO-${year}`));
-      const maxPoNum = yearPOs.reduce((max: number, po: any) => {
-        const num = parseInt(po.poNumber.split("-").pop() || "0", 10);
-        return num > max ? num : max;
-      }, 0);
-      const poNumber = `PO-${year}-${String(maxPoNum + 1).padStart(4, "0")}`;
+      const fyPR = getFinancialYear(new Date());
+      const poNumber = nextDocNumber("ITFI-PO", fyPR, allPOs.map((po: any) => po.poNumber));
 
       const supplierProds = await storage.getSupplierProducts(pr.supplierId);
       const allProducts = await storage.getProducts();

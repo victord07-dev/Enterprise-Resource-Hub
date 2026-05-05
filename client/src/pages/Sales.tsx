@@ -1839,8 +1839,7 @@ export default function Sales() {
 
   const openNewOrder = () => {
     setEditingOrder(null);
-    const num = `SO-${Date.now().toString(36).toUpperCase()}`;
-    setOrderForm({ orderNumber: num, customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
+    setOrderForm({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderTouchedLines(new Set()); // Phase 5: fresh order — start empty, warn on any line the user touches
@@ -1896,8 +1895,7 @@ export default function Sales() {
 
   const openNewQuote = () => {
     setEditingQuote(null);
-    const num = `QT-${Date.now().toString(36).toUpperCase()}`;
-    setQuoteForm({ quoteNumber: num, customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
+    setQuoteForm({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
     setQuoteTouchedLines(new Set()); // Phase 5: fresh quote — start empty

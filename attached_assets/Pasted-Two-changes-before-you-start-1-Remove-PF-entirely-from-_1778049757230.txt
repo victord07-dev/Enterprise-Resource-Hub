@@ -1,0 +1,47 @@
+Two changes before you start:
+1. Remove PF entirely from this build. Skip all PF-related fields, calculations, columns, and payslip line items. Keep Incentive and Advance Payments only.
+2. Advances are record-only, not repayment-tracking. Advances are recorded after the money has already been paid to the employee in person. They will be deducted from the employee's salary, not "repaid."
+Specifically:
+
+Drop the amountRepaid field — not needed
+Drop the status field (pending / repaid) — not needed
+Drop the FIFO repayment logic — not needed
+Drop the carry-forward rule — not needed
+No edit, no delete on advances once recorded. Advances are immutable after creation. (If a wrong amount is entered, log it as a correction with a separate adjustment entry — but keep the original record intact for audit integrity.)
+
+Simplified advance behavior:
+
+HR/CEO records the advance amount + date + reason
+That advance amount is deducted from the employee's salary in the month matching dateGiven (or the next payroll run if payroll for that month is already disbursed)
+Once deducted in payroll, the advance is marked as deducted (simple boolean flag, e.g., isDeducted: false → true) so we don't double-deduct it
+That's it — no installments, no carry-forward, no partial recovery
+
+Updated employee_advances schema:
+
+id
+employeeId
+amount
+dateGiven
+reason (optional)
+isDeducted (boolean, default false)
+deductedInPayrollId (nullable, references the payroll run that deducted it — for audit)
+createdBy, createdAt
+
+Updated payroll calculation:
+earnedSalary = fullDays × dailyRate + halfDays × halfDayRate
+incentive    = fixed amount OR salary × percent/100  (flat, not prorated)
+advanceDeduct = sum of all advances where isDeducted = false AND dateGiven falls within this payroll period
+netPay       = earnedSalary + incentive - advanceDeduct
+If advanceDeduct > earnedSalary + incentive, allow netPay to go to ₹0 but not negative — flag the excess on the payslip as "Unrecovered Advance: ₹X" and leave those advances as isDeducted = false so they get picked up in the next payroll.
+UI changes:
+
+"Record Advance" form: employee, amount, date, reason → Save (no edit, no delete buttons)
+Advances list view: show all advances with isDeducted status (read-only)
+Payslip: show "Advance Deduction" line item and the date(s) of the original advance(s)
+
+Audit log:
+
+Advance created (only — no edit/delete events since those don't exist)
+Advance auto-deducted during payroll disburse (advance ID, amount, payroll ID)
+
+Confirm this scope and proceed: schema → API → payroll calculation → UI.

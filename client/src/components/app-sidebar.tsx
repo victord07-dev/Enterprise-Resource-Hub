@@ -31,6 +31,7 @@ import {
   SidebarMenuItem,
   SidebarFooter,
   SidebarHeader,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -103,10 +104,15 @@ export function AppSidebar() {
   const user = getUser();
   const role = user?.role || "admin";
   const menuItems = getNavItemsForRole(role);
+  const { isMobile, setOpenMobile } = useSidebar();
 
   const isActive = (url: string) => {
     if (url === "/") return location === "/";
     return location.startsWith(url);
+  };
+
+  const closeOnMobile = () => {
+    if (isMobile) setOpenMobile(false);
   };
 
   return (
@@ -130,6 +136,7 @@ export function AppSidebar() {
                     asChild
                     isActive={isActive(item.url)}
                     data-testid={`nav-${item.title.toLowerCase().replace(/\s+/g, "-")}`}
+                    onClick={closeOnMobile}
                   >
                     <Link href={item.url}>
                       <item.icon className="w-4 h-4" />

@@ -238,7 +238,10 @@ function AuthenticatedLayout() {
           <AppSidebar />
           <div className="flex flex-col flex-1 min-w-0">
             <header className="flex items-center gap-2 p-2 border-b h-12 flex-shrink-0">
-              <SidebarTrigger data-testid="button-sidebar-toggle" />
+              <SidebarTrigger
+                data-testid="button-sidebar-toggle"
+                className="h-10 w-10 [&>svg]:w-5 [&>svg]:h-5 sm:h-7 sm:w-7 sm:[&>svg]:w-4 sm:[&>svg]:h-4"
+              />
               <div className="flex-1" />
               <NotificationBell open={bellOpen} onOpenChange={setBellOpen} />
             </header>

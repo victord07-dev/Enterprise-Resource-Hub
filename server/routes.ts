@@ -12,7 +12,7 @@ import {
   loginSchema, insertCustomerSchema, insertSupplierSchema, insertProductSchema,
   insertWarehouseSchema, insertSalesOrderSchema, insertSalesOrderItemSchema, insertQuotationSchema,
   insertQuotationItemSchema, insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
-  insertPaymentSchema, insertEmployeeSchema, insertAttendanceSchema,
+  insertPaymentSchema, insertEmployeeSchema, insertEmployeeAdvanceSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
   insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
@@ -3979,6 +3979,24 @@ export async function registerRoutes(
         const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
         const monthLabel = `${monthNames[payrollRecord.month]} ${payrollRecord.year}`;
         const allEmployees = await storage.getEmployees();
+
+        // Process all undeducted advances (from any prior month + current month)
+        const pendingAdvances = await storage.listEmployeeAdvances({ isDeducted: false });
+        if (pendingAdvances.length > 0) {
+          const advanceIds = pendingAdvances.map(a => a.id);
+          await storage.markAdvancesDeducted(advanceIds, payrollRecord.id);
+          for (const adv of pendingAdvances) {
+            const emp = allEmployees.find(e => e.id === adv.employeeId);
+            await logAction(
+              req.user.id,
+              "advance_deducted",
+              "employee_advances",
+              `Advance ₹${Number(adv.amount).toLocaleString("en-IN")} for ${emp?.name || adv.employeeId} deducted in ${monthLabel} payroll (advance ID: ${adv.id})`
+            );
+          }
+        }
+
+        // Send salary disbursed notifications
         const employeeUserIds = allEmployees
           .filter(e => e.isActive && e.userId)
           .map(e => e.userId!);
@@ -3998,6 +4016,44 @@ export async function registerRoutes(
       res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update payroll status" });
+    }
+  });
+
+  // Employee Advances
+  app.get("/api/employee-advances", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
+    try {
+      const { employeeId, isDeducted } = req.query;
+      const filters: { employeeId?: string; isDeducted?: boolean } = {};
+      if (employeeId) filters.employeeId = employeeId as string;
+      if (isDeducted !== undefined) filters.isDeducted = isDeducted === "true";
+      const data = await storage.listEmployeeAdvances(filters);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch advances" });
+    }
+  });
+
+  app.post("/api/employee-advances", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
+    try {
+      const parsed = insertEmployeeAdvanceSchema.safeParse({
+        ...req.body,
+        createdBy: req.user.id,
+        createdAt: new Date(),
+        dateGiven: req.body.dateGiven ? new Date(req.body.dateGiven) : new Date(),
+      });
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createEmployeeAdvance(parsed.data);
+      const allEmployees = await storage.getEmployees();
+      const emp = allEmployees.find(e => e.id === parsed.data.employeeId);
+      await logAction(
+        req.user.id,
+        "advance_created",
+        "employee_advances",
+        `Advance of ₹${Number(parsed.data.amount).toLocaleString("en-IN")} recorded for ${emp?.name || parsed.data.employeeId} on ${new Date(parsed.data.dateGiven).toLocaleDateString("en-IN")}${parsed.data.reason ? ` — Reason: ${parsed.data.reason}` : ""}`
+      );
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create advance" });
     }
   });
 

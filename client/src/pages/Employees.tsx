@@ -10,14 +10,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp, CalendarOff, Check, X, CreditCard, AlarmClock } from "lucide-react";
+import { Plus, Search, Users, CalendarCheck, MapPin, UserCheck, Pencil, Trash2, QrCode, Download, Wallet, ChevronLeft, ChevronRight, Eye, Mail, Globe, CheckCircle2, ShieldCheck, ShieldOff, KeyRound, ChevronDown, ChevronUp, CalendarOff, Check, X, CreditCard, AlarmClock, FileText, IndianRupee, TrendingUp, AlertCircle } from "lucide-react";
 import EmployeeIdCard from "@/components/EmployeeIdCard";
 import { downloadIdCardPDF } from "@/lib/id-card-pdf";
+import { downloadPayslipPDF } from "@/lib/payslip-pdf";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest, LateArrivalRequest } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest, LateArrivalRequest, EmployeeAdvance } from "@shared/schema";
 
 type UserAccount = { id: string; username: string; role: string };
 
@@ -35,7 +36,7 @@ export default function Employees() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, incentiveType: "none", incentiveAmount: "" });
 
   const [showPortalSection, setShowPortalSection] = useState(false);
   const [portalForm, setPortalForm] = useState({ username: "", password: "", role: "field_staff" });
@@ -52,9 +53,22 @@ export default function Employees() {
   const [payrollYear, setPayrollYear] = useState(now.getFullYear());
   const [payslipEmployee, setPayslipEmployee] = useState<Employee | null>(null);
   const [payslipOpen, setPayslipOpen] = useState(false);
+  const [advanceDialogOpen, setAdvanceDialogOpen] = useState(false);
+  const [advanceForm, setAdvanceForm] = useState({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
+  const [advanceEmployeeFilter, setAdvanceEmployeeFilter] = useState("all");
+  const [advanceStatusFilter, setAdvanceStatusFilter] = useState("all");
+  const [csvFromMonth, setCsvFromMonth] = useState(new Date().getMonth());
+  const [csvFromYear, setCsvFromYear] = useState(new Date().getFullYear());
+  const [csvToMonth, setCsvToMonth] = useState(new Date().getMonth());
+  const [csvToYear, setCsvToYear] = useState(new Date().getFullYear());
+  const [csvPopoverOpen, setCsvPopoverOpen] = useState(false);
 
   const { data: payrollStatusData, isLoading: psLoading } = useQuery<PayrollStatus | null>({
     queryKey: ["/api/payroll-status", payrollMonth, payrollYear],
+  });
+
+  const { data: advances = [] } = useQuery<EmployeeAdvance[]>({
+    queryKey: ["/api/employee-advances"],
   });
 
   const { data: allLeaveRequests = [], isLoading: lrLoading } = useQuery<LeaveRequest[]>({
@@ -162,11 +176,34 @@ export default function Employees() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payroll-status"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employee-advances"] });
       toast({ title: "Payroll disbursed", description: `${monthNames[payrollMonth]} ${payrollYear} payroll marked as disbursed.` });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
+  });
+
+  const advanceMutation = useMutation({
+    mutationFn: async () => {
+      if (!advanceForm.employeeId || !advanceForm.amount || Number(advanceForm.amount) <= 0) {
+        throw new Error("Employee and a valid amount are required.");
+      }
+      const res = await apiRequest("POST", "/api/employee-advances", {
+        employeeId: advanceForm.employeeId,
+        amount: advanceForm.amount,
+        dateGiven: advanceForm.dateGiven,
+        reason: advanceForm.reason || undefined,
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to record advance"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employee-advances"] });
+      toast({ title: "Advance recorded", description: "Advance payment will be deducted from next payroll." });
+      setAdvanceDialogOpen(false);
+      setAdvanceForm({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
   const getLinkedUser = (emp: Employee): UserAccount | undefined => {
@@ -224,7 +261,7 @@ export default function Employees() {
 
   const openNew = () => {
     setEditingEmployee(null);
-    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true };
+    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, incentiveType: "none", incentiveAmount: "" };
     setForm(emptyForm);
     setShowPortalSection(false);
     setPortalForm({ username: "", password: "", role: "field_staff" });
@@ -242,6 +279,8 @@ export default function Employees() {
       designation: emp.designation,
       salary: emp.salary ? String(emp.salary) : "",
       isActive: emp.isActive,
+      incentiveType: emp.incentiveType || "none",
+      incentiveAmount: emp.incentiveAmount ? String(emp.incentiveAmount) : "",
     });
     const linkedUser = getLinkedUser(emp);
     if (linkedUser) {
@@ -349,8 +388,26 @@ export default function Employees() {
     const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
     const earnedSalary = (fullDays * dailyRate) + (halfDays * Math.round(dailyRate / 2));
     const deductions = monthlySalary - earnedSalary;
-    const netPay = earnedSalary;
-    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, netPay };
+
+    // Incentive (flat addition, not prorated)
+    const incentiveType = emp.incentiveType || "none";
+    let incentiveAmt = 0;
+    if (incentiveType === "fixed") {
+      incentiveAmt = Number(emp.incentiveAmount) || 0;
+    } else if (incentiveType === "percent") {
+      incentiveAmt = Math.round(monthlySalary * (Number(emp.incentiveAmount) || 0) / 100);
+    }
+
+    // Advance deduction: all undeducted advances for this employee regardless of month
+    const empPendingAdvances = advances.filter(a => a.employeeId === emp.id && !a.isDeducted);
+    const totalAdvancePending = empPendingAdvances.reduce((s, a) => s + Number(a.amount), 0);
+    const grossBeforeAdv = earnedSalary + incentiveAmt;
+    const advanceDeduct = Math.min(totalAdvancePending, grossBeforeAdv);
+    const unrecoveredAdvance = totalAdvancePending - advanceDeduct;
+    const advanceDates = empPendingAdvances.map(a => new Date(a.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
+
+    const netPay = Math.max(0, grossBeforeAdv - advanceDeduct);
+    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, incentiveAmt, incentiveType, advanceDeduct, unrecoveredAdvance, advanceDates, netPay };
   };
 
   const prevMonth = () => {
@@ -360,6 +417,63 @@ export default function Employees() {
   const nextMonth = () => {
     if (payrollMonth === 11) { setPayrollMonth(0); setPayrollYear(payrollYear + 1); }
     else setPayrollMonth(payrollMonth + 1);
+  };
+
+  const downloadPayrollCSV = () => {
+    const activeEmployees = employees?.filter(e => e.isActive) || [];
+    const rows: string[][] = [];
+    rows.push(["Employee", "Department", "Company", "Month", "Year", "Gross Salary", "Daily Rate", "Full Days", "Half Days", "Absent", "Earned Salary", "Incentive Type", "Incentive Amount", "Advance Deduction", "Attendance Deduction", "Net Pay"]);
+
+    const fromIdx = csvFromYear * 12 + csvFromMonth;
+    const toIdx = csvToYear * 12 + csvToMonth;
+
+    for (let idx = fromIdx; idx <= toIdx; idx++) {
+      const m = idx % 12;
+      const y = Math.floor(idx / 12);
+      for (const emp of activeEmployees) {
+        const monthlySalary = emp.salary ? Number(emp.salary) : 0;
+        const dailyRate = Math.round(monthlySalary / 26);
+        const empAtt = attendance?.filter(a => {
+          const d = new Date(a.date);
+          return a.employeeId === emp.id && d.getMonth() === m && d.getFullYear() === y;
+        }) || [];
+        const fullDays = empAtt.filter(a => a.status === "present").length;
+        const halfDays = empAtt.filter(a => a.status === "half_day").length;
+        const workingDays = getWorkingDaysInMonth(m, y);
+        const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
+        const earnedSalary = fullDays * dailyRate + halfDays * Math.round(dailyRate / 2);
+        const attDeduction = monthlySalary - earnedSalary;
+        const incentiveType = emp.incentiveType || "none";
+        let incentiveAmt = 0;
+        if (incentiveType === "fixed") incentiveAmt = Number(emp.incentiveAmount) || 0;
+        else if (incentiveType === "percent") incentiveAmt = Math.round(monthlySalary * (Number(emp.incentiveAmount) || 0) / 100);
+        const empPending = advances.filter(a => a.employeeId === emp.id && !a.isDeducted);
+        const totalAdv = empPending.reduce((s, a) => s + Number(a.amount), 0);
+        const advDeduct = Math.min(totalAdv, earnedSalary + incentiveAmt);
+        const netPay = Math.max(0, earnedSalary + incentiveAmt - advDeduct);
+        rows.push([
+          emp.name, emp.department, emp.company || "", monthNames[m], String(y),
+          String(monthlySalary), String(dailyRate),
+          String(fullDays), String(halfDays), String(daysAbsent),
+          String(earnedSalary),
+          incentiveType === "none" ? "None" : incentiveType === "fixed" ? "Fixed" : `${emp.incentiveAmount}%`,
+          String(incentiveAmt),
+          String(advDeduct),
+          String(attDeduction),
+          String(netPay),
+        ]);
+      }
+    }
+
+    const csv = rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Payroll-${monthNames[csvFromMonth]}-${csvFromYear}-to-${monthNames[csvToMonth]}-${csvToYear}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setCsvPopoverOpen(false);
   };
 
   return (
@@ -671,6 +785,50 @@ export default function Employees() {
                 <Wallet className="w-4 h-4" />
                 <span>Working Days: <strong className="text-foreground">{getWorkingDaysInMonth(payrollMonth, payrollYear)}</strong></span>
               </div>
+              {/* CSV Export popover */}
+              <div className="relative">
+                <Button variant="outline" size="sm" onClick={() => setCsvPopoverOpen(v => !v)} data-testid="button-csv-payroll">
+                  <Download className="w-4 h-4 mr-1" />
+                  Download CSV
+                </Button>
+                {csvPopoverOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-50 bg-popover border rounded-lg shadow-lg p-4 w-72 space-y-3">
+                    <p className="text-sm font-semibold">Export Month Range</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">From Month</Label>
+                        <Select value={String(csvFromMonth)} onValueChange={v => setCsvFromMonth(Number(v))}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>{monthNames.map((m, i) => <SelectItem key={i} value={String(i)}>{m}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">From Year</Label>
+                        <Input type="number" className="h-8 text-xs" value={csvFromYear} onChange={e => setCsvFromYear(Number(e.target.value))} />
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">To Month</Label>
+                        <Select value={String(csvToMonth)} onValueChange={v => setCsvToMonth(Number(v))}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>{monthNames.map((m, i) => <SelectItem key={i} value={String(i)}>{m}</SelectItem>)}</SelectContent>
+                        </Select>
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">To Year</Label>
+                        <Input type="number" className="h-8 text-xs" value={csvToYear} onChange={e => setCsvToYear(Number(e.target.value))} />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" className="flex-1" onClick={downloadPayrollCSV} data-testid="button-confirm-csv">Export</Button>
+                      <Button size="sm" variant="outline" onClick={() => setCsvPopoverOpen(false)}>Cancel</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setAdvanceDialogOpen(true)} data-testid="button-record-advance">
+                <IndianRupee className="w-4 h-4 mr-1" />
+                Record Advance
+              </Button>
               {payrollStatusData?.status === "disbursed" ? (
                 <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate" data-testid="badge-payroll-disbursed">
                   <CheckCircle2 className="w-3 h-3 mr-1" /> Disbursed
@@ -692,13 +850,14 @@ export default function Employees() {
                     <tr className="border-b">
                       <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Company</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Monthly Salary</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Gross Salary</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Daily Rate</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Full Days</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Half Days</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Absent</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Earned</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Deductions</th>
+                      <th className="text-right p-3 font-medium text-emerald-600">Incentive</th>
+                      <th className="text-right p-3 font-medium text-red-500">Advance</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Net Pay</th>
                       <th className="text-center p-3 font-medium text-muted-foreground">Payslip</th>
                     </tr>
@@ -707,7 +866,7 @@ export default function Employees() {
                     {empLoading ? (
                       Array.from({ length: 3 }).map((_, i) => (
                         <tr key={i} className="border-b">
-                          {Array.from({ length: 11 }).map((_, j) => (
+                          {Array.from({ length: 12 }).map((_, j) => (
                             <td key={j} className="p-3"><Skeleton className="h-4 w-16" /></td>
                           ))}
                         </tr>
@@ -749,7 +908,12 @@ export default function Employees() {
                               )}
                             </td>
                             <td className="p-3 text-right font-medium text-emerald-600 dark:text-emerald-400" data-testid={`text-payroll-earned-${emp.id}`}>{"\u20B9"}{p.earnedSalary.toLocaleString("en-IN")}</td>
-                            <td className="p-3 text-right text-red-600 dark:text-red-400">{p.deductions > 0 ? `\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</td>
+                            <td className="p-3 text-right text-emerald-600 dark:text-emerald-400 text-xs" data-testid={`text-payroll-incentive-${emp.id}`}>
+                              {p.incentiveAmt > 0 ? `+\u20B9${p.incentiveAmt.toLocaleString("en-IN")}` : <span className="text-muted-foreground">\u2014</span>}
+                            </td>
+                            <td className="p-3 text-right text-red-600 dark:text-red-400 text-xs" data-testid={`text-payroll-advance-${emp.id}`}>
+                              {p.advanceDeduct > 0 ? `-\u20B9${p.advanceDeduct.toLocaleString("en-IN")}` : <span className="text-muted-foreground">\u2014</span>}
+                            </td>
                             <td className="p-3 text-right font-bold" data-testid={`text-payroll-net-${emp.id}`}>{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</td>
                             <td className="p-3 text-center">
                               <Button size="icon" variant="ghost" data-testid={`button-payslip-${emp.id}`} onClick={() => { setPayslipEmployee(emp); setPayslipOpen(true); }}>
@@ -761,7 +925,7 @@ export default function Employees() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                        <td colSpan={12} className="p-8 text-center text-muted-foreground">
                           <Wallet className="w-10 h-10 mx-auto mb-2 text-muted-foreground/30" />
                           <p>No active employees found.</p>
                         </td>
@@ -775,8 +939,11 @@ export default function Employees() {
                         <td className="p-3 text-right font-semibold text-emerald-600 dark:text-emerald-400" data-testid="text-total-earned">
                           {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).earnedSalary, 0).toLocaleString("en-IN")}
                         </td>
-                        <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400" data-testid="text-total-deductions">
-                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).deductions, 0).toLocaleString("en-IN")}
+                        <td className="p-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">
+                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).incentiveAmt, 0).toLocaleString("en-IN")}
+                        </td>
+                        <td className="p-3 text-right font-semibold text-red-600 dark:text-red-400">
+                          {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).advanceDeduct, 0).toLocaleString("en-IN")}
                         </td>
                         <td className="p-3 text-right font-bold text-lg" data-testid="text-total-net">
                           {"\u20B9"}{employees.filter(e => e.isActive).reduce((sum, emp) => sum + getPayrollData(emp).netPay, 0).toLocaleString("en-IN")}
@@ -787,6 +954,94 @@ export default function Employees() {
                   )}
                 </table>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Advances sub-section */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <IndianRupee className="w-4 h-4 text-amber-500" />
+                  Advance Payments
+                  {advances.filter(a => !a.isDeducted).length > 0 && (
+                    <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs no-default-hover-elevate no-default-active-elevate">
+                      {advances.filter(a => !a.isDeducted).length} Pending
+                    </Badge>
+                  )}
+                </CardTitle>
+                <div className="flex gap-2 flex-wrap">
+                  <Select value={advanceEmployeeFilter} onValueChange={setAdvanceEmployeeFilter}>
+                    <SelectTrigger className="w-40 h-8 text-xs" data-testid="select-advance-employee-filter"><SelectValue placeholder="All Employees" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Employees</SelectItem>
+                      {employees?.filter(e => e.isActive).map(emp => <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={advanceStatusFilter} onValueChange={setAdvanceStatusFilter}>
+                    <SelectTrigger className="w-36 h-8 text-xs" data-testid="select-advance-status-filter"><SelectValue placeholder="All Status" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Status</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="deducted">Deducted</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {(() => {
+                const filtered = advances.filter(a => {
+                  if (advanceEmployeeFilter !== "all" && a.employeeId !== advanceEmployeeFilter) return false;
+                  if (advanceStatusFilter === "pending" && a.isDeducted) return false;
+                  if (advanceStatusFilter === "deducted" && !a.isDeducted) return false;
+                  return true;
+                });
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-muted-foreground">
+                      <IndianRupee className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
+                      <p className="text-sm">No advance payments recorded.</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Date Given</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                          <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered.map(adv => (
+                          <tr key={adv.id} className="border-b last:border-0" data-testid={`row-advance-${adv.id}`}>
+                            <td className="p-3 font-medium">{employees?.find(e => e.id === adv.employeeId)?.name || "—"}</td>
+                            <td className="p-3 text-muted-foreground">{new Date(adv.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                            <td className="p-3 text-right font-semibold">{"\u20B9"}{Number(adv.amount).toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-muted-foreground text-xs">{adv.reason || "—"}</td>
+                            <td className="p-3 text-center">
+                              {adv.isDeducted ? (
+                                <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 text-xs no-default-hover-elevate no-default-active-elevate">
+                                  <CheckCircle2 className="w-3 h-3 mr-1" /> Deducted
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400 text-xs no-default-hover-elevate no-default-active-elevate">
+                                  <AlertCircle className="w-3 h-3 mr-1" /> Pending
+                                </Badge>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1293,6 +1548,50 @@ export default function Employees() {
               <Label htmlFor="empActive">Active</Label>
             </div>
 
+            {/* Incentive section */}
+            <div className="space-y-3 border rounded-md p-3">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-emerald-500" />
+                <Label className="font-medium text-sm">Incentive / Bonus</Label>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Type</Label>
+                  <Select value={form.incentiveType} onValueChange={v => setForm({ ...form, incentiveType: v, incentiveAmount: "" })}>
+                    <SelectTrigger data-testid="select-incentive-type"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">None</SelectItem>
+                      <SelectItem value="fixed">Fixed Amount (₹)</SelectItem>
+                      <SelectItem value="percent">% of Salary</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.incentiveType !== "none" && (
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">
+                      {form.incentiveType === "fixed" ? "Amount (₹)" : "Percentage (%)"}
+                    </Label>
+                    <Input
+                      type="number"
+                      data-testid="input-incentive-amount"
+                      value={form.incentiveAmount}
+                      onChange={e => setForm({ ...form, incentiveAmount: e.target.value })}
+                      placeholder={form.incentiveType === "fixed" ? "e.g. 2000" : "e.g. 5"}
+                      min="0"
+                    />
+                  </div>
+                )}
+              </div>
+              {form.incentiveType !== "none" && form.incentiveAmount && form.salary && (
+                <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                  Monthly incentive: ₹{form.incentiveType === "fixed"
+                    ? Number(form.incentiveAmount).toLocaleString("en-IN")
+                    : Math.round(Number(form.salary) * Number(form.incentiveAmount) / 100).toLocaleString("en-IN")
+                  }
+                </p>
+              )}
+            </div>
+
             <div className="border rounded-md overflow-hidden">
               <button
                 type="button"
@@ -1439,8 +1738,52 @@ export default function Employees() {
         </DialogContent>
       </Dialog>
 
+      {/* Advance Record Dialog */}
+      <Dialog open={advanceDialogOpen} onOpenChange={setAdvanceDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <IndianRupee className="w-4 h-4 text-amber-500" />
+              Record Advance Payment
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">Advance will be deducted from the employee's next payroll disbursement.</p>
+            <div className="space-y-2">
+              <Label>Employee</Label>
+              <Select value={advanceForm.employeeId} onValueChange={v => setAdvanceForm({ ...advanceForm, employeeId: v })}>
+                <SelectTrigger data-testid="select-advance-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                <SelectContent>
+                  {employees?.filter(e => e.isActive).map(emp => (
+                    <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Amount (₹)</Label>
+              <Input type="number" data-testid="input-advance-amount" value={advanceForm.amount} onChange={e => setAdvanceForm({ ...advanceForm, amount: e.target.value })} placeholder="e.g. 5000" min="1" />
+            </div>
+            <div className="space-y-2">
+              <Label>Date Given</Label>
+              <Input type="date" data-testid="input-advance-date" value={advanceForm.dateGiven} onChange={e => setAdvanceForm({ ...advanceForm, dateGiven: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Reason <span className="text-muted-foreground text-xs">(optional)</span></Label>
+              <Input data-testid="input-advance-reason" value={advanceForm.reason} onChange={e => setAdvanceForm({ ...advanceForm, reason: e.target.value })} placeholder="e.g. Medical emergency" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAdvanceDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => advanceMutation.mutate()} disabled={advanceMutation.isPending} data-testid="button-confirm-advance">
+              {advanceMutation.isPending ? "Saving..." : "Record Advance"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={payslipOpen} onOpenChange={setPayslipOpen}>
-        <DialogContent className="max-w-lg p-0 overflow-hidden">
+        <DialogContent className="max-w-lg p-0 overflow-hidden flex flex-col max-h-[90vh]">
           <DialogHeader className="sr-only">
             <DialogTitle>Payslip - {monthNames[payrollMonth]} {payrollYear}</DialogTitle>
           </DialogHeader>
@@ -1448,7 +1791,7 @@ export default function Employees() {
             const p = getPayrollData(payslipEmployee);
             const companyName = payslipEmployee.company || "ITFI Group";
             return (
-              <div data-testid="payslip-content">
+              <div data-testid="payslip-content" className="flex flex-col overflow-hidden">
                 <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-center gap-3">
@@ -1469,7 +1812,7 @@ export default function Employees() {
                   </div>
                 </div>
 
-                <div className="px-6 py-5 space-y-5">
+                <div className="px-6 py-5 space-y-5 overflow-y-auto flex-1">
                   <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm border-b pb-4">
                     <div>
                       <p className="text-xs text-muted-foreground">Employee Name</p>
@@ -1513,7 +1856,7 @@ export default function Employees() {
 
                   <div>
                     <h3 className="font-semibold text-xs uppercase tracking-wider text-muted-foreground mb-2">Earnings & Deductions</h3>
-                    <div className="text-sm border rounded-md">
+                    <div className="text-sm border rounded-md divide-y">
                       <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30">
                         <span className="text-muted-foreground">Monthly Salary (Gross)</span>
                         <span className="font-medium">{"\u20B9"}{p.monthlySalary.toLocaleString("en-IN")}</span>
@@ -1523,18 +1866,56 @@ export default function Employees() {
                         <span>{"\u20B9"}{p.dailyRate.toLocaleString("en-IN")}</span>
                       </div>
                       <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30">
-                        <span className="text-muted-foreground">Full Days ({p.fullDays} x {"\u20B9"}{p.dailyRate.toLocaleString("en-IN")})</span>
+                        <span className="text-muted-foreground">Full Days ({p.fullDays} × {"\u20B9"}{p.dailyRate.toLocaleString("en-IN")})</span>
                         <span className="text-emerald-600 font-medium">{"\u20B9"}{(p.fullDays * p.dailyRate).toLocaleString("en-IN")}</span>
                       </div>
-                      <div className="flex justify-between gap-4 px-3 py-2">
-                        <span className="text-muted-foreground">Half Days ({p.halfDays} x {"\u20B9"}{Math.round(p.dailyRate / 2).toLocaleString("en-IN")})</span>
-                        <span className="text-amber-600 font-medium">{"\u20B9"}{(p.halfDays * Math.round(p.dailyRate / 2)).toLocaleString("en-IN")}</span>
+                      {p.halfDays > 0 && (
+                        <div className="flex justify-between gap-4 px-3 py-2">
+                          <span className="text-muted-foreground">Half Days ({p.halfDays} × {"\u20B9"}{Math.round(p.dailyRate / 2).toLocaleString("en-IN")})</span>
+                          <span className="text-amber-600 font-medium">{"\u20B9"}{(p.halfDays * Math.round(p.dailyRate / 2)).toLocaleString("en-IN")}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30">
+                        <span className="text-muted-foreground">Attendance Earned</span>
+                        <span className="font-semibold text-emerald-600">{"\u20B9"}{p.earnedSalary.toLocaleString("en-IN")}</span>
                       </div>
-                      <div className="flex justify-between gap-4 px-3 py-2 bg-muted/30 border-t">
-                        <span className="text-muted-foreground font-medium">Total Deductions</span>
-                        <span className="text-red-600 font-medium">{p.deductions > 0 ? `-\u20B9${p.deductions.toLocaleString("en-IN")}` : "\u2014"}</span>
-                      </div>
+                      {p.incentiveAmt > 0 && (
+                        <div className="flex justify-between gap-4 px-3 py-2">
+                          <span className="text-muted-foreground">
+                            Incentive / Bonus
+                            {p.incentiveType === "percent" && (
+                              <span className="text-xs ml-1 text-muted-foreground/70">({payslipEmployee.incentiveAmount}% of salary)</span>
+                            )}
+                          </span>
+                          <span className="text-emerald-600 font-medium">+{"\u20B9"}{p.incentiveAmt.toLocaleString("en-IN")}</span>
+                        </div>
+                      )}
+                      {p.deductions > 0 && (
+                        <div className="flex justify-between gap-4 px-3 py-2 bg-red-500/5">
+                          <span className="text-muted-foreground">Attendance Deduction ({p.daysAbsent} absent)</span>
+                          <span className="text-red-600 font-medium">-{"\u20B9"}{p.deductions.toLocaleString("en-IN")}</span>
+                        </div>
+                      )}
+                      {p.advanceDeduct > 0 && (
+                        <div className="flex justify-between gap-4 px-3 py-2 bg-red-500/5">
+                          <span className="text-muted-foreground">
+                            Advance Recovery
+                            {p.advanceDates.length > 0 && (
+                              <span className="text-xs ml-1 text-muted-foreground/70">({p.advanceDates.join(", ")})</span>
+                            )}
+                          </span>
+                          <span className="text-red-600 font-medium">-{"\u20B9"}{p.advanceDeduct.toLocaleString("en-IN")}</span>
+                        </div>
+                      )}
                     </div>
+                    {p.unrecoveredAdvance > 0 && (
+                      <div className="mt-2 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-md px-3 py-2">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                        <span>
+                          Unrecovered advance of {"\u20B9"}{p.unrecoveredAdvance.toLocaleString("en-IN")} carries forward to next payroll.
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-between items-center px-4 py-3 rounded-md bg-slate-800 text-white">
@@ -1542,7 +1923,41 @@ export default function Employees() {
                     <span className="text-xl font-bold" data-testid="text-payslip-net">{"\u20B9"}{p.netPay.toLocaleString("en-IN")}</span>
                   </div>
 
-                  <p className="text-[10px] text-muted-foreground text-center pt-1">This is a system-generated payslip and does not require a signature.</p>
+                  <div className="flex gap-2">
+                    <Button
+                      className="flex-1 gap-2"
+                      onClick={() => downloadPayslipPDF({
+                        employeeName: payslipEmployee.name,
+                        employeeId: payslipEmployee.id,
+                        designation: payslipEmployee.designation,
+                        department: payslipEmployee.department,
+                        company: companyName,
+                        month: monthNames[payrollMonth],
+                        year: payrollYear,
+                        monthlySalary: p.monthlySalary,
+                        dailyRate: p.dailyRate,
+                        fullDays: p.fullDays,
+                        halfDays: p.halfDays,
+                        daysAbsent: p.daysAbsent,
+                        workingDays: p.workingDays,
+                        earnedSalary: p.earnedSalary,
+                        deductions: p.deductions,
+                        incentiveAmt: p.incentiveAmt,
+                        incentiveType: p.incentiveType,
+                        advanceDeduct: p.advanceDeduct,
+                        advanceDates: p.advanceDates,
+                        unrecoveredAdvance: p.unrecoveredAdvance,
+                        netPay: p.netPay,
+                      })}
+                      data-testid="button-download-payslip-pdf"
+                    >
+                      <FileText className="w-4 h-4" />
+                      Download PDF
+                    </Button>
+                    <Button variant="outline" onClick={() => setPayslipOpen(false)}>Close</Button>
+                  </div>
+
+                  <p className="text-[10px] text-muted-foreground text-center">This is a system-generated payslip and does not require a signature.</p>
                 </div>
               </div>
             );

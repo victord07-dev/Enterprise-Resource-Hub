@@ -3,7 +3,7 @@ import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
 import {
   users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
+  invoices, payments, employees, employeeAdvances, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -17,7 +17,7 @@ import {
   type User, type InsertUser, type Customer, type Supplier, type Product, type Brand, type InsertBrand,
   type Warehouse, type InventoryStock, type SalesOrder, type SalesOrderItem,
   type Quotation, type QuotationItem, type Project, type PurchaseOrder, type Invoice, type Payment, type ProductBundleItem, type InsertProductBundleItem,
-  type Employee, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type LateArrivalRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
+  type Employee, type EmployeeAdvance, type AttendanceRecord, type FieldStaffActivity, type PayrollStatus, type TravelExpense, type Trip, type LocationLog, type Lead, type LeadActivity, type LeadFollowup, type QuotationActivity, type QuotationFollowup, type SupplierProduct, type PurchaseOrderItem, type StockMovement, type DeliveryChallan, type DeliveryChallanItem, type PurchaseRequest, type PurchaseRequestItem, type GoodsReceiptNote, type GoodsReceiptNoteItem, type AuditLog, type Notification, type LeaveRequest, type LateArrivalRequest, type SupplierInvoice, type SupplierPayment, type SalesInvoice, type SalesInvoiceItem, type CustomerPayment, type Attachment, type SalesReturn, type SalesReturnItem, type CreditNote, type DailyPriceSheet, type DailyPriceSheetLot,
   type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
   type WhatsappTemplateSyncLog, type InsertWhatsappTemplateSyncLog,
   type WhatsappWebhookJob, type WhatsappWebhookJobDeadLetter,
@@ -194,6 +194,11 @@ export interface IStorage {
   createEmployee(data: Omit<Employee, "id">): Promise<Employee>;
   updateEmployee(id: string, data: Partial<Omit<Employee, "id">>): Promise<Employee | undefined>;
   deleteEmployee(id: string): Promise<boolean>;
+
+  // Employee Advances
+  listEmployeeAdvances(filters?: { employeeId?: string; isDeducted?: boolean }): Promise<EmployeeAdvance[]>;
+  createEmployeeAdvance(data: Omit<EmployeeAdvance, "id">): Promise<EmployeeAdvance>;
+  markAdvancesDeducted(advanceIds: string[], payrollId: string): Promise<void>;
 
   // Attendance
   getAttendance(): Promise<AttendanceRecord[]>;
@@ -995,6 +1000,31 @@ export class DatabaseStorage implements IStorage {
   async deleteEmployee(id: string): Promise<boolean> {
     await db.delete(employees).where(eq(employees.id, id));
     return true;
+  }
+
+  // Employee Advances
+  async listEmployeeAdvances(filters?: { employeeId?: string; isDeducted?: boolean }): Promise<EmployeeAdvance[]> {
+    const conditions = [];
+    if (filters?.employeeId) conditions.push(eq(employeeAdvances.employeeId, filters.employeeId));
+    if (filters?.isDeducted !== undefined) conditions.push(eq(employeeAdvances.isDeducted, filters.isDeducted));
+    const q = conditions.length > 0
+      ? db.select().from(employeeAdvances).where(and(...conditions))
+      : db.select().from(employeeAdvances);
+    return (await q).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async createEmployeeAdvance(data: Omit<EmployeeAdvance, "id">): Promise<EmployeeAdvance> {
+    const [created] = await db.insert(employeeAdvances).values(data).returning();
+    return created;
+  }
+
+  async markAdvancesDeducted(advanceIds: string[], payrollId: string): Promise<void> {
+    if (advanceIds.length === 0) return;
+    for (const id of advanceIds) {
+      await db.update(employeeAdvances)
+        .set({ isDeducted: true, deductedInPayrollId: payrollId })
+        .where(eq(employeeAdvances.id, id));
+    }
   }
 
   // Attendance

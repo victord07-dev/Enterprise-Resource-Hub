@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrentUser } from "@/lib/auth";
-import { RefreshCw, TrendingUp, DollarSign, CheckCircle, Package, Flame, ShieldAlert, Plus, Pencil } from "lucide-react";
+import { RefreshCw, TrendingUp, DollarSign, CheckCircle, Package, Flame, ShieldAlert, Plus, Pencil, Search } from "lucide-react";
 import type { Product } from "@shared/schema";
 
 type LastSoldEntry = { price: string; lastSoldAt: string };
@@ -89,6 +89,9 @@ export default function Pricing() {
     if (!inventoryStock) return 0;
     return inventoryStock.filter((s: any) => s.productId === productId).reduce((sum: number, s: any) => sum + Number(s.quantity), 0);
   };
+
+  // ─── Product search filter ───────────────────────────────────────────────────
+  const [productSearch, setProductSearch] = useState("");
 
   // ─── Dialog state ────────────────────────────────────────────────────────────
   const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
@@ -317,6 +320,18 @@ export default function Pricing() {
         ))}
       </div>
 
+      {/* Product search */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search products by name or SKU…"
+          className="pl-9"
+          data-testid="input-search-pricing-products"
+          value={productSearch}
+          onChange={e => setProductSearch(e.target.value)}
+        />
+      </div>
+
       {/* Products table */}
       <Card>
         <CardContent className="p-0">
@@ -346,7 +361,20 @@ export default function Pricing() {
                       ))}
                     </tr>
                   ))
-                ) : (products ?? []).filter(p => p.type === "product").map((product) => {
+                ) : (() => {
+                  const q = productSearch.trim().toLowerCase();
+                  const filtered = (products ?? []).filter(p =>
+                    p.type === "product" &&
+                    (!q || p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q))
+                  );
+                  if (filtered.length === 0) return (
+                    <tr>
+                      <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                        {q ? `No products matching "${productSearch}"` : "No products found."}
+                      </td>
+                    </tr>
+                  );
+                  return filtered.map((product) => {
                   const sheet = (todaySheets ?? []).find((s: any) => s.productId === product.id);
                   const ep = effectivePrices?.[product.id];
                   const totalStock = getProductTotalStock(product.id);
@@ -442,15 +470,8 @@ export default function Pricing() {
                       </td>
                     </tr>
                   );
-                })}
-                {!sheetsLoading && (products ?? []).filter(p => p.type === "product").length === 0 && (
-                  <tr>
-                    <td colSpan={11} className="p-8 text-center text-muted-foreground">
-                      <Package className="w-10 h-10 mx-auto mb-2 text-muted-foreground/40" />
-                      No products found
-                    </td>
-                  </tr>
-                )}
+                  });
+                })()}
               </tbody>
             </table>
           </div>

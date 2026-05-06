@@ -1600,11 +1600,12 @@ export default function Accounts() {
 
       {/* ── AP: Record Supplier Payment Dialog ───────────────────────────── */}
       <Dialog open={spDialogOpen} onOpenChange={setSpDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="w-full max-w-[95vw] sm:max-w-xl md:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Record Supplier Payment</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Payment Type */}
             <div className="space-y-2">
               <Label>Payment Type *</Label>
               <Select value={spForm.paymentType} onValueChange={v => setSpForm({ ...spForm, paymentType: v, supplierInvoiceId: "", purchaseOrderId: "" })}>
@@ -1617,6 +1618,8 @@ export default function Accounts() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Supplier */}
             <div className="space-y-2">
               <Label>Supplier *</Label>
               <Select value={spForm.supplierId} onValueChange={v => setSpForm({ ...spForm, supplierId: v, supplierInvoiceId: "", purchaseOrderId: "" })}>
@@ -1629,47 +1632,53 @@ export default function Accounts() {
               </Select>
             </div>
 
-            {spForm.paymentType === "advance" ? (
-              <div className="space-y-2">
-                <Label>Purchase Order *</Label>
-                <Select value={spForm.purchaseOrderId} onValueChange={v => setSpForm({ ...spForm, purchaseOrderId: v })} disabled={!spForm.supplierId}>
-                  <SelectTrigger data-testid="select-sp-po">
-                    <SelectValue placeholder={spForm.supplierId ? "Select PO" : "Select supplier first"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {supplierPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString()}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                {spForm.purchaseOrderId && (
-                  <p className="text-xs text-muted-foreground">
-                    Advance already paid: ₹{Number(poMap.get(spForm.purchaseOrderId)?.advancePaid ?? 0).toLocaleString()}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Label>Supplier Invoice *</Label>
-                <Select value={spForm.supplierInvoiceId} onValueChange={v => setSpForm({ ...spForm, supplierInvoiceId: v })} disabled={!spForm.supplierId}>
-                  <SelectTrigger data-testid="select-sp-invoice">
-                    <SelectValue placeholder={spForm.supplierId ? "Select invoice" : "Select supplier first"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {supplierSIs.filter(si => si.status !== "paid").map(si => <SelectItem key={si.id} value={si.id}>{si.invoiceNumber} — ₹{Number(si.totalAmount).toLocaleString()}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                {invoiceBalance !== null && (
-                  <div className="p-3 bg-muted/50 rounded-md text-sm flex justify-between">
-                    <span className="text-muted-foreground">Current Balance</span>
-                    <span className={`font-semibold ${invoiceBalance <= 0 ? "text-green-600" : ""}`}>₹{Math.max(0, invoiceBalance).toLocaleString()}</span>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Invoice / PO — full width */}
+            <div className="sm:col-span-2 space-y-2">
+              {spForm.paymentType === "advance" ? (
+                <>
+                  <Label>Purchase Order *</Label>
+                  <Select value={spForm.purchaseOrderId} onValueChange={v => setSpForm({ ...spForm, purchaseOrderId: v })} disabled={!spForm.supplierId}>
+                    <SelectTrigger data-testid="select-sp-po">
+                      <SelectValue placeholder={spForm.supplierId ? "Select PO" : "Select supplier first"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {supplierPOs.map(po => <SelectItem key={po.id} value={po.id}>{po.poNumber} — ₹{Number((po as any).grandTotal ?? po.totalAmount).toLocaleString()}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {spForm.purchaseOrderId && (
+                    <p className="text-xs text-muted-foreground">
+                      Advance already paid: ₹{Number(poMap.get(spForm.purchaseOrderId)?.advancePaid ?? 0).toLocaleString()}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Label>Supplier Invoice *</Label>
+                  <Select value={spForm.supplierInvoiceId} onValueChange={v => setSpForm({ ...spForm, supplierInvoiceId: v })} disabled={!spForm.supplierId}>
+                    <SelectTrigger data-testid="select-sp-invoice">
+                      <SelectValue placeholder={spForm.supplierId ? "Select invoice" : "Select supplier first"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {supplierSIs.filter(si => si.status !== "paid").map(si => <SelectItem key={si.id} value={si.id}>{si.invoiceNumber} — ₹{Number(si.totalAmount).toLocaleString()}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {invoiceBalance !== null && (
+                    <div className="p-3 bg-muted/50 rounded-md text-sm flex justify-between">
+                      <span className="text-muted-foreground">Current Balance</span>
+                      <span className={`font-semibold ${invoiceBalance <= 0 ? "text-green-600" : ""}`}>₹{Math.max(0, invoiceBalance).toLocaleString()}</span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
 
+            {/* Amount */}
             <div className="space-y-2">
               <Label>Amount (₹) *</Label>
               <Input type="number" data-testid="input-sp-amount" value={spForm.amount} onChange={e => setSpForm({ ...spForm, amount: e.target.value })} placeholder="0" />
             </div>
+
+            {/* Payment Method */}
             <div className="space-y-2">
               <Label>Payment Method</Label>
               <Select value={spForm.paymentMethod} onValueChange={v => setSpForm({ ...spForm, paymentMethod: v })}>
@@ -1683,8 +1692,10 @@ export default function Accounts() {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Account */}
             {spAccounts.length > 0 && (
-              <div className="space-y-2">
+              <div className="space-y-2 sm:col-span-2">
                 <Label>Account <span className="text-muted-foreground text-xs">(required)</span></Label>
                 <Select value={spForm.cashAccountId} onValueChange={(v) => setSpForm({ ...spForm, cashAccountId: v })}>
                   <SelectTrigger data-testid="select-sp-account">
@@ -1701,18 +1712,23 @@ export default function Accounts() {
                 </Select>
               </div>
             )}
+
+            {/* Payment Date */}
             <div className="space-y-2">
               <Label>Payment Date</Label>
               <Input type="date" data-testid="input-sp-date" value={spForm.paymentDate} onChange={e => setSpForm({ ...spForm, paymentDate: e.target.value })} />
             </div>
+
+            {/* Reference */}
             <div className="space-y-2">
               <Label>Reference</Label>
               <Input data-testid="input-sp-reference" value={spForm.reference} onChange={e => setSpForm({ ...spForm, reference: e.target.value })} placeholder="NEFT/Cheque number, etc." />
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSpDialogOpen(false)}>Cancel</Button>
+          <DialogFooter className="mt-4 flex-col sm:flex-row gap-2">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => setSpDialogOpen(false)}>Cancel</Button>
             <Button
+              className="w-full sm:w-auto"
               data-testid="button-submit-supplier-payment"
               disabled={spMutation.isPending || !spForm.supplierId || !spForm.amount ||
                 (spForm.paymentType === "regular" && !spForm.supplierInvoiceId) ||

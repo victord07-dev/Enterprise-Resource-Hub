@@ -1,0 +1,49 @@
+Let me check the logs and the relevant code to understand the current behaviour before giving you a diagnosis.
+
+
+2 actions
+Let me look at the GRN expanded row code, the supplier invoice route, and the Accounts page all at once to fully diagnose this.
+
+
+4 actions
+Critical finding: GRN-2026-0012 has supplierInvoiceId = NO_INV — meaning the invoice was created but NOT linked back to the GRN. Let me now read the endpoint and the GRN UI button logic simultaneously.
+
+
+4 actions
+Now I can see the full picture. Let me read the GRN expanded row button logic and the Accounts supplier invoice row rendering together.
+
+
+11 actions
+Now I have the full picture. Let me also read the Accounts.tsx supplier invoice action row to complete the diagnosis.
+
+
+3 actions
+I now have the complete diagnosis. Here's what's happening — this is a design gap, not a bug by intent, but it behaves like a bug.
+
+What's Happening
+There are two parallel systems that record supplier invoice data for a GRN, and they've never been wired together:
+
+System 1 — GRN-level lightweight fields (Inventory tab)
+The "Supplier Invoice" button in the GRN row calls POST /api/grns/:id/upload-supplier-invoice. This stores the invoice number, date and file URL directly on the GRN row in the goods_receipt_notes table. It creates no record in supplier_invoices.
+
+System 2 — Full supplier invoice record (Accounts tab)
+When a GRN is confirmed, the system auto-creates a supplier_invoices row (e.g. SI-2026-0002) with uploadStatus: "pending_upload". This is what the Accounts → Supplier Invoices tab tracks. The accountant is expected to "Mark as Recorded" from there, which sets uploadStatus = "recorded" and stores the external invoice number/date.
+
+The Three Specific Gaps
+#	Where	Problem
+1	GRN tab button label	The button only changes to "Re-upload Invoice" if a file was uploaded. If you only entered the invoice number (no file), supplierInvoiceUrl is null, so it still shows "Supplier Invoice" — making it look like nothing was done yet.
+2	Backend cross-update missing	POST /api/grns/:id/upload-supplier-invoice updates fields on the GRN row but never touches the linked supplier_invoices record. So SI-2026-0002 stays pending_upload and extInvoiceNumber remains null — even though you just recorded those details from the GRN tab. This is the main gap.
+3	Accounts tab still shows action	Because SI-2026-0002 is still pending_upload (gap #2 above), the "Mark as Recorded" button stays fully visible and clickable in Accounts — allowing a double-entry.
+Proposed Fix (3 targeted changes, no schema changes)
+Fix 1 — GRN tab button label (client/src/pages/Inventory.tsx, ~line 1944):
+Change the condition from checking only supplierInvoiceUrl to checking either supplierInvoiceUrl OR supplierInvoiceNumber. Label becomes "Update Invoice" when either is set.
+
+Fix 2 — Backend cross-update (server/routes.ts, POST /api/grns/:id/upload-supplier-invoice):
+After updating the GRN row, look up the supplier_invoices record whose grnId = grn.id. If found and uploadStatus ≠ "recorded", update it to: uploadStatus = "recorded", extInvoiceNumber = supplierInvoiceNumber, extInvoiceDate = supplierInvoiceDate, and signedCopyUrl = fileUrl (if a file was provided). This bridges the two systems.
+
+Fix 3 — Accounts tab guard (client/src/pages/Accounts.tsx):
+Hide/disable the "Mark as Recorded" button for any supplier_invoices row that already has uploadStatus === "recorded". The backend already rejects a 400 in that case, but the UI button should reflect it without making the user try first.
+
+Regarding the pending upload label in Accounts — that's by design. pending_upload means "the system created this invoice entry automatically but is waiting for the physical invoice details to be recorded." Once Fix 2 lands, recording from the GRN tab will flip it to recorded and the Accounts tab will show it as done.
+
+Shall I go ahead and ship these 3 fixes?

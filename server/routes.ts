@@ -6048,6 +6048,22 @@ export async function registerRoutes(
         WHERE id = ${grn.id}
       `);
 
+      // ── Bidirectional sync: also update the linked supplier_invoices record ──
+      // When the accountant records invoice details from the GRN tab, propagate
+      // those details to the auto-created supplier_invoices row so the Accounts
+      // tab reflects the same state (uploadStatus → "recorded").
+      await db.execute(sql`
+        UPDATE supplier_invoices
+        SET upload_status = 'recorded',
+            ext_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}, ext_invoice_number),
+            ext_invoice_date   = COALESCE(${supplierInvoiceDate ? new Date(supplierInvoiceDate) : null}, ext_invoice_date),
+            signed_copy_url    = COALESCE(${fileUrl ?? null}, signed_copy_url),
+            signed_copy_uploaded_by  = CASE WHEN ${fileUrl ?? null} IS NOT NULL THEN ${req.user.id} ELSE signed_copy_uploaded_by END,
+            signed_copy_uploaded_at  = CASE WHEN ${fileUrl ?? null} IS NOT NULL THEN now() ELSE signed_copy_uploaded_at END
+        WHERE grn_id = ${grn.id}
+          AND upload_status != 'cancelled'
+      `);
+
       await logAction(req.user.id, "grn_supplier_invoice_uploaded", "supply_chain",
         `Supplier invoice uploaded for GRN ${grn.grnNumber}. Ref: ${supplierInvoiceNumber ?? "n/a"}`);
 
@@ -7625,6 +7641,22 @@ export async function registerRoutes(
             ext_gst_amount = ${extGstAmount ? String(Number(extGstAmount)) : null}
         WHERE id = ${inv.id}
       `);
+
+      // ── Bidirectional sync: also update the linked GRN row ────────────────
+      // When the accountant records invoice details from the Accounts tab,
+      // propagate ext_invoice_number / ext_invoice_date back to the GRN so
+      // the Inventory tab button reflects the recorded state.
+      if ((inv as any).grnId) {
+        await db.execute(sql`
+          UPDATE goods_receipt_notes
+          SET supplier_invoice_number = COALESCE(${extInvoiceNumber.trim()}, supplier_invoice_number),
+              supplier_invoice_date   = COALESCE(${new Date(extInvoiceDate)}, supplier_invoice_date),
+              supplier_invoice_uploaded_by = COALESCE(supplier_invoice_uploaded_by, ${req.user.id}),
+              supplier_invoice_uploaded_at = COALESCE(supplier_invoice_uploaded_at, now())
+          WHERE id = ${(inv as any).grnId}
+        `);
+      }
+
       const varianceNote = variance > 0.01 ? ` Variance from system: ₹${variance.toFixed(2)}` : "";
       await logAction(req.user.id, "supplier_invoice_recorded", "accounts",
         `Supplier invoice ${(inv as any).invoiceNumber} recorded. Ext invoice: ${extInvoiceNumber} dated ${extInvoiceDate} for ₹${extTotal.toFixed(2)}.${varianceNote}`);

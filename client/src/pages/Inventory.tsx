@@ -1941,7 +1941,11 @@ export default function Inventory() {
                                       onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
                                     >
                                       <Receipt className="w-3 h-3 mr-1" />
-                                      {(grn as any).supplierInvoiceUrl ? "Re-upload Invoice" : "Supplier Invoice"}
+                                      {(grn as any).supplierInvoiceUrl
+                                        ? "Re-upload Invoice"
+                                        : (grn as any).supplierInvoiceNumber
+                                          ? "Update Invoice"
+                                          : "Supplier Invoice"}
                                     </Button>
                                   )}
                                 </div>

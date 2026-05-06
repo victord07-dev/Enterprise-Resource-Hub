@@ -1,0 +1,81 @@
+Here's your reply to Replit AI:
+
+Reply to Replit AI:
+Change of plan on incentives. Restructure them to mirror the Advance Payment pattern — incentives are discretionary monthly amounts that vary per employee, vary per month, and may not be given at all in some months. They are not a fixed per-employee setting.
+
+1. Remove the static incentive fields from the employee profile
+
+Drop incentiveType and incentiveAmount columns from the employees table
+Remove the "Incentive" section from the employee create/edit form
+Remove related audit logging for incentive field changes
+No existing data to preserve — drop the columns cleanly
+
+
+2. Add a new employee_incentives table (mirrors employee_advances)
+
+id
+employeeId
+amount
+dateGiven (used for matching to payroll month)
+reason (optional — e.g., "Diwali bonus", "performance reward")
+isApplied (boolean, default false)
+appliedInPayrollId (nullable varchar)
+createdBy, createdAt
+
+Incentives are immutable after creation — no PATCH, no DELETE endpoints.
+
+3. Storage + API
+
+createEmployeeIncentive, listEmployeeIncentives (with filters)
+POST /api/employee-incentives
+GET /api/employee-incentives?employeeId=&isApplied=&from=&to=
+No PATCH or DELETE
+
+
+4. Payroll tab — Incentives sub-section
+Mirror the Advances sub-section exactly:
+
+"Record Incentive" button → dialog with employee selector, amount (required), date (default today), reason (optional) → POST → toast → refetch
+Read-only list table: Employee | Date | Amount | Reason | Applied (Yes/No badge)
+Filter controls: employee dropdown + applied status filter
+
+Place this card next to or below the Advances card.
+
+5. Extend disburse endpoint
+When PATCH /api/payroll-status/:id/disburse runs:
+
+After marking status = disbursed, loop through unapplied incentives whose dateGiven falls within that payroll month/year, plus any prior unapplied incentives (same self-healing rule as advances)
+Mark each isApplied = true and appliedInPayrollId = payrollStatusId
+Write one audit log entry per incentive (incentive_applied type)
+
+
+6. Update getPayrollData()
+Replace the static incentive calculation with the event-based pattern:
+incentiveAmt = sum of all incentives where isApplied = false 
+               AND dateGiven falls within this payroll month 
+               (plus any prior unapplied incentives)
+advanceDeduct = (unchanged)
+netPay = earnedSalary + incentiveAmt - advanceDeduct (floor at 0)
+Pass the incentives list into getPayrollData() the same way advances are passed.
+
+7. Payslip
+
+"Incentive" line item in the Earnings section showing total applied this month
+If multiple incentives were applied in one month, list them individually with date and reason, or show a single total with count (e.g., "Incentive (2 entries): ₹X")
+Include in the PDF download
+
+
+8. CSV export
+
+The "Incentive" column reflects the sum of incentives applied that month per employee (no column change, just the data source)
+
+
+9. Audit logging
+
+Incentive created (employee, amount, date, reason, createdBy)
+Incentive auto-applied during payroll disburse (incentive ID, amount, payroll ID)
+Remove the old "incentive field changed on employee profile" audit event since the fields no longer exist
+
+
+Don't change: Advance payment logic, attendance, leave, or any other module.
+Proceed in the same order: schema → API → payroll calculation → UI.

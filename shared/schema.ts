@@ -299,8 +299,6 @@ export const employees = pgTable("employees", {
   isActive: boolean("is_active").notNull().default(true),
   salary: decimal("salary", { precision: 12, scale: 2 }),
   qrCode: text("qr_code"),
-  incentiveType: text("incentive_type").notNull().default("none"),
-  incentiveAmount: decimal("incentive_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const employeeAdvances = pgTable("employee_advances", {
@@ -311,6 +309,18 @@ export const employeeAdvances = pgTable("employee_advances", {
   reason: text("reason"),
   isDeducted: boolean("is_deducted").notNull().default(false),
   deductedInPayrollId: varchar("deducted_in_payroll_id"),
+  createdBy: varchar("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const employeeIncentives = pgTable("employee_incentives", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  employeeId: varchar("employee_id").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  dateGiven: timestamp("date_given").notNull().defaultNow(),
+  reason: text("reason"),
+  isApplied: boolean("is_applied").notNull().default(false),
+  appliedInPayrollId: varchar("applied_in_payroll_id"),
   createdBy: varchar("created_by").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -889,6 +899,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true 
 export const insertPaymentSchema = createInsertSchema(payments).omit({ id: true });
 export const insertEmployeeSchema = createInsertSchema(employees).omit({ id: true });
 export const insertEmployeeAdvanceSchema = createInsertSchema(employeeAdvances).omit({ id: true });
+export const insertEmployeeIncentiveSchema = createInsertSchema(employeeIncentives).omit({ id: true });
 export const insertAttendanceSchema = createInsertSchema(attendanceRecords).omit({ id: true });
 export const insertFieldStaffActivitySchema = createInsertSchema(fieldStaffActivities).omit({ id: true });
 export const insertPayrollStatusSchema = createInsertSchema(payrollStatus).omit({ id: true });
@@ -1002,6 +1013,8 @@ export type Payment = typeof payments.$inferSelect;
 export type Employee = typeof employees.$inferSelect;
 export type EmployeeAdvance = typeof employeeAdvances.$inferSelect;
 export type InsertEmployeeAdvance = z.infer<typeof insertEmployeeAdvanceSchema>;
+export type EmployeeIncentive = typeof employeeIncentives.$inferSelect;
+export type InsertEmployeeIncentive = z.infer<typeof insertEmployeeIncentiveSchema>;
 export type AttendanceRecord = typeof attendanceRecords.$inferSelect;
 export type FieldStaffActivity = typeof fieldStaffActivities.$inferSelect;
 export type PayrollStatus = typeof payrollStatus.$inferSelect;

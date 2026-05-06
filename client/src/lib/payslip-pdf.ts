@@ -19,7 +19,7 @@ export interface PayslipData {
   dailyRate: number;
   earnedSalary: number;
   incentiveAmt: number;
-  incentiveType: string;
+  incentiveDates: string[];
   advanceDeduct: number;
   advanceDates: string[];
   unrecoveredAdvance: number;
@@ -165,9 +165,9 @@ export async function downloadPayslipPDF(data: PayslipData) {
   ];
 
   if (data.incentiveAmt > 0) {
-    const iLabel = data.incentiveType === "percent"
-      ? `Incentive (% of salary)`
-      : `Incentive (Fixed)`;
+    const iLabel = data.incentiveDates && data.incentiveDates.length > 0
+      ? `Incentive / Bonus (${data.incentiveDates.slice(0, 2).join(", ")}${data.incentiveDates.length > 2 ? "..." : ""})`
+      : "Incentive / Bonus";
     rows.push({ label: iLabel, value: `+${fmt(data.incentiveAmt)}`, color: [5, 150, 105], bg: [236, 253, 245] });
   }
 

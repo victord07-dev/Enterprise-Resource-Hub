@@ -12,7 +12,7 @@ import {
   loginSchema, insertCustomerSchema, insertSupplierSchema, insertProductSchema,
   insertWarehouseSchema, insertSalesOrderSchema, insertSalesOrderItemSchema, insertQuotationSchema,
   insertQuotationItemSchema, insertProjectSchema, insertPurchaseOrderSchema, insertInvoiceSchema,
-  insertPaymentSchema, insertEmployeeSchema, insertEmployeeAdvanceSchema, insertAttendanceSchema,
+  insertPaymentSchema, insertEmployeeSchema, insertEmployeeAdvanceSchema, insertEmployeeIncentiveSchema, insertAttendanceSchema,
   insertFieldStaffActivitySchema, insertUserSchema, insertLeadSchema,
   insertLeadActivitySchema, insertLeadFollowupSchema, insertQuotationActivitySchema, insertQuotationFollowupSchema,
   insertSupplierProductSchema, insertPurchaseOrderItemSchema,
@@ -3996,6 +3996,22 @@ export async function registerRoutes(
           }
         }
 
+        // Process all unapplied incentives (from any prior month + current month)
+        const pendingIncentives = await storage.listEmployeeIncentives({ isApplied: false });
+        if (pendingIncentives.length > 0) {
+          const incentiveIds = pendingIncentives.map(i => i.id);
+          await storage.markIncentivesApplied(incentiveIds, payrollRecord.id);
+          for (const inc of pendingIncentives) {
+            const emp = allEmployees.find(e => e.id === inc.employeeId);
+            await logAction(
+              req.user.id,
+              "incentive_applied",
+              "employee_incentives",
+              `Incentive ₹${Number(inc.amount).toLocaleString("en-IN")} for ${emp?.name || inc.employeeId} applied in ${monthLabel} payroll (incentive ID: ${inc.id}${inc.reason ? ` — ${inc.reason}` : ""})`
+            );
+          }
+        }
+
         // Send salary disbursed notifications
         const employeeUserIds = allEmployees
           .filter(e => e.isActive && e.userId)
@@ -4054,6 +4070,44 @@ export async function registerRoutes(
       res.status(201).json(created);
     } catch (error) {
       res.status(500).json({ message: "Failed to create advance" });
+    }
+  });
+
+  // Employee Incentives
+  app.get("/api/employee-incentives", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
+    try {
+      const { employeeId, isApplied } = req.query;
+      const filters: { employeeId?: string; isApplied?: boolean } = {};
+      if (employeeId) filters.employeeId = employeeId as string;
+      if (isApplied !== undefined) filters.isApplied = isApplied === "true";
+      const data = await storage.listEmployeeIncentives(filters);
+      res.json(data);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch incentives" });
+    }
+  });
+
+  app.post("/api/employee-incentives", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
+    try {
+      const parsed = insertEmployeeIncentiveSchema.safeParse({
+        ...req.body,
+        createdBy: req.user.id,
+        createdAt: new Date(),
+        dateGiven: req.body.dateGiven ? new Date(req.body.dateGiven) : new Date(),
+      });
+      if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+      const created = await storage.createEmployeeIncentive(parsed.data);
+      const allEmployees = await storage.getEmployees();
+      const emp = allEmployees.find(e => e.id === parsed.data.employeeId);
+      await logAction(
+        req.user.id,
+        "incentive_created",
+        "employee_incentives",
+        `Incentive of ₹${Number(parsed.data.amount).toLocaleString("en-IN")} recorded for ${emp?.name || parsed.data.employeeId} on ${new Date(parsed.data.dateGiven).toLocaleDateString("en-IN")}${parsed.data.reason ? ` — Reason: ${parsed.data.reason}` : ""}`
+      );
+      res.status(201).json(created);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create incentive" });
     }
   });
 

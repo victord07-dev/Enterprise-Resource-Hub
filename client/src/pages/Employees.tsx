@@ -18,7 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest, LateArrivalRequest, EmployeeAdvance } from "@shared/schema";
+import type { Employee, AttendanceRecord, PayrollStatus, LeaveRequest, LateArrivalRequest, EmployeeAdvance, EmployeeIncentive } from "@shared/schema";
 
 type UserAccount = { id: string; username: string; role: string };
 
@@ -36,7 +36,7 @@ export default function Employees() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, incentiveType: "none", incentiveAmount: "" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
 
   const [showPortalSection, setShowPortalSection] = useState(false);
   const [portalForm, setPortalForm] = useState({ username: "", password: "", role: "field_staff" });
@@ -57,6 +57,10 @@ export default function Employees() {
   const [advanceForm, setAdvanceForm] = useState({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
   const [advanceEmployeeFilter, setAdvanceEmployeeFilter] = useState("all");
   const [advanceStatusFilter, setAdvanceStatusFilter] = useState("all");
+  const [incentiveDialogOpen, setIncentiveDialogOpen] = useState(false);
+  const [incentiveForm, setIncentiveForm] = useState({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
+  const [incentiveEmployeeFilter, setIncentiveEmployeeFilter] = useState("all");
+  const [incentiveStatusFilter, setIncentiveStatusFilter] = useState("all");
   const [csvFromMonth, setCsvFromMonth] = useState(new Date().getMonth());
   const [csvFromYear, setCsvFromYear] = useState(new Date().getFullYear());
   const [csvToMonth, setCsvToMonth] = useState(new Date().getMonth());
@@ -69,6 +73,10 @@ export default function Employees() {
 
   const { data: advances = [] } = useQuery<EmployeeAdvance[]>({
     queryKey: ["/api/employee-advances"],
+  });
+
+  const { data: incentives = [] } = useQuery<EmployeeIncentive[]>({
+    queryKey: ["/api/employee-incentives"],
   });
 
   const { data: allLeaveRequests = [], isLoading: lrLoading } = useQuery<LeaveRequest[]>({
@@ -177,6 +185,7 @@ export default function Employees() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payroll-status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/employee-advances"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/employee-incentives"] });
       toast({ title: "Payroll disbursed", description: `${monthNames[payrollMonth]} ${payrollYear} payroll marked as disbursed.` });
     },
     onError: (error: Error) => {
@@ -202,6 +211,28 @@ export default function Employees() {
       toast({ title: "Advance recorded", description: "Advance payment will be deducted from next payroll." });
       setAdvanceDialogOpen(false);
       setAdvanceForm({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const incentiveMutation = useMutation({
+    mutationFn: async () => {
+      if (!incentiveForm.employeeId || !incentiveForm.amount || Number(incentiveForm.amount) <= 0) {
+        throw new Error("Employee and a valid amount are required.");
+      }
+      const res = await apiRequest("POST", "/api/employee-incentives", {
+        employeeId: incentiveForm.employeeId,
+        amount: incentiveForm.amount,
+        dateGiven: incentiveForm.dateGiven,
+        reason: incentiveForm.reason || undefined,
+      });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to record incentive"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/employee-incentives"] });
+      toast({ title: "Incentive recorded", description: "Incentive will be added to the employee's next payroll disbursement." });
+      setIncentiveDialogOpen(false);
+      setIncentiveForm({ employeeId: "", amount: "", dateGiven: new Date().toISOString().slice(0, 10), reason: "" });
     },
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
@@ -261,7 +292,7 @@ export default function Employees() {
 
   const openNew = () => {
     setEditingEmployee(null);
-    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, incentiveType: "none", incentiveAmount: "" };
+    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true };
     setForm(emptyForm);
     setShowPortalSection(false);
     setPortalForm({ username: "", password: "", role: "field_staff" });
@@ -279,8 +310,6 @@ export default function Employees() {
       designation: emp.designation,
       salary: emp.salary ? String(emp.salary) : "",
       isActive: emp.isActive,
-      incentiveType: emp.incentiveType || "none",
-      incentiveAmount: emp.incentiveAmount ? String(emp.incentiveAmount) : "",
     });
     const linkedUser = getLinkedUser(emp);
     if (linkedUser) {
@@ -389,14 +418,10 @@ export default function Employees() {
     const earnedSalary = (fullDays * dailyRate) + (halfDays * Math.round(dailyRate / 2));
     const deductions = monthlySalary - earnedSalary;
 
-    // Incentive (flat addition, not prorated)
-    const incentiveType = emp.incentiveType || "none";
-    let incentiveAmt = 0;
-    if (incentiveType === "fixed") {
-      incentiveAmt = Number(emp.incentiveAmount) || 0;
-    } else if (incentiveType === "percent") {
-      incentiveAmt = Math.round(monthlySalary * (Number(emp.incentiveAmount) || 0) / 100);
-    }
+    // Incentive: sum of all unapplied incentives for this employee (event-based, not static)
+    const empPendingIncentives = incentives.filter(i => i.employeeId === emp.id && !i.isApplied);
+    const incentiveAmt = empPendingIncentives.reduce((s, i) => s + Number(i.amount), 0);
+    const incentiveDates = empPendingIncentives.map(i => new Date(i.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
 
     // Advance deduction: all undeducted advances for this employee regardless of month
     const empPendingAdvances = advances.filter(a => a.employeeId === emp.id && !a.isDeducted);
@@ -407,7 +432,7 @@ export default function Employees() {
     const advanceDates = empPendingAdvances.map(a => new Date(a.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
 
     const netPay = Math.max(0, grossBeforeAdv - advanceDeduct);
-    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, incentiveAmt, incentiveType, advanceDeduct, unrecoveredAdvance, advanceDates, netPay };
+    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, incentiveAmt, incentiveDates, advanceDeduct, unrecoveredAdvance, advanceDates, netPay };
   };
 
   const prevMonth = () => {
@@ -422,7 +447,7 @@ export default function Employees() {
   const downloadPayrollCSV = () => {
     const activeEmployees = employees?.filter(e => e.isActive) || [];
     const rows: string[][] = [];
-    rows.push(["Employee", "Department", "Company", "Month", "Year", "Gross Salary", "Daily Rate", "Full Days", "Half Days", "Absent", "Earned Salary", "Incentive Type", "Incentive Amount", "Advance Deduction", "Attendance Deduction", "Net Pay"]);
+    rows.push(["Employee", "Department", "Company", "Month", "Year", "Gross Salary", "Daily Rate", "Full Days", "Half Days", "Absent", "Earned Salary", "Incentive Amount", "Advance Deduction", "Attendance Deduction", "Net Pay"]);
 
     const fromIdx = csvFromYear * 12 + csvFromMonth;
     const toIdx = csvToYear * 12 + csvToMonth;
@@ -443,10 +468,11 @@ export default function Employees() {
         const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
         const earnedSalary = fullDays * dailyRate + halfDays * Math.round(dailyRate / 2);
         const attDeduction = monthlySalary - earnedSalary;
-        const incentiveType = emp.incentiveType || "none";
-        let incentiveAmt = 0;
-        if (incentiveType === "fixed") incentiveAmt = Number(emp.incentiveAmount) || 0;
-        else if (incentiveType === "percent") incentiveAmt = Math.round(monthlySalary * (Number(emp.incentiveAmount) || 0) / 100);
+        const empIncentivesThisMonth = incentives.filter(i => {
+          const d = new Date(i.dateGiven);
+          return i.employeeId === emp.id && d.getMonth() === m && d.getFullYear() === y;
+        });
+        const incentiveAmt = empIncentivesThisMonth.reduce((s, i) => s + Number(i.amount), 0);
         const empPending = advances.filter(a => a.employeeId === emp.id && !a.isDeducted);
         const totalAdv = empPending.reduce((s, a) => s + Number(a.amount), 0);
         const advDeduct = Math.min(totalAdv, earnedSalary + incentiveAmt);
@@ -456,7 +482,6 @@ export default function Employees() {
           String(monthlySalary), String(dailyRate),
           String(fullDays), String(halfDays), String(daysAbsent),
           String(earnedSalary),
-          incentiveType === "none" ? "None" : incentiveType === "fixed" ? "Fixed" : `${emp.incentiveAmount}%`,
           String(incentiveAmt),
           String(advDeduct),
           String(attDeduction),
@@ -829,6 +854,10 @@ export default function Employees() {
                 <IndianRupee className="w-4 h-4 mr-1" />
                 Record Advance
               </Button>
+              <Button variant="outline" size="sm" onClick={() => setIncentiveDialogOpen(true)} className="border-emerald-500 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/20" data-testid="button-record-incentive">
+                <TrendingUp className="w-4 h-4 mr-1" />
+                Record Incentive
+              </Button>
               {payrollStatusData?.status === "disbursed" ? (
                 <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 no-default-hover-elevate no-default-active-elevate" data-testid="badge-payroll-disbursed">
                   <CheckCircle2 className="w-3 h-3 mr-1" /> Disbursed
@@ -1028,6 +1057,94 @@ export default function Employees() {
                               {adv.isDeducted ? (
                                 <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 text-xs no-default-hover-elevate no-default-active-elevate">
                                   <CheckCircle2 className="w-3 h-3 mr-1" /> Deducted
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400 text-xs no-default-hover-elevate no-default-active-elevate">
+                                  <AlertCircle className="w-3 h-3 mr-1" /> Pending
+                                </Badge>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </CardContent>
+          </Card>
+
+          {/* Incentives sub-section */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-emerald-500" />
+                  Incentive / Bonus Payments
+                  {incentives.filter(i => !i.isApplied).length > 0 && (
+                    <Badge variant="outline" className="border-emerald-500 text-emerald-600 text-xs no-default-hover-elevate no-default-active-elevate">
+                      {incentives.filter(i => !i.isApplied).length} Pending
+                    </Badge>
+                  )}
+                </CardTitle>
+                <div className="flex gap-2 flex-wrap">
+                  <Select value={incentiveEmployeeFilter} onValueChange={setIncentiveEmployeeFilter}>
+                    <SelectTrigger className="w-40 h-8 text-xs" data-testid="select-incentive-employee-filter"><SelectValue placeholder="All Employees" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Employees</SelectItem>
+                      {employees?.filter(e => e.isActive).map(emp => <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={incentiveStatusFilter} onValueChange={setIncentiveStatusFilter}>
+                    <SelectTrigger className="w-36 h-8 text-xs" data-testid="select-incentive-status-filter"><SelectValue placeholder="All Status" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Status</SelectItem>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="applied">Applied</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {(() => {
+                const filtered = incentives.filter(i => {
+                  if (incentiveEmployeeFilter !== "all" && i.employeeId !== incentiveEmployeeFilter) return false;
+                  if (incentiveStatusFilter === "pending" && i.isApplied) return false;
+                  if (incentiveStatusFilter === "applied" && !i.isApplied) return false;
+                  return true;
+                });
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-8 text-center text-muted-foreground">
+                      <TrendingUp className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
+                      <p className="text-sm">No incentives recorded.</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          <th className="text-left p-3 font-medium text-muted-foreground">Employee</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Date Given</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Reason</th>
+                          <th className="text-center p-3 font-medium text-muted-foreground">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filtered.map(inc => (
+                          <tr key={inc.id} className="border-b last:border-0" data-testid={`row-incentive-${inc.id}`}>
+                            <td className="p-3 font-medium">{employees?.find(e => e.id === inc.employeeId)?.name || "—"}</td>
+                            <td className="p-3 text-muted-foreground">{new Date(inc.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                            <td className="p-3 text-right font-semibold text-emerald-600 dark:text-emerald-400">{"\u20B9"}{Number(inc.amount).toLocaleString("en-IN")}</td>
+                            <td className="p-3 text-muted-foreground text-xs">{inc.reason || "—"}</td>
+                            <td className="p-3 text-center">
+                              {inc.isApplied ? (
+                                <Badge variant="outline" className="border-emerald-500 text-emerald-600 dark:text-emerald-400 text-xs no-default-hover-elevate no-default-active-elevate">
+                                  <CheckCircle2 className="w-3 h-3 mr-1" /> Applied
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400 text-xs no-default-hover-elevate no-default-active-elevate">
@@ -1548,50 +1665,6 @@ export default function Employees() {
               <Label htmlFor="empActive">Active</Label>
             </div>
 
-            {/* Incentive section */}
-            <div className="space-y-3 border rounded-md p-3">
-              <div className="flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-emerald-500" />
-                <Label className="font-medium text-sm">Incentive / Bonus</Label>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Type</Label>
-                  <Select value={form.incentiveType} onValueChange={v => setForm({ ...form, incentiveType: v, incentiveAmount: "" })}>
-                    <SelectTrigger data-testid="select-incentive-type"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">None</SelectItem>
-                      <SelectItem value="fixed">Fixed Amount (₹)</SelectItem>
-                      <SelectItem value="percent">% of Salary</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {form.incentiveType !== "none" && (
-                  <div className="space-y-1">
-                    <Label className="text-xs text-muted-foreground">
-                      {form.incentiveType === "fixed" ? "Amount (₹)" : "Percentage (%)"}
-                    </Label>
-                    <Input
-                      type="number"
-                      data-testid="input-incentive-amount"
-                      value={form.incentiveAmount}
-                      onChange={e => setForm({ ...form, incentiveAmount: e.target.value })}
-                      placeholder={form.incentiveType === "fixed" ? "e.g. 2000" : "e.g. 5"}
-                      min="0"
-                    />
-                  </div>
-                )}
-              </div>
-              {form.incentiveType !== "none" && form.incentiveAmount && form.salary && (
-                <p className="text-xs text-emerald-600 dark:text-emerald-400">
-                  Monthly incentive: ₹{form.incentiveType === "fixed"
-                    ? Number(form.incentiveAmount).toLocaleString("en-IN")
-                    : Math.round(Number(form.salary) * Number(form.incentiveAmount) / 100).toLocaleString("en-IN")
-                  }
-                </p>
-              )}
-            </div>
-
             <div className="border rounded-md overflow-hidden">
               <button
                 type="button"
@@ -1782,6 +1855,50 @@ export default function Employees() {
         </DialogContent>
       </Dialog>
 
+      {/* Incentive Record Dialog */}
+      <Dialog open={incentiveDialogOpen} onOpenChange={setIncentiveDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-emerald-500" />
+              🎁 Record Incentive
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">Incentive will be added to the employee's next payroll disbursement.</p>
+            <div className="space-y-2">
+              <Label>Employee</Label>
+              <Select value={incentiveForm.employeeId} onValueChange={v => setIncentiveForm({ ...incentiveForm, employeeId: v })}>
+                <SelectTrigger data-testid="select-incentive-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                <SelectContent>
+                  {employees?.filter(e => e.isActive).map(emp => (
+                    <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Amount (₹)</Label>
+              <Input type="number" data-testid="input-incentive-amount" value={incentiveForm.amount} onChange={e => setIncentiveForm({ ...incentiveForm, amount: e.target.value })} placeholder="e.g. 2000" min="1" />
+            </div>
+            <div className="space-y-2">
+              <Label>Date Given</Label>
+              <Input type="date" data-testid="input-incentive-date" value={incentiveForm.dateGiven} onChange={e => setIncentiveForm({ ...incentiveForm, dateGiven: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Reason <span className="text-muted-foreground text-xs">(optional)</span></Label>
+              <Input data-testid="input-incentive-reason" value={incentiveForm.reason} onChange={e => setIncentiveForm({ ...incentiveForm, reason: e.target.value })} placeholder="e.g. Diwali bonus / Performance reward" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIncentiveDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => incentiveMutation.mutate()} disabled={incentiveMutation.isPending} className="bg-emerald-600 hover:bg-emerald-700 text-white" data-testid="button-confirm-incentive">
+              {incentiveMutation.isPending ? "Saving..." : "Record Incentive"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={payslipOpen} onOpenChange={setPayslipOpen}>
         <DialogContent className="max-w-lg p-0 overflow-hidden flex flex-col max-h-[90vh]">
           <DialogHeader className="sr-only">
@@ -1883,8 +2000,8 @@ export default function Employees() {
                         <div className="flex justify-between gap-4 px-3 py-2">
                           <span className="text-muted-foreground">
                             Incentive / Bonus
-                            {p.incentiveType === "percent" && (
-                              <span className="text-xs ml-1 text-muted-foreground/70">({payslipEmployee.incentiveAmount}% of salary)</span>
+                            {p.incentiveDates.length > 0 && (
+                              <span className="text-xs ml-1 text-muted-foreground/70">({p.incentiveDates.join(", ")})</span>
                             )}
                           </span>
                           <span className="text-emerald-600 font-medium">+{"\u20B9"}{p.incentiveAmt.toLocaleString("en-IN")}</span>
@@ -1943,7 +2060,7 @@ export default function Employees() {
                         earnedSalary: p.earnedSalary,
                         deductions: p.deductions,
                         incentiveAmt: p.incentiveAmt,
-                        incentiveType: p.incentiveType,
+                        incentiveDates: p.incentiveDates,
                         advanceDeduct: p.advanceDeduct,
                         advanceDates: p.advanceDates,
                         unrecoveredAdvance: p.unrecoveredAdvance,

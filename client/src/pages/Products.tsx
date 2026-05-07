@@ -647,10 +647,12 @@ export default function Products() {
   const { data: missingSupplierIds } = useQuery<string[]>({ queryKey: ["/api/products/missing-supplier"] });
   const missingSupplierSet = useMemo(() => new Set(missingSupplierIds ?? []), [missingSupplierIds]);
   const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
+  const [gridTypeFilter, setGridTypeFilter] = useState<string | null>(null);
 
   const filteredItems = currentList.filter((p) => {
     if (familyFilter !== "__all__" && p.productFamily !== familyFilter) return false;
     if (showOnlyMissingSupplier && activeTab !== "services" && !missingSupplierSet.has(p.id)) return false;
+    if (gridTypeFilter && activeTab !== "services" && (p as any).gridType !== gridTypeFilter) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     const brandName = (p.brandId ? brandsById.get(p.brandId)?.name : null) || p.brand;
@@ -1311,6 +1313,42 @@ export default function Products() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap" data-testid="grid-type-filters">
+            {(
+              [
+                { label: "On Grid",  value: "on_grid"  },
+                { label: "Off Grid", value: "off_grid" },
+                { label: "Hybrid",   value: "hybrid"   },
+              ] as const
+            ).map(({ label, value }) => (
+              <button
+                key={value}
+                type="button"
+                data-testid={`button-grid-filter-${value}`}
+                onClick={() => setGridTypeFilter(gridTypeFilter === value ? null : value)}
+                className={[
+                  "inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+                  gridTypeFilter === value
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white dark:bg-muted text-muted-foreground border-border hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-400",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+            {gridTypeFilter && (
+              <button
+                type="button"
+                data-testid="button-grid-filter-reset"
+                onClick={() => setGridTypeFilter(null)}
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border border-border text-muted-foreground hover:text-red-500 hover:border-red-400 transition-colors bg-white dark:bg-muted"
+                aria-label="Clear grid type filter"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>
+              </button>
             )}
           </div>
 

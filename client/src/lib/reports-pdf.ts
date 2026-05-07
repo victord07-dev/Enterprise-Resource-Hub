@@ -912,7 +912,101 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
       const w = pwP - mP * 2;
       const h = (ti.cssHeight / ti.cssWidth) * w;
       doc.addImage(ti.dataUrl, ti.format, mP, cy, w, h);
-      cy += h + 8;
+      cy += h + 4;
+
+      // P4 — colour-swatch legend for trend bars (Recharts Legend renders
+      // outside the SVG so it is not captured; we redraw it manually).
+      const TREND_LEGEND: Array<{ label: string; rgb: [number, number, number] }> = [
+        { label: "Revenue",    rgb: [16, 185, 129] },
+        { label: "Expense",    rgb: [239, 68, 68]  },
+        { label: "Net Profit", rgb: [30, 58, 138]  },
+      ];
+      const swatchSz = 3;
+      const swatchGap = 18;
+      let lx = mP;
+      TREND_LEGEND.forEach(({ label, rgb }) => {
+        doc.setFillColor(...rgb);
+        doc.rect(lx, cy, swatchSz, swatchSz, "F");
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(...C.textPrimary);
+        doc.text(label, lx + swatchSz + 1.5, cy + swatchSz - 0.5);
+        lx += swatchGap;
+      });
+      cy += swatchSz + 5;
+
+      // P5 — 12-month trend data table (Month | Revenue | Expenses | Net Profit)
+      if (d.trend && d.trend.length > 0) {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8);
+        doc.setTextColor(...C.textPrimary);
+        doc.text("Monthly Trend Data", mP, cy);
+        cy += 5;
+
+        // Column layout: left-aligned Month, right-aligned amounts
+        const tblW  = pwP - mP * 2;
+        const col0x = mP;           // Month (left-aligned)
+        const col1x = mP + tblW * 0.40;  // Revenue (right-aligned)
+        const col2x = mP + tblW * 0.65;  // Expenses (right-aligned)
+        const col3x = mP + tblW;         // Net Profit (right-aligned)
+        const rowH  = 5.5;
+
+        // Header row
+        doc.setFillColor(...C.tableHeaderBg);
+        doc.rect(mP, cy, tblW, rowH, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(...C.textPrimary);
+        doc.text("Month",      col0x + 1, cy + rowH * 0.68);
+        doc.text("Revenue",    col1x - 1, cy + rowH * 0.68, { align: "right" });
+        doc.text("Expenses",   col2x - 1, cy + rowH * 0.68, { align: "right" });
+        doc.text("Net Profit", col3x - 1, cy + rowH * 0.68, { align: "right" });
+        cy += rowH;
+
+        // Data rows
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(7);
+        let totRev = 0, totExp = 0, totNet = 0;
+        d.trend.forEach((pt, i) => {
+          const [yr, mo] = pt.month.split("-");
+          const dt = new Date(Number(yr), Number(mo) - 1, 1);
+          const monthLabel = dt.toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
+
+          if (i % 2 !== 0) {
+            doc.setFillColor(...C.tableAltBg);
+            doc.rect(mP, cy, tblW, rowH, "F");
+          }
+          doc.setTextColor(...C.textPrimary);
+          doc.text(monthLabel,             col0x + 1, cy + rowH * 0.68);
+          doc.text(fmtINR(pt.revenue),     col1x - 1, cy + rowH * 0.68, { align: "right" });
+          doc.text(fmtINR(pt.expense),     col2x - 1, cy + rowH * 0.68, { align: "right" });
+          const npColor = pt.netProfit >= 0 ? C.green : C.red;
+          doc.setTextColor(...npColor);
+          doc.text(fmtINR(pt.netProfit),   col3x - 1, cy + rowH * 0.68, { align: "right" });
+          doc.setTextColor(...C.textPrimary);
+
+          totRev += pt.revenue;
+          totExp += pt.expense;
+          totNet += pt.netProfit;
+          cy += rowH;
+        });
+
+        // Totals row
+        doc.setDrawColor(...C.tableBorder);
+        doc.setLineWidth(0.3);
+        doc.line(mP, cy, mP + tblW, cy);
+        doc.setFillColor(...C.summaryBg);
+        doc.rect(mP, cy, tblW, rowH, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(...C.textPrimary);
+        doc.text("Total",            col0x + 1, cy + rowH * 0.68);
+        doc.text(fmtINR(totRev),     col1x - 1, cy + rowH * 0.68, { align: "right" });
+        doc.text(fmtINR(totExp),     col2x - 1, cy + rowH * 0.68, { align: "right" });
+        doc.setTextColor(...(totNet >= 0 ? C.green : C.red));
+        doc.text(fmtINR(totNet),     col3x - 1, cy + rowH * 0.68, { align: "right" });
+        cy += rowH + 6;
+      }
     }
     if (charts.expenseImage) {
       const ei = charts.expenseImage;

@@ -12,3 +12,9 @@ id = "mtTlUioSau_OG8olpGCWA"
 uri = "file://attached_assets/pl-artifacts/pl-statement.csv"
 type = "table"
 title = "Artifact #4 file — P&L Statement (CSV)"
+
+[[outputs]]
+id = "uilrmNeVvqVaK-ixtsB9H"
+uri = "file://screenshots/pl-chart-page.jpg"
+type = "image"
+title = "P&L Statement — on-screen chart page"

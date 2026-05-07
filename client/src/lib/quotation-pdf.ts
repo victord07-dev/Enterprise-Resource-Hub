@@ -23,9 +23,9 @@ const COLORS = {
 };
 
 const TERMS = [
-  "All prices are inclusive of 5% GST.",
-  "100% advance payment required before supply or work commencement. Accepted modes: NEFT / RTGS / UPI / Account Payee Cheque only. Work begins only on fund realisation.",
-  "Materials will be delivered and installed at our cost.",
+  "All prices are inclusive of taxes as per HSN Code.",
+  "If the order is under PM Surya Ghar scheme under our vendor then we bear the installation & delivery cost.",
+  "Vendor/Customer delivery will be at your cost.",
   "Delivery is within Nagaon, Assam limits only. Freight, loading & transportation outside city limits are charged extra at actuals.",
   "Site must be ready before scheduled visit. Revisit charges apply if our team cannot proceed due to site unreadiness. Engineers' travel, food & lodging for sites outside Nagaon, Assam are under the buyer's scope.",
   "Warranty on materials is as per respective manufacturer's terms. Warranty is void for misuse, unauthorised modifications, or power fluctuations.",

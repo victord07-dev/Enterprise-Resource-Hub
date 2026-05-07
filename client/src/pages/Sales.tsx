@@ -42,15 +42,19 @@ import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type Merg
 const SOLAR_PANEL_CATEGORY = "Solar Panel / PV Module";
 const SUBSIDY_SCHEMES = ["none", "PM Surya Ghar", "MNRE Rooftop", "KUSUM", "Other"] as const;
 
-/** Phase 3: customer-type label + badge — uses existing Badge variants (no new colors invented). */
-const customerTypeLabel = (t?: string | null) => (t === "business" ? "Business" : "End User");
+/** Phase 3: customer-type label + badge */
+const customerTypeLabel = (t?: string | null) => {
+  if (t === "vendor") return "Vendor";
+  if (t === "solar_consumer") return "Solar Consumer";
+  if (t === "customer") return "Customer";
+  if (t === "business") return "Business";
+  return "End User";
+};
 function CustomerTypeBadge({ type }: { type?: string | null }) {
-  const t = type === "business" ? "business" : "end_user";
-  // Business -> default (primary, prominent); End User -> secondary (neutral). Existing variants only.
-  const variant = t === "business" ? "default" : "secondary";
+  const variant = type === "vendor" ? "default" : type === "solar_consumer" ? "secondary" : "outline";
   return (
-    <Badge variant={variant} className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${t}`}>
-      {customerTypeLabel(t)}
+    <Badge variant={variant} className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${type || "unknown"}`}>
+      {customerTypeLabel(type)}
     </Badge>
   );
 }
@@ -1311,7 +1315,9 @@ export default function Sales() {
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business", paymentTerms: "immediate" });
+  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "customer" as string, paymentTerms: "immediate" });
+  const [showQuoteNewCust, setShowQuoteNewCust] = useState(false);
+  const [quoteNewCust, setQuoteNewCust] = useState({ name: "", email: "", phone: "", address: "", customerType: "customer", gstNumber: "" });
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [customerTypeFilter, setCustomerTypeFilter] = useState<string>("__all__");
 
@@ -1711,6 +1717,23 @@ export default function Sales() {
     },
   });
 
+  const quoteInlineCustMutation = useMutation({
+    mutationFn: async (data: typeof quoteNewCust) => {
+      const res = await apiRequest("POST", "/api/customers", data);
+      return res.json();
+    },
+    onSuccess: (created: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      setQuoteForm((f) => ({ ...f, customerId: created.id }));
+      setShowQuoteNewCust(false);
+      setQuoteNewCust({ name: "", email: "", phone: "", address: "", customerType: "customer", gstNumber: "" });
+      toast({ title: "Customer created", description: `${created.name} added and selected` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
   const deleteCustomerMutation = useMutation({
     mutationFn: async (id: string) => { await apiRequest("DELETE", `/api/customers/${id}`); },
     onSuccess: () => {
@@ -1974,7 +1997,7 @@ export default function Sales() {
 
   const openNewCustomer = () => {
     setEditingCustomer(null);
-    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user", paymentTerms: "immediate" });
+    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "customer", paymentTerms: "immediate" });
     setCustomerDialogOpen(true);
   };
 
@@ -1987,8 +2010,7 @@ export default function Sales() {
       address: c.address || "",
       gstNumber: c.gstNumber || "",
       contactPerson: c.contactPerson || "",
-      // Hydrate from migrated value; default to end_user if column is missing/empty for any reason
-      customerType: (c.customerType === "business" ? "business" : "end_user"),
+      customerType: c.customerType || "customer",
       paymentTerms: (c as any).paymentTerms || "immediate",
     });
     setCustomerDialogOpen(true);
@@ -2284,7 +2306,7 @@ export default function Sales() {
             </div>
             <div>
               <p className="text-2xl font-bold">{orders?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Total Orders</p>
+              <p className="text-xs text-muted-foreground">Total Sales Confirmed</p>
             </div>
           </CardContent>
         </Card>
@@ -3162,15 +3184,15 @@ export default function Sales() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all__" data-testid="option-customer-filter-all">All Customers</SelectItem>
-                <SelectItem value="end_user" data-testid="option-customer-filter-end_user">End User</SelectItem>
-                <SelectItem value="business" data-testid="option-customer-filter-business">Business</SelectItem>
+                <SelectItem value="vendor" data-testid="option-customer-filter-vendor">Vendor</SelectItem>
+                <SelectItem value="solar_consumer" data-testid="option-customer-filter-solar_consumer">Solar Consumer</SelectItem>
+                <SelectItem value="customer" data-testid="option-customer-filter-customer">Customer</SelectItem>
               </SelectContent>
             </Select>
           </div>
           {(() => {
             const filteredCustomers = (customers ?? []).filter((c) => {
-              const ct = c.customerType === "business" ? "business" : "end_user";
-              if (customerTypeFilter !== "__all__" && ct !== customerTypeFilter) return false;
+              if (customerTypeFilter !== "__all__" && c.customerType !== customerTypeFilter) return false;
               if (!customerSearchQuery) return true;
               const q = customerSearchQuery.toLowerCase();
               return (
@@ -3530,7 +3552,7 @@ export default function Sales() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="quoteCustomerId">Customer</Label>
-                <Select value={quoteForm.customerId} onValueChange={(v) => setQuoteForm({ ...quoteForm, customerId: v })}>
+                <Select value={quoteForm.customerId} onValueChange={(v) => { setQuoteForm({ ...quoteForm, customerId: v }); setShowQuoteNewCust(false); }}>
                   <SelectTrigger data-testid="select-quote-customer">
                     <SelectValue placeholder="Select customer" />
                   </SelectTrigger>
@@ -3540,6 +3562,66 @@ export default function Sales() {
                     ))}
                   </SelectContent>
                 </Select>
+                <button
+                  type="button"
+                  data-testid="button-quote-add-new-customer"
+                  onClick={() => setShowQuoteNewCust(!showQuoteNewCust)}
+                  className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 flex items-center gap-1 mt-1"
+                >
+                  <Plus className="w-3 h-3" />
+                  {showQuoteNewCust ? "Cancel" : "Add new customer"}
+                </button>
+                {showQuoteNewCust && (
+                  <div className="mt-2 rounded-lg border bg-muted/40 p-3 space-y-3" data-testid="panel-quote-new-customer">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">New Customer</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Name <span className="text-destructive">*</span></Label>
+                        <Input className="h-8 text-sm" data-testid="input-qnc-name" placeholder="Full name" value={quoteNewCust.name} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, name: e.target.value })} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Phone <span className="text-destructive">*</span></Label>
+                        <Input className="h-8 text-sm" data-testid="input-qnc-phone" placeholder="Mobile number" value={quoteNewCust.phone} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, phone: e.target.value })} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Email</Label>
+                        <Input className="h-8 text-sm" data-testid="input-qnc-email" placeholder="Optional" value={quoteNewCust.email} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, email: e.target.value })} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Customer Type <span className="text-destructive">*</span></Label>
+                        <Select value={quoteNewCust.customerType} onValueChange={(v) => setQuoteNewCust({ ...quoteNewCust, customerType: v })}>
+                          <SelectTrigger className="h-8 text-sm" data-testid="select-qnc-type">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="vendor">Vendor</SelectItem>
+                            <SelectItem value="solar_consumer">Solar Consumer</SelectItem>
+                            <SelectItem value="customer">Customer</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-xs">Address</Label>
+                        <Input className="h-8 text-sm" data-testid="input-qnc-address" placeholder="Optional" value={quoteNewCust.address} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, address: e.target.value })} />
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label className="text-xs">
+                          GST Number {quoteNewCust.customerType === "vendor" ? <span className="text-destructive">*</span> : <span className="text-muted-foreground">(optional)</span>}
+                        </Label>
+                        <Input className="h-8 text-sm" data-testid="input-qnc-gst" placeholder={quoteNewCust.customerType === "vendor" ? "Required for Vendor" : "Optional"} value={quoteNewCust.gstNumber} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, gstNumber: e.target.value })} />
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      data-testid="button-qnc-save"
+                      disabled={quoteInlineCustMutation.isPending || !quoteNewCust.name.trim() || !quoteNewCust.phone.trim() || (quoteNewCust.customerType === "vendor" && !quoteNewCust.gstNumber.trim())}
+                      onClick={() => quoteInlineCustMutation.mutate(quoteNewCust)}
+                    >
+                      {quoteInlineCustMutation.isPending ? "Saving..." : "Save & Select"}
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4">
@@ -3963,14 +4045,15 @@ export default function Sales() {
                 <Label htmlFor="custType">Customer Type <span className="text-destructive">*</span></Label>
                 <Select
                   value={customerForm.customerType}
-                  onValueChange={(v) => setCustomerForm({ ...customerForm, customerType: (v as "end_user" | "business") })}
+                  onValueChange={(v) => setCustomerForm({ ...customerForm, customerType: v })}
                 >
                   <SelectTrigger id="custType" data-testid="select-customer-type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="end_user" data-testid="option-customer-type-end_user">End User</SelectItem>
-                    <SelectItem value="business" data-testid="option-customer-type-business">Business</SelectItem>
+                    <SelectItem value="vendor" data-testid="option-customer-type-vendor">Vendor</SelectItem>
+                    <SelectItem value="solar_consumer" data-testid="option-customer-type-solar_consumer">Solar Consumer</SelectItem>
+                    <SelectItem value="customer" data-testid="option-customer-type-customer">Customer</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

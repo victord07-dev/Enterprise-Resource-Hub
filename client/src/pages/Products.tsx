@@ -612,6 +612,8 @@ export default function Products() {
   const [activeTab, setActiveTab] = useState("products");
   const [searchQuery, setSearchQuery] = useState("");
   const [familyFilter, setFamilyFilter] = useState<string>("__all__");
+  const [pricesSearch, setPricesSearch] = useState("");
+  const [pricesGridFilter, setPricesGridFilter] = useState<string | null>(null);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -648,6 +650,13 @@ export default function Products() {
   const missingSupplierSet = useMemo(() => new Set(missingSupplierIds ?? []), [missingSupplierIds]);
   const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
   const [gridTypeFilter, setGridTypeFilter] = useState<string | null>(null);
+
+  const filteredPricesItems = productsOnly.filter((p) => {
+    if (pricesGridFilter && (p as any).gridType !== pricesGridFilter) return false;
+    if (!pricesSearch) return true;
+    const q = pricesSearch.toLowerCase();
+    return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+  });
 
   const filteredItems = currentList.filter((p) => {
     if (familyFilter !== "__all__" && p.productFamily !== familyFilter) return false;
@@ -1445,6 +1454,49 @@ export default function Products() {
         </TabsContent>
 
         <TabsContent value="prices" className="space-y-4 mt-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name or SKU..."
+                className="pl-9"
+                value={pricesSearch}
+                onChange={(e) => setPricesSearch(e.target.value)}
+                data-testid="input-search-prices"
+              />
+            </div>
+            {([
+              { label: "On Grid",  value: "on_grid"  },
+              { label: "Off Grid", value: "off_grid" },
+              { label: "Hybrid",   value: "hybrid"   },
+            ] as const).map(({ label, value }) => (
+              <button
+                key={value}
+                type="button"
+                data-testid={`button-prices-grid-filter-${value}`}
+                onClick={() => setPricesGridFilter(pricesGridFilter === value ? null : value)}
+                className={[
+                  "inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+                  pricesGridFilter === value
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white dark:bg-muted text-muted-foreground border-border hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-400",
+                ].join(" ")}
+              >
+                {label}
+              </button>
+            ))}
+            {pricesGridFilter && (
+              <button
+                type="button"
+                data-testid="button-prices-grid-filter-reset"
+                onClick={() => setPricesGridFilter(null)}
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border border-border text-muted-foreground hover:text-red-500 hover:border-red-400 transition-colors bg-white dark:bg-muted"
+                aria-label="Clear grid type filter"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>
+              </button>
+            )}
+          </div>
             <Card>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -1470,10 +1522,10 @@ export default function Products() {
                             ))}
                           </tr>
                         ))
-                      ) : productsOnly.length === 0 ? (
-                        <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No products found</td></tr>
+                      ) : filteredPricesItems.length === 0 ? (
+                        <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No products match your filters</td></tr>
                       ) : (
-                        productsOnly.map((product) => {
+                        filteredPricesItems.map((product) => {
                           const ep = effectivePricesMap?.[product.id];
                           const ls = lastSoldPrices?.[product.id];
                           const source = ep?.source ?? "none";

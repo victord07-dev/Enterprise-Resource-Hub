@@ -1,0 +1,231 @@
+CEO confirmed:
+- Phase 4C Batch 1 closed (P&L + Cash Flow complete)
+- Batch 2 scope: Customer Aging, Supplier Aging, Cash Position, 
+  Account Statement (per-account), Consolidated Cash Statement, 
+  Cash-basis Ledger (Report 10C, Option A — cash-basis)
+- Expense Report (T13) will include both expenses table AND 
+  travel_expenses table as separate labelled sections
+- All aggregations land in financial-aggregations.ts FIRST, 
+  route SECOND (Standing Rule #11)
+- Canonical helpers mandatory: computeCustomerInvoiceOutstanding, 
+  computeSupplierInvoiceOutstanding, computeAccountBalance 
+  (Standing Rule #10 — no inline math anywhere)
+
+==================================================================
+PRE-WORK (read-only, before any code)
+==================================================================
+
+Read these before writing a single line:
+1. All 6 stub signatures in financial-aggregations.ts 
+   (T9 x2, T14, T15, T16, and note T10-T13 stubs — do NOT 
+   touch those this batch)
+2. computeAccountBalance, computeCustomerInvoiceOutstanding, 
+   computeSupplierInvoiceOutstanding in storage.ts
+3. Existing APAgingTab and ARAgingTab functions in 
+   client/src/pages/Reports.tsx — reference their query 
+   structure and column patterns before reimplementing
+4. The UNION of 5 source tables that feed the cash ledger:
+   customer_payments (inflow), supplier_payments (outflow), 
+   expenses (outflow), account_transfers (both legs), 
+   balance_adjustments (signed) — all linkable via 
+   cashAccountId
+
+After PRE-WORK, post your implementation plan (function 
+signatures, key query logic, UI component names) for all 6 
+reports before writing any code. Wait for approval.
+
+==================================================================
+BATCH 2 — 6 REPORTS
+==================================================================
+
+──────────────────────────────────────────────────────────────
+REPORT 1 — Customer Aging (implements T9 getCustomerAging stub)
+──────────────────────────────────────────────────────────────
+
+Aggregator (financial-aggregations.ts):
+getCustomerAging(asOf?: string, customerId?: string)
+
+Logic:
+- For each customer (or single customer if customerId passed):
+  fetch all sales_invoices that have outstanding > 0
+- Outstanding per invoice = computeCustomerInvoiceOutstanding()
+  — canonical helper, no inline math
+- Age each invoice: days from invoice dueDate to asOf 
+  (default today)
+- Bucket per customer into: Current (not yet due), 
+  1-30 days, 31-60 days, 61-90 days, 90+ days
+- Output per customer row: name, total outstanding, bucket 
+  amounts, oldest invoice date
+
+Route: GET /api/reports/customer-aging?asOf=&customerId=
+
+UI (new tab or page, operator decides placement — surface 
+options before building):
+- As-of date picker (single date, default today)
+- Optional customer filter dropdown
+- Table: Customer | Total Outstanding | Current | 1-30 | 
+  31-60 | 61-90 | 90+ | Oldest Invoice
+- Status color coding: current = green, 1-30 = amber, 
+  31-60 = orange, 61-90 = red, 90+ = dark red
+- Summary bar chart (Recharts): stacked bar per bucket 
+  across all customers
+- 3 download buttons: CSV, Excel (ExcelJS), PDF (jsPDF + 
+  drawLetterhead + Noto Sans)
+- Indian number formatting throughout
+
+──────────────────────────────────────────────────────────────
+REPORT 2 — Supplier Aging (implements T9 getSupplierAging stub)
+──────────────────────────────────────────────────────────────
+
+Mirror of Customer Aging. Same structure, different tables:
+- computeSupplierInvoiceOutstanding() — canonical helper
+- Age from supplier_invoice dueDate to asOf
+- Same buckets, same download buttons, same chart pattern
+- Table: Supplier | Total Payable | Current | 1-30 | 31-60 | 
+  61-90 | 90+ | Oldest Invoice
+
+Build this immediately after Customer Aging using identical 
+pattern. No architectural divergence allowed.
+
+──────────────────────────────────────────────────────────────
+REPORT 3 — Cash Position (implements T14 getCashPositionReport)
+──────────────────────────────────────────────────────────────
+
+Note: getCashPositionPerAccount() is already implemented 
+(returns current balance per account). T14 getCashPositionReport 
+extends this with as-of-date support and period inflow/outflow 
+breakdown.
+
+Aggregator:
+getCashPositionReport(asOf?: string)
+
+Logic per account:
+- Opening balance = computeAccountBalance(accountId, 
+  day before asOf start of FY or period start)
+- Inflows in period = SUM(customer_payments) + 
+  SUM(positive balance_adjustments) + SUM(incoming 
+  account_transfers)
+- Outflows in period = SUM(supplier_payments) + 
+  SUM(expenses) + SUM(negative balance_adjustments) + 
+  SUM(outgoing account_transfers)
+- Closing balance = computeAccountBalance(accountId, asOf)
+
+Route: GET /api/reports/cash-position?asOf=
+
+UI: Table per account + consolidated total row. Bar chart 
+(Recharts) showing opening vs closing per account. 
+3 download buttons.
+
+──────────────────────────────────────────────────────────────
+REPORT 4 — Account Statement (implements T15 getAccountStatement)
+──────────────────────────────────────────────────────────────
+
+Aggregator:
+getAccountStatement(accountId: string, p: PeriodFilter)
+
+Logic:
+- Opening balance = computeAccountBalance(accountId, 
+  day before p.from)
+- UNION all transactions for accountId in period from 5 
+  source tables:
+  customer_payments WHERE cashAccountId = accountId → 
+    type='Receipt', amount positive
+  supplier_payments WHERE cashAccountId = accountId → 
+    type='Payment', amount negative
+  expenses WHERE cashAccountId = accountId → 
+    type='Expense', amount negative
+  account_transfers WHERE fromAccountId = accountId → 
+    type='Transfer Out', amount negative
+  account_transfers WHERE toAccountId = accountId → 
+    type='Transfer In', amount positive
+  balance_adjustments WHERE cashAccountId = accountId → 
+    type='Adjustment', amount = adjustmentAmount (signed)
+- Sort all rows by date ASC, then compute running balance 
+  after each row (opening + cumulative)
+- Output: date, type, description/reference, debit, credit, 
+  running balance
+
+Route: GET /api/reports/account-statement?accountId=&from=&to=
+
+UI: Account selector dropdown (cash_accounts list), 
+DateRangeFilter, table with running balance column, opening 
+and closing balance rows pinned. 3 download buttons.
+
+──────────────────────────────────────────────────────────────
+REPORT 5 — Consolidated Cash Statement 
+(implements T16 getConsolidatedCashStatement)
+──────────────────────────────────────────────────────────────
+
+Aggregator:
+getConsolidatedCashStatement(p: PeriodFilter)
+
+Logic: Same UNION as Account Statement but across ALL accounts. 
+Group rows by account with subtotals. account_transfers between 
+internal accounts net ₹0 consolidated (show both legs but label 
+as internal). Consolidated opening + closing = SUM across all 
+accounts.
+
+Route: GET /api/reports/consolidated-cash?from=&to=
+
+UI: Grouped table (per-account section + consolidated footer). 
+Stacked bar chart (Recharts) per account over period. 
+3 download buttons.
+
+──────────────────────────────────────────────────────────────
+REPORT 6 — Cash-basis Ledger (Report 10C, new — not stubbed)
+──────────────────────────────────────────────────────────────
+
+New aggregator (financial-aggregations.ts):
+getCashLedger(from: string, to: string, accountId?: string)
+
+Logic: Same UNION as Account Statement. If accountId passed, 
+filter to that account. If not, show all accounts 
+chronologically in one unified ledger. Running balance tracks 
+the consolidated cash position across all accounts (or single 
+account if filtered). Sort strictly by date ASC, then 
+createdAt for same-day tie-breaking.
+
+Output per row: date, account name, transaction type, 
+party name (customer/supplier/vendor), reference number, 
+debit, credit, running balance.
+
+Route: GET /api/reports/cash-ledger?from=&to=&accountId=
+
+UI: DateRangeFilter + optional account filter. Full-width 
+table. Running balance column. Opening and closing balance 
+header/footer rows. 3 download buttons (CSV formatted for 
+Tally import).
+
+==================================================================
+LOCKED STANDARDS ACROSS ALL 6 REPORTS
+==================================================================
+
+- 3 download buttons on every report: CSV (raw, Tally-friendly), 
+  Excel (ExcelJS server-side, branded header), PDF (jsPDF + 
+  drawLetterhead + Noto Sans font for ₹)
+- Charts on-screen via Recharts. Charts embedded in PDF. 
+  No charts in Excel.
+- Indian number formatting: ₹X,XX,XXX.XX (en-IN locale) 
+  everywhere. No plain toLocaleString() without locale arg.
+- DateRangeFilter component for period-based reports. 
+  Single date picker for as-of-date reports.
+- ARROW = ">" and WARN_GLYPH = "!" in PDFs 
+  (Noto Sans missing → and ⚠)
+- Status colors on Aging reports only: current green, 
+  1-30 amber, 31-60 orange, 61-90 red, 90+ dark red
+- Cash reports use net-positive-vs-negative coloring 
+  (not status colors)
+- No jspdf-autotable. Manual jsPDF primitives only.
+
+==================================================================
+STOP CHECKPOINT
+==================================================================
+
+After PRE-WORK, post your implementation plan for all 6 
+reports — function signatures, key query logic, proposed UI 
+placement, any ambiguities or conflicts with existing code. 
+Wait for operator approval before writing any production code.
+
+Do NOT touch: Batch 3 stubs (T10-T13), PLStatement, 
+CashFlowStatement, Phase 4A tabs, FieldStaff, any non-report 
+module.

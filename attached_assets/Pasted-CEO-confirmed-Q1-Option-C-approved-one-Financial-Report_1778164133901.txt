@@ -1,0 +1,49 @@
+CEO confirmed:
+- Q1: Option C approved — one "Financial Reports" parent tab 
+  in outer TabsList, 6 lazy-loaded sub-tabs inside its panel.
+  Outer bar stays at 7 entries. Pattern matches PLStatement / 
+  CashFlowStatement lazy-load already in place.
+- Q2: Do NOT fix the AR aging inline math in routes.ts line 
+  8058 this batch. Standing Rule #6 — out of scope. Log it to 
+  Quality Backlog. Phase 4A retrofit will address it.
+
+Three adjustments before you build:
+
+1. R6 party column — clarify: for account_transfers, the 
+   party column must show the COUNTERPART account name. 
+   Transfer Out rows → show the destination account name. 
+   Transfer In rows → show the source account name. 
+   Not the current account, not a generic label.
+
+2. SQL column naming — before running any query, confirm 
+   whether your UNION arms use raw SQL (snake_case: 
+   payment_date, cash_account_id) or Drizzle query builder 
+   (camelCase: paymentDate, cashAccountId). Pick one approach 
+   and keep it consistent across all 6 UNION arms in R4/R5/R6. 
+   Mixed approaches will cause silent column mismatches.
+
+3. Build order — two stop checkpoints, not one at the end:
+
+   CHECKPOINT 1: Build R1 (Customer Aging) only. Post 
+   screenshot of the UI + downloaded PDF. Wait for operator 
+   visual approval before building R2 (Supplier Aging mirrors 
+   R1 — no architectural divergence allowed once R1 is 
+   approved).
+
+   CHECKPOINT 2: Build R3 (Cash Position) + R4 (Account 
+   Statement) as the reference implementations for the cash 
+   group. Post screenshots of both. Wait for operator 
+   visual approval before building R5 (Consolidated Cash) 
+   and R6 (Cash Ledger).
+
+   After Checkpoint 2 approval: build R5 and R6, then final 
+   screenshot of all 6 reports for Batch 2 close.
+
+All other plan details approved exactly as written. Proceed.
+
+Standing Rule #2 reminder: screenshots required for every 
+stop checkpoint — UI view AND downloaded PDF for each report. 
+Curl-only testing is not acceptable.
+
+Do NOT touch: T10-T13 stubs, PLStatement, CashFlowStatement, 
+Phase 4A tabs, FieldStaff, any non-Batch-2 file.

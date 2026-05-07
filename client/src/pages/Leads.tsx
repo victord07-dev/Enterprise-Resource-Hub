@@ -10,9 +10,10 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Plus, Search, Users, UserCheck, Trophy, XCircle, Pencil, Trash2, ArrowRightLeft,
+  Plus, Search, Users, UserCheck, Pencil, Trash2, ArrowRightLeft,
   ChevronDown, ChevronRight, Phone, Mail, Users as UsersGroup, MapPin, MessageCircle, StickyNote,
-  AlertTriangle, Clock, Check, ArrowUpDown, CalendarDays
+  AlertTriangle, Clock, Check, ArrowUpDown, CalendarDays,
+  Flame, Sun, Snowflake, UserX
 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -258,8 +259,10 @@ export default function Leads() {
 
   const totalLeads = leads?.length ?? 0;
   const qualifiedCount = leads?.filter(l => l.status === "qualified").length ?? 0;
-  const wonCount = leads?.filter(l => l.status === "won").length ?? 0;
-  const lostCount = leads?.filter(l => l.status === "lost").length ?? 0;
+  const hotCount = leads?.filter(l => l.status === "quotation_sent").length ?? 0;
+  const warmCount = leads?.filter(l => l.status === "contacted").length ?? 0;
+  const coldCount = leads?.filter(l => l.status === "dormant").length ?? 0;
+  const unqualifiedCount = leads?.filter(l => l.status === "new").length ?? 0;
 
   const toggleLeadExpand = useCallback(async (leadId: string) => {
     if (expandedLeadId === leadId) {
@@ -537,51 +540,51 @@ export default function Leads() {
             </div>
             <div>
               <p className="text-2xl font-bold" data-testid="text-qualified-leads">{qualifiedCount}</p>
-              <p className="text-xs text-muted-foreground">Qualified</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-md bg-green-50 dark:bg-green-950/30 flex items-center justify-center">
-              <Trophy className="w-5 h-5 text-green-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" data-testid="text-won-leads">{wonCount}</p>
-              <p className="text-xs text-muted-foreground">Won</p>
+              <p className="text-xs text-muted-foreground">Qualified Leads</p>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
-              <XCircle className="w-5 h-5 text-red-500" />
+              <Flame className="w-5 h-5 text-red-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold" data-testid="text-lost-leads">{lostCount}</p>
-              <p className="text-xs text-muted-foreground">Lost</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="w-10 h-10 rounded-md bg-red-50 dark:bg-red-950/30 flex items-center justify-center">
-              <AlertTriangle className="w-5 h-5 text-red-500" />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" data-testid="text-overdue-followups">{followupsSummary?.overdue ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Overdue</p>
+              <p className="text-2xl font-bold" data-testid="text-hot-leads">{hotCount}</p>
+              <p className="text-xs text-muted-foreground">Hot Leads</p>
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-5 flex items-center gap-4">
             <div className="w-10 h-10 rounded-md bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
-              <Clock className="w-5 h-5 text-amber-500" />
+              <Sun className="w-5 h-5 text-amber-500" />
             </div>
             <div>
-              <p className="text-2xl font-bold" data-testid="text-today-followups">{followupsSummary?.today ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Today</p>
+              <p className="text-2xl font-bold" data-testid="text-warm-leads">{warmCount}</p>
+              <p className="text-xs text-muted-foreground">Warm Leads</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-md bg-cyan-50 dark:bg-cyan-950/30 flex items-center justify-center">
+              <Snowflake className="w-5 h-5 text-cyan-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold" data-testid="text-cold-leads">{coldCount}</p>
+              <p className="text-xs text-muted-foreground">Cold Leads</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-5 flex items-center gap-4">
+            <div className="w-10 h-10 rounded-md bg-gray-50 dark:bg-gray-950/30 flex items-center justify-center">
+              <UserX className="w-5 h-5 text-gray-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold" data-testid="text-unqualified-leads">{unqualifiedCount}</p>
+              <p className="text-xs text-muted-foreground">Leads Unqualified</p>
             </div>
           </CardContent>
         </Card>

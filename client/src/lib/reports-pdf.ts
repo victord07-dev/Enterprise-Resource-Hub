@@ -1276,3 +1276,258 @@ export async function generateCashFlowStatementPDF(d: CashFlowStatementPDFData):
   addPageFooter(doc);
   return doc.output("blob");
 }
+
+// ── Phase 4C Batch 2 — R1: Customer Aging PDF ────────────────────────────────
+
+export interface CustomerAgingRowPDF {
+  customerName: string; gstNumber: string | null; customerType: string | null;
+  totalOutstanding: number; current: number; days1_30: number;
+  days31_60: number; days61_90: number; days90plus: number;
+  oldestInvoiceDate: string | null;
+}
+
+export async function generateCustomerAgingPDF(
+  rows: CustomerAgingRowPDF[],
+  summary: AgingSummaryPDF,
+  asOf: string
+): Promise<Blob> {
+  const doc = await newDoc({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Customer Aging Report", `As of ${asOf}`);
+  y = drawSummaryBand(doc, [
+    { label: "Total Outstanding", value: summary.totalOutstanding },
+    { label: "Current", value: summary.current, color: C.green },
+    { label: "1–30 Days", value: summary.days1_30, color: C.amber },
+    { label: "31–60 Days", value: summary.days31_60, color: C.amber },
+    { label: "61–90 Days", value: summary.days61_90, color: C.red },
+    { label: "90+ Days", value: summary.days90plus, color: C.red },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Customer", width: 52 },
+    { header: "Type", width: 18, align: "center" },
+    { header: "GSTIN", width: 30 },
+    { header: "Current", width: 28, align: "right" },
+    { header: "1–30 Days", width: 28, align: "right" },
+    { header: "31–60 Days", width: 28, align: "right" },
+    { header: "61–90 Days", width: 28, align: "right" },
+    { header: "90+ Days", width: 28, align: "right" },
+    { header: "Total", width: 33, align: "right" },
+    { header: "Oldest", width: 22, align: "center" },
+  ];
+  const tableRows = rows.map(r => [
+    r.customerName, r.customerType ?? "—", r.gstNumber ?? "—",
+    r.current > 0 ? fmtINR(r.current) : "—",
+    r.days1_30 > 0 ? fmtINR(r.days1_30) : "—",
+    r.days31_60 > 0 ? fmtINR(r.days31_60) : "—",
+    r.days61_90 > 0 ? fmtINR(r.days61_90) : "—",
+    r.days90plus > 0 ? fmtINR(r.days90plus) : "—",
+    fmtINR(r.totalOutstanding),
+    r.oldestInvoiceDate ?? "—",
+  ]);
+  drawTable(doc, cols, tableRows, y + 2, (_, row) =>
+    row[7] !== "—" ? C.red as [number, number, number] : null
+  );
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── R2: Supplier Aging PDF ────────────────────────────────────────────────────
+
+export interface SupplierAgingRowPDF {
+  supplierName: string; totalOutstanding: number;
+  current: number; days1_30: number; days31_60: number;
+  days61_90: number; days90plus: number; oldestInvoiceDate: string | null;
+}
+
+export async function generateSupplierAgingPDF(
+  rows: SupplierAgingRowPDF[],
+  summary: AgingSummaryPDF,
+  asOf: string
+): Promise<Blob> {
+  const doc = await newDoc({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Supplier Aging Report", `As of ${asOf}`);
+  y = drawSummaryBand(doc, [
+    { label: "Total Outstanding", value: summary.totalOutstanding },
+    { label: "Current", value: summary.current, color: C.green },
+    { label: "1–30 Days", value: summary.days1_30, color: C.amber },
+    { label: "31–60 Days", value: summary.days31_60, color: C.amber },
+    { label: "61–90 Days", value: summary.days61_90, color: C.red },
+    { label: "90+ Days", value: summary.days90plus, color: C.red },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Supplier", width: 65 },
+    { header: "Current", width: 34, align: "right" },
+    { header: "1–30 Days", width: 34, align: "right" },
+    { header: "31–60 Days", width: 34, align: "right" },
+    { header: "61–90 Days", width: 34, align: "right" },
+    { header: "90+ Days", width: 34, align: "right" },
+    { header: "Total", width: 38, align: "right" },
+    { header: "Oldest", width: 24, align: "center" },
+  ];
+  const tableRows = rows.map(r => [
+    r.supplierName,
+    r.current > 0 ? fmtINR(r.current) : "—",
+    r.days1_30 > 0 ? fmtINR(r.days1_30) : "—",
+    r.days31_60 > 0 ? fmtINR(r.days31_60) : "—",
+    r.days61_90 > 0 ? fmtINR(r.days61_90) : "—",
+    r.days90plus > 0 ? fmtINR(r.days90plus) : "—",
+    fmtINR(r.totalOutstanding),
+    r.oldestInvoiceDate ?? "—",
+  ]);
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── R3: Cash Position PDF ─────────────────────────────────────────────────────
+
+export interface CashPositionAccountPDF {
+  accountName: string; accountType: string; balance: number;
+}
+
+export async function generateCashPositionPDF(
+  accounts: CashPositionAccountPDF[],
+  totalBalance: number,
+  totalBank: number,
+  totalCash: number,
+  asOf: string
+): Promise<Blob> {
+  const doc = await newDoc({ orientation: "portrait", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Cash Position Report", `As of ${asOf}`);
+  y = drawSummaryBand(doc, [
+    { label: "Total Balance", value: totalBalance },
+    { label: "Bank Accounts", value: totalBank },
+    { label: "Cash in Hand", value: totalCash, color: C.green },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Account", width: 105 },
+    { header: "Type", width: 42, align: "center" },
+    { header: "Balance (₹)", width: 60, align: "right" },
+  ];
+  const tableRows = accounts.map(a => [
+    a.accountName,
+    a.accountType === "bank" ? "Bank" : "Cash",
+    fmtINR(a.balance),
+  ]);
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── R4: Account Statement PDF ─────────────────────────────────────────────────
+
+export interface AccountStatementPDF {
+  accountName: string; period: { from: string; to: string };
+  openingBalance: number; closingBalance: number;
+  totalDebit: number; totalCredit: number;
+  lines: { txnDate: string; type: string; description: string; party: string; reference: string; debit: number; credit: number }[];
+}
+
+export async function generateAccountStatementPDF(data: AccountStatementPDF): Promise<Blob> {
+  const doc = await newDoc({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, `Account Statement — ${data.accountName}`, `${data.period.from} → ${data.period.to}`);
+  y = drawSummaryBand(doc, [
+    { label: "Opening Balance", value: data.openingBalance },
+    { label: "Total Receipts", value: data.totalCredit, color: C.green },
+    { label: "Total Payments", value: data.totalDebit, color: C.red },
+    { label: "Closing Balance", value: data.closingBalance, color: data.closingBalance >= 0 ? C.green : C.red },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Date", width: 22 },
+    { header: "Type", width: 24 },
+    { header: "Description", width: 74 },
+    { header: "Party", width: 46 },
+    { header: "Reference", width: 30 },
+    { header: "Debit (₹)", width: 30, align: "right" },
+    { header: "Credit (₹)", width: 30, align: "right" },
+  ];
+  const tableRows = data.lines.map(l => [
+    l.txnDate, l.type, l.description, l.party || "—", l.reference || "—",
+    l.debit > 0 ? fmtINR(l.debit) : "—",
+    l.credit > 0 ? fmtINR(l.credit) : "—",
+  ]);
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── R5: Consolidated Cash Statement PDF ──────────────────────────────────────
+
+export interface ConsolidatedCashLinePDF {
+  txnDate: string; accountName: string; type: string;
+  description: string; party: string; reference?: string;
+  debit: number; credit: number;
+}
+
+export async function generateConsolidatedCashPDF(
+  lines: ConsolidatedCashLinePDF[],
+  totalDebit: number,
+  totalCredit: number,
+  from: string,
+  to: string
+): Promise<Blob> {
+  const doc = await newDoc({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, "Consolidated Cash Statement", `${from} → ${to}`);
+  y = drawSummaryBand(doc, [
+    { label: "Total Inflows", value: totalCredit, color: C.green },
+    { label: "Total Outflows", value: totalDebit, color: C.red },
+    { label: "Net Change", value: totalCredit - totalDebit, color: (totalCredit - totalDebit) >= 0 ? C.green : C.red },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Date", width: 22 },
+    { header: "Account", width: 44 },
+    { header: "Type", width: 24 },
+    { header: "Description", width: 58 },
+    { header: "Party", width: 42 },
+    { header: "Reference", width: 26 },
+    { header: "Debit (₹)", width: 30, align: "right" },
+    { header: "Credit (₹)", width: 30, align: "right" },
+  ];
+  const tableRows = lines.map(l => [
+    l.txnDate, l.accountName, l.type, l.description, l.party || "—",
+    l.reference || "—",
+    l.debit > 0 ? fmtINR(l.debit) : "—",
+    l.credit > 0 ? fmtINR(l.credit) : "—",
+  ]);
+  drawTable(doc, cols, tableRows, y + 2);
+  addPageFooter(doc);
+  return doc.output("blob");
+}
+
+// ── R6: Cash Ledger PDF ───────────────────────────────────────────────────────
+
+export interface CashLedgerPDF {
+  accountName: string; period: { from: string; to: string };
+  openingBalance: number; closingBalance: number;
+  lines: { txnDate: string; type: string; description: string; party: string; reference: string; debit: number; credit: number; runningBalance: number }[];
+}
+
+export async function generateCashLedgerPDF(data: CashLedgerPDF): Promise<Blob> {
+  const doc = await newDoc({ orientation: "landscape", unit: "mm", format: "a4" });
+  let y = drawHeader(doc, `Cash Ledger — ${data.accountName}`, `${data.period.from} → ${data.period.to}`);
+  y = drawSummaryBand(doc, [
+    { label: "Opening Balance", value: data.openingBalance },
+    { label: "Net Change", value: data.closingBalance - data.openingBalance, color: (data.closingBalance - data.openingBalance) >= 0 ? C.green : C.red },
+    { label: "Closing Balance", value: data.closingBalance, color: data.closingBalance >= 0 ? C.green : C.red },
+  ], y + 2);
+  const cols: ColDef[] = [
+    { header: "Date", width: 22 },
+    { header: "Type", width: 24 },
+    { header: "Description", width: 68 },
+    { header: "Party", width: 44 },
+    { header: "Reference", width: 28 },
+    { header: "Debit (₹)", width: 28, align: "right" },
+    { header: "Credit (₹)", width: 28, align: "right" },
+    { header: "Balance (₹)", width: 33, align: "right" },
+  ];
+  const tableRows = data.lines.map(l => [
+    l.txnDate, l.type, l.description, l.party || "—", l.reference || "—",
+    l.debit > 0 ? fmtINR(l.debit) : "—",
+    l.credit > 0 ? fmtINR(l.credit) : "—",
+    fmtINR(l.runningBalance),
+  ]);
+  drawTable(doc, cols, tableRows, y + 2, (_, row) =>
+    Number(String(row[7]).replace(/[₹,]/g, "")) < 0 ? C.red as [number, number, number] : null
+  );
+  addPageFooter(doc);
+  return doc.output("blob");
+}

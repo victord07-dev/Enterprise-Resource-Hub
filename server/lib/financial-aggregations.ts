@@ -995,12 +995,198 @@ export async function getCashFlowStatement(p: PeriodFilter): Promise<CashFlowSta
     notes: { legacyReceiptsExcluded: legacyExcl, info },
   };
 }
-export async function getCustomerAging(_asOf?: string, _customerId?: string): Promise<unknown> {
-  throw new Error("getCustomerAging extension not yet implemented (T9)");
+// ── Shared aging types ────────────────────────────────────────────────────────
+export interface AgingSummary {
+  totalOutstanding: number;
+  current: number;
+  days1_30: number;
+  days31_60: number;
+  days61_90: number;
+  days90plus: number;
 }
-export async function getSupplierAging(_asOf?: string, _supplierId?: string): Promise<unknown> {
-  throw new Error("getSupplierAging extension not yet implemented (T9)");
+
+export interface CustomerAgingRow {
+  customerId: string;
+  customerName: string;
+  gstNumber: string | null;
+  customerType: string | null;
+  totalOutstanding: number;
+  current: number;
+  days1_30: number;
+  days31_60: number;
+  days61_90: number;
+  days90plus: number;
+  oldestInvoiceDate: string | null;
 }
+
+export interface CustomerAgingResult {
+  asOf: string;
+  rows: CustomerAgingRow[];
+  summary: AgingSummary;
+}
+
+export async function getCustomerAging(asOf?: string, customerId?: string): Promise<CustomerAgingResult> {
+  const asOfNorm = normIso(asOf) ?? new Date().toISOString().slice(0, 10);
+
+  const invResult = await db.execute(sql`
+    SELECT si.id, si.invoice_date, si.due_date, si.customer_id,
+           c.name AS customer_name, c.gst_number, c.customer_type
+    FROM sales_invoices si
+    JOIN customers c ON c.id = si.customer_id
+    WHERE si.status NOT IN ('paid', 'cancelled')
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      ${customerId ? sql`AND si.customer_id = ${customerId}` : sql``}
+    ORDER BY si.due_date ASC NULLS LAST
+  `);
+
+  const customerMap = new Map<string, CustomerAgingRow>();
+
+  for (const row of invResult.rows as any[]) {
+    const outstanding = await storage.computeCustomerInvoiceOutstanding(row.id);
+    if (outstanding < 0.005) continue;
+
+    const dueDate = row.due_date ? new Date(String(row.due_date) + "T00:00:00") : null;
+    let bucket: "current" | "1-30" | "31-60" | "61-90" | "90+" = "current";
+    if (dueDate) {
+      const asOfMs = new Date(asOfNorm + "T23:59:59").getTime();
+      const diffDays = Math.floor((asOfMs - dueDate.getTime()) / 86400000);
+      if (diffDays > 0) {
+        if (diffDays <= 30) bucket = "1-30";
+        else if (diffDays <= 60) bucket = "31-60";
+        else if (diffDays <= 90) bucket = "61-90";
+        else bucket = "90+";
+      }
+    }
+
+    const cid = String(row.customer_id);
+    if (!customerMap.has(cid)) {
+      customerMap.set(cid, {
+        customerId: cid,
+        customerName: String(row.customer_name),
+        gstNumber: row.gst_number ?? null,
+        customerType: row.customer_type ?? null,
+        totalOutstanding: 0, current: 0, days1_30: 0,
+        days31_60: 0, days61_90: 0, days90plus: 0,
+        oldestInvoiceDate: null,
+      });
+    }
+    const entry = customerMap.get(cid)!;
+    entry.totalOutstanding += outstanding;
+    if (bucket === "current") entry.current += outstanding;
+    else if (bucket === "1-30") entry.days1_30 += outstanding;
+    else if (bucket === "31-60") entry.days31_60 += outstanding;
+    else if (bucket === "61-90") entry.days61_90 += outstanding;
+    else entry.days90plus += outstanding;
+
+    const invDate = row.invoice_date ? String(row.invoice_date).slice(0, 10) : null;
+    if (invDate && (!entry.oldestInvoiceDate || invDate < entry.oldestInvoiceDate)) {
+      entry.oldestInvoiceDate = invDate;
+    }
+  }
+
+  const rows = Array.from(customerMap.values()).sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+  const summary = rows.reduce<AgingSummary>(
+    (acc, r) => {
+      acc.totalOutstanding += r.totalOutstanding;
+      acc.current += r.current; acc.days1_30 += r.days1_30;
+      acc.days31_60 += r.days31_60; acc.days61_90 += r.days61_90;
+      acc.days90plus += r.days90plus;
+      return acc;
+    },
+    { totalOutstanding: 0, current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0 }
+  );
+  return { asOf: asOfNorm, rows, summary };
+}
+
+export interface SupplierAgingRow {
+  supplierId: string;
+  supplierName: string;
+  totalOutstanding: number;
+  current: number;
+  days1_30: number;
+  days31_60: number;
+  days61_90: number;
+  days90plus: number;
+  oldestInvoiceDate: string | null;
+}
+
+export interface SupplierAgingResult {
+  asOf: string;
+  rows: SupplierAgingRow[];
+  summary: AgingSummary;
+}
+
+export async function getSupplierAging(asOf?: string, supplierId?: string): Promise<SupplierAgingResult> {
+  const asOfNorm = normIso(asOf) ?? new Date().toISOString().slice(0, 10);
+
+  const invResult = await db.execute(sql`
+    SELECT si.id, si.invoice_date, si.due_date, si.supplier_id,
+           s.name AS supplier_name
+    FROM supplier_invoices si
+    JOIN suppliers s ON s.id = si.supplier_id
+    WHERE si.status NOT IN ('paid', 'cancelled')
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      ${supplierId ? sql`AND si.supplier_id = ${supplierId}` : sql``}
+    ORDER BY si.due_date ASC NULLS LAST
+  `);
+
+  const supplierMap = new Map<string, SupplierAgingRow>();
+
+  for (const row of invResult.rows as any[]) {
+    const outstanding = await storage.computeSupplierInvoiceOutstanding(row.id);
+    if (outstanding < 0.005) continue;
+
+    const dueDate = row.due_date ? new Date(String(row.due_date) + "T00:00:00") : null;
+    let bucket: "current" | "1-30" | "31-60" | "61-90" | "90+" = "current";
+    if (dueDate) {
+      const asOfMs = new Date(asOfNorm + "T23:59:59").getTime();
+      const diffDays = Math.floor((asOfMs - dueDate.getTime()) / 86400000);
+      if (diffDays > 0) {
+        if (diffDays <= 30) bucket = "1-30";
+        else if (diffDays <= 60) bucket = "31-60";
+        else if (diffDays <= 90) bucket = "61-90";
+        else bucket = "90+";
+      }
+    }
+
+    const sid = String(row.supplier_id);
+    if (!supplierMap.has(sid)) {
+      supplierMap.set(sid, {
+        supplierId: sid,
+        supplierName: String(row.supplier_name),
+        totalOutstanding: 0, current: 0, days1_30: 0,
+        days31_60: 0, days61_90: 0, days90plus: 0,
+        oldestInvoiceDate: null,
+      });
+    }
+    const entry = supplierMap.get(sid)!;
+    entry.totalOutstanding += outstanding;
+    if (bucket === "current") entry.current += outstanding;
+    else if (bucket === "1-30") entry.days1_30 += outstanding;
+    else if (bucket === "31-60") entry.days31_60 += outstanding;
+    else if (bucket === "61-90") entry.days61_90 += outstanding;
+    else entry.days90plus += outstanding;
+
+    const invDate = row.invoice_date ? String(row.invoice_date).slice(0, 10) : null;
+    if (invDate && (!entry.oldestInvoiceDate || invDate < entry.oldestInvoiceDate)) {
+      entry.oldestInvoiceDate = invDate;
+    }
+  }
+
+  const rows = Array.from(supplierMap.values()).sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+  const summary = rows.reduce<AgingSummary>(
+    (acc, r) => {
+      acc.totalOutstanding += r.totalOutstanding;
+      acc.current += r.current; acc.days1_30 += r.days1_30;
+      acc.days31_60 += r.days31_60; acc.days61_90 += r.days61_90;
+      acc.days90plus += r.days90plus;
+      return acc;
+    },
+    { totalOutstanding: 0, current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0 }
+  );
+  return { asOf: asOfNorm, rows, summary };
+}
+
 export async function getTaxSummary(_p: PeriodFilter): Promise<unknown> {
   throw new Error("getTaxSummary not yet implemented (T10)");
 }
@@ -1013,12 +1199,276 @@ export async function getPurchaseRegister(_p: PeriodFilter, _supplierId?: string
 export async function getExpenseReport(_p: PeriodFilter, _categoryId?: string, _accountId?: string): Promise<unknown> {
   throw new Error("getExpenseReport not yet implemented (T13)");
 }
-export async function getCashPositionReport(_asOf?: string): Promise<unknown> {
-  throw new Error("getCashPositionReport not yet implemented (T14)");
+
+// ── R3: Cash Position ─────────────────────────────────────────────────────────
+export interface CashPositionAccount {
+  accountId: string;
+  accountName: string;
+  accountType: string;
+  balance: number;
 }
-export async function getAccountStatement(_accountId: string, _p: PeriodFilter): Promise<unknown> {
-  throw new Error("getAccountStatement not yet implemented (T15)");
+export interface CashPositionResult {
+  asOf: string;
+  accounts: CashPositionAccount[];
+  totalBalance: number;
+  totalBank: number;
+  totalCash: number;
 }
-export async function getConsolidatedCashStatement(_p: PeriodFilter): Promise<unknown> {
-  throw new Error("getConsolidatedCashStatement not yet implemented (T16)");
+
+export async function getCashPositionReport(asOf?: string): Promise<CashPositionResult> {
+  const asOfNorm = normIso(asOf) ?? new Date().toISOString().slice(0, 10);
+  const accountsResult = await db.execute(sql`
+    SELECT id, name, account_type FROM cash_accounts ORDER BY account_type, name
+  `);
+  const accounts: CashPositionAccount[] = [];
+  let totalBalance = 0, totalBank = 0, totalCash = 0;
+  for (const acct of accountsResult.rows as any[]) {
+    const balance = await storage.computeAccountBalance(String(acct.id), asOfNorm);
+    const a: CashPositionAccount = {
+      accountId: String(acct.id),
+      accountName: String(acct.name),
+      accountType: String(acct.account_type),
+      balance,
+    };
+    accounts.push(a);
+    totalBalance += balance;
+    if (a.accountType === "bank") totalBank += balance;
+    else totalCash += balance;
+  }
+  return { asOf: asOfNorm, accounts, totalBalance, totalBank, totalCash };
+}
+
+// ── Ledger line type (shared by R4, R5, R6) ───────────────────────────────────
+export interface LedgerLine {
+  txnDate: string;
+  type: string;
+  description: string;
+  party: string;
+  reference: string;
+  debit: number;
+  credit: number;
+  accountId: string;
+  accountName: string;
+}
+
+// UNION SQL for all 5 transaction sources. accountId = null → all accounts.
+async function fetchLedgerLines(accountId: string | null, fromNorm: string, toNorm: string): Promise<LedgerLine[]> {
+  const acctFilter = accountId ? sql`AND cp.cash_account_id = ${accountId}` : sql``;
+  const acctFilterSP = accountId ? sql`AND sp.cash_account_id = ${accountId}` : sql``;
+  const acctFilterE = accountId ? sql`AND e.cash_account_id = ${accountId}` : sql``;
+  const acctFilterATFrom = accountId ? sql`AND at2.from_account_id = ${accountId}` : sql``;
+  const acctFilterATTo = accountId ? sql`AND at3.to_account_id = ${accountId}` : sql``;
+  const acctFilterBA = accountId ? sql`AND ba.cash_account_id = ${accountId}` : sql``;
+
+  const result = await db.execute(sql`
+    SELECT
+      cp.payment_date::text AS txn_date,
+      'Receipt' AS type,
+      COALESCE(cp.payment_method, 'Receipt') AS description,
+      COALESCE(c.name, '') AS party,
+      COALESCE(cp.reference_number, '') AS reference,
+      0::numeric AS debit,
+      cp.amount::numeric AS credit,
+      cp.cash_account_id AS account_id,
+      COALESCE(ca1.name, '') AS account_name
+    FROM customer_payments cp
+    LEFT JOIN sales_invoices si ON si.id = cp.invoice_id
+    LEFT JOIN customers c ON c.id = si.customer_id
+    LEFT JOIN cash_accounts ca1 ON ca1.id = cp.cash_account_id
+    WHERE cp.payment_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilter}
+
+    UNION ALL
+
+    SELECT
+      sp.payment_date::text AS txn_date,
+      'Payment' AS type,
+      COALESCE(sp.payment_method, 'Supplier Payment') AS description,
+      COALESCE(s.name, '') AS party,
+      COALESCE(sp.reference_number, '') AS reference,
+      sp.amount::numeric AS debit,
+      0::numeric AS credit,
+      sp.cash_account_id AS account_id,
+      COALESCE(ca2.name, '') AS account_name
+    FROM supplier_payments sp
+    LEFT JOIN supplier_invoices siv ON siv.id = sp.supplier_invoice_id
+    LEFT JOIN suppliers s ON s.id = siv.supplier_id
+    LEFT JOIN cash_accounts ca2 ON ca2.id = sp.cash_account_id
+    WHERE sp.payment_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilterSP}
+
+    UNION ALL
+
+    SELECT
+      e.expense_date::text AS txn_date,
+      'Expense' AS type,
+      e.description AS description,
+      COALESCE(e.vendor_name, '') AS party,
+      '' AS reference,
+      e.amount::numeric AS debit,
+      0::numeric AS credit,
+      e.cash_account_id AS account_id,
+      COALESCE(ca3.name, '') AS account_name
+    FROM expenses e
+    LEFT JOIN cash_accounts ca3 ON ca3.id = e.cash_account_id
+    WHERE e.expense_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilterE}
+
+    UNION ALL
+
+    SELECT
+      at2.transfer_date::text AS txn_date,
+      'Transfer Out' AS type,
+      COALESCE(at2.notes, 'Transfer') AS description,
+      COALESCE(dest.name, '') AS party,
+      COALESCE(at2.reference, '') AS reference,
+      at2.amount::numeric AS debit,
+      0::numeric AS credit,
+      at2.from_account_id AS account_id,
+      COALESCE(src2.name, '') AS account_name
+    FROM account_transfers at2
+    LEFT JOIN cash_accounts dest ON dest.id = at2.to_account_id
+    LEFT JOIN cash_accounts src2 ON src2.id = at2.from_account_id
+    WHERE at2.transfer_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilterATFrom}
+
+    UNION ALL
+
+    SELECT
+      at3.transfer_date::text AS txn_date,
+      'Transfer In' AS type,
+      COALESCE(at3.notes, 'Transfer') AS description,
+      COALESCE(src3.name, '') AS party,
+      COALESCE(at3.reference, '') AS reference,
+      0::numeric AS debit,
+      at3.amount::numeric AS credit,
+      at3.to_account_id AS account_id,
+      COALESCE(dest3.name, '') AS account_name
+    FROM account_transfers at3
+    LEFT JOIN cash_accounts src3 ON src3.id = at3.from_account_id
+    LEFT JOIN cash_accounts dest3 ON dest3.id = at3.to_account_id
+    WHERE at3.transfer_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilterATTo}
+
+    UNION ALL
+
+    SELECT
+      ba.adjustment_date::text AS txn_date,
+      'Adjustment' AS type,
+      ba.reason AS description,
+      '' AS party,
+      '' AS reference,
+      CASE WHEN ba.adjustment_amount::numeric < 0 THEN ABS(ba.adjustment_amount::numeric) ELSE 0 END AS debit,
+      CASE WHEN ba.adjustment_amount::numeric >= 0 THEN ba.adjustment_amount::numeric ELSE 0 END AS credit,
+      ba.cash_account_id AS account_id,
+      COALESCE(ca6.name, '') AS account_name
+    FROM balance_adjustments ba
+    LEFT JOIN cash_accounts ca6 ON ca6.id = ba.cash_account_id
+    WHERE ba.adjustment_date BETWEEN ${fromNorm} AND ${toNorm}
+      ${acctFilterBA}
+
+    ORDER BY txn_date ASC, type ASC
+  `);
+
+  return (result.rows as any[]).map(r => ({
+    txnDate: String(r.txn_date).slice(0, 10),
+    type: String(r.type),
+    description: String(r.description),
+    party: String(r.party),
+    reference: String(r.reference),
+    debit: Number(r.debit),
+    credit: Number(r.credit),
+    accountId: String(r.account_id),
+    accountName: String(r.account_name),
+  }));
+}
+
+// ── R4: Account Statement ─────────────────────────────────────────────────────
+export interface AccountStatementResult {
+  accountId: string;
+  accountName: string;
+  period: { from: string; to: string };
+  openingBalance: number;
+  lines: LedgerLine[];
+  totalDebit: number;
+  totalCredit: number;
+  closingBalance: number;
+}
+
+export async function getAccountStatement(accountId: string, p: PeriodFilter): Promise<AccountStatementResult> {
+  const fromNorm = normIso(p.from) ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const toNorm = normIso(p.to) ?? new Date().toISOString().slice(0, 10);
+
+  const acctResult = await db.execute(sql`SELECT id, name FROM cash_accounts WHERE id = ${accountId}`);
+  const acct = (acctResult.rows[0] as any);
+  if (!acct) throw new Error(`Cash account ${accountId} not found`);
+
+  // Opening balance = balance as of day before period start
+  const dayBefore = new Date(fromNorm + "T00:00:00");
+  dayBefore.setDate(dayBefore.getDate() - 1);
+  const openingBalance = await storage.computeAccountBalance(accountId, dayBefore.toISOString().slice(0, 10));
+
+  const lines = await fetchLedgerLines(accountId, fromNorm, toNorm);
+  const totalDebit = lines.reduce((s, l) => s + l.debit, 0);
+  const totalCredit = lines.reduce((s, l) => s + l.credit, 0);
+  const closingBalance = openingBalance + totalCredit - totalDebit;
+
+  return {
+    accountId,
+    accountName: String(acct.name),
+    period: { from: fromNorm, to: toNorm },
+    openingBalance,
+    lines,
+    totalDebit,
+    totalCredit,
+    closingBalance,
+  };
+}
+
+// ── R5: Consolidated Cash Statement ───────────────────────────────────────────
+export interface ConsolidatedCashResult {
+  period: { from: string; to: string };
+  lines: LedgerLine[];
+  totalDebit: number;
+  totalCredit: number;
+  netChange: number;
+}
+
+export async function getConsolidatedCashStatement(p: PeriodFilter): Promise<ConsolidatedCashResult> {
+  const fromNorm = normIso(p.from) ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const toNorm = normIso(p.to) ?? new Date().toISOString().slice(0, 10);
+  const lines = await fetchLedgerLines(null, fromNorm, toNorm);
+  const totalDebit = lines.reduce((s, l) => s + l.debit, 0);
+  const totalCredit = lines.reduce((s, l) => s + l.credit, 0);
+  return { period: { from: fromNorm, to: toNorm }, lines, totalDebit, totalCredit, netChange: totalCredit - totalDebit };
+}
+
+// ── R6: Cash Ledger (per-account running balance) ─────────────────────────────
+export interface CashLedgerLine extends LedgerLine {
+  runningBalance: number;
+}
+export interface CashLedgerResult {
+  accountId: string;
+  accountName: string;
+  period: { from: string; to: string };
+  openingBalance: number;
+  lines: CashLedgerLine[];
+  closingBalance: number;
+}
+
+export async function getCashLedger(accountId: string, p: PeriodFilter): Promise<CashLedgerResult> {
+  const stmt = await getAccountStatement(accountId, p);
+  let running = stmt.openingBalance;
+  const lines: CashLedgerLine[] = stmt.lines.map(l => {
+    running += l.credit - l.debit;
+    return { ...l, runningBalance: running };
+  });
+  return {
+    accountId: stmt.accountId,
+    accountName: stmt.accountName,
+    period: stmt.period,
+    openingBalance: stmt.openingBalance,
+    lines,
+    closingBalance: running,
+  };
 }

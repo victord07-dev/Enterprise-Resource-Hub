@@ -11324,5 +11324,269 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Phase 4C Batch 2 — Financial Reports Routes ─────────────────────────────
+
+  // R1: Customer Aging (JSON)
+  app.get("/api/reports/customer-aging", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getCustomerAging } = await import("./lib/financial-aggregations");
+      const data = await getCustomerAging(req.query.asOf as string | undefined, req.query.customerId as string | undefined);
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate customer aging" });
+    }
+  });
+
+  // R1: Customer Aging (Excel)
+  app.get("/api/reports/customer-aging/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getCustomerAging } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getCustomerAging(req.query.asOf as string | undefined, req.query.customerId as string | undefined);
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Customer Aging",
+          title: "Customer Aging Report",
+          subtitle: `As of ${data.asOf}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Customer", key: "customerName", width: 32, type: "text" },
+            { header: "GSTIN", key: "gstNumber", width: 22, type: "text" },
+            { header: "Type", key: "customerType", width: 14, type: "text" },
+            { header: "Total Outstanding", key: "totalOutstanding", width: 22, type: "currency" },
+            { header: "Current", key: "current", width: 18, type: "currency" },
+            { header: "1-30 Days", key: "days1_30", width: 18, type: "currency" },
+            { header: "31-60 Days", key: "days31_60", width: 18, type: "currency" },
+            { header: "61-90 Days", key: "days61_90", width: 18, type: "currency" },
+            { header: "90+ Days", key: "days90plus", width: 18, type: "currency" },
+            { header: "Oldest Invoice", key: "oldestInvoiceDate", width: 18, type: "date" },
+          ],
+          rows: data.rows,
+          totals: { customerName: "TOTAL", totalOutstanding: data.summary.totalOutstanding, current: data.summary.current, days1_30: data.summary.days1_30, days31_60: data.summary.days31_60, days61_90: data.summary.days61_90, days90plus: data.summary.days90plus },
+        }],
+      });
+      sendExcel(res, buf, `Customer-Aging-${data.asOf}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export customer aging Excel" });
+    }
+  });
+
+  // R2: Supplier Aging (JSON)
+  app.get("/api/reports/supplier-aging", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getSupplierAging } = await import("./lib/financial-aggregations");
+      const data = await getSupplierAging(req.query.asOf as string | undefined, req.query.supplierId as string | undefined);
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate supplier aging" });
+    }
+  });
+
+  // R2: Supplier Aging (Excel)
+  app.get("/api/reports/supplier-aging/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getSupplierAging } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getSupplierAging(req.query.asOf as string | undefined, req.query.supplierId as string | undefined);
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Supplier Aging",
+          title: "Supplier Aging Report",
+          subtitle: `As of ${data.asOf}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Supplier", key: "supplierName", width: 32, type: "text" },
+            { header: "Total Outstanding", key: "totalOutstanding", width: 22, type: "currency" },
+            { header: "Current", key: "current", width: 18, type: "currency" },
+            { header: "1-30 Days", key: "days1_30", width: 18, type: "currency" },
+            { header: "31-60 Days", key: "days31_60", width: 18, type: "currency" },
+            { header: "61-90 Days", key: "days61_90", width: 18, type: "currency" },
+            { header: "90+ Days", key: "days90plus", width: 18, type: "currency" },
+            { header: "Oldest Invoice", key: "oldestInvoiceDate", width: 18, type: "date" },
+          ],
+          rows: data.rows,
+          totals: { supplierName: "TOTAL", totalOutstanding: data.summary.totalOutstanding, current: data.summary.current, days1_30: data.summary.days1_30, days31_60: data.summary.days31_60, days61_90: data.summary.days61_90, days90plus: data.summary.days90plus },
+        }],
+      });
+      sendExcel(res, buf, `Supplier-Aging-${data.asOf}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export supplier aging Excel" });
+    }
+  });
+
+  // R3: Cash Position (JSON)
+  app.get("/api/reports/cash-position", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getCashPositionReport } = await import("./lib/financial-aggregations");
+      const data = await getCashPositionReport(req.query.asOf as string | undefined);
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate cash position" });
+    }
+  });
+
+  // R3: Cash Position (Excel)
+  app.get("/api/reports/cash-position/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getCashPositionReport } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getCashPositionReport(req.query.asOf as string | undefined);
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Cash Position",
+          title: "Cash Position Report",
+          subtitle: `As of ${data.asOf}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Account", key: "accountName", width: 30, type: "text" },
+            { header: "Type", key: "accountType", width: 14, type: "text" },
+            { header: "Balance (₹)", key: "balance", width: 22, type: "currency" },
+          ],
+          rows: data.accounts,
+          totals: { accountName: "TOTAL", balance: data.totalBalance },
+        }],
+      });
+      sendExcel(res, buf, `Cash-Position-${data.asOf}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export cash position Excel" });
+    }
+  });
+
+  // R4: Account Statement (JSON)
+  app.get("/api/reports/account-statement", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const accountId = req.query.accountId as string;
+      if (!accountId) return res.status(400).json({ message: "accountId is required" });
+      const { getAccountStatement } = await import("./lib/financial-aggregations");
+      const data = await getAccountStatement(accountId, { from: req.query.from as string, to: req.query.to as string });
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate account statement" });
+    }
+  });
+
+  // R4: Account Statement (Excel)
+  app.get("/api/reports/account-statement/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const accountId = req.query.accountId as string;
+      if (!accountId) return res.status(400).json({ message: "accountId is required" });
+      const { getAccountStatement } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getAccountStatement(accountId, { from: req.query.from as string, to: req.query.to as string });
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Account Statement",
+          title: `Account Statement — ${data.accountName}`,
+          subtitle: `${data.period.from} → ${data.period.to}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Date", key: "txnDate", width: 14, type: "date" },
+            { header: "Type", key: "type", width: 16, type: "text" },
+            { header: "Description", key: "description", width: 34, type: "text" },
+            { header: "Party", key: "party", width: 26, type: "text" },
+            { header: "Reference", key: "reference", width: 20, type: "text" },
+            { header: "Debit (₹)", key: "debit", width: 18, type: "currency" },
+            { header: "Credit (₹)", key: "credit", width: 18, type: "currency" },
+          ],
+          rows: data.lines,
+          totals: { txnDate: "", type: "TOTAL", description: "", party: "", reference: "", debit: data.totalDebit, credit: data.totalCredit },
+        }],
+      });
+      sendExcel(res, buf, `Account-Statement-${data.accountName.replace(/\s+/g, "-")}-${data.period.from}-${data.period.to}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export account statement Excel" });
+    }
+  });
+
+  // R5: Consolidated Cash Statement (JSON)
+  app.get("/api/reports/consolidated-cash", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getConsolidatedCashStatement } = await import("./lib/financial-aggregations");
+      const data = await getConsolidatedCashStatement({ from: req.query.from as string, to: req.query.to as string });
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate consolidated cash statement" });
+    }
+  });
+
+  // R5: Consolidated Cash Statement (Excel)
+  app.get("/api/reports/consolidated-cash/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getConsolidatedCashStatement } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getConsolidatedCashStatement({ from: req.query.from as string, to: req.query.to as string });
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Consolidated Cash",
+          title: "Consolidated Cash Statement",
+          subtitle: `${data.period.from} → ${data.period.to}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Date", key: "txnDate", width: 14, type: "date" },
+            { header: "Account", key: "accountName", width: 24, type: "text" },
+            { header: "Type", key: "type", width: 16, type: "text" },
+            { header: "Description", key: "description", width: 30, type: "text" },
+            { header: "Party", key: "party", width: 24, type: "text" },
+            { header: "Reference", key: "reference", width: 18, type: "text" },
+            { header: "Debit (₹)", key: "debit", width: 18, type: "currency" },
+            { header: "Credit (₹)", key: "credit", width: 18, type: "currency" },
+          ],
+          rows: data.lines,
+          totals: { txnDate: "", accountName: "TOTAL", type: "", description: "", party: "", reference: "", debit: data.totalDebit, credit: data.totalCredit },
+        }],
+      });
+      sendExcel(res, buf, `Consolidated-Cash-${data.period.from}-${data.period.to}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export consolidated cash Excel" });
+    }
+  });
+
+  // R6: Cash Ledger (JSON)
+  app.get("/api/reports/cash-ledger", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const accountId = req.query.accountId as string;
+      if (!accountId) return res.status(400).json({ message: "accountId is required" });
+      const { getCashLedger } = await import("./lib/financial-aggregations");
+      const data = await getCashLedger(accountId, { from: req.query.from as string, to: req.query.to as string });
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate cash ledger" });
+    }
+  });
+
+  // R6: Cash Ledger (Excel)
+  app.get("/api/reports/cash-ledger/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const accountId = req.query.accountId as string;
+      if (!accountId) return res.status(400).json({ message: "accountId is required" });
+      const { getCashLedger } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getCashLedger(accountId, { from: req.query.from as string, to: req.query.to as string });
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Cash Ledger",
+          title: `Cash Ledger — ${data.accountName}`,
+          subtitle: `${data.period.from} → ${data.period.to}  |  Opening: ₹${data.openingBalance.toFixed(2)}`,
+          headerStyle: "compact",
+          columns: [
+            { header: "Date", key: "txnDate", width: 14, type: "date" },
+            { header: "Type", key: "type", width: 16, type: "text" },
+            { header: "Description", key: "description", width: 32, type: "text" },
+            { header: "Party", key: "party", width: 24, type: "text" },
+            { header: "Reference", key: "reference", width: 18, type: "text" },
+            { header: "Debit (₹)", key: "debit", width: 18, type: "currency" },
+            { header: "Credit (₹)", key: "credit", width: 18, type: "currency" },
+            { header: "Balance (₹)", key: "runningBalance", width: 20, type: "currency" },
+          ],
+          rows: data.lines,
+          totals: { txnDate: "", type: "CLOSING", description: "", party: "", reference: "", debit: data.lines.reduce((s, l) => s + l.debit, 0), credit: data.lines.reduce((s, l) => s + l.credit, 0), runningBalance: data.closingBalance },
+        }],
+      });
+      sendExcel(res, buf, `Cash-Ledger-${data.accountName.replace(/\s+/g, "-")}-${data.period.from}-${data.period.to}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export cash ledger Excel" });
+    }
+  });
+
   return httpServer;
 }

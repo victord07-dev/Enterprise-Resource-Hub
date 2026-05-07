@@ -31,6 +31,12 @@ import {
 // aging, daily-pricing) stay in the main Reports chunk.
 const PLStatement = lazy(() => import("@/components/reports/PLStatement"));
 const CashFlowStatement = lazy(() => import("@/components/reports/CashFlowStatement"));
+const CustomerAging = lazy(() => import("@/components/reports/CustomerAging").then(m => ({ default: m.CustomerAging })));
+const SupplierAging = lazy(() => import("@/components/reports/SupplierAging").then(m => ({ default: m.SupplierAging })));
+const CashPosition = lazy(() => import("@/components/reports/CashPosition").then(m => ({ default: m.CashPosition })));
+const AccountStatement = lazy(() => import("@/components/reports/AccountStatement").then(m => ({ default: m.AccountStatement })));
+const ConsolidatedCash = lazy(() => import("@/components/reports/ConsolidatedCash").then(m => ({ default: m.ConsolidatedCash })));
+const CashLedger = lazy(() => import("@/components/reports/CashLedger").then(m => ({ default: m.CashLedger })));
 
 const salesData = [
   { month: "Jan", sales: 4000 },
@@ -1440,6 +1446,7 @@ export default function Reports() {
           {canManagePricing && <TabsTrigger value="daily-pricing" data-testid="tab-daily-pricing">Daily Pricing</TabsTrigger>}
           {isFinanceUser && <TabsTrigger value="pl-statement" data-testid="tab-pl-statement">P&amp;L</TabsTrigger>}
           {isFinanceUser && <TabsTrigger value="cash-flow" data-testid="tab-cash-flow">Cash Flow</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="financial-reports" data-testid="tab-financial-reports">Financial Reports</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6 mt-4">
@@ -1590,6 +1597,52 @@ export default function Reports() {
             <Suspense fallback={<PageLoader />}>
               <CashFlowStatement />
             </Suspense>
+          </TabsContent>
+        )}
+
+        {isFinanceUser && (
+          <TabsContent value="financial-reports" className="mt-4">
+            <Tabs defaultValue="customer-aging">
+              <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-financial-reports">
+                <TabsTrigger value="customer-aging" className="text-xs" data-testid="tab-fin-customer-aging">Customer Aging</TabsTrigger>
+                <TabsTrigger value="supplier-aging" className="text-xs" data-testid="tab-fin-supplier-aging">Supplier Aging</TabsTrigger>
+                <TabsTrigger value="cash-position" className="text-xs" data-testid="tab-fin-cash-position">Cash Position</TabsTrigger>
+                <TabsTrigger value="account-statement" className="text-xs" data-testid="tab-fin-account-statement">Account Statement</TabsTrigger>
+                <TabsTrigger value="consolidated-cash" className="text-xs" data-testid="tab-fin-consolidated-cash">Consolidated Cash</TabsTrigger>
+                <TabsTrigger value="cash-ledger" className="text-xs" data-testid="tab-fin-cash-ledger">Cash Ledger</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="customer-aging">
+                <Suspense fallback={<PageLoader />}>
+                  <CustomerAging />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="supplier-aging">
+                <Suspense fallback={<PageLoader />}>
+                  <SupplierAging />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="cash-position">
+                <Suspense fallback={<PageLoader />}>
+                  <CashPosition />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="account-statement">
+                <Suspense fallback={<PageLoader />}>
+                  <AccountStatement />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="consolidated-cash">
+                <Suspense fallback={<PageLoader />}>
+                  <ConsolidatedCash />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="cash-ledger">
+                <Suspense fallback={<PageLoader />}>
+                  <CashLedger />
+                </Suspense>
+              </TabsContent>
+            </Tabs>
           </TabsContent>
         )}
       </Tabs>

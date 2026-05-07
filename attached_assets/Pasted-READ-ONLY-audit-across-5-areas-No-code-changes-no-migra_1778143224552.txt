@@ -1,0 +1,73 @@
+READ-ONLY audit across 5 areas. No code changes, no migrations, 
+no writes of any kind. Findings only — post all 5 as a single 
+structured reply.
+
+═══════════════════════════════════════════════════════════════
+AUDIT 1 — financial-aggregations.ts complete inventory
+═══════════════════════════════════════════════════════════════
+
+List every exported function in server/lib/financial-aggregations.ts.
+For each function:
+- Name + parameter signature
+- One-line description of what it computes
+- What tables/helpers it reads from
+
+═══════════════════════════════════════════════════════════════
+AUDIT 2 — Phase 4B cash schema
+═══════════════════════════════════════════════════════════════
+
+From shared/schema.ts, list full table structures (all columns, 
+types, nullable/not-null) for:
+- cash_accounts (or equivalent)
+- cash_transactions / account_transactions (or equivalent)
+- cash_transfers (or equivalent)
+- cash_adjustments (or equivalent)
+- Any other table created during Phase 4B
+
+If the table name differs from above, use the actual name.
+
+═══════════════════════════════════════════════════════════════
+AUDIT 3 — Expense tracking
+═══════════════════════════════════════════════════════════════
+
+A. Does a standalone expenses table exist in shared/schema.ts? 
+   If yes, list all columns, types, nullable/not-null.
+B. Where in the codebase are expenses recorded? Check if they 
+   flow through supplier_invoices, a dedicated expenses table, 
+   or both.
+C. Is there an expense_categories table or similar?
+D. What routes exist for expense creation/listing? 
+   (routes.ts — just method + path, no need to paste the body)
+
+═══════════════════════════════════════════════════════════════
+AUDIT 4 — Balance Sheet primitives
+═══════════════════════════════════════════════════════════════
+
+Check shared/schema.ts and routes.ts for any tables/routes 
+related to:
+A. Fixed assets (machinery, vehicles, equipment)
+B. Long-term liabilities (loans, credit lines, borrowings)
+C. Equity / capital accounts (share capital, retained earnings, 
+   owner equity)
+D. Opening balances — is there any opening_balances table or 
+   mechanism to enter starting values for accounts?
+
+For each of A-D: report what exists (table name + columns) OR 
+confirm explicitly that nothing exists.
+
+═══════════════════════════════════════════════════════════════
+AUDIT 5 — N1-N17 cleanup list
+═══════════════════════════════════════════════════════════════
+
+Locate the N1-N17 cleanup item list. Check:
+- replit.md
+- docs/ folder (any cleanup, backlog, or todo docs)
+- Any inline comment blocks in routes.ts or storage.ts that 
+  enumerate numbered cleanup items
+
+Paste the full list exactly as documented. If it doesn't exist 
+anywhere, say so explicitly.
+
+═══════════════════════════════════════════════════════════════
+
+STOP after posting all 5 findings. No implementation.

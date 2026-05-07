@@ -1,0 +1,74 @@
+CEO confirmed:
+- Fix A (hardcoded fake chart data) approved for immediate fix, 
+  scoped separately from Phase 4C.
+- Fix B–F (locale parity sweep, AuditTrail wiring, Login security, 
+  not-found dark mode, `any` cleanup) logged to Quality Backlog, 
+  out of scope this turn.
+- Phase 4C Phase C remains gated on my 7-PDF spot-check — handled 
+  separately, do NOT pre-stage Phase C work here.
+
+------------------------------------------------------------------
+TASK: Eliminate hardcoded chart fixtures from Dashboard.tsx and 
+Reports.tsx.
+
+SITES:
+1. client/src/pages/Dashboard.tsx lines 23–31 — `revenueData` 
+   array (Mon: 2400, Tue: 1398, …) feeds the "Revenue Overview" 
+   AreaChart in the all-roles section (~lines 245–283).
+2. client/src/pages/Reports.tsx lines 34–49 — `salesData` 
+   (Jan: 4000, …) and `categoryData` (Solar Panels: 40, …) arrays. 
+   Trace every consumer.
+
+PRE-WORK (Standing Rule #5 — read existing code FIRST, do not 
+write any production code in this step):
+
+A. For each of the three constants, list every UI consumer 
+   (file + line + which chart/widget).
+
+B. Identify candidate real data sources:
+   - /api/dashboard/stats
+   - /api/dashboard/snapshot (finance-role only)
+   - server/lib/financial-aggregations.ts — any existing 
+     sales-by-period or sales-by-category aggregator?
+
+C. For each affected chart, propose ONE of:
+   (1) Wire to existing endpoint [name it]
+   (2) Delete the widget if it duplicates a Phase 4C widget 
+       already shipped in the finance-only section
+   (3) Build a small new aggregator in 
+       financial-aggregations.ts (DEFAULT NO — prefer 1 or 2 
+       to avoid scope creep)
+
+STOP CHECKPOINT: Post findings A+B+C in your reply. Wait for my 
+approval of the resolution-per-chart before implementing.
+
+CONSTRAINTS:
+- Rule #6: no other cleanup while you're in there. Touch only 
+  the three constants and their direct consumers. Specifically 
+  do NOT touch:
+  - Phase 4C finance-only widgets in Dashboard.tsx
+  - PLStatement.tsx, CashFlowStatement.tsx
+  - Other Reports tabs (AP/AR Aging, Daily Pricing)
+  - Any PDF generator, letterhead helper, or Excel exporter
+- Rule #11: any new aggregator lands in 
+  financial-aggregations.ts FIRST, exposed via route SECOND. 
+  Zero inline math in components.
+- Rule #12: reuse existing patterns (DateRangeFilter, format.ts, 
+  chart-to-image.ts).
+- Currency display, if any: use `formatINR` (Products.tsx) or 
+  `fmtCur` pattern from Reports.tsx line 772 (en-IN locale). The 
+  global locale parity sweep is Quality Backlog item B and OUT 
+  OF SCOPE this turn.
+
+DEFINITION OF DONE:
+- Zero hardcoded chart fixtures in Dashboard.tsx or Reports.tsx
+- Resolution per chart: real data, deletion, or new 
+  aggregator-via-route
+- Screenshots of each affected chart post-fix
+- Visual confirmation (Standing Rule #2) of zero drift in: Phase 
+  4C dashboard widgets, P&L, Cash Flow, AP/AR Aging, Daily 
+  Pricing
+- TypeScript builds clean, no new `any` introduced
+
+NO PHASE CLOSURE — just this fix. Phase 4C continues on its own 
+track.

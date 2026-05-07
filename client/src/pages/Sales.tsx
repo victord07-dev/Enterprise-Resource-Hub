@@ -478,6 +478,19 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       item.gstRate = Number(value);
       item.taxAmount = item.totalPrice * Number(value) / 100;
     }
+    if (field === "customComponents" && Array.isArray(value)) {
+      const comps = value as Array<{ componentProductId: string; quantity: number; unit: string }>;
+      const newUnitPrice = comps.reduce((sum, comp) => {
+        const ep = effectivePrices?.[comp.componentProductId];
+        const compPrice = (ep && !ep.noConfirmedPrice)
+          ? Number(ep.effectivePrice)
+          : Number(products.find(p => p.id === comp.componentProductId)?.unitPrice ?? 0);
+        return sum + compPrice * Number(comp.quantity || 1);
+      }, 0);
+      item.unitPrice = Math.round(newUnitPrice * 100) / 100;
+      item.totalPrice = item.quantity * item.unitPrice;
+      item.taxAmount = item.totalPrice * item.gstRate / 100;
+    }
     if (field === "itemType") {
       item.productId = "";
       item.description = "";

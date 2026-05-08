@@ -1,0 +1,110 @@
+CEO Reports 1-4 are complete. Phase 4D begins now.
+
+Phase 4D scope: Full Balance Sheet — new schema tables, 
+data entry UIs, the Balance Sheet report itself, then 
+CEO Reports 5-6 (Current Ratio + Debt-Equity) built on top.
+
+This is a major build. Do PRE-WORK and planning only 
+this turn — no schema migrations, no code.
+
+══════════════════════════════════════════════════════════════
+PHASE 4D PRE-WORK — propose the full data model
+══════════════════════════════════════════════════════════════
+
+Read shared/schema.ts fully. Then propose the schema 
+additions needed for a complete Balance Sheet for an 
+Indian SMB (solar/electronics distribution). 
+
+For each new table, propose: columns, types, nullable 
+or not, relationships.
+
+REQUIRED tables to propose:
+
+1. fixed_assets
+   Must support: asset name, category (machinery/vehicle/
+   equipment/furniture/other), purchase date, purchase 
+   value, useful life in years, depreciation method 
+   (SLM = Straight Line Method is Indian statutory 
+   default), accumulated depreciation, current book 
+   value, notes, is_active flag
+
+2. loans
+   Must support: lender name, loan type (short_term = 
+   ≤1 year / long_term = >1 year), sanctioned amount, 
+   outstanding amount, interest rate %, disbursement 
+   date, maturity date, repayment schedule notes, 
+   linked cash account (where loan proceeds were 
+   received), notes
+
+3. equity_accounts
+   Must support: account name, account type 
+   (share_capital / retained_earnings / owners_capital / 
+   other), opening balance, opening balance date, notes
+
+4. opening_balances
+   This is the go-live opening balance table. Must 
+   support entering starting values for:
+   - Accounts Receivable (total AR as at go-live date 
+     — separate from ongoing invoices the ERP tracks)
+   - Accounts Payable (total AP as at go-live date)
+   - Inventory value (total stock value as at go-live)
+   - Any other current asset/liability category
+   Must support: account_type enum, amount, 
+   as_of_date, notes
+
+ALSO answer:
+A. Are there any existing tables that partially cover 
+   any of the above? (e.g. does cash_accounts already 
+   handle opening balance for cash? Yes — confirm how.)
+B. What data does the existing system already provide 
+   for each Balance Sheet line item without new tables?
+   Map each line:
+   - Cash & Bank: ✓ (computeAccountBalance)
+   - Accounts Receivable: ✓ (sumOpenCustomerOutstanding)
+   - Inventory: ? (GRN items have buying price — is 
+     FIFO inventory valuation already computable?)
+   - Fixed Assets: ?
+   - Accounts Payable: ✓ (sumOpenSupplierOutstanding)
+   - Loans: ?
+   - Equity: ?
+C. For depreciation: SLM formula is 
+   (purchase_value - salvage_value) / useful_life_years 
+   per year. Annual depreciation = that amount. 
+   Accumulated = annual × years_elapsed (capped at 
+   purchase_value). Confirm this is correct and 
+   sufficient for ITFI's CA.
+D. Propose the Balance Sheet report structure:
+
+   ASSETS
+     Current Assets
+       Cash & Bank Accounts        [from computeAccountBalance]
+       Accounts Receivable         [from customer outstanding]
+       Inventory (stock value)     [from GRN FIFO valuation]
+       Other Current Assets        [from opening_balances]
+     Non-Current Assets
+       Fixed Assets (net)          [purchase - accumulated dep]
+   TOTAL ASSETS
+
+   LIABILITIES
+     Current Liabilities
+       Accounts Payable            [from supplier outstanding]
+       Short-term Loans            [from loans table]
+     Non-Current Liabilities
+       Long-term Loans             [from loans table]
+   TOTAL LIABILITIES
+
+   EQUITY
+     Share Capital                 [from equity_accounts]
+     Retained Earnings             [opening + cumulative P&L]
+     Owner's Capital               [from equity_accounts]
+   TOTAL EQUITY
+
+   BALANCE CHECK: Total Assets = Total Liabilities + Equity
+
+   Flag if this structure needs adjustment for ITFI's 
+   specific CA requirements.
+
+STOP CHECKPOINT:
+Post your schema proposals (A, B, C, D above). 
+No migrations, no code. Operator and PM will review 
+the data model before any table is created.

@@ -1,9 +1,8 @@
 import { useState, lazy, Suspense } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
 import { useLocation } from "wouter";
 import { PageLoader } from "@/components/PageLoader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,18 +16,12 @@ import { useToast } from "@/hooks/use-toast";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
-  Flame, TrendingDown, Shield, Search, ChevronDown, Loader2,
+  Flame, TrendingDown, Shield, Search, ChevronDown,
 } from "lucide-react";
 import { useCurrentUser } from "@/lib/auth";
-import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF, generateTaxReportPDF, generateInventoryPDF, generateStaffPDF, generateSalesReportPDF, generateFinancialReportPDF } from "@/lib/reports-pdf";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell,
-} from "recharts";
+import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF } from "@/lib/reports-pdf";
 
-// Lazy-loaded so Recharts code in these tabs only downloads when the
-// operator actually clicks them. Other Reports tabs (overview, AR/AP
-// aging, daily-pricing) stay in the main Reports chunk.
+// Lazy-loaded so heavy code only downloads when the tab is opened.
 const PLStatement = lazy(() => import("@/components/reports/PLStatement"));
 const CashFlowStatement = lazy(() => import("@/components/reports/CashFlowStatement"));
 const CustomerAging = lazy(() => import("@/components/reports/CustomerAging").then(m => ({ default: m.CustomerAging })));
@@ -42,32 +35,7 @@ const SalesRegister = lazy(() => import("@/components/reports/SalesRegister").th
 const PurchaseRegister = lazy(() => import("@/components/reports/PurchaseRegister").then(m => ({ default: m.PurchaseRegister })));
 const ExpenseReport = lazy(() => import("@/components/reports/ExpenseReport").then(m => ({ default: m.ExpenseReport })));
 
-const salesData = [
-  { month: "Jan", sales: 4000 },
-  { month: "Feb", sales: 3000 },
-  { month: "Mar", sales: 5000 },
-  { month: "Apr", sales: 4500 },
-  { month: "May", sales: 6000 },
-  { month: "Jun", sales: 5500 },
-];
-
-const categoryData = [
-  { name: "Solar Panels", value: 40 },
-  { name: "Electronics", value: 30 },
-  { name: "Commodities", value: 20 },
-  { name: "Accessories", value: 10 },
-];
-
-const COLORS = ["hsl(217, 91%, 60%)", "hsl(160, 60%, 45%)", "hsl(30, 80%, 55%)", "hsl(280, 65%, 60%)"];
-
-const reportCards = [
-  { title: "Sales Report", description: "Revenue, orders, and customer analytics", icon: ShoppingCart, color: "text-blue-500", bg: "bg-blue-50 dark:bg-blue-950/30" },
-  { title: "Inventory Report", description: "Stock levels, movements, and alerts", icon: Package, color: "text-emerald-500", bg: "bg-emerald-50 dark:bg-emerald-950/30" },
-  { title: "Financial Report", description: "Income, expenses, and P&L statements", icon: CreditCard, color: "text-violet-500", bg: "bg-violet-50 dark:bg-violet-950/30" },
-  { title: "Staff Report", description: "Employee performance and attendance", icon: Users, color: "text-orange-500", bg: "bg-orange-50 dark:bg-orange-950/30" },
-  { title: "Project Report", description: "Project status and timeline tracking", icon: TrendingUp, color: "text-pink-500", bg: "bg-pink-50 dark:bg-pink-950/30" },
-  { title: "Tax Report", description: "GST, TDS, and tax compliance reports", icon: FileText, color: "text-indigo-500", bg: "bg-indigo-50 dark:bg-indigo-950/30" },
-];
+// ─── Formatting helpers ───────────────────────────────────────────────────────
 
 const fmt = (n: number) =>
   "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -104,7 +72,7 @@ const rowTint: Record<string, string> = {
   "90+": "bg-red-100/70 dark:bg-red-950/25",
 };
 
-// ─── Export helpers ──────────────────────────────────────────────────────────
+// ─── Export helpers ───────────────────────────────────────────────────────────
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -186,82 +154,7 @@ interface ARAgingResponse {
   summary: APAgingSummary;
 }
 
-interface ProductRow {
-  id: string;
-  name: string;
-  sku: string;
-  category: string;
-  unit: string;
-  costPrice: string | null;
-  unitPrice: string;
-}
-
-interface InventoryStockRow {
-  productId: string;
-  quantity: number;
-}
-
-interface EmployeeRow {
-  id: string;
-  userId?: string | null;
-  name: string;
-  email: string;
-  department: string;
-  designation: string;
-  isActive: boolean;
-  joinDate?: string | null;
-}
-
-interface UserRow {
-  id: string;
-  role: string;
-}
-
-interface CustomerRow {
-  id: string;
-  name: string;
-}
-
-interface SupplierRow {
-  id: string;
-  name: string;
-}
-
-interface SalesInvoiceRow {
-  id: string;
-  invoiceNumber: string;
-  customerId: string;
-  customerType: string;
-  customerGSTIN?: string | null;
-  invoiceDate: string;
-  dueDate?: string | null;
-  grandTotal: string;
-  creditedAmount?: string | null;
-  status: string;
-}
-
-interface CustomerPaymentRow {
-  id: string;
-  invoiceId: string;
-  amount: string;
-}
-
-interface SupplierInvoiceRow {
-  id: string;
-  invoiceNumber: string;
-  supplierId: string;
-  invoiceDate: string;
-  subtotal: string;
-  taxAmount: string;
-  totalAmount: string;
-  status: string;
-}
-
-interface SupplierPaymentRow {
-  id: string;
-  supplierInvoiceId: string | null;
-  amount: string;
-}
+// ─── AP Aging Tab (Payables → Invoice Detail) ─────────────────────────────────
 
 function APAgingTab() {
   const [supplierFilter, setSupplierFilter] = useState<string>("all");
@@ -275,10 +168,8 @@ function APAgingTab() {
 
   const uniqueSuppliers = Array.from(new Map(rows.map(r => [r.supplierId, r.supplierName])).entries());
 
-  // Apply supplier filter (but always include all non-zero balance rows for summary)
   const supplierFiltered = supplierFilter === "all" ? rows : rows.filter(r => r.supplierId === supplierFilter);
 
-  // Compute summary from supplier-filtered, non-zero rows only
   const summary = supplierFiltered
     .filter(r => r.balance > 0)
     .reduce(
@@ -294,7 +185,6 @@ function APAgingTab() {
       { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
     );
 
-  // Table rows: apply paid-invoice toggle on top of supplier filter
   const filtered = supplierFiltered.filter(r => showPaid || r.balance > 0);
 
   const handleExportCSV = () => {
@@ -321,7 +211,6 @@ function APAgingTab() {
 
   return (
     <div className="space-y-5" data-testid="section-ap-aging">
-      {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {summaryCards.map(card => {
           const Icon = card.icon;
@@ -341,7 +230,6 @@ function APAgingTab() {
         })}
       </div>
 
-      {/* Filters */}
       <div className="flex items-center gap-4 flex-wrap">
         <Select value={supplierFilter} onValueChange={setSupplierFilter}>
           <SelectTrigger className="w-52" data-testid="select-supplier-filter">
@@ -374,7 +262,6 @@ function APAgingTab() {
         </Button>
       </div>
 
-      {/* Table */}
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
@@ -469,7 +356,6 @@ function APAgingTab() {
                     </tr>
                   ))}
                 </tbody>
-                {/* Totals footer */}
                 {filtered.length > 1 && (
                   <tfoot>
                     <tr className="border-t-2 bg-muted/40 font-semibold">
@@ -489,6 +375,8 @@ function APAgingTab() {
     </div>
   );
 }
+
+// ─── AR Aging Tab (Receivables → Invoice Detail) ──────────────────────────────
 
 type ARSortKey = "daysOverdue" | "dueDate" | "balance" | "customerName" | "invoiceNumber";
 
@@ -737,7 +625,7 @@ function ARAgingTab() {
   );
 }
 
-// ─── Daily Pricing Tab ──────────────────────────────────────────────────────
+// ─── Daily Pricing Tab (Pricing) ──────────────────────────────────────────────
 
 interface PricingProduct {
   productId: string;
@@ -820,7 +708,6 @@ function DailyPricingTab() {
   const { portfolio } = data;
   const categories = Array.from(new Set(data.products.map(p => p.category))).sort();
 
-  // Insight bucket counts + top-3 lists
   const needsPricingProducts = data.products.filter(p => p.needsPricingReview || p.source === "none");
   const highRiskProducts = data.products.filter(p => p.pressureLevel === "High Risk");
   const sellPriorityProducts = data.products.filter(p => p.sellPriority);
@@ -832,7 +719,6 @@ function DailyPricingTab() {
 
   let filtered = data.products;
 
-  // Insight quick-filter (overrides atRiskOnly when active)
   if (activeInsight === "needsPricing") {
     filtered = needsPricingProducts;
   } else if (activeInsight === "highRisk") {
@@ -869,7 +755,6 @@ function DailyPricingTab() {
   }
   if (category !== "all") filtered = filtered.filter(p => p.category === category);
 
-  // Sort: High Risk first, then Medium, then by marginPct ascending
   filtered = [...filtered].sort((a, b) => {
     const order = { "High Risk": 0, "Medium": 1, "Safe": 2, "None": 3 };
     const diff = (order[a.pressureLevel] ?? 3) - (order[b.pressureLevel] ?? 3);
@@ -882,7 +767,6 @@ function DailyPricingTab() {
 
   return (
     <div className="space-y-5">
-      {/* Portfolio cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card data-testid="card-portfolio-cost">
           <CardContent className="p-4">
@@ -952,9 +836,7 @@ function DailyPricingTab() {
         </Card>
       </div>
 
-      {/* Actionable Insights */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* Needs Pricing */}
         <button
           onClick={() => toggleInsight("needsPricing")}
           data-testid="card-insight-needs-pricing"
@@ -974,7 +856,6 @@ function DailyPricingTab() {
           </div>
         </button>
 
-        {/* High Risk */}
         <button
           onClick={() => toggleInsight("highRisk")}
           data-testid="card-insight-high-risk"
@@ -994,7 +875,6 @@ function DailyPricingTab() {
           </div>
         </button>
 
-        {/* Old Stock Pressure */}
         <button
           onClick={() => toggleInsight("sellPriority")}
           data-testid="card-insight-sell-priority"
@@ -1021,7 +901,6 @@ function DailyPricingTab() {
         </div>
       )}
 
-      {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-40">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -1051,7 +930,6 @@ function DailyPricingTab() {
         </Button>
       </div>
 
-      {/* Table */}
       <Card>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -1126,21 +1004,20 @@ function DailyPricingTab() {
   );
 }
 
+// ─── Tab label map ────────────────────────────────────────────────────────────
+
 const TAB_LABELS: Record<string, string> = {
   overview: "Overview",
-  "ap-aging": "AP Aging",
-  "ar-aging": "AR Aging",
-  "daily-pricing": "Daily Pricing",
+  receivables: "Receivables",
+  payables: "Payables",
+  "cash-banking": "Cash & Banking",
+  "sales-revenue": "Sales & Revenue",
+  "tax-compliance": "Tax & Compliance",
+  "financial-statements": "Financial Statements",
+  pricing: "Pricing",
 };
 
-const cardFormats: Record<string, ("csv" | "pdf")[]> = {
-  "Sales Report": ["csv", "pdf"],
-  "Inventory Report": ["csv", "pdf"],
-  "Financial Report": ["csv", "pdf"],
-  "Staff Report": ["csv", "pdf"],
-  "Project Report": [],
-  "Tax Report": ["pdf"],
-};
+// ─── Main Reports page ────────────────────────────────────────────────────────
 
 export default function Reports() {
   const { data: currentUser } = useCurrentUser();
@@ -1149,268 +1026,21 @@ export default function Reports() {
   const [activeTab, setActiveTab] = useState("overview");
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  const [loadingCard, setLoadingCard] = useState<string | null>(null);
 
-  // ── Shared AP/AR export functions (using query cache, full unfiltered data) ──
+  const reportCards = [
+    { title: "Sales Report", description: "Revenue, orders, and customer analytics", icon: ShoppingCart, color: "text-blue-500", bg: "bg-blue-50 dark:bg-blue-950/30", action: () => setActiveTab("sales-revenue") },
+    { title: "Inventory Report", description: "Stock levels, movements, and alerts", icon: Package, color: "text-emerald-500", bg: "bg-emerald-50 dark:bg-emerald-950/30", action: () => navigate("/inventory") },
+    { title: "Financial Report", description: "Income, expenses, and P&L statements", icon: CreditCard, color: "text-violet-500", bg: "bg-violet-50 dark:bg-violet-950/30", action: () => setActiveTab("financial-statements") },
+    { title: "Staff Report", description: "Employee performance and attendance", icon: Users, color: "text-orange-500", bg: "bg-orange-50 dark:bg-orange-950/30", action: () => navigate("/employees") },
+    { title: "Project Report", description: "Project status and timeline tracking", icon: TrendingUp, color: "text-pink-500", bg: "bg-pink-50 dark:bg-pink-950/30", action: () => navigate("/projects") },
+    { title: "Tax Report", description: "GST, TDS, and tax compliance reports", icon: FileText, color: "text-indigo-500", bg: "bg-indigo-50 dark:bg-indigo-950/30", action: () => setActiveTab("tax-compliance") },
+  ];
 
-  const buildAPSummary = (rows: APAgingRow[]) =>
-    rows.filter(r => r.balance > 0).reduce(
-      (acc, r) => {
-        acc.totalOutstanding += r.balance;
-        if (r.bucket === "current") acc.current += r.balance;
-        else if (r.bucket === "1-30") acc.days1_30 += r.balance;
-        else if (r.bucket === "31-60") acc.days31_60 += r.balance;
-        else if (r.bucket === "61-90") acc.days61_90 += r.balance;
-        else acc.days90plus += r.balance;
-        return acc;
-      },
-      { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
-    );
-
-  const buildARSummary = (rows: ARAgingRow[]) =>
-    rows.filter(r => r.balance > 0).reduce(
-      (acc, r) => {
-        acc.totalOutstanding += r.balance;
-        if (r.bucket === "current") acc.current += r.balance;
-        else if (r.bucket === "1-30") acc.days1_30 += r.balance;
-        else if (r.bucket === "31-60") acc.days31_60 += r.balance;
-        else if (r.bucket === "61-90") acc.days61_90 += r.balance;
-        else acc.days90plus += r.balance;
-        return acc;
-      },
-      { current: 0, days1_30: 0, days31_60: 0, days61_90: 0, days90plus: 0, totalOutstanding: 0 }
-    );
-
-  const exportCurrentTab = async (format: "csv" | "pdf") => {
-    const apData = queryClient.getQueryData<APAgingResponse>(["/api/reports/ap-aging"]);
-    const arData = queryClient.getQueryData<ARAgingResponse>(["/api/reports/ar-aging"]);
-    const pricingData = queryClient.getQueryData<PricingSummary>(["/api/reports/pricing-summary"]);
-
-    if (activeTab === "ap-aging") {
-      if (!apData?.rows?.length) {
-        toast({ title: "No AP Aging data", description: "Open the AP Aging tab to load data first." });
-        return;
-      }
-      const outstandingRows = apData.rows.filter(r => r.balance > 0);
-      const summary = buildAPSummary(outstandingRows);
-      if (format === "csv") {
-        downloadCSV(
-          `itfi-ap-aging-${todayISO()}.csv`,
-          ["Supplier", "Invoice #", "PO #", "Invoice Date", "Due Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
-          outstandingRows.map(r => [r.supplierName, r.invoiceNumber, r.poNumber ?? "", r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
-        );
-      } else {
-        downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, await generateAPAgingPDF(outstandingRows, summary, "All Suppliers"));
-      }
-    } else if (activeTab === "ar-aging") {
-      if (!arData?.rows?.length) {
-        toast({ title: "No AR Aging data", description: "Open the AR Aging tab to load data first." });
-        return;
-      }
-      const outstandingRows = arData.rows.filter(r => r.balance > 0);
-      const summary = buildARSummary(outstandingRows);
-      if (format === "csv") {
-        downloadCSV(
-          `itfi-ar-aging-${todayISO()}.csv`,
-          ["Customer", "Type", "GSTIN", "Invoice #", "Invoice Date", "Due Date", "Grand Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
-          outstandingRows.map(r => [r.customerName, r.customerType, r.customerGSTIN ?? "", r.invoiceNumber, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
-        );
-      } else {
-        downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, await generateARAgingPDF(outstandingRows, summary, "All Customers"));
-      }
-    } else if (activeTab === "daily-pricing") {
-      if (!pricingData?.products?.length) {
-        toast({ title: "No Pricing data", description: "Open the Daily Pricing tab to load data first." });
-        return;
-      }
-      const ps = (p: PricingProduct) => p.hasConfirmedToday ? "Confirmed" : p.hasUnconfirmedSheet ? "Pending" : "No Sheet";
-      if (format === "csv") {
-        downloadCSV(
-          `itfi-daily-pricing-${todayISO()}.csv`,
-          ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Pricing Status", "Sell Priority"],
-          pricingData.products.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, ps(p), p.sellPriority ? "Yes" : "No"])
-        );
-      } else {
-        downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, await generatePricingPDF(pricingData.products, pricingData.portfolio, "All Products"));
-      }
-    } else {
-      toast({ title: "Switch to a data tab first", description: "Select AP Aging, AR Aging, or Daily Pricing to export." });
-    }
-  };
-
-  const handleCardExport = async (title: string, format: "csv" | "pdf") => {
-    if (title === "Project Report") { navigate("/projects"); return; }
-
-    setLoadingCard(title);
-    if (title === "Tax Report") {
-      toast({ title: "⏳ Generating Tax Report…", description: "Fetching AP & AR aging data — download will start automatically." });
-    }
-
-    try {
-      if (title === "Inventory Report") {
-        const [products, inventoryStock] = await Promise.all([
-          queryClient.fetchQuery<ProductRow[]>({ queryKey: ["/api/products"], staleTime: 30_000 }),
-          queryClient.fetchQuery<InventoryStockRow[]>({ queryKey: ["/api/inventory-stock"], staleTime: 30_000 }),
-        ]);
-        const stockMap = new Map<string, number>();
-        for (const s of inventoryStock) {
-          stockMap.set(s.productId, (stockMap.get(s.productId) ?? 0) + s.quantity);
-        }
-        if (format === "csv") {
-          downloadCSV(
-            `itfi-inventory-${todayISO()}.csv`,
-            ["Product", "SKU", "Category", "Unit", "Total Stock", "Cost Price (₹)", "List Price (₹)", "Stock Value (Cost ₹)"],
-            products.map(p => {
-              const qty = stockMap.get(p.id) ?? 0;
-              const cost = Number(p.costPrice ?? 0);
-              return [p.name, p.sku, p.category, p.unit, qty, cost || "", p.unitPrice, qty * cost];
-            })
-          );
-        } else {
-          downloadPDF(`itfi-inventory-${todayISO()}.pdf`, await generateInventoryPDF(products, stockMap));
-        }
-
-      } else if (title === "Staff Report") {
-        const [employees, users] = await Promise.all([
-          queryClient.fetchQuery<EmployeeRow[]>({ queryKey: ["/api/employees"], staleTime: 30_000 }),
-          queryClient.fetchQuery<UserRow[]>({ queryKey: ["/api/users"], staleTime: 30_000 }).catch(() => [] as UserRow[]),
-        ]);
-        const userRoleMap = new Map(users.map(u => [u.id, u.role]));
-        const enriched = employees.map(e => ({
-          ...e,
-          role: e.userId ? (userRoleMap.get(e.userId) ?? "—") : "—",
-        }));
-        if (format === "csv") {
-          downloadCSV(
-            `itfi-staff-${todayISO()}.csv`,
-            ["Name", "Employee ID", "Department", "Designation", "Role", "Status"],
-            enriched.map(e => [e.name, e.id.slice(0, 8).toUpperCase(), e.department, e.designation, e.role, e.isActive ? "Active" : "Inactive"])
-          );
-        } else {
-          downloadPDF(`itfi-staff-${todayISO()}.pdf`, await generateStaffPDF(enriched));
-        }
-
-      } else if (title === "Sales Report") {
-        const [invoices, customers, payments] = await Promise.all([
-          queryClient.fetchQuery<SalesInvoiceRow[]>({ queryKey: ["/api/sales-invoices"], staleTime: 30_000 }),
-          queryClient.fetchQuery<CustomerRow[]>({ queryKey: ["/api/customers"], staleTime: 30_000 }),
-          queryClient.fetchQuery<CustomerPaymentRow[]>({ queryKey: ["/api/customer-payments"], staleTime: 30_000 }),
-        ]);
-        const customerMap = new Map(customers.map(c => [c.id, c.name]));
-        const paidMap = new Map<string, number>();
-        for (const p of payments) {
-          paidMap.set(p.invoiceId, (paidMap.get(p.invoiceId) ?? 0) + Number(p.amount));
-        }
-        const rows = invoices.map(inv => {
-          const totalPaid = paidMap.get(inv.id) ?? 0;
-          const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
-          return { ...inv, customerName: customerMap.get(inv.customerId) ?? inv.customerId, totalPaid, balance };
-        });
-        if (format === "csv") {
-          downloadCSV(
-            `itfi-sales-report-${todayISO()}.csv`,
-            ["Invoice #", "Customer", "Type", "Invoice Date", "Due Date", "Grand Total (₹)", "Collected (₹)", "Balance (₹)", "Status"],
-            rows.map(r => [r.invoiceNumber, r.customerName, r.customerType, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status])
-          );
-        } else {
-          const pdfRows = rows.map(r => ({
-            customerName: r.customerName,
-            customerType: r.customerType,
-            customerGSTIN: r.customerGSTIN ?? null,
-            invoiceNumber: r.invoiceNumber,
-            invoiceDate: r.invoiceDate,
-            dueDate: r.dueDate ?? null,
-            grandTotal: Number(r.grandTotal),
-            totalPaid: r.totalPaid,
-            balance: r.balance,
-            daysOverdue: 0,
-            bucket: "current",
-            status: r.status,
-          }));
-          downloadPDF(`itfi-sales-report-${todayISO()}.pdf`, await generateSalesReportPDF(pdfRows));
-        }
-
-      } else if (title === "Financial Report") {
-        const [invoices, customers, payments, supplierInvoices, suppliers, supplierPayments] = await Promise.all([
-          queryClient.fetchQuery<SalesInvoiceRow[]>({ queryKey: ["/api/sales-invoices"], staleTime: 30_000 }),
-          queryClient.fetchQuery<CustomerRow[]>({ queryKey: ["/api/customers"], staleTime: 30_000 }),
-          queryClient.fetchQuery<CustomerPaymentRow[]>({ queryKey: ["/api/customer-payments"], staleTime: 30_000 }),
-          queryClient.fetchQuery<SupplierInvoiceRow[]>({ queryKey: ["/api/supplier-invoices"], staleTime: 30_000 }),
-          queryClient.fetchQuery<SupplierRow[]>({ queryKey: ["/api/suppliers"], staleTime: 30_000 }),
-          queryClient.fetchQuery<SupplierPaymentRow[]>({ queryKey: ["/api/supplier-payments"], staleTime: 30_000 }),
-        ]);
-        const customerMap = new Map(customers.map(c => [c.id, c.name]));
-        const supplierMap = new Map(suppliers.map(s => [s.id, s.name]));
-        const paidMap = new Map<string, number>();
-        for (const p of payments) {
-          paidMap.set(p.invoiceId, (paidMap.get(p.invoiceId) ?? 0) + Number(p.amount));
-        }
-        const apPaidMap = new Map<string, number>();
-        for (const p of supplierPayments) {
-          if (p.supplierInvoiceId) {
-            apPaidMap.set(p.supplierInvoiceId, (apPaidMap.get(p.supplierInvoiceId) ?? 0) + Number(p.amount));
-          }
-        }
-        const arRows = invoices.map(inv => {
-          const totalPaid = paidMap.get(inv.id) ?? 0;
-          const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
-          return { ...inv, customerName: customerMap.get(inv.customerId) ?? inv.customerId, totalPaid, balance };
-        });
-        const apRows = supplierInvoices.map(inv => {
-          const totalPaid = apPaidMap.get(inv.id) ?? 0;
-          const balance = Math.max(0, Number(inv.totalAmount) - totalPaid);
-          return {
-            ...inv,
-            supplierName: supplierMap.get(inv.supplierId) ?? inv.supplierId,
-            totalPaid,
-            balance,
-            poNumber: null as string | null,
-            daysOverdue: 0,
-            bucket: "current",
-          };
-        });
-        if (format === "csv") {
-          const revenueRows = arRows.map(r => [r.invoiceNumber, r.customerName, "Income", r.invoiceDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
-          const expenseRows = apRows.map(r => [r.invoiceNumber, r.supplierName, "Expense", r.invoiceDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.status] as (string | number | null)[]);
-          downloadCSV(
-            `itfi-financial-report-${todayISO()}.csv`,
-            ["Invoice #", "Entity", "Type", "Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Status"],
-            [...revenueRows, ...expenseRows]
-          );
-        } else {
-          const arPdfRows = arRows.map(r => ({
-            customerName: r.customerName, customerType: r.customerType,
-            customerGSTIN: r.customerGSTIN ?? null, invoiceNumber: r.invoiceNumber,
-            invoiceDate: r.invoiceDate, dueDate: r.dueDate ?? null,
-            grandTotal: Number(r.grandTotal), totalPaid: r.totalPaid, balance: r.balance,
-            daysOverdue: 0, bucket: "current", status: r.status,
-          }));
-          const apPdfRows = apRows.map(r => ({
-            supplierName: r.supplierName, invoiceNumber: r.invoiceNumber, poNumber: r.poNumber,
-            invoiceDate: r.invoiceDate, dueDate: null as string | null,
-            totalAmount: Number(r.totalAmount), totalPaid: r.totalPaid, balance: r.balance,
-            daysOverdue: 0, bucket: "current", status: r.status,
-          }));
-          downloadPDF(`itfi-financial-report-${todayISO()}.pdf`, await generateFinancialReportPDF(arPdfRows, apPdfRows));
-        }
-
-      } else if (title === "Tax Report") {
-        const [apData, arData] = await Promise.all([
-          queryClient.fetchQuery<APAgingResponse>({ queryKey: ["/api/reports/ap-aging"], staleTime: 30_000 }),
-          queryClient.fetchQuery<ARAgingResponse>({ queryKey: ["/api/reports/ar-aging"], staleTime: 30_000 }),
-        ]);
-        const apOutstanding = (apData?.rows ?? []).filter(r => r.balance > 0);
-        const arOutstanding = (arData?.rows ?? []).filter(r => r.balance > 0);
-        const apSummary = buildAPSummary(apOutstanding);
-        const arSummary = buildARSummary(arOutstanding);
-        const blob = await generateTaxReportPDF(apOutstanding, apSummary, arOutstanding, arSummary);
-        downloadPDF(`itfi-tax-report-${todayISO()}.pdf`, blob);
-      }
-    } catch {
-      toast({ title: "Export failed", description: "Could not generate the report. Please try again.", variant: "destructive" });
-    } finally {
-      setLoadingCard(null);
-    }
+  const exportCurrentTab = () => {
+    toast({
+      title: "Use the in-tab export buttons",
+      description: `Each panel in ${TAB_LABELS[activeTab] ?? "this tab"} has its own CSV and PDF export buttons.`,
+    });
   };
 
   return (
@@ -1429,12 +1059,12 @@ export default function Reports() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => exportCurrentTab("csv")} data-testid="dropdown-export-csv">
+            <DropdownMenuItem onClick={() => exportCurrentTab()} data-testid="dropdown-export-csv">
               <Download className="w-4 h-4 mr-2" />
               Export {TAB_LABELS[activeTab] ?? "Current Tab"} as CSV
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => exportCurrentTab("pdf")} data-testid="dropdown-export-pdf">
+            <DropdownMenuItem onClick={() => exportCurrentTab()} data-testid="dropdown-export-pdf">
               <FileText className="w-4 h-4 mr-2" />
               Export {TAB_LABELS[activeTab] ?? "Current Tab"} as PDF
             </DropdownMenuItem>
@@ -1443,234 +1073,180 @@ export default function Reports() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList data-testid="tabs-reports">
+        <TabsList className="flex flex-wrap gap-1 h-auto" data-testid="tabs-reports">
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
-          <TabsTrigger value="ap-aging" data-testid="tab-ap-aging">AP Aging</TabsTrigger>
-          <TabsTrigger value="ar-aging" data-testid="tab-ar-aging">AR Aging</TabsTrigger>
-          {canManagePricing && <TabsTrigger value="daily-pricing" data-testid="tab-daily-pricing">Daily Pricing</TabsTrigger>}
-          {isFinanceUser && <TabsTrigger value="pl-statement" data-testid="tab-pl-statement">P&amp;L</TabsTrigger>}
-          {isFinanceUser && <TabsTrigger value="cash-flow" data-testid="tab-cash-flow">Cash Flow</TabsTrigger>}
-          {isFinanceUser && <TabsTrigger value="financial-reports" data-testid="tab-financial-reports">Financial Reports</TabsTrigger>}
+          <TabsTrigger value="receivables" data-testid="tab-receivables">Receivables</TabsTrigger>
+          <TabsTrigger value="payables" data-testid="tab-payables">Payables</TabsTrigger>
+          {isFinanceUser && <TabsTrigger value="cash-banking" data-testid="tab-cash-banking">Cash &amp; Banking</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="sales-revenue" data-testid="tab-sales-revenue">Sales &amp; Revenue</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="tax-compliance" data-testid="tab-tax-compliance">Tax &amp; Compliance</TabsTrigger>}
+          {isFinanceUser && <TabsTrigger value="financial-statements" data-testid="tab-financial-statements">Financial Statements</TabsTrigger>}
+          {canManagePricing && <TabsTrigger value="pricing" data-testid="tab-pricing">Pricing</TabsTrigger>}
         </TabsList>
 
+        {/* ── Tab 1: Overview ── */}
         <TabsContent value="overview" className="space-y-6 mt-4">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {reportCards.map((report) => {
-              const formats = cardFormats[report.title] ?? [];
-              const isLoading = loadingCard === report.title;
-              const testId = `button-generate-${report.title.toLowerCase().replace(/\s+/g, "-")}`;
+              const Icon = report.icon;
               return (
                 <Card key={report.title} className="hover-elevate" data-testid={`card-report-${report.title.toLowerCase().replace(/\s+/g, "-")}`}>
                   <CardContent className="p-5">
                     <div className="flex items-center gap-4 mb-3">
                       <div className={`w-10 h-10 rounded-md flex items-center justify-center ${report.bg}`}>
-                        <report.icon className={`w-5 h-5 ${report.color}`} />
+                        <Icon className={`w-5 h-5 ${report.color}`} />
                       </div>
                       <div>
                         <p className="font-semibold">{report.title}</p>
                         <p className="text-xs text-muted-foreground">{report.description}</p>
                       </div>
                     </div>
-                    {formats.length === 0 ? (
-                      <Button variant="outline" size="sm" className="w-full" onClick={() => handleCardExport(report.title, "pdf")} data-testid={testId}>
-                        <BarChart3 className="w-3.5 h-3.5 mr-2" />
-                        Open Report
-                      </Button>
-                    ) : formats.length === 1 ? (
-                      <Button variant="outline" size="sm" className="w-full" disabled={isLoading} onClick={() => handleCardExport(report.title, formats[0])} data-testid={testId}>
-                        {isLoading ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-2" />}
-                        {isLoading ? "Generating…" : "Generate Report"}
-                      </Button>
-                    ) : (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="w-full" disabled={isLoading} data-testid={testId}>
-                            {isLoading ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Download className="w-3.5 h-3.5 mr-2" />}
-                            {isLoading ? "Generating…" : "Generate Report"}
-                            <ChevronDown className="w-3 h-3 ml-auto" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-40">
-                          <DropdownMenuItem onClick={() => handleCardExport(report.title, "csv")} data-testid={`${testId}-csv`}>
-                            <Download className="w-4 h-4 mr-2" />
-                            Export CSV
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => handleCardExport(report.title, "pdf")} data-testid={`${testId}-pdf`}>
-                            <FileText className="w-4 h-4 mr-2" />
-                            Export PDF
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={report.action}
+                      data-testid={`button-open-${report.title.toLowerCase().replace(/\s+/g, "-")}`}
+                    >
+                      <BarChart3 className="w-3.5 h-3.5 mr-2" />
+                      View Report
+                    </Button>
                   </CardContent>
                 </Card>
               );
             })}
           </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base font-semibold">Monthly Sales Trend</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={salesData}>
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                      <XAxis dataKey="month" tick={{ fill: "hsl(215, 16%, 47%)", fontSize: 12 }} />
-                      <YAxis tick={{ fill: "hsl(215, 16%, 47%)", fontSize: 12 }} />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "hsl(0, 0%, 100%)",
-                          border: "1px solid hsl(214, 20%, 88%)",
-                          borderRadius: "6px",
-                          fontSize: "12px",
-                        }}
-                      />
-                      <Bar dataKey="sales" fill="hsl(217, 91%, 60%)" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base font-semibold">Sales by Category</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-64 flex items-center justify-center">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={categoryData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={90}
-                        paddingAngle={2}
-                        dataKey="value"
-                      >
-                        {categoryData.map((_, index) => (
-                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="flex flex-wrap gap-4 justify-center mt-2">
-                  {categoryData.map((item, index) => (
-                    <div key={item.name} className="flex items-center gap-2 text-xs">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[index] }} />
-                      <span className="text-muted-foreground">{item.name} ({item.value}%)</span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
         </TabsContent>
 
-        <TabsContent value="ap-aging" className="mt-4">
-          <APAgingTab />
-        </TabsContent>
-
-        <TabsContent value="ar-aging" className="mt-4">
-          <ARAgingTab />
-        </TabsContent>
-
-        {canManagePricing && (
-          <TabsContent value="daily-pricing" className="mt-4">
-            <DailyPricingTab />
-          </TabsContent>
-        )}
-
-        {isFinanceUser && (
-          <TabsContent value="pl-statement" className="mt-4">
-            <Suspense fallback={<PageLoader />}>
-              <PLStatement />
-            </Suspense>
-          </TabsContent>
-        )}
-
-        {isFinanceUser && (
-          <TabsContent value="cash-flow" className="mt-4">
-            <Suspense fallback={<PageLoader />}>
-              <CashFlowStatement />
-            </Suspense>
-          </TabsContent>
-        )}
-
-        {isFinanceUser && (
-          <TabsContent value="financial-reports" className="mt-4">
-            <Tabs defaultValue="customer-aging">
-              <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-financial-reports">
-                <TabsTrigger value="customer-aging" className="text-xs" data-testid="tab-fin-customer-aging">Customer Aging</TabsTrigger>
-                <TabsTrigger value="supplier-aging" className="text-xs" data-testid="tab-fin-supplier-aging">Supplier Aging</TabsTrigger>
-                <TabsTrigger value="cash-position" className="text-xs" data-testid="tab-fin-cash-position">Cash Position</TabsTrigger>
-                <TabsTrigger value="account-statement" className="text-xs" data-testid="tab-fin-account-statement">Account Statement</TabsTrigger>
-                <TabsTrigger value="consolidated-cash" className="text-xs" data-testid="tab-fin-consolidated-cash">Consolidated Cash</TabsTrigger>
-                <TabsTrigger value="cash-ledger" className="text-xs" data-testid="tab-fin-cash-ledger">Cash Ledger</TabsTrigger>
-                <TabsTrigger value="tax-summary" className="text-xs" data-testid="tab-fin-tax-summary">Tax Summary (GST)</TabsTrigger>
-                <TabsTrigger value="sales-register" className="text-xs" data-testid="tab-fin-sales-register">Sales Register</TabsTrigger>
-                <TabsTrigger value="purchase-register" className="text-xs" data-testid="tab-fin-purchase-register">Purchase Register</TabsTrigger>
-                <TabsTrigger value="expense-report" className="text-xs" data-testid="tab-fin-expense-report">Expense Report</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="customer-aging">
+        {/* ── Tab 2: Receivables ── */}
+        <TabsContent value="receivables" className="mt-4">
+          <Tabs defaultValue={isFinanceUser ? "customer-summary" : "invoice-detail"}>
+            <TabsList className="mb-4" data-testid="tablist-receivables">
+              {isFinanceUser && (
+                <TabsTrigger value="customer-summary" data-testid="tab-recv-customer-summary">Customer Summary</TabsTrigger>
+              )}
+              <TabsTrigger value="invoice-detail" data-testid="tab-recv-invoice-detail">Invoice Detail</TabsTrigger>
+            </TabsList>
+            {isFinanceUser && (
+              <TabsContent value="customer-summary">
                 <Suspense fallback={<PageLoader />}>
                   <CustomerAging />
                 </Suspense>
               </TabsContent>
-              <TabsContent value="supplier-aging">
+            )}
+            <TabsContent value="invoice-detail">
+              <ARAgingTab />
+            </TabsContent>
+          </Tabs>
+        </TabsContent>
+
+        {/* ── Tab 3: Payables ── */}
+        <TabsContent value="payables" className="mt-4">
+          <Tabs defaultValue={isFinanceUser ? "supplier-summary" : "invoice-detail"}>
+            <TabsList className="mb-4" data-testid="tablist-payables">
+              {isFinanceUser && (
+                <TabsTrigger value="supplier-summary" data-testid="tab-pay-supplier-summary">Supplier Summary</TabsTrigger>
+              )}
+              <TabsTrigger value="invoice-detail" data-testid="tab-pay-invoice-detail">Invoice Detail</TabsTrigger>
+            </TabsList>
+            {isFinanceUser && (
+              <TabsContent value="supplier-summary">
                 <Suspense fallback={<PageLoader />}>
                   <SupplierAging />
                 </Suspense>
               </TabsContent>
+            )}
+            <TabsContent value="invoice-detail">
+              <APAgingTab />
+            </TabsContent>
+          </Tabs>
+        </TabsContent>
+
+        {/* ── Tab 4: Cash & Banking ── */}
+        {isFinanceUser && (
+          <TabsContent value="cash-banking" className="mt-4">
+            <Tabs defaultValue="cash-position">
+              <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-cash-banking">
+                <TabsTrigger value="cash-position" className="text-xs" data-testid="tab-cb-cash-position">Cash Position</TabsTrigger>
+                <TabsTrigger value="account-statement" className="text-xs" data-testid="tab-cb-account-statement">Account Statement</TabsTrigger>
+                <TabsTrigger value="consolidated-cash" className="text-xs" data-testid="tab-cb-consolidated-cash">Consolidated Cash</TabsTrigger>
+                <TabsTrigger value="cash-ledger" className="text-xs" data-testid="tab-cb-cash-ledger">Cash Ledger</TabsTrigger>
+              </TabsList>
               <TabsContent value="cash-position">
-                <Suspense fallback={<PageLoader />}>
-                  <CashPosition />
-                </Suspense>
+                <Suspense fallback={<PageLoader />}><CashPosition /></Suspense>
               </TabsContent>
               <TabsContent value="account-statement">
-                <Suspense fallback={<PageLoader />}>
-                  <AccountStatement />
-                </Suspense>
+                <Suspense fallback={<PageLoader />}><AccountStatement /></Suspense>
               </TabsContent>
               <TabsContent value="consolidated-cash">
-                <Suspense fallback={<PageLoader />}>
-                  <ConsolidatedCash />
-                </Suspense>
+                <Suspense fallback={<PageLoader />}><ConsolidatedCash /></Suspense>
               </TabsContent>
               <TabsContent value="cash-ledger">
-                <Suspense fallback={<PageLoader />}>
-                  <CashLedger />
-                </Suspense>
-              </TabsContent>
-              <TabsContent value="tax-summary">
-                <Suspense fallback={<PageLoader />}>
-                  <TaxSummary />
-                </Suspense>
-              </TabsContent>
-              <TabsContent value="sales-register">
-                <Suspense fallback={<PageLoader />}>
-                  <SalesRegister />
-                </Suspense>
-              </TabsContent>
-              <TabsContent value="purchase-register">
-                <Suspense fallback={<PageLoader />}>
-                  <PurchaseRegister />
-                </Suspense>
-              </TabsContent>
-              <TabsContent value="expense-report">
-                <Suspense fallback={<PageLoader />}>
-                  <ExpenseReport />
-                </Suspense>
+                <Suspense fallback={<PageLoader />}><CashLedger /></Suspense>
               </TabsContent>
             </Tabs>
+          </TabsContent>
+        )}
+
+        {/* ── Tab 5: Sales & Revenue ── */}
+        {isFinanceUser && (
+          <TabsContent value="sales-revenue" className="mt-4">
+            <Tabs defaultValue="sales-register">
+              <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-sales-revenue">
+                <TabsTrigger value="sales-register" className="text-xs" data-testid="tab-sr-sales-register">Sales Register</TabsTrigger>
+                {/* Phase B: Period Sales, Period Profit, Product Sales, Product Profit */}
+              </TabsList>
+              <TabsContent value="sales-register">
+                <Suspense fallback={<PageLoader />}><SalesRegister /></Suspense>
+              </TabsContent>
+            </Tabs>
+          </TabsContent>
+        )}
+
+        {/* ── Tab 6: Tax & Compliance ── */}
+        {isFinanceUser && (
+          <TabsContent value="tax-compliance" className="mt-4">
+            <Tabs defaultValue="tax-summary">
+              <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-tax-compliance">
+                <TabsTrigger value="tax-summary" className="text-xs" data-testid="tab-tc-tax-summary">Tax Summary (GST)</TabsTrigger>
+                <TabsTrigger value="expense-report" className="text-xs" data-testid="tab-tc-expense-report">Expense Report</TabsTrigger>
+                <TabsTrigger value="purchase-register" className="text-xs" data-testid="tab-tc-purchase-register">Purchase Register</TabsTrigger>
+              </TabsList>
+              <TabsContent value="tax-summary">
+                <Suspense fallback={<PageLoader />}><TaxSummary /></Suspense>
+              </TabsContent>
+              <TabsContent value="expense-report">
+                <Suspense fallback={<PageLoader />}><ExpenseReport /></Suspense>
+              </TabsContent>
+              <TabsContent value="purchase-register">
+                <Suspense fallback={<PageLoader />}><PurchaseRegister /></Suspense>
+              </TabsContent>
+            </Tabs>
+          </TabsContent>
+        )}
+
+        {/* ── Tab 7: Financial Statements ── */}
+        {isFinanceUser && (
+          <TabsContent value="financial-statements" className="mt-4">
+            <Tabs defaultValue="pl-statement">
+              <TabsList className="mb-4" data-testid="tablist-financial-statements">
+                <TabsTrigger value="pl-statement" data-testid="tab-fs-pl-statement">P&amp;L Statement</TabsTrigger>
+                <TabsTrigger value="cash-flow" data-testid="tab-fs-cash-flow">Cash Flow</TabsTrigger>
+              </TabsList>
+              <TabsContent value="pl-statement">
+                <Suspense fallback={<PageLoader />}><PLStatement /></Suspense>
+              </TabsContent>
+              <TabsContent value="cash-flow">
+                <Suspense fallback={<PageLoader />}><CashFlowStatement /></Suspense>
+              </TabsContent>
+            </Tabs>
+          </TabsContent>
+        )}
+
+        {/* ── Tab 8: Pricing ── */}
+        {canManagePricing && (
+          <TabsContent value="pricing" className="mt-4">
+            <DailyPricingTab />
           </TabsContent>
         )}
       </Tabs>

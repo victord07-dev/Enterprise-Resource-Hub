@@ -1,0 +1,227 @@
+CEO confirmed:
+- Reports page reorganization + CEO Reports 1-4 build 
+  in one pass
+- New tab structure must be clean and logical before 
+  CEO reports are added
+- All locked standards apply (jsPDF, ExcelJS, Recharts, 
+  drawLetterhead, en-IN formatting, 3 download buttons)
+- Standing Rule #5: read existing code first
+- Standing Rule #6: Reports.tsx + new report component 
+  files + financial-aggregations.ts + routes.ts only
+- Standing Rule #11: aggregations in 
+  financial-aggregations.ts first
+
+══════════════════════════════════════════════════════════════
+PHASE A — REPORTS PAGE REORGANIZATION (do first, stop before 
+CEO report build)
+══════════════════════════════════════════════════════════════
+
+PRE-WORK (read-only):
+1. Read full Reports.tsx — map every outer tab, every 
+   inner tab, every component, every fake data array, 
+   every PDF generator call
+2. Confirm which outer tab components are duplicated 
+   inside Financial Reports nested tab
+3. List every import that becomes unused after 
+   reorganization
+4. Post your findings before touching anything
+
+──────────────────────────────────────────────────────────────
+NEW OUTER TAB STRUCTURE (replace current flat bar):
+──────────────────────────────────────────────────────────────
+
+Tab 1: OVERVIEW (all roles)
+- Remove: fake salesData and categoryData arrays entirely
+- Remove: Monthly Sales Trend BarChart and Sales by 
+  Category PieChart — delete these two card components
+- Remove: BarChart, Bar, PieChart, Pie, Cell imports 
+  if they become unused
+- Keep: the 6 report cards grid but convert each card 
+  button to navigate to the relevant new tab instead of 
+  generating a PDF (e.g. "Financial Report" card → 
+  navigate to Financial Statements tab)
+- Result: Overview becomes a clean navigation landing 
+  page with category cards
+
+Tab 2: RECEIVABLES (admin + accountant only)
+Nested sub-tabs:
+  - Customer Summary → existing CustomerAging component
+  - Invoice Detail → existing ARAgingTab component 
+    (currently outer "AR Aging" tab — MOVE it here)
+
+Tab 3: PAYABLES (admin + accountant only)
+Nested sub-tabs:
+  - Supplier Summary → existing SupplierAging component
+  - Invoice Detail → existing APAgingTab component 
+    (currently outer "AP Aging" tab — MOVE it here)
+
+Tab 4: CASH & BANKING (admin + accountant only)
+Nested sub-tabs:
+  - Cash Position → existing CashPosition component
+  - Account Statement → existing AccountStatement component
+  - Consolidated Cash → existing ConsolidatedCash component
+  - Cash Ledger → existing CashLedger component
+
+Tab 5: SALES & REVENUE (admin + accountant only)
+Nested sub-tabs:
+  - Sales Register → existing SalesRegister component
+  - Period Sales → NEW (CEO Report 1 — built in Phase B)
+  - Period Profit → NEW (CEO Report 2 — built in Phase B)
+  - Product Sales → NEW (CEO Report 3 — built in Phase B)
+  - Product Profit → NEW (CEO Report 4 — built in Phase B)
+
+Tab 6: TAX & COMPLIANCE (admin + accountant only)
+Nested sub-tabs:
+  - Tax Summary → existing TaxSummary component
+  (more sub-tabs added here in Phase 4D)
+
+Tab 7: FINANCIAL STATEMENTS (admin + accountant only)
+Nested sub-tabs:
+  - P&L Statement → existing PLStatement component
+  - Cash Flow → existing CashFlowStatement component
+
+Tab 8: PURCHASE REGISTER (admin + accountant only)
+  - Standalone tab → existing PurchaseRegister component
+  (doesn't fit neatly elsewhere; standalone is cleaner 
+  than forcing it under a group)
+
+Tab 9: PRICING (admin + canManagePricing only)
+  - Standalone tab → existing DailyPricingTab component
+
+WHAT GETS DELETED from the outer tab bar:
+- "AP Aging" outer tab (moves to Payables > Invoice Detail)
+- "AR Aging" outer tab (moves to Receivables > Invoice Detail)
+- "Financial Reports" parent tab (contents redistributed 
+  above)
+
+WHAT GETS DELETED from the codebase:
+- salesData const (lines 45-52)
+- categoryData const (lines 54-59)
+- COLORS const if unused after chart removal
+- Any orphaned chart imports
+
+TAB_LABELS map and activeTab state must be updated to 
+match new tab values.
+
+STOP CHECKPOINT after Phase A:
+Post screenshot of the new Reports page tab bar and 
+verify each new tab/sub-tab renders its existing 
+component correctly. No CEO report content needed yet — 
+just confirm the reorganization is clean and nothing broke.
+Await operator approval before Phase B.
+
+══════════════════════════════════════════════════════════════
+PHASE B — CEO REPORTS 1-4 BUILD (after Phase A approved)
+══════════════════════════════════════════════════════════════
+
+Build 4 new components that slot into the 
+SALES & REVENUE tab (Tab 5) alongside Sales Register.
+
+Time filter for all 4: auto-bucket from date range span
+(≤31d→daily, 31–180→weekly, 180–730→monthly, 
+>730→yearly) with granularity override toggle.
+
+Product-wise Profit design constraints locked:
+- Method 2 dispatch-time FIFO
+- Exclude type='bundle' (footer note required)
+- Zero-cost lines: show with flag, exclude from margin
+
+──────────────────────────────────────────────────────────────
+CEO REPORT 1 — Period-wise Sales
+──────────────────────────────────────────────────────────────
+
+Aggregator: getPeriodSales(from, to, granularity?)
+- Auto-bucket if granularity not passed
+- SUM(sales_invoices.grand_total) per bucket, 
+  exclude cancelled
+- Return: [{period_label, period_start, total_sales, 
+  invoice_count}], grand_total, avg_per_bucket, 
+  peak_bucket, peak_amount
+
+Route: GET /api/reports/period-sales?from=&to=&granularity=
+
+Component: PeriodSales
+- DateRangeFilter + granularity override toggle
+- Bar chart (Recharts): x=period, y=₹ sales
+- Table: Period | Total Sales | Invoice Count
+- Summary cards: Total, Average, Peak
+- 3 download buttons (CSV, Excel, PDF)
+
+──────────────────────────────────────────────────────────────
+CEO REPORT 2 — Period-wise Profit
+──────────────────────────────────────────────────────────────
+
+Aggregator: getPeriodProfit(from, to, granularity?)
+- Per bucket: revenue (sales invoices), purchases 
+  (supplier invoices as proxy COGS), expenses
+- profit = revenue - purchases - expenses
+- margin_pct = profit / revenue × 100
+
+Route: GET /api/reports/period-profit?from=&to=&granularity=
+
+Component: PeriodProfit
+- DateRangeFilter + granularity toggle
+- Grouped bar chart: Revenue / Purchases / Profit
+- Table: Period | Revenue | Purchases | Expenses | 
+  Profit | Margin %
+- Profit cells green if positive, red if negative
+- 3 download buttons
+
+──────────────────────────────────────────────────────────────
+CEO REPORT 3 — Product-wise Sales
+──────────────────────────────────────────────────────────────
+
+Aggregator: getProductSales(from, to, productId?)
+- JOIN sales_invoice_items → sales_invoices → products
+- Exclude type='bundle'
+- Group by product: SUM(qty), SUM(totalAmount), 
+  COUNT(distinct invoices)
+- Sort by total_sales DESC
+
+Route: GET /api/reports/product-sales?from=&to=&productId=
+
+Component: ProductSales
+- DateRangeFilter + optional product search filter
+- Horizontal bar chart: top 10 products by sales
+- Table: Product | SKU | Category | Qty Sold | 
+  Total Sales | Invoice Count
+- 3 download buttons
+
+──────────────────────────────────────────────────────────────
+CEO REPORT 4 — Product-wise Profit (FIFO)
+──────────────────────────────────────────────────────────────
+
+Aggregator: getProductWiseProfit(from, to)
+- Dispatched challans in period, exclude bundles
+- FIFO cost via computeFifoLots per product
+- Gross profit = revenue - FIFO cost
+- Zero-cost lines: show with "No GRN cost data" flag
+
+Route: GET /api/reports/product-profit?from=&to=
+
+Component: ProductProfit
+- DateRangeFilter
+- Bar chart: top 10 by gross profit
+- Table: Product | SKU | Qty | Revenue | Cost | 
+  Gross Profit | Margin % | GRN flag
+- Footer: "Bundle products excluded — component-level 
+  costing deferred to Phase 4D" always visible
+- 3 download buttons
+
+──────────────────────────────────────────────────────────────
+PHASE B STOP CHECKPOINT:
+──────────────────────────────────────────────────────────────
+
+Post screenshots:
+1. Sales & Revenue tab showing all 5 sub-tabs 
+   (Sales Register + 4 new CEO reports)
+2. Period Sales tab with real data and chart
+3. Period Profit tab with real data
+4. Product Sales tab with real data
+5. Product Profit tab with real data and GRN flag 
+   where applicable
+
+TypeScript clean, no new `any`.
+Do NOT touch any other module outside Reports.tsx, 
+financial-aggregations.ts, routes.ts, and new 
+component files.

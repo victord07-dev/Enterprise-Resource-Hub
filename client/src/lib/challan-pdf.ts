@@ -51,6 +51,7 @@ export async function generateChallanPDF(
   items: DeliveryChallanItem[],
   customer: Customer | undefined,
   products: Product[],
+  bundleCompsMap?: Record<string, Array<{ componentProductId: string; quantity: number; unit?: string }>>,
   logoDataUrl?: string,
 ) {
   const JsPDF = await loadJsPDF();
@@ -204,8 +205,9 @@ export async function generateChallanPDF(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6.5);
   let taxableTotal = 0, cgstTotal = 0, sgstTotal = 0, igstTotal = 0;
+  let rowIdx = 0;
 
-  items.forEach((item, idx) => {
+  for (const item of items) {
     const prod    = products.find(p => p.id === item.productId);
     const qty     = Number(item.qtyToDispatch ?? item.quantity ?? 0);
     const rate    = Number(item.unitPrice ?? 0);
@@ -214,13 +216,12 @@ export async function generateChallanPDF(
     const halfGst = gstRate / 2;
     const cgstAmt = taxable * halfGst / 100;
     const sgstAmt = taxable * halfGst / 100;
-    const igstAmt = 0;
     taxableTotal += taxable;
     cgstTotal    += cgstAmt;
     sgstTotal    += sgstAmt;
 
     const rowH = 6;
-    if (idx % 2 === 0) {
+    if (rowIdx % 2 === 0) {
       doc.setFillColor(...C.tableAlt);
       doc.rect(margin, y, contentW, rowH, "F");
     }
@@ -234,7 +235,7 @@ export async function generateChallanPDF(
     doc.setTextColor(...C.textPrimary);
     const rowMid = y + 4.2;
     // SR
-    doc.text(String(idx + 1), COL.sr.x + 2, rowMid);
+    doc.text(String(rowIdx + 1), COL.sr.x + 2, rowMid);
     // Description
     const descTxt = doc.splitTextToSize(item.description || prod?.name || "\u2014", COL.desc.w - 3);
     doc.text(descTxt[0], COL.desc.x + 2, rowMid);
@@ -263,9 +264,37 @@ export async function generateChallanPDF(
     doc.text("0%",                                                COL.igstR.x + COL.igstR.w - 1.5, rowMid, { align: "right" });
     doc.text("\u2014",                                            COL.igstA.x + COL.igstA.w - 1.5, rowMid, { align: "right" });
     doc.setTextColor(...C.textPrimary);
-
     y += rowH;
-  });
+    rowIdx++;
+
+    // Bundle sub-rows: list component products below the bundle parent row
+    if ((prod as any)?.type === "bundle" && item.productId && bundleCompsMap?.[item.productId]) {
+      for (const comp of bundleCompsMap[item.productId]) {
+        const compProd = products.find(p => p.id === comp.componentProductId);
+        const compQty = Number(comp.quantity ?? 1) * qty;
+        const subRowH = 5.5;
+        doc.setFillColor(245, 243, 255);
+        doc.rect(margin, y, contentW, subRowH, "F");
+        doc.setDrawColor(...C.tableBorder);
+        doc.line(margin, y + subRowH, margin + contentW, y + subRowH);
+        Object.values(COL).forEach(col => doc.line(col.x, y, col.x, y + subRowH));
+        doc.line(margin + contentW, y, margin + contentW, y + subRowH);
+        const subMid = y + 3.8;
+        doc.setFontSize(5.5);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...C.textSecondary);
+        doc.text("\u2514 " + (compProd?.name || comp.componentProductId || "\u2014"), COL.desc.x + 5, subMid);
+        doc.text(compProd?.hsnCode || "\u2014", COL.hsn.x + 2, subMid);
+        doc.text(String(compQty), COL.qty.x + COL.qty.w - 1.5, subMid, { align: "right" });
+        doc.text("\u2014", COL.rate.x + COL.rate.w - 1.5, subMid, { align: "right" });
+        doc.text("\u2014", COL.taxable.x + COL.taxable.w - 1.5, subMid, { align: "right" });
+        doc.setTextColor(...C.textPrimary);
+        doc.setFontSize(6.5);
+        y += subRowH;
+        rowIdx++;
+      }
+    }
+  }
 
   // ── Totals row ──────────────────────────────────────────────────────────────
   const grandTotal = taxableTotal + cgstTotal + sgstTotal + igstTotal;

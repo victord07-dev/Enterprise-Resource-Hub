@@ -13,7 +13,7 @@ import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircl
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount } from "@shared/schema";
+import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount, Product } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { useLocation } from "wouter";
 import ExpensesTab from "@/components/ExpensesTab";
@@ -91,6 +91,7 @@ export default function Accounts() {
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
+  const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
 
   // ── AR Summary (from sales_invoices + customer_payments) ─────────────────
   const customerMap = useMemo(() => new Map((customers ?? []).map(c => [c.id, c])), [customers]);
@@ -154,7 +155,24 @@ export default function Accounts() {
 
   // ── AP State ──────────────────────────────────────────────────────────────
   const [expandedSiIds, setExpandedSiIds] = useState<Set<string>>(new Set());
-  const toggleSiExpanded = (id: string) => setExpandedSiIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [grnItemsMap, setGrnItemsMap] = useState<Record<string, any[]>>({});
+  const toggleSiExpanded = async (id: string) => {
+    const wasExpanded = expandedSiIds.has(id);
+    setExpandedSiIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    if (!wasExpanded) {
+      const inv = supplierInvoices?.find(si => si.id === id);
+      const grnId = (inv as any)?.grnId || grns?.find(g => g.purchaseOrderId === inv?.purchaseOrderId)?.id;
+      if (grnId && !grnItemsMap[grnId]) {
+        try {
+          const res = await fetch(`/api/grns/${grnId}/items`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+          const items = await res.json();
+          setGrnItemsMap(prev => ({ ...prev, [grnId]: Array.isArray(items) ? items : [] }));
+        } catch {
+          setGrnItemsMap(prev => ({ ...prev, [grnId]: [] }));
+        }
+      }
+    }
+  };
   const [siDialogOpen, setSiDialogOpen] = useState(false);
   const [siForm, setSiForm] = useState({
     supplierId: "", purchaseOrderId: "", grnId: "", invoiceNumber: "",
@@ -947,15 +965,56 @@ export default function Accounts() {
                                 </div>
                               </td>
                             </tr>
-                            {isExpanded && (
+                            {isExpanded && (() => {
+                              const grnId = (inv as any)?.grnId || grns?.find(g => g.purchaseOrderId === inv.purchaseOrderId)?.id;
+                              const grnItems: any[] = grnId ? (grnItemsMap[grnId] ?? []) : [];
+                              return (
                               <tr key={`${inv.id}-attach`} className="border-b last:border-0">
                                 <td colSpan={11} className="p-0">
-                                  <div className="bg-muted/30 px-6 py-4 ml-8">
+                                  <div className="bg-muted/30 px-6 py-4 ml-8 space-y-4">
+                                    {grnItems.length > 0 && (
+                                      <div>
+                                        <p className="text-xs font-semibold text-muted-foreground mb-2">GRN Line Items</p>
+                                        <div className="rounded-md border overflow-hidden">
+                                          <table className="w-full text-xs">
+                                            <thead>
+                                              <tr className="bg-muted/40 border-b">
+                                                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
+                                                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">SKU</th>
+                                                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">HSN</th>
+                                                <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Qty Received</th>
+                                                <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Buying Price</th>
+                                                <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Total Cost</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {grnItems.map((gi: any, i: number) => {
+                                                const prod = allProducts?.find(p => p.id === gi.productId);
+                                                const qty = Number(gi.receivedQuantity ?? gi.quantity ?? 0);
+                                                const price = Number(gi.buyingPrice ?? gi.unitCost ?? 0);
+                                                const total = qty * price;
+                                                return (
+                                                  <tr key={i} className="border-b last:border-0" data-testid={`row-grn-item-${gi.id}`}>
+                                                    <td className="px-3 py-1.5 font-medium">{prod?.name || gi.productId || "—"}</td>
+                                                    <td className="px-3 py-1.5 text-muted-foreground">{(prod as any)?.sku || "—"}</td>
+                                                    <td className="px-3 py-1.5 text-muted-foreground">{(prod as any)?.hsnCode || "—"}</td>
+                                                    <td className="px-3 py-1.5 text-center">{qty}</td>
+                                                    <td className="px-3 py-1.5 text-right">₹{price.toLocaleString("en-IN")}</td>
+                                                    <td className="px-3 py-1.5 text-right font-medium">₹{total.toLocaleString("en-IN")}</td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    )}
                                     <AttachmentsPanel entityType="supplier_invoice" entityId={inv.id} module="accounts" />
                                   </div>
                                 </td>
                               </tr>
-                            )}
+                              );
+                            })()}
                           </Fragment>
                         );
                       });

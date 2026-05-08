@@ -31,6 +31,7 @@ interface POLineItem {
   gstAmount?: number;
   _priceSource?: "supplier" | "distributor" | "fallback" | "manual" | "none";
   _priceLastUpdated?: string | null;
+  _bundleLabel?: string;
 }
 
 function formatRelative(ts: string | null | undefined): string {
@@ -261,6 +262,67 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
     onChange(updated.length === 0 ? [emptyLineItem()] : updated);
   };
 
+  const handlePickerSelect = async (index: number, pid: string) => {
+    const prod = products.find(p => p.id === pid);
+    if (!prod || (prod as any).type !== "bundle") {
+      updateItem(index, "productId", pid);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/products/${pid}/bundle-items`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      });
+      if (!res.ok) {
+        poToast({ title: "Failed to load bundle components", variant: "destructive" });
+        return;
+      }
+      const comps = await res.json();
+      if (!Array.isArray(comps) || comps.length === 0) {
+        poToast({ title: "Bundle has no components", description: "Add component products to this bundle first.", variant: "destructive" });
+        return;
+      }
+      const label = `Bundle: ${prod.name}`;
+      const componentItems: POLineItem[] = comps.map((comp: any) => {
+        const compProd = products.find(p => p.id === comp.componentProductId);
+        const sp = spMap.get(comp.componentProductId);
+        let unitCost = 0;
+        let priceSource: POLineItem["_priceSource"] = "none";
+        if (sp && Number(sp.supplierPrice) > 0) {
+          unitCost = Number(sp.supplierPrice);
+          priceSource = "supplier";
+        } else if ((compProd as any)?.distributorPrice) {
+          unitCost = Number((compProd as any).distributorPrice);
+          priceSource = "distributor";
+        } else if ((compProd as any)?.costPrice) {
+          unitCost = Number((compProd as any).costPrice);
+          priceSource = "fallback";
+        }
+        const qty = Number(comp.quantity ?? 1);
+        const totalCost = qty * unitCost;
+        const gstRate = Number((compProd as any)?.gstRate ?? 18);
+        return {
+          productId: comp.componentProductId,
+          description: compProd?.name || comp.componentProductId,
+          quantity: qty,
+          unitCost,
+          totalCost,
+          hsnCode: (compProd as any)?.hsnCode || "",
+          gstRate,
+          taxableAmount: +totalCost.toFixed(2),
+          gstAmount: +(totalCost * gstRate / 100).toFixed(2),
+          _priceSource: priceSource,
+          _priceLastUpdated: null,
+          _bundleLabel: label,
+        };
+      });
+      const updated = [...items.slice(0, index), ...componentItems, ...items.slice(index + 1)];
+      onChange(updated);
+      poToast({ title: "Bundle expanded", description: `${prod.name} → ${comps.length} component line(s) added.` });
+    } catch {
+      poToast({ title: "Error loading bundle components", variant: "destructive" });
+    }
+  };
+
   const grandTotal = items.reduce((sum, item) => sum + item.totalCost, 0);
 
   const supplierProductIds = new Set(supplierProducts.map(sp => sp.productId));
@@ -284,8 +346,16 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
       </div>
 
       <div className="space-y-2">
-        {items.map((item, index) => (
-          <div key={index} className="border rounded-lg p-3 space-y-2 bg-muted/30" data-testid={`po-line-item-${index}`}>
+        {items.map((item, index) => {
+          const isBundleGroupStart = !!item._bundleLabel && (index === 0 || items[index - 1]._bundleLabel !== item._bundleLabel);
+          return (
+          <Fragment key={index}>
+            {isBundleGroupStart && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-violet-50 dark:bg-violet-950/20 border border-violet-200 dark:border-violet-800 text-xs font-semibold text-violet-700 dark:text-violet-300" data-testid={`bundle-group-label-${index}`}>
+                <Package className="w-3 h-3" /> {item._bundleLabel}
+              </div>
+            )}
+          <div className={`border rounded-lg p-3 space-y-2 ${item._bundleLabel ? "bg-violet-50/40 dark:bg-violet-950/10 ml-4 border-violet-200 dark:border-violet-800" : "bg-muted/30"}`} data-testid={`po-line-item-${index}`}>
             {/* Row 1: Hierarchical picker + delete */}
             <div className="flex items-start gap-2">
               <div className="flex-1">
@@ -294,7 +364,7 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
                   products={products}
                   hidePrice={true}
                   currentProductId={item.productId}
-                  onProductSelect={(pid) => updateItem(index, "productId", pid)}
+                  onProductSelect={(pid) => handlePickerSelect(index, pid)}
                 />
               </div>
               <Button
@@ -409,7 +479,9 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
               </div>
             )}
           </div>
-        ))}
+          </Fragment>
+          );
+        })}
       </div>
 
       <div className="pt-2 border-t space-y-1 text-sm text-right">

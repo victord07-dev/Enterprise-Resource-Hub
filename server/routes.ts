@@ -3459,6 +3459,21 @@ export async function registerRoutes(
     try {
       const { items } = req.body;
       if (!Array.isArray(items)) return res.status(400).json({ message: "Items must be an array" });
+      // Bundle guard: reject bundle-type products — they must be expanded to components first
+      {
+        const pidsToCheck = (items as any[]).filter(it => it?.productId).map(it => String(it.productId));
+        if (pidsToCheck.length > 0) {
+          const bundleRows = (await db.execute(sql`
+            SELECT id, name FROM products WHERE id = ANY(${pidsToCheck}) AND type = 'bundle' LIMIT 5
+          `)).rows as { id: string; name: string }[];
+          if (bundleRows.length > 0) {
+            return res.status(400).json({
+              code: "bundle_in_po",
+              message: `Purchase orders cannot contain bundle products directly. Expand "${bundleRows.map(r => r.name).join('", "')}" into its component products on the line items.`,
+            });
+          }
+        }
+      }
       // Phase 6.5 D2: if the parent PO is in an "issued" status, block when any line refers to
       // a product whose master distributor_price is null/zero. Run this BEFORE the validItems
       // filter — otherwise lines with auto-prefilled unitCost=0 get silently dropped and the
@@ -11510,6 +11525,244 @@ export async function registerRoutes(
       sendExcel(res, buf, `Cash-Ledger-${data.accountName.replace(/\s+/g, "-")}-${data.period.from}-${data.period.to}.xlsx`);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to export cash ledger Excel" });
+    }
+  });
+
+  // ── T10: Tax Summary ────────────────────────────────────────────────────────
+  app.get("/api/reports/tax-summary", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getTaxSummary } = await import("./lib/financial-aggregations");
+      const data = await getTaxSummary({ from: req.query.from as string, to: req.query.to as string });
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate tax summary" });
+    }
+  });
+
+  app.get("/api/reports/tax-summary/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getTaxSummary } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getTaxSummary({ from: req.query.from as string, to: req.query.to as string });
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"}`;
+      const buf = await buildExcelBuffer({
+        sheets: [
+          {
+            name: "Output Tax",
+            title: "GST Tax Summary — Output Tax",
+            subtitle,
+            headerStyle: "compact",
+            columns: [
+              { header: "Invoice No", key: "invoiceNumber", width: 18 },
+              { header: "Date", key: "invoiceDate", width: 13, type: "date" },
+              { header: "Customer", key: "customerName", width: 28 },
+              { header: "GSTIN", key: "customerGSTIN", width: 18 },
+              { header: "Type", key: "customerType", width: 8 },
+              { header: "Taxable (₹)", key: "subtotal", width: 18, type: "currency" },
+              { header: "CGST (₹)", key: "cgst", width: 16, type: "currency" },
+              { header: "SGST (₹)", key: "sgst", width: 16, type: "currency" },
+              { header: "IGST (₹)", key: "igst", width: 16, type: "currency" },
+              { header: "Total Tax (₹)", key: "totalTax", width: 16, type: "currency" },
+              { header: "Grand Total (₹)", key: "grandTotal", width: 18, type: "currency" },
+            ],
+            rows: data.output.rows,
+            totals: { invoiceNumber: `TOTAL (${data.output.invoiceCount} invoices)`, invoiceDate: "", customerName: "", customerGSTIN: "", customerType: "", subtotal: data.output.subtotal, cgst: data.output.cgst, sgst: data.output.sgst, igst: data.output.igst, totalTax: data.output.totalTax, grandTotal: data.output.grandTotal },
+          },
+          {
+            name: "Summary",
+            title: "GST Tax Summary",
+            subtitle,
+            headerStyle: "compact",
+            columns: [
+              { header: "Category", key: "category", width: 30 },
+              { header: "Amount (₹)", key: "amount", width: 22, type: "currency" },
+            ],
+            rows: [
+              { category: "Output CGST", amount: data.output.cgst },
+              { category: "Output SGST", amount: data.output.sgst },
+              { category: "Output IGST", amount: data.output.igst },
+              { category: "Total Output Tax", amount: data.output.totalTax },
+              { category: "Input Tax Credit (ITC)", amount: data.input.totalTax },
+              { category: "Net Tax Liability", amount: data.netTaxLiability },
+            ],
+          },
+        ],
+      });
+      sendExcel(res, buf, `Tax-Summary-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export tax summary Excel" });
+    }
+  });
+
+  // ── T11: Sales Register ──────────────────────────────────────────────────────
+  app.get("/api/reports/sales-register", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const { getSalesRegister } = await import("./lib/financial-aggregations");
+      const data = await getSalesRegister(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.customerId as string | undefined,
+        req.query.status as string | undefined
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate sales register" });
+    }
+  });
+
+  app.get("/api/reports/sales-register/excel", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const { getSalesRegister } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getSalesRegister(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.customerId as string | undefined,
+        req.query.status as string | undefined
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"}`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Sales Register",
+          title: "Sales Register",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Invoice No", key: "invoiceNumber", width: 18 },
+            { header: "Date", key: "invoiceDate", width: 13, type: "date" },
+            { header: "Customer", key: "customerName", width: 28 },
+            { header: "GSTIN", key: "customerGSTIN", width: 20 },
+            { header: "Type", key: "customerType", width: 7 },
+            { header: "Taxable (₹)", key: "subtotal", width: 18, type: "currency" },
+            { header: "Tax (₹)", key: "totalTax", width: 15, type: "currency" },
+            { header: "Grand Total (₹)", key: "grandTotal", width: 18, type: "currency" },
+            { header: "Paid (₹)", key: "paidAmount", width: 15, type: "currency" },
+            { header: "Outstanding (₹)", key: "outstanding", width: 18, type: "currency" },
+            { header: "Status", key: "status", width: 12 },
+          ],
+          rows: data.rows,
+          totals: { invoiceNumber: `TOTAL (${data.totals.count})`, invoiceDate: "", customerName: "", customerGSTIN: "", customerType: "", subtotal: data.totals.subtotal, totalTax: data.totals.totalTax, grandTotal: data.totals.grandTotal, paidAmount: data.totals.paidAmount, outstanding: data.totals.outstanding, status: "" },
+        }],
+      });
+      sendExcel(res, buf, `Sales-Register-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export sales register Excel" });
+    }
+  });
+
+  // ── T12: Purchase Register ───────────────────────────────────────────────────
+  app.get("/api/reports/purchase-register", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPurchaseRegister } = await import("./lib/financial-aggregations");
+      const data = await getPurchaseRegister(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.supplierId as string | undefined,
+        req.query.status as string | undefined
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate purchase register" });
+    }
+  });
+
+  app.get("/api/reports/purchase-register/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPurchaseRegister } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getPurchaseRegister(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.supplierId as string | undefined,
+        req.query.status as string | undefined
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"}`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Purchase Register",
+          title: "Purchase Register",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Invoice No", key: "invoiceNumber", width: 20 },
+            { header: "Date", key: "invoiceDate", width: 13, type: "date" },
+            { header: "Supplier", key: "supplierName", width: 28 },
+            { header: "Taxable (₹)", key: "subtotal", width: 18, type: "currency" },
+            { header: "Tax (₹)", key: "taxAmount", width: 15, type: "currency" },
+            { header: "Total (₹)", key: "totalAmount", width: 18, type: "currency" },
+            { header: "Paid (₹)", key: "paidAmount", width: 15, type: "currency" },
+            { header: "Outstanding (₹)", key: "outstanding", width: 18, type: "currency" },
+            { header: "Status", key: "status", width: 12 },
+          ],
+          rows: data.rows,
+          totals: { invoiceNumber: `TOTAL (${data.totals.count})`, invoiceDate: "", supplierName: "", subtotal: data.totals.subtotal, taxAmount: data.totals.taxAmount, totalAmount: data.totals.totalAmount, paidAmount: data.totals.paidAmount, outstanding: data.totals.outstanding, status: "" },
+        }],
+      });
+      sendExcel(res, buf, `Purchase-Register-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export purchase register Excel" });
+    }
+  });
+
+  // ── T13: Expense Report ──────────────────────────────────────────────────────
+  app.get("/api/reports/expense-report", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getExpenseReport } = await import("./lib/financial-aggregations");
+      const data = await getExpenseReport(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.categoryId as string | undefined,
+        req.query.accountId as string | undefined
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate expense report" });
+    }
+  });
+
+  app.get("/api/reports/expense-report/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getExpenseReport } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getExpenseReport(
+        { from: req.query.from as string, to: req.query.to as string },
+        req.query.categoryId as string | undefined,
+        req.query.accountId as string | undefined
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"}`;
+      const buf = await buildExcelBuffer({
+        sheets: [
+          {
+            name: "By Category",
+            title: "Expense Report — By Category",
+            subtitle,
+            headerStyle: "compact",
+            columns: [
+              { header: "Category", key: "categoryName", width: 30 },
+              { header: "Transactions", key: "count", width: 16, type: "number" },
+              { header: "Total (₹)", key: "total", width: 20, type: "currency" },
+            ],
+            rows: data.byCategory,
+            totals: { categoryName: `TOTAL (${data.byCategory.length} categories)`, count: data.rows.length, total: data.grandTotal },
+          },
+          {
+            name: "Transactions",
+            title: "Expense Report — Transactions",
+            subtitle,
+            headerStyle: "compact",
+            columns: [
+              { header: "Date", key: "expenseDate", width: 13, type: "date" },
+              { header: "Category", key: "categoryName", width: 24 },
+              { header: "Description", key: "description", width: 36 },
+              { header: "Vendor", key: "vendorName", width: 24 },
+              { header: "Amount (₹)", key: "amount", width: 18, type: "currency" },
+              { header: "Payment Method", key: "paymentMethod", width: 20 },
+              { header: "Account", key: "accountName", width: 20 },
+              { header: "Notes", key: "notes", width: 30 },
+            ],
+            rows: data.rows,
+            totals: { expenseDate: "", categoryName: `TOTAL (${data.rows.length} expenses)`, description: "", vendorName: "", amount: data.grandTotal, paymentMethod: "", accountName: "", notes: "" },
+          },
+        ],
+      });
+      sendExcel(res, buf, `Expense-Report-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export expense report Excel" });
     }
   });
 

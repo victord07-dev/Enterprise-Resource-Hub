@@ -1187,17 +1187,330 @@ export async function getSupplierAging(asOf?: string, supplierId?: string): Prom
   return { asOf: asOfNorm, rows, summary };
 }
 
-export async function getTaxSummary(_p: PeriodFilter): Promise<unknown> {
-  throw new Error("getTaxSummary not yet implemented (T10)");
+// ── T10: Tax Summary GST ──────────────────────────────────────────────────────
+export interface TaxSummaryOutputRow {
+  invoiceId: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  customerName: string;
+  customerGSTIN: string | null;
+  customerType: string;
+  isInterState: boolean;
+  subtotal: number;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  totalTax: number;
+  grandTotal: number;
 }
-export async function getSalesRegister(_p: PeriodFilter, _customerId?: string, _status?: string): Promise<unknown> {
-  throw new Error("getSalesRegister not yet implemented (T11)");
+export interface TaxSummaryResult {
+  period: { from: string | null; to: string | null };
+  output: {
+    cgst: number; sgst: number; igst: number; totalTax: number;
+    subtotal: number; grandTotal: number; invoiceCount: number;
+    rows: TaxSummaryOutputRow[];
+  };
+  input: {
+    totalTax: number; subtotal: number; totalAmount: number; invoiceCount: number;
+  };
+  netTaxLiability: number;
 }
-export async function getPurchaseRegister(_p: PeriodFilter, _supplierId?: string, _status?: string): Promise<unknown> {
-  throw new Error("getPurchaseRegister not yet implemented (T12)");
+
+export async function getTaxSummary(p: PeriodFilter): Promise<TaxSummaryResult> {
+  const from = dayStart(p.from);
+  const to = dayEnd(p.to);
+
+  const buildRange = (col: any) => {
+    const conds: any[] = [];
+    if (from) conds.push(gte(col, from));
+    if (to) conds.push(lte(col, to));
+    return conds.length ? and(...conds) : undefined;
+  };
+
+  const outputResult = await db.execute(sql`
+    SELECT
+      si.id, si.invoice_number, si.invoice_date::text, si.customer_type,
+      si.customer_gstin, si.is_inter_state,
+      si.subtotal::numeric AS subtotal,
+      si.total_cgst::numeric AS cgst,
+      si.total_sgst::numeric AS sgst,
+      si.total_igst::numeric AS igst,
+      si.total_tax::numeric AS total_tax,
+      si.grand_total::numeric AS grand_total,
+      COALESCE(c.name, 'Unknown') AS customer_name
+    FROM sales_invoices si
+    LEFT JOIN customers c ON c.id = si.customer_id
+    WHERE si.status <> 'cancelled'
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      ${from ? sql`AND si.invoice_date >= ${from}` : sql``}
+      ${to ? sql`AND si.invoice_date <= ${to}` : sql``}
+    ORDER BY si.invoice_date ASC
+  `);
+
+  const outputRows = (outputResult.rows as any[]).map(r => ({
+    invoiceId: String(r.id),
+    invoiceNumber: String(r.invoice_number ?? "—"),
+    invoiceDate: String(r.invoice_date ?? "").slice(0, 10),
+    customerName: String(r.customer_name),
+    customerGSTIN: r.customer_gstin ?? null,
+    customerType: String(r.customer_type ?? "B2C"),
+    isInterState: Boolean(r.is_inter_state),
+    subtotal: Number(r.subtotal),
+    cgst: Number(r.cgst),
+    sgst: Number(r.sgst),
+    igst: Number(r.igst),
+    totalTax: Number(r.total_tax),
+    grandTotal: Number(r.grand_total),
+  }));
+
+  const outputTotals = outputRows.reduce(
+    (acc, r) => { acc.cgst += r.cgst; acc.sgst += r.sgst; acc.igst += r.igst; acc.totalTax += r.totalTax; acc.subtotal += r.subtotal; acc.grandTotal += r.grandTotal; return acc; },
+    { cgst: 0, sgst: 0, igst: 0, totalTax: 0, subtotal: 0, grandTotal: 0 }
+  );
+
+  const [inputRow] = await db
+    .select({
+      totalTax: sql<string>`COALESCE(SUM(${supplierInvoices.taxAmount}::numeric),0)`,
+      subtotal: sql<string>`COALESCE(SUM(COALESCE(${supplierInvoices.subtotal}::numeric, ${supplierInvoices.totalAmount}::numeric - COALESCE(${supplierInvoices.taxAmount}::numeric,0))),0)`,
+      totalAmount: sql<string>`COALESCE(SUM(COALESCE(${supplierInvoices.totalAmount}::numeric,0)),0)`,
+      cnt: sql<number>`COUNT(*)::int`,
+    })
+    .from(supplierInvoices)
+    .where(and(
+      buildRange(supplierInvoices.invoiceDate),
+      ne(supplierInvoices.status, "cancelled"),
+      ne(supplierInvoices.uploadStatus, "cancelled"),
+    ));
+
+  const inputTax = Number(inputRow?.totalTax ?? 0);
+  return {
+    period: { from: p.from ?? null, to: p.to ?? null },
+    output: { ...outputTotals, invoiceCount: outputRows.length, rows: outputRows },
+    input: { totalTax: inputTax, subtotal: Number(inputRow?.subtotal ?? 0), totalAmount: Number(inputRow?.totalAmount ?? 0), invoiceCount: inputRow?.cnt ?? 0 },
+    netTaxLiability: outputTotals.totalTax - inputTax,
+  };
 }
-export async function getExpenseReport(_p: PeriodFilter, _categoryId?: string, _accountId?: string): Promise<unknown> {
-  throw new Error("getExpenseReport not yet implemented (T13)");
+
+// ── T11: Sales Register ───────────────────────────────────────────────────────
+export interface SalesRegisterRow {
+  invoiceId: string;
+  invoiceNumber: string;
+  invoiceDate: string;
+  customerName: string;
+  customerGSTIN: string | null;
+  customerType: string;
+  subtotal: number;
+  totalTax: number;
+  grandTotal: number;
+  paidAmount: number;
+  outstanding: number;
+  status: string;
+}
+export interface SalesRegisterResult {
+  period: { from: string | null; to: string | null };
+  rows: SalesRegisterRow[];
+  totals: { subtotal: number; totalTax: number; grandTotal: number; paidAmount: number; outstanding: number; count: number };
+}
+
+export async function getSalesRegister(p: PeriodFilter, customerId?: string, status?: string): Promise<SalesRegisterResult> {
+  const from = dayStart(p.from);
+  const to = dayEnd(p.to);
+
+  const result = await db.execute(sql`
+    SELECT
+      si.id, si.invoice_number, si.invoice_date::text,
+      si.customer_type, si.customer_gstin,
+      si.subtotal::numeric AS subtotal,
+      si.total_tax::numeric AS total_tax,
+      si.grand_total::numeric AS grand_total,
+      si.credited_amount::numeric AS credited_amount,
+      si.status,
+      COALESCE(c.name, 'Unknown') AS customer_name,
+      COALESCE((
+        SELECT SUM(cp.amount::numeric) FROM customer_payments cp WHERE cp.invoice_id = si.id
+      ), 0) AS paid_amount
+    FROM sales_invoices si
+    LEFT JOIN customers c ON c.id = si.customer_id
+    WHERE si.status <> 'cancelled'
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      ${from ? sql`AND si.invoice_date >= ${from}` : sql``}
+      ${to ? sql`AND si.invoice_date <= ${to}` : sql``}
+      ${customerId ? sql`AND si.customer_id = ${customerId}` : sql``}
+      ${status && status !== "__all__" ? sql`AND si.status = ${status}` : sql``}
+    ORDER BY si.invoice_date ASC, si.invoice_number ASC
+  `);
+
+  const rows: SalesRegisterRow[] = (result.rows as any[]).map(r => {
+    const grandTotal = Number(r.grand_total);
+    const paidAmount = Number(r.paid_amount);
+    const credited = Number(r.credited_amount ?? 0);
+    const outstanding = Math.max(0, grandTotal - paidAmount - credited);
+    return {
+      invoiceId: String(r.id),
+      invoiceNumber: String(r.invoice_number ?? "—"),
+      invoiceDate: String(r.invoice_date ?? "").slice(0, 10),
+      customerName: String(r.customer_name),
+      customerGSTIN: r.customer_gstin ?? null,
+      customerType: String(r.customer_type ?? "B2C"),
+      subtotal: Number(r.subtotal),
+      totalTax: Number(r.total_tax),
+      grandTotal,
+      paidAmount,
+      outstanding,
+      status: String(r.status),
+    };
+  });
+
+  const totals = rows.reduce(
+    (acc, r) => { acc.subtotal += r.subtotal; acc.totalTax += r.totalTax; acc.grandTotal += r.grandTotal; acc.paidAmount += r.paidAmount; acc.outstanding += r.outstanding; acc.count++; return acc; },
+    { subtotal: 0, totalTax: 0, grandTotal: 0, paidAmount: 0, outstanding: 0, count: 0 }
+  );
+
+  return { period: { from: p.from ?? null, to: p.to ?? null }, rows, totals };
+}
+
+// ── T12: Purchase Register ────────────────────────────────────────────────────
+export interface PurchaseRegisterRow {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  invoiceDate: string;
+  supplierName: string;
+  subtotal: number;
+  taxAmount: number;
+  totalAmount: number;
+  paidAmount: number;
+  outstanding: number;
+  status: string;
+}
+export interface PurchaseRegisterResult {
+  period: { from: string | null; to: string | null };
+  rows: PurchaseRegisterRow[];
+  totals: { subtotal: number; taxAmount: number; totalAmount: number; paidAmount: number; outstanding: number; count: number };
+}
+
+export async function getPurchaseRegister(p: PeriodFilter, supplierId?: string, status?: string): Promise<PurchaseRegisterResult> {
+  const from = dayStart(p.from);
+  const to = dayEnd(p.to);
+
+  const result = await db.execute(sql`
+    SELECT
+      si.id, si.invoice_number, si.invoice_date::text,
+      COALESCE(si.subtotal::numeric, si.total_amount::numeric - COALESCE(si.tax_amount::numeric,0)) AS subtotal,
+      si.tax_amount::numeric AS tax_amount,
+      COALESCE(si.total_amount::numeric, 0) AS total_amount,
+      si.status,
+      COALESCE(s.name, 'Unknown') AS supplier_name,
+      COALESCE((
+        SELECT SUM(sp.amount::numeric) FROM supplier_payments sp WHERE sp.supplier_invoice_id = si.id
+      ), 0) AS paid_amount
+    FROM supplier_invoices si
+    LEFT JOIN suppliers s ON s.id = si.supplier_id
+    WHERE si.status <> 'cancelled'
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      ${from ? sql`AND si.invoice_date >= ${from}` : sql``}
+      ${to ? sql`AND si.invoice_date <= ${to}` : sql``}
+      ${supplierId ? sql`AND si.supplier_id = ${supplierId}` : sql``}
+      ${status && status !== "__all__" ? sql`AND si.status = ${status}` : sql``}
+    ORDER BY si.invoice_date ASC
+  `);
+
+  const rows: PurchaseRegisterRow[] = (result.rows as any[]).map(r => {
+    const totalAmount = Number(r.total_amount);
+    const paidAmount = Number(r.paid_amount);
+    const outstanding = Math.max(0, totalAmount - paidAmount);
+    return {
+      invoiceId: String(r.id),
+      invoiceNumber: r.invoice_number ? String(r.invoice_number) : null,
+      invoiceDate: String(r.invoice_date ?? "").slice(0, 10),
+      supplierName: String(r.supplier_name),
+      subtotal: Number(r.subtotal ?? 0),
+      taxAmount: Number(r.tax_amount ?? 0),
+      totalAmount,
+      paidAmount,
+      outstanding,
+      status: String(r.status),
+    };
+  });
+
+  const totals = rows.reduce(
+    (acc, r) => { acc.subtotal += r.subtotal; acc.taxAmount += r.taxAmount; acc.totalAmount += r.totalAmount; acc.paidAmount += r.paidAmount; acc.outstanding += r.outstanding; acc.count++; return acc; },
+    { subtotal: 0, taxAmount: 0, totalAmount: 0, paidAmount: 0, outstanding: 0, count: 0 }
+  );
+
+  return { period: { from: p.from ?? null, to: p.to ?? null }, rows, totals };
+}
+
+// ── T13: Expense Report ───────────────────────────────────────────────────────
+export interface ExpenseReportRow {
+  id: string;
+  expenseDate: string;
+  categoryName: string;
+  description: string;
+  vendorName: string | null;
+  amount: number;
+  paymentMethod: string;
+  accountName: string | null;
+  notes: string | null;
+}
+export interface ExpenseByCategoryRow {
+  categoryId: string | null;
+  categoryName: string;
+  total: number;
+  count: number;
+}
+export interface ExpenseReportResult {
+  period: { from: string | null; to: string | null };
+  rows: ExpenseReportRow[];
+  byCategory: ExpenseByCategoryRow[];
+  grandTotal: number;
+}
+
+export async function getExpenseReport(p: PeriodFilter, categoryId?: string, accountId?: string): Promise<ExpenseReportResult> {
+  const from = dayStart(p.from);
+  const to = dayEnd(p.to);
+
+  const result = await db.execute(sql`
+    SELECT
+      e.id, e.expense_date::text, e.description, e.vendor_name,
+      e.amount::numeric AS amount, e.payment_method, e.notes,
+      COALESCE(ec.name, 'Uncategorised') AS category_name,
+      ec.id AS category_id,
+      COALESCE(ca.name, NULL) AS account_name
+    FROM expenses e
+    LEFT JOIN expense_categories ec ON ec.id = e.category_id
+    LEFT JOIN cash_accounts ca ON ca.id = e.cash_account_id
+    WHERE 1=1
+      ${from ? sql`AND e.expense_date >= ${from.toISOString().slice(0,10)}` : sql``}
+      ${to ? sql`AND e.expense_date <= ${to.toISOString().slice(0,10)}` : sql``}
+      ${categoryId && categoryId !== "__all__" ? sql`AND e.category_id = ${categoryId}` : sql``}
+      ${accountId && accountId !== "__all__" ? sql`AND e.cash_account_id = ${accountId}` : sql``}
+    ORDER BY e.expense_date ASC, e.created_at ASC
+  `);
+
+  const rows: ExpenseReportRow[] = (result.rows as any[]).map(r => ({
+    id: String(r.id),
+    expenseDate: String(r.expense_date ?? "").slice(0, 10),
+    categoryName: String(r.category_name),
+    description: String(r.description ?? ""),
+    vendorName: r.vendor_name ? String(r.vendor_name) : null,
+    amount: Number(r.amount),
+    paymentMethod: String(r.payment_method ?? "—"),
+    accountName: r.account_name ? String(r.account_name) : null,
+    notes: r.notes ? String(r.notes) : null,
+  }));
+
+  const catMap = new Map<string, ExpenseByCategoryRow>();
+  for (const r of rows) {
+    const key = r.categoryName;
+    if (!catMap.has(key)) catMap.set(key, { categoryId: null, categoryName: key, total: 0, count: 0 });
+    const cat = catMap.get(key)!;
+    cat.total += r.amount;
+    cat.count++;
+  }
+  const byCategory = Array.from(catMap.values()).sort((a, b) => b.total - a.total);
+  const grandTotal = rows.reduce((s, r) => s + r.amount, 0);
+
+  return { period: { from: p.from ?? null, to: p.to ?? null }, rows, byCategory, grandTotal };
 }
 
 // ── R3: Cash Position ─────────────────────────────────────────────────────────

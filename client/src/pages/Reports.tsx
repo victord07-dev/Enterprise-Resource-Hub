@@ -37,6 +37,10 @@ const CashPosition = lazy(() => import("@/components/reports/CashPosition").then
 const AccountStatement = lazy(() => import("@/components/reports/AccountStatement").then(m => ({ default: m.AccountStatement })));
 const ConsolidatedCash = lazy(() => import("@/components/reports/ConsolidatedCash").then(m => ({ default: m.ConsolidatedCash })));
 const CashLedger = lazy(() => import("@/components/reports/CashLedger").then(m => ({ default: m.CashLedger })));
+const TaxSummary = lazy(() => import("@/components/reports/TaxSummary").then(m => ({ default: m.TaxSummary })));
+const SalesRegister = lazy(() => import("@/components/reports/SalesRegister").then(m => ({ default: m.SalesRegister })));
+const PurchaseRegister = lazy(() => import("@/components/reports/PurchaseRegister").then(m => ({ default: m.PurchaseRegister })));
+const ExpenseReport = lazy(() => import("@/components/reports/ExpenseReport").then(m => ({ default: m.ExpenseReport })));
 
 const salesData = [
   { month: "Jan", sales: 4000 },
@@ -1610,6 +1614,10 @@ export default function Reports() {
                 <TabsTrigger value="account-statement" className="text-xs" data-testid="tab-fin-account-statement">Account Statement</TabsTrigger>
                 <TabsTrigger value="consolidated-cash" className="text-xs" data-testid="tab-fin-consolidated-cash">Consolidated Cash</TabsTrigger>
                 <TabsTrigger value="cash-ledger" className="text-xs" data-testid="tab-fin-cash-ledger">Cash Ledger</TabsTrigger>
+                <TabsTrigger value="tax-summary" className="text-xs" data-testid="tab-fin-tax-summary">Tax Summary (GST)</TabsTrigger>
+                <TabsTrigger value="sales-register" className="text-xs" data-testid="tab-fin-sales-register">Sales Register</TabsTrigger>
+                <TabsTrigger value="purchase-register" className="text-xs" data-testid="tab-fin-purchase-register">Purchase Register</TabsTrigger>
+                <TabsTrigger value="expense-report" className="text-xs" data-testid="tab-fin-expense-report">Expense Report</TabsTrigger>
               </TabsList>
 
               <TabsContent value="customer-aging">
@@ -1640,6 +1648,26 @@ export default function Reports() {
               <TabsContent value="cash-ledger">
                 <Suspense fallback={<PageLoader />}>
                   <CashLedger />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="tax-summary">
+                <Suspense fallback={<PageLoader />}>
+                  <TaxSummary />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="sales-register">
+                <Suspense fallback={<PageLoader />}>
+                  <SalesRegister />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="purchase-register">
+                <Suspense fallback={<PageLoader />}>
+                  <PurchaseRegister />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="expense-report">
+                <Suspense fallback={<PageLoader />}>
+                  <ExpenseReport />
                 </Suspense>
               </TabsContent>
             </Tabs>

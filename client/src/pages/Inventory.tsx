@@ -262,6 +262,8 @@ export default function Inventory() {
   const [expandedChallanIds, setExpandedChallanIds] = useState<Set<string>>(new Set());
   const [highlightedChallanId, setHighlightedChallanId] = useState<string | null>(null);
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
+  const [challanBundleCompsMap, setChallanBundleCompsMap] = useState<Record<string, any[]>>({});
+  const [requestedBundleComps, setRequestedBundleComps] = useState<Set<string>>(new Set());
   const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
   // C2: Credit override dialog state
@@ -336,6 +338,30 @@ export default function Inventory() {
       }
     }
   }, [challanItemsMap]);
+
+  // Load bundle components whenever new challan items are fetched
+  useEffect(() => {
+    if (!products) return;
+    const token = localStorage.getItem("token");
+    const headers = { Authorization: `Bearer ${token}` };
+    const toLoad: string[] = [];
+    Object.values(challanItemsMap).flat().forEach(item => {
+      if (item.productId && !requestedBundleComps.has(item.productId)) {
+        const prod = products.find(p => p.id === item.productId);
+        if ((prod as any)?.type === "bundle") toLoad.push(item.productId);
+      }
+    });
+    if (toLoad.length === 0) return;
+    setRequestedBundleComps(prev => new Set([...prev, ...toLoad]));
+    toLoad.forEach(pid => {
+      fetch(`/api/products/${pid}/bundle-items`, { headers })
+        .then(r => r.json())
+        .then(comps => {
+          if (Array.isArray(comps)) setChallanBundleCompsMap(prev => ({ ...prev, [pid]: comps }));
+        })
+        .catch(() => {});
+    });
+  }, [challanItemsMap, products]);
 
   const openCreateChallan = () => {
     setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
@@ -1539,7 +1565,7 @@ export default function Inventory() {
                                     onClick={async () => {
                                       const items = challanItemsMap[challan.id] || [];
                                       const customer = customers?.find(c => c.id === challan.customerId);
-                                      await generateChallanPDF(challan, items, customer, products ?? []);
+                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap);
                                     }}
                                   >
                                     <Download className="w-3 h-3" />
@@ -1740,6 +1766,8 @@ export default function Inventory() {
                                           <tbody>
                                             {items.map((item) => {
                                               const product = products?.find(p => p.id === item.productId);
+                                              const isBundle = (product as any)?.type === "bundle";
+                                              const bundleComps = isBundle && item.productId ? challanBundleCompsMap[item.productId] : undefined;
                                               const isDraft = challan.status === "draft";
                                               const qtyOrdered = item.qtyOrdered != null ? Number(item.qtyOrdered) : item.quantity;
                                               const qtyDispatched = item.qtyDispatched != null ? Number(item.qtyDispatched) : 0;
@@ -1748,11 +1776,13 @@ export default function Inventory() {
                                               const editVal = challanItemQtyEdits[editKey];
                                               const displayVal = editVal !== undefined ? editVal : String(qtyToDispatch);
                                               return (
-                                                <tr key={item.id} className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
+                                                <Fragment key={item.id}>
+                                                <tr className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
                                                   <td className="py-1.5">
                                                     <span className="flex items-center gap-1.5 font-medium">
                                                       <Package className="w-3 h-3 text-muted-foreground" />
                                                       {product?.name || item.productId}
+                                                      {isBundle && <Badge variant="outline" className="text-[10px] px-1 py-0 ml-1">Bundle</Badge>}
                                                       {item.description && <span className="text-muted-foreground font-normal ml-1">({item.description})</span>}
                                                     </span>
                                                   </td>
@@ -1785,6 +1815,26 @@ export default function Inventory() {
                                                   <td className="py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{qtyDispatched || "—"}</td>
                                                   <td className="py-1.5 text-right text-muted-foreground">{item.unitPrice ? `₹${Number(item.unitPrice).toLocaleString()}` : "—"}</td>
                                                 </tr>
+                                                {isBundle && bundleComps && bundleComps.map((comp: any, ci: number) => {
+                                                  const compProd = products?.find(p => p.id === comp.componentProductId);
+                                                  const compQty = Number(comp.quantity ?? 1) * qtyToDispatch;
+                                                  return (
+                                                    <tr key={`${item.id}-comp-${ci}`} className="bg-muted/20 border-b last:border-0" data-testid={`text-challan-comp-${item.id}-${ci}`}>
+                                                      <td className="py-1 pl-8 text-[11px] text-muted-foreground">
+                                                        <span className="flex items-center gap-1">
+                                                          <span className="text-muted-foreground/50">└</span>
+                                                          {compProd?.name || comp.componentProductId}
+                                                        </span>
+                                                      </td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">{compQty}</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-right text-[11px] text-muted-foreground">—</td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                                </Fragment>
                                               );
                                             })}
                                           </tbody>

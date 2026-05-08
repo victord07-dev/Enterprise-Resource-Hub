@@ -558,6 +558,8 @@ export const deliveryChallans = pgTable("delivery_challans", {
   creditApprovedBy: varchar("credit_approved_by"),
   creditApprovedAt: timestamp("credit_approved_at"),
   creditReason: text("credit_reason"),
+  // Challan form additions
+  printedBy: text("printed_by"),
 });
 
 export const deliveryChallanItems = pgTable("delivery_challan_items", {

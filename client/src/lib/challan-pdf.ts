@@ -1,15 +1,15 @@
 // Dynamic import — jsPDF only loads when the user clicks "Download PDF".
 import type jsPDF from "jspdf";
 import type { DeliveryChallan, DeliveryChallanItem, Customer, Product } from "@shared/schema";
+import { drawLetterhead } from "@shared/pdf-letterhead";
+import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
 
 async function loadJsPDF() {
   const mod = await import("jspdf");
   return mod.default || (mod as any).jsPDF;
 }
-import { COMPANY } from "@shared/letterhead";
-import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
 
-const COLORS = {
+const C = {
   headerBg:      [30, 41, 59]   as [number, number, number],
   headerText:    [255, 255, 255] as [number, number, number],
   accent:        [59, 130, 246]  as [number, number, number],
@@ -17,275 +17,33 @@ const COLORS = {
   textSecondary: [100, 116, 139] as [number, number, number],
   tableBorder:   [226, 232, 240] as [number, number, number],
   tableHeader:   [241, 245, 249] as [number, number, number],
+  tableAlt:      [248, 250, 252] as [number, number, number],
   white:         [255, 255, 255] as [number, number, number],
   infoBg:        [248, 250, 252] as [number, number, number],
   draftRed:      [220, 38, 38]  as [number, number, number],
-  dividerMid:    [203, 213, 225] as [number, number, number],
+  sigBg:         [245, 247, 250] as [number, number, number],
 };
 
 function fmt(val: number | string | null | undefined): string {
-  if (val === null || val === undefined || val === "") return "—";
-  return `₹${Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (val === null || val === undefined || val === "") return "\u2014";
+  return `\u20b9${Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
-  if (!d) return "—";
+  if (!d) return "\u2014";
   return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function drawWatermark(doc: jsPDF, label: string, top: number, height: number) {
+function drawWatermark(doc: jsPDF, label: string) {
   doc.saveGraphicsState();
-  (doc as any).setGState((doc as any).GState({ opacity: 0.07 }));
-  doc.setFontSize(52);
+  (doc as any).setGState((doc as any).GState({ opacity: 0.06 }));
+  doc.setFontSize(72);
   doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.draftRed);
-  const cx = doc.internal.pageSize.getWidth() / 2;
-  const cy = top + height / 2;
-  doc.text(label, cx, cy, { align: "center", angle: 35 });
+  doc.setTextColor(...C.draftRed);
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+  doc.text(label, pw / 2, ph / 2, { align: "center", angle: 35 });
   doc.restoreGraphicsState();
-}
-
-function drawCopyBand(doc: jsPDF, label: string, x: number, y: number, w: number) {
-  doc.setFillColor(...COLORS.accent);
-  doc.rect(x, y, w, 7, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.setTextColor(...COLORS.white);
-  doc.text(label, x + w / 2, y + 5, { align: "center" });
-}
-
-function drawCompanyHeader(
-  doc: jsPDF,
-  x: number,
-  y: number,
-  w: number,
-  logoDataUrl: string | undefined,
-) {
-  const headerH = 22;
-  doc.setFillColor(...COLORS.headerBg);
-  doc.rect(x, y, w, headerH, "F");
-
-  const logoW = 64, logoH = 14, logoY = y + (headerH - logoH) / 2;
-  if (logoDataUrl) {
-    try { doc.addImage(logoDataUrl, "PNG", x + 4, logoY, logoW, logoH); }
-    catch { _drawCompanyNameFallback(doc, x + 4, y + headerH / 2 + 1); }
-  } else {
-    _drawCompanyNameFallback(doc, x + 4, y + headerH / 2 + 1);
-  }
-
-  const rx = x + w - 3;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(6);
-  doc.setTextColor(220, 230, 248);
-  doc.text(COMPANY.name, rx, y + 4.5, { align: "right" });
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(5);
-  doc.setTextColor(180, 190, 210);
-  doc.text(COMPANY.address.substring(0, 65), rx, y + 8, { align: "right" });
-  doc.text(`GSTIN: ${COMPANY.gstin}   ${COMPANY.phone}`, rx, y + 11.5, { align: "right" });
-  doc.text(`${COMPANY.email}   ${COMPANY.website}`, rx, y + 15, { align: "right" });
-
-  return headerH;
-}
-
-function _drawCompanyNameFallback(doc: jsPDF, x: number, y: number) {
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.setTextColor(...COLORS.headerText);
-  doc.text(COMPANY.name, x, y);
-}
-
-function drawOneCopy(
-  doc: jsPDF,
-  challan: DeliveryChallan,
-  items: DeliveryChallanItem[],
-  customer: Customer | undefined,
-  products: Product[],
-  copyLabel: string,
-  startY: number,
-  maxHeight: number,
-  isDraft: boolean,
-  logoDataUrl: string | undefined,
-) {
-  const margin = 8;
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const w = pageWidth - margin * 2;
-  let y = startY;
-
-  // ── Company header ────────────────────────────────────────────────────────
-  const headerH = drawCompanyHeader(doc, margin, y, w, logoDataUrl);
-  y += headerH;
-
-  // ── Copy label band ───────────────────────────────────────────────────────
-  drawCopyBand(doc, `DELIVERY CHALLAN  ·  ${copyLabel}`, margin, y, w);
-  y += 7;
-
-  // ── Info row: challan number, date, SO ref ────────────────────────────────
-  const infoBoxH = 14;
-  doc.setFillColor(...COLORS.infoBg);
-  doc.rect(margin, y, w, infoBoxH, "F");
-
-  const colW = w / 4;
-  const c1 = margin + 3, c2 = margin + colW + 3, c3 = margin + colW * 2 + 3, c4 = margin + colW * 3 + 3;
-
-  doc.setFontSize(5.5);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Challan No.", c1, y + 4.5);
-  doc.text("Date", c2, y + 4.5);
-  doc.text("Dispatch Date", c3, y + 4.5);
-  doc.text("Vehicle No.", c4, y + 4.5);
-
-  doc.setFontSize(7.5);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.textPrimary);
-  doc.text(challan.challanNumber, c1, y + 10);
-  doc.setFont("helvetica", "normal");
-  doc.text(fmtDate(challan.createdAt), c2, y + 10);
-  doc.text(challan.dispatchDate ? fmtDate(challan.dispatchDate) : "—", c3, y + 10);
-  doc.text(challan.vehicleNumber || "—", c4, y + 10);
-
-  y += infoBoxH + 1;
-
-  // ── Bill To / Deliver To row ───────────────────────────────────────────────
-  const addressBoxH = 14;
-  doc.setFillColor(...COLORS.white);
-  doc.setDrawColor(...COLORS.tableBorder);
-  doc.rect(margin, y, w / 2 - 1, addressBoxH, "S");
-  doc.rect(margin + w / 2 + 1, y, w / 2 - 1, addressBoxH, "S");
-
-  doc.setFontSize(5.5);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Bill To / Customer", margin + 3, y + 4);
-  doc.text("Deliver To / Driver", margin + w / 2 + 4, y + 4);
-
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.textPrimary);
-  doc.text(customer?.name || "—", margin + 3, y + 8.5);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6);
-  doc.setTextColor(...COLORS.textSecondary);
-  if (customer?.phone) doc.text(customer.phone, margin + 3, y + 12);
-
-  // Driver / address right column
-  doc.setFontSize(7);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.textPrimary);
-  doc.text(challan.driverName || "—", margin + w / 2 + 4, y + 8.5);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6);
-  doc.setTextColor(...COLORS.textSecondary);
-  if (challan.deliveryAddress) {
-    const addrLines = doc.splitTextToSize(challan.deliveryAddress, w / 2 - 10);
-    doc.text(addrLines[0], margin + w / 2 + 4, y + 12);
-  }
-
-  y += addressBoxH + 2;
-
-  // ── Items table ───────────────────────────────────────────────────────────
-  const tblHeaderH = 6;
-  doc.setFillColor(...COLORS.tableHeader);
-  doc.rect(margin, y, w, tblHeaderH, "F");
-
-  doc.setFontSize(6);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...COLORS.textSecondary);
-
-  const cNo   = margin + 2;
-  const cDesc = margin + 9;
-  const cHsn  = margin + w * 0.55;
-  const cQty  = margin + w * 0.68;
-  const cRate = margin + w * 0.80;
-  const cAmt  = margin + w - 2;
-
-  doc.text("#",          cNo,   y + 4.3);
-  doc.text("Description",cDesc, y + 4.3);
-  doc.text("HSN",        cHsn,  y + 4.3);
-  doc.text("Qty",        cQty,  y + 4.3, { align: "right" });
-  doc.text("Rate",       cRate, y + 4.3, { align: "right" });
-  doc.text("Amount",     cAmt,  y + 4.3, { align: "right" });
-
-  y += tblHeaderH;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6.5);
-  let subtotal = 0;
-
-  items.forEach((item, idx) => {
-    const prod    = products.find(p => p.id === item.productId);
-    const qty     = Number(item.qtyToDispatch ?? item.quantity ?? 0);
-    const rate    = Number(item.unitPrice ?? 0);
-    const lineAmt = qty * rate;
-    subtotal += lineAmt;
-
-    const rowH = 5.5;
-    const ry = y;
-
-    if (idx % 2 === 0) {
-      doc.setFillColor(248, 250, 252);
-      doc.rect(margin, ry, w, rowH, "F");
-    }
-    doc.setDrawColor(...COLORS.tableBorder);
-    doc.line(margin, ry + rowH, margin + w, ry + rowH);
-
-    doc.setTextColor(...COLORS.textPrimary);
-    doc.text(String(idx + 1),                           cNo,   ry + 4);
-    const descText = doc.splitTextToSize(item.description || prod?.name || "—", w * 0.45);
-    doc.text(descText[0],                               cDesc, ry + 4);
-    doc.setTextColor(...COLORS.textSecondary);
-    doc.text(prod?.hsnCode || "—",                      cHsn,  ry + 4);
-    doc.setTextColor(...COLORS.textPrimary);
-    doc.text(String(qty),                               cQty,  ry + 4, { align: "right" });
-    doc.text(fmt(rate),                                 cRate, ry + 4, { align: "right" });
-    doc.setFont("helvetica", "bold");
-    doc.text(fmt(lineAmt),                              cAmt,  ry + 4, { align: "right" });
-    doc.setFont("helvetica", "normal");
-
-    y += rowH;
-  });
-
-  // ── Subtotal row ──────────────────────────────────────────────────────────
-  y += 2;
-  const totBoxW = 60;
-  const totBoxX = margin + w - totBoxW;
-  doc.setFillColor(...COLORS.infoBg);
-  doc.rect(totBoxX, y, totBoxW, 8, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(...COLORS.textPrimary);
-  doc.text("Sub-total", totBoxX + 3, y + 5.5);
-  doc.text(fmt(subtotal), margin + w - 2, y + 5.5, { align: "right" });
-  y += 10;
-
-  // ── Notes ─────────────────────────────────────────────────────────────────
-  if (challan.notes) {
-    doc.setFontSize(6);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(...COLORS.textSecondary);
-    const noteLines = doc.splitTextToSize(`Notes: ${challan.notes}`, w);
-    doc.text(noteLines, margin, y);
-    y += noteLines.length * 3.5 + 2;
-  }
-
-  // ── Signature row ─────────────────────────────────────────────────────────
-  const sigY = startY + maxHeight - 14;
-  doc.setDrawColor(...COLORS.tableBorder);
-  doc.line(margin, sigY, margin + w / 3, sigY);
-  doc.line(margin + w * 0.65, sigY, margin + w, sigY);
-  doc.setFontSize(6);
-  doc.setFont("helvetica", "normal");
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text("Receiver's Signature & Stamp", margin, sigY + 4);
-  doc.text("For IT Futuristic Industries Pvt. Ltd.", margin + w, sigY + 4, { align: "right" });
-  doc.setFontSize(5.5);
-  doc.text("Authorised Signatory", margin + w, sigY + 8, { align: "right" });
-
-  // ── Watermark (DRAFT) ─────────────────────────────────────────────────────
-  if (isDraft) {
-    drawWatermark(doc, "DRAFT", startY, maxHeight);
-  }
 }
 
 export async function generateChallanPDF(
@@ -295,28 +53,291 @@ export async function generateChallanPDF(
   products: Product[],
   logoDataUrl?: string,
 ) {
-  const doc = new (await loadJsPDF())({ orientation: "portrait", unit: "mm", format: "a4" });
+  const JsPDF = await loadJsPDF();
+  const doc: jsPDF = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   await ensureNotoSansRegistered(doc);
+
+  const pageWidth  = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const halfH      = pageHeight / 2 - 2;
-  const isDraft    = ["draft", "ready", "do_issued"].includes(challan.status);
+  const margin = 12;
+  const contentW = pageWidth - margin * 2;
+  const isDraft = ["draft", "ready", "do_issued"].includes(challan.status);
 
-  // TOP COPY: OFFICE COPY
-  drawOneCopy(doc, challan, items, customer, products, "OFFICE COPY", 2, halfH, isDraft, logoDataUrl);
+  // ── Letterhead ──────────────────────────────────────────────────────────────
+  let y = drawLetterhead(doc, {
+    pageWidth,
+    margin,
+    title: `DELIVERY CHALLAN  \u00b7  ${challan.challanNumber}`,
+    logoDataUrl,
+    bannerSubtitle: fmtDate(challan.createdAt),
+  });
 
-  // Dashed separator between the two copies
-  doc.setDrawColor(...COLORS.dividerMid);
-  doc.setLineDashPattern([3, 2], 0);
-  doc.line(8, halfH + 2, doc.internal.pageSize.getWidth() - 8, halfH + 2);
-  doc.setLineDashPattern([], 0);
-  const cx = doc.internal.pageSize.getWidth() / 2;
+  // ── Info strip (4 cells) ────────────────────────────────────────────────────
+  const stripH = 14;
+  doc.setFillColor(...C.infoBg);
+  doc.setDrawColor(...C.tableBorder);
+  doc.rect(margin, y, contentW, stripH, "FD");
+
+  const colW = contentW / 4;
+  const cells = [
+    ["Challan No.", challan.challanNumber],
+    ["Date", fmtDate(challan.createdAt)],
+    ["Dispatch Date", challan.dispatchDate ? fmtDate(challan.dispatchDate) : "\u2014"],
+    ["Vehicle No.", challan.vehicleNumber || "\u2014"],
+  ];
+  cells.forEach(([label, value], i) => {
+    const cx = margin + colW * i + 3;
+    doc.setFontSize(5.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...C.textSecondary);
+    doc.text(label, cx, y + 5);
+    doc.setFontSize(7.5);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.textPrimary);
+    doc.text(value, cx, y + 11);
+    if (i > 0) {
+      doc.setDrawColor(...C.tableBorder);
+      doc.line(margin + colW * i, y, margin + colW * i, y + stripH);
+    }
+  });
+  y += stripH + 2;
+
+  // ── Bill To / Deliver To ────────────────────────────────────────────────────
+  const addrBoxH = 18;
+  const halfW = (contentW - 3) / 2;
+
+  // Left: Bill To
+  doc.setFillColor(...C.white);
+  doc.setDrawColor(...C.tableBorder);
+  doc.rect(margin, y, halfW, addrBoxH, "FD");
   doc.setFontSize(5.5);
   doc.setFont("helvetica", "normal");
-  doc.setTextColor(...COLORS.textSecondary);
-  doc.text("— Cut Here —", cx, halfH + 2, { align: "center" });
+  doc.setTextColor(...C.textSecondary);
+  doc.text("Bill To / Customer", margin + 3, y + 4.5);
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.textPrimary);
+  doc.text(customer?.name || "\u2014", margin + 3, y + 9.5);
+  if (customer?.phone || customer?.email) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...C.textSecondary);
+    doc.text([customer?.phone || "", customer?.email || ""].filter(Boolean).join("  |  "), margin + 3, y + 14);
+  }
 
-  // BOTTOM COPY: DRIVER COPY
-  drawOneCopy(doc, challan, items, customer, products, "DRIVER COPY", halfH + 4, halfH - 4, isDraft, logoDataUrl);
+  // Right: Deliver To
+  const rx2 = margin + halfW + 3;
+  doc.setFillColor(...C.white);
+  doc.rect(rx2, y, halfW, addrBoxH, "FD");
+  doc.setFontSize(5.5);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...C.textSecondary);
+  doc.text("Deliver To / Address", rx2 + 3, y + 4.5);
+  doc.setFontSize(7);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.textPrimary);
+  if (challan.deliveryAddress) {
+    const addrLines = doc.splitTextToSize(challan.deliveryAddress, halfW - 8);
+    doc.text(addrLines.slice(0, 2), rx2 + 3, y + 9.5);
+  } else {
+    doc.text("\u2014", rx2 + 3, y + 9.5);
+  }
+  if (challan.driverName) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(6.5);
+    doc.setTextColor(...C.textSecondary);
+    doc.text(`Driver: ${challan.driverName}${challan.driverPhone ? "  " + challan.driverPhone : ""}`, rx2 + 3, y + 15);
+  }
+  y += addrBoxH + 3;
+
+  // ── GST Items Table ─────────────────────────────────────────────────────────
+  // Columns: SR | Description | HSN/SAC | Qty | Price/Item | Taxable Value | CGST Rate | CGST Amt | SGST Rate | SGST Amt | IGST Rate | IGST Amt
+  const COL = {
+    sr:      { x: margin,                   w: 7  },
+    desc:    { x: margin + 7,               w: 44 },
+    hsn:     { x: margin + 51,              w: 18 },
+    qty:     { x: margin + 69,              w: 11 },
+    rate:    { x: margin + 80,              w: 20 },
+    taxable: { x: margin + 100,             w: 21 },
+    cgstR:   { x: margin + 121,             w: 10 },
+    cgstA:   { x: margin + 131,             w: 16 },
+    sgstR:   { x: margin + 147,             w: 10 },
+    sgstA:   { x: margin + 157,             w: 15 },
+    igstR:   { x: margin + 172,             w: 9  },
+    igstA:   { x: margin + 181,             w: contentW - 181 },
+  };
+
+  const tblHdrH = 10;
+  doc.setFillColor(...C.tableHeader);
+  doc.setDrawColor(...C.tableBorder);
+  doc.rect(margin, y, contentW, tblHdrH, "FD");
+
+  const HEADERS: [keyof typeof COL, string][] = [
+    ["sr",      "#"],
+    ["desc",    "Description"],
+    ["hsn",     "HSN / SAC"],
+    ["qty",     "Qty"],
+    ["rate",    "Price / Item"],
+    ["taxable", "Taxable Value"],
+    ["cgstR",   "CGST%"],
+    ["cgstA",   "CGST\u20b9"],
+    ["sgstR",   "SGST%"],
+    ["sgstA",   "SGST\u20b9"],
+    ["igstR",   "IGST%"],
+    ["igstA",   "IGST\u20b9"],
+  ];
+
+  doc.setFontSize(5.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.textSecondary);
+  const midY = y + 5.5;
+  HEADERS.forEach(([key, label]) => {
+    const col = COL[key];
+    const align = ["sr", "desc", "hsn"].includes(key) ? "left" : "right";
+    const tx = align === "right" ? col.x + col.w - 1.5 : col.x + 2;
+    doc.text(label, tx, midY, { align });
+    doc.line(col.x, y, col.x, y + tblHdrH);
+  });
+  doc.line(margin + contentW, y, margin + contentW, y + tblHdrH);
+  y += tblHdrH;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.5);
+  let taxableTotal = 0, cgstTotal = 0, sgstTotal = 0, igstTotal = 0;
+
+  items.forEach((item, idx) => {
+    const prod    = products.find(p => p.id === item.productId);
+    const qty     = Number(item.qtyToDispatch ?? item.quantity ?? 0);
+    const rate    = Number(item.unitPrice ?? 0);
+    const taxable = qty * rate;
+    const gstRate = Number((prod as any)?.gstRate ?? 0);
+    const halfGst = gstRate / 2;
+    const cgstAmt = taxable * halfGst / 100;
+    const sgstAmt = taxable * halfGst / 100;
+    const igstAmt = 0;
+    taxableTotal += taxable;
+    cgstTotal    += cgstAmt;
+    sgstTotal    += sgstAmt;
+
+    const rowH = 6;
+    if (idx % 2 === 0) {
+      doc.setFillColor(...C.tableAlt);
+      doc.rect(margin, y, contentW, rowH, "F");
+    }
+    doc.setDrawColor(...C.tableBorder);
+    doc.line(margin, y + rowH, margin + contentW, y + rowH);
+    Object.values(COL).forEach(col => {
+      doc.line(col.x, y, col.x, y + rowH);
+    });
+    doc.line(margin + contentW, y, margin + contentW, y + rowH);
+
+    doc.setTextColor(...C.textPrimary);
+    const rowMid = y + 4.2;
+    // SR
+    doc.text(String(idx + 1), COL.sr.x + 2, rowMid);
+    // Description
+    const descTxt = doc.splitTextToSize(item.description || prod?.name || "\u2014", COL.desc.w - 3);
+    doc.text(descTxt[0], COL.desc.x + 2, rowMid);
+    // HSN
+    doc.setTextColor(...C.textSecondary);
+    doc.text(prod?.hsnCode || "\u2014", COL.hsn.x + 2, rowMid);
+    doc.setTextColor(...C.textPrimary);
+    // Qty
+    doc.text(String(qty),                                         COL.qty.x + COL.qty.w - 1.5,     rowMid, { align: "right" });
+    // Rate
+    doc.text(fmt(rate),                                           COL.rate.x + COL.rate.w - 1.5,   rowMid, { align: "right" });
+    // Taxable
+    doc.setFont("helvetica", "bold");
+    doc.text(fmt(taxable),                                        COL.taxable.x + COL.taxable.w - 1.5, rowMid, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    // CGST
+    doc.setTextColor(...C.textSecondary);
+    doc.text(gstRate > 0 ? `${halfGst}%` : "\u2014",            COL.cgstR.x + COL.cgstR.w - 1.5, rowMid, { align: "right" });
+    doc.setTextColor(...C.textPrimary);
+    doc.text(gstRate > 0 ? fmt(cgstAmt) : "\u2014",              COL.cgstA.x + COL.cgstA.w - 1.5, rowMid, { align: "right" });
+    doc.setTextColor(...C.textSecondary);
+    doc.text(gstRate > 0 ? `${halfGst}%` : "\u2014",            COL.sgstR.x + COL.sgstR.w - 1.5, rowMid, { align: "right" });
+    doc.setTextColor(...C.textPrimary);
+    doc.text(gstRate > 0 ? fmt(sgstAmt) : "\u2014",              COL.sgstA.x + COL.sgstA.w - 1.5, rowMid, { align: "right" });
+    doc.setTextColor(...C.textSecondary);
+    doc.text("0%",                                                COL.igstR.x + COL.igstR.w - 1.5, rowMid, { align: "right" });
+    doc.text("\u2014",                                            COL.igstA.x + COL.igstA.w - 1.5, rowMid, { align: "right" });
+    doc.setTextColor(...C.textPrimary);
+
+    y += rowH;
+  });
+
+  // ── Totals row ──────────────────────────────────────────────────────────────
+  const grandTotal = taxableTotal + cgstTotal + sgstTotal + igstTotal;
+  const totH = 8;
+  doc.setFillColor(...C.infoBg);
+  doc.setDrawColor(...C.tableBorder);
+  doc.rect(margin, y, contentW, totH, "FD");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(6.5);
+  doc.setTextColor(...C.textPrimary);
+  const totMid = y + 5;
+  doc.text("TOTALS", COL.desc.x + 2, totMid);
+  doc.text(fmt(taxableTotal), COL.taxable.x + COL.taxable.w - 1.5, totMid, { align: "right" });
+  doc.text(fmt(cgstTotal),    COL.cgstA.x + COL.cgstA.w - 1.5,     totMid, { align: "right" });
+  doc.text(fmt(sgstTotal),    COL.sgstA.x + COL.sgstA.w - 1.5,     totMid, { align: "right" });
+  doc.text("\u2014",          COL.igstA.x + COL.igstA.w - 1.5,     totMid, { align: "right" });
+  y += totH + 2;
+
+  // Grand total box
+  const gtBoxW = 75;
+  doc.setFillColor(...C.accent);
+  doc.rect(margin + contentW - gtBoxW, y, gtBoxW, 8, "F");
+  doc.setFontSize(7.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...C.white);
+  doc.text("Grand Total (incl. GST)", margin + contentW - gtBoxW + 3, y + 5.5);
+  doc.text(fmt(grandTotal), margin + contentW - 2, y + 5.5, { align: "right" });
+  y += 10;
+
+  // ── Notes ───────────────────────────────────────────────────────────────────
+  if (challan.notes) {
+    doc.setFontSize(6);
+    doc.setFont("helvetica", "italic");
+    doc.setTextColor(...C.textSecondary);
+    const noteLines = doc.splitTextToSize(`Notes: ${challan.notes}`, contentW);
+    doc.text(noteLines, margin, y);
+    y += noteLines.length * 4 + 2;
+  }
+
+  // ── Signature boxes (pinned near bottom, with overflow guard) ──────────────
+  const sigH = 22;
+  const sigY  = Math.max(y + 8, pageHeight - margin - sigH - 14);
+  const sigW  = (contentW - 6) / 2;
+
+  [[margin, "Dispatched by (seal & sign)"], [margin + sigW + 6, "Received by (seal & sign)"]] .forEach(([bx, label]) => {
+    const bxNum = Number(bx);
+    doc.setFillColor(...C.sigBg);
+    doc.setDrawColor(...C.tableBorder);
+    doc.rect(bxNum, sigY, sigW, sigH, "FD");
+    doc.setFontSize(6);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...C.textSecondary);
+    doc.text(String(label), bxNum + sigW / 2, sigY + 4, { align: "center" });
+    // signature line
+    doc.setDrawColor(...C.tableBorder);
+    doc.line(bxNum + 6, sigY + sigH - 4, bxNum + sigW - 6, sigY + sigH - 4);
+    doc.setFontSize(5.5);
+    doc.setFont("helvetica", "normal");
+    doc.text("Name & Stamp", bxNum + sigW / 2, sigY + sigH - 1, { align: "center" });
+  });
+
+  // ── Printed by footer ───────────────────────────────────────────────────────
+  const footerY = pageHeight - margin + 2;
+  doc.setFontSize(6);
+  doc.setFont("helvetica", "italic");
+  doc.setTextColor(...C.textSecondary);
+  const printedByLabel = `Printed by: ${(challan as any).printedBy || "\u2014"}`;
+  doc.text(printedByLabel, margin, footerY);
+  doc.text(`Generated on: ${new Date().toLocaleString("en-IN")}`, margin + contentW, footerY, { align: "right" });
+
+  // ── DRAFT watermark ─────────────────────────────────────────────────────────
+  if (isDraft) drawWatermark(doc, "DRAFT");
 
   doc.save(`${challan.challanNumber}.pdf`);
 }

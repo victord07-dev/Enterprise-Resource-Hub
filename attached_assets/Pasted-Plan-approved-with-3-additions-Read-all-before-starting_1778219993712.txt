@@ -1,0 +1,74 @@
+Plan approved with 3 additions. Read all before starting.
+
+CLARIFICATION ANSWER:
+Yes — cancelled challans allow button to re-appear.
+Rule: hide "Create Dispatch Challan" button if any challan 
+with status != 'cancelled' exists for that SO. Show button 
+if zero non-cancelled challans exist (including the case 
+where all existing challans are cancelled).
+
+──────────────────────────────────────────────────────────────
+ADDITION 1 — deliveryAddress also needs a schema column
+──────────────────────────────────────────────────────────────
+
+Your plan lists printedBy as the only new column needed in 
+delivery_challans. deliveryAddress must also be persisted — 
+add it to the same migration as nullable text column alongside 
+printedBy. Without this, the delivery address entered in the 
+form won't survive to the PDF download.
+
+──────────────────────────────────────────────────────────────
+ADDITION 2 — deliveryAddress pre-fill behavior
+──────────────────────────────────────────────────────────────
+
+When the Delivery Address text area renders in both forms:
+- Pre-fill with the linked customer's billing/shipping 
+  address from the sales order if that data is available
+- User can edit the pre-filled value before submitting
+- If no customer address data found, field starts empty
+- Field is required before form can be submitted
+
+──────────────────────────────────────────────────────────────
+ADDITION 3 — Confirm GST field availability before PDF build
+──────────────────────────────────────────────────────────────
+
+Before writing the new challan-pdf.ts layout, confirm:
+- Do delivery_challan_items have: HSN code, unit rate, 
+  taxable amount, CGST rate, CGST amount, SGST rate, SGST 
+  amount, IGST rate, IGST amount?
+- If these fields don't exist on challan items but do exist 
+  on the linked SO line items, use SO items as the source
+- If neither location has these fields, flag it before 
+  building and propose what to show instead
+
+Do NOT hardcode ₹0 for tax columns and do NOT skip the 
+columns. If data is genuinely unavailable, show "—" in 
+those cells with a footer note explaining the gap.
+
+The new PDF items table must have these columns:
+SR No | Item Description | HSN/SAC | QTY | Price/Item | 
+Taxable Value | CGST Rate | CGST Amt | SGST Rate | SGST Amt | 
+IGST Rate | IGST Amt
+
+──────────────────────────────────────────────────────────────
+BUILD — proceed with your 5-file plan + 3 additions above
+──────────────────────────────────────────────────────────────
+
+Files: schema.ts, routes.ts, Sales.tsx, Inventory.tsx, 
+challan-pdf.ts — nothing else.
+
+Standing Rule #1: throwaway test challan → verify → 
+hard delete + audit log entry. Do not use existing real 
+challan records.
+Standing Rule #6: no cleanup while in there.
+
+STOP CHECKPOINT — post screenshots of:
+1. SO ITFI-SO/2026-27/0007 detail view — button must 
+   be gone (non-cancelled challan exists)
+2. Create Delivery Challan form (Inventory tab) — no 
+   Physical Challan Number field, has Delivery Address 
+   + Printed By
+3. Create Dispatch Challan form (Sales) — no Real Challan 
+   No. field, has Warehouse + Delivery Address + Printed By
+4. Downloaded DC PDF — single copy, proper items table, 
+   signature boxes, Printed By shown

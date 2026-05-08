@@ -244,17 +244,17 @@ export default function Inventory() {
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
 
   const [challanDialogOpen, setChallanDialogOpen] = useState(false);
-  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
   const [challanPhoneError, setChallanPhoneError] = useState("");
   const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
   const challanFormValid =
     !!challanForm.orderId &&
     !!challanForm.sourceId &&
-    !!challanForm.physicalChallanNumber.trim() &&
     !!challanForm.vehicleNumber.trim() &&
     !!challanForm.vehicleOwnerName.trim() &&
     !!challanForm.driverName.trim() &&
-    INDIAN_MOBILE_RE.test(challanForm.driverPhone.trim());
+    INDIAN_MOBILE_RE.test(challanForm.driverPhone.trim()) &&
+    !!challanForm.deliveryAddress.trim();
   const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
   const [challanStockAvailability, setChallanStockAvailability] = useState<Record<string, InventoryStock[]>>({});
   const [challanFilterStatus, setChallanFilterStatus] = useState("all");
@@ -286,7 +286,10 @@ export default function Inventory() {
 
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
-  const eligibleSalesOrders = (salesOrders ?? []).filter(o => CHALLAN_ELIGIBLE_STATUSES.includes(o.status));
+  const eligibleSalesOrders = (salesOrders ?? []).filter(o =>
+    CHALLAN_ELIGIBLE_STATUSES.includes(o.status) &&
+    !(deliveryChallans ?? []).some(c => c.orderId === o.id && c.status !== "cancelled")
+  );
 
   const filteredChallans = (deliveryChallans ?? []).filter((c) => {
     if (challanFilterStatus !== "all" && c.status !== challanFilterStatus) return false;
@@ -335,7 +338,7 @@ export default function Inventory() {
   }, [challanItemsMap]);
 
   const openCreateChallan = () => {
-    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
     setChallanPhoneError("");
     setChallanItems([]);
     setChallanStockAvailability({});
@@ -2277,7 +2280,9 @@ export default function Inventory() {
               <Select
                 value={challanForm.orderId}
                 onValueChange={(v) => {
-                  setChallanForm({ ...challanForm, orderId: v });
+                  const linked = salesOrders?.find(o => o.id === v);
+                  const prefillAddr = (linked as any)?.deliveryAddress || "";
+                  setChallanForm({ ...challanForm, orderId: v, deliveryAddress: prefillAddr });
                   loadOrderItems(v);
                 }}
               >
@@ -2360,8 +2365,18 @@ export default function Inventory() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Physical Challan Number <span className="text-red-500">*</span></Label>
-              <Input data-testid="input-challan-physical-number" placeholder="Transporter's own challan no." value={challanForm.physicalChallanNumber} onChange={(e) => setChallanForm({ ...challanForm, physicalChallanNumber: e.target.value })} />
+              <Label>Delivery Address <span className="text-red-500">*</span></Label>
+              <Textarea
+                data-testid="input-challan-delivery-address"
+                className="resize-none text-sm"
+                rows={2}
+                placeholder="Full delivery address..."
+                value={challanForm.deliveryAddress}
+                onChange={(e) => {
+                  const linked = salesOrders?.find(o => o.id === challanForm.orderId);
+                  setChallanForm({ ...challanForm, deliveryAddress: e.target.value });
+                }}
+              />
             </div>
             <div className="space-y-2">
               <Label>Notes</Label>
@@ -2438,10 +2453,10 @@ export default function Inventory() {
                           sourceId: challanForm.sourceId,
                           vehicleNumber: challanForm.vehicleNumber.trim(),
                           driverName: challanForm.driverName.trim(),
-                          physicalChallanNumber: challanForm.physicalChallanNumber.trim(),
                           vehicleOwnerName: challanForm.vehicleOwnerName.trim(),
                           driverPhone: challanForm.driverPhone.trim(),
                           notes: challanForm.notes || null,
+                          deliveryAddress: challanForm.deliveryAddress.trim() || null,
                           items: challanItems.filter(it => it.quantity > 0).map(it => ({
                             productId: it.productId,
                             description: it.description,
@@ -2464,7 +2479,7 @@ export default function Inventory() {
                         ? `Select a ${challanForm.sourceType}`
                         : challanItems.length === 0
                         ? "Order has no remaining items to dispatch"
-                        : "Fill all required transport fields (Real Challan No., Vehicle No., Owner, Driver, valid phone)"}
+                        : "Fill all required transport fields (Vehicle No., Owner, Driver, valid phone, Delivery Address)"}
                     </p>
                   </TooltipContent>
                 )}

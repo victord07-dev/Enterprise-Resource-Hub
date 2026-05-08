@@ -4556,23 +4556,19 @@ export async function registerRoutes(
         return res.status(400).json({ message: "At least one item is required" });
       }
 
-      // Phase 4 Cleanup D — mirror create-from-so 5-field transport gate so direct
-      // challan creation cannot bypass the dispatch-fields enforcement.
-      const physicalChallanNumber = (challanData.physicalChallanNumber ?? "").toString().trim();
       const vehicleNumber = (challanData.vehicleNumber ?? "").toString().trim();
       const vehicleOwnerName = (challanData.vehicleOwnerName ?? "").toString().trim();
       const driverName = (challanData.driverName ?? "").toString().trim();
       const driverPhone = (challanData.driverPhone ?? "").toString().trim();
-      if (!physicalChallanNumber || !vehicleNumber || !vehicleOwnerName || !driverName || !driverPhone) {
+      if (!vehicleNumber || !vehicleOwnerName || !driverName || !driverPhone) {
         return res.status(400).json({
-          message: "All transport fields are required: Real Challan No., Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone",
+          message: "Transport fields are required: Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone",
         });
       }
       const indianMobileRe = /^(\+91)?[6-9]\d{9}$/;
       if (!indianMobileRe.test(driverPhone)) {
         return res.status(400).json({ message: "Driver Phone must be a valid Indian mobile number" });
       }
-      challanData.physicalChallanNumber = physicalChallanNumber;
       challanData.vehicleNumber = vehicleNumber;
       challanData.vehicleOwnerName = vehicleOwnerName;
       challanData.driverName = driverName;
@@ -4593,11 +4589,10 @@ export async function registerRoutes(
         }
       }
 
-      const year = new Date().getFullYear();
       const allChallans = await storage.getDeliveryChallans();
-      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
-      const nextNum = yearChallans.length + 1;
-      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+      const itfiChallans = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
+      const nextNum = itfiChallans.length + 1;
+      const challanNumber = `ITFI-DC-${String(nextNum).padStart(4, "0")}`;
 
       let challanDeliveryAddress = challanData.deliveryAddress || null;
       if (!challanDeliveryAddress && challanData.orderId) {
@@ -4613,6 +4608,7 @@ export async function registerRoutes(
         status: "draft",
         createdBy: req.user.id,
         deliveryAddress: challanDeliveryAddress,
+        printedBy: challanData.printedBy || null,
       });
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
 
@@ -4662,11 +4658,10 @@ export async function registerRoutes(
       const salesOrder = await storage.getSalesOrder(salesOrderId);
       if (!salesOrder) return res.status(400).json({ message: "Linked sales order not found" });
 
-      const year = new Date().getFullYear();
       const allChallans = await storage.getDeliveryChallans();
-      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
-      const nextNum = yearChallans.length + 1;
-      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+      const itfiChallans = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
+      const nextNum = itfiChallans.length + 1;
+      const challanNumber = `ITFI-DC-${String(nextNum).padStart(4, "0")}`;
 
       const challanData: any = {
         challanNumber,
@@ -4765,9 +4760,9 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All items have already been dispatched" });
       }
 
-      const { physicalChallanNumber, vehicleNumber, vehicleOwnerName, driverName, driverPhone, notes, deliveryAddress } = req.body;
-      if (!physicalChallanNumber?.trim() || !vehicleNumber?.trim() || !vehicleOwnerName?.trim() || !driverName?.trim() || !driverPhone?.trim()) {
-        return res.status(400).json({ message: "All transport fields are required: Real Challan No., Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone" });
+      const { vehicleNumber, vehicleOwnerName, driverName, driverPhone, notes, deliveryAddress, printedBy, sourceId: bodySourceId } = req.body;
+      if (!vehicleNumber?.trim() || !vehicleOwnerName?.trim() || !driverName?.trim() || !driverPhone?.trim()) {
+        return res.status(400).json({ message: "Transport fields are required: Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone" });
       }
       const indianMobileRe = /^(\+91)?[6-9]\d{9}$/;
       if (!indianMobileRe.test(driverPhone.trim())) {
@@ -4775,7 +4770,9 @@ export async function registerRoutes(
       }
       const sourceType = "warehouse";
       let sourceId: string;
-      if (order.warehouseId) {
+      if (bodySourceId?.trim()) {
+        sourceId = bodySourceId.trim();
+      } else if (order.warehouseId) {
         sourceId = order.warehouseId;
       } else {
         const allWarehouses = await storage.getWarehouses();
@@ -4786,10 +4783,9 @@ export async function registerRoutes(
         }
       }
 
-      const year = new Date().getFullYear();
-      const yearChallans = allChallans.filter((c: any) => c.challanNumber.startsWith(`DC-${year}`));
-      const nextNum = yearChallans.length + 1;
-      const challanNumber = `DC-${year}-${String(nextNum).padStart(4, "0")}`;
+      const itfiChallans2 = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
+      const nextNum2 = itfiChallans2.length + 1;
+      const challanNumber = `ITFI-DC-${String(nextNum2).padStart(4, "0")}`;
 
       const challanAddr = deliveryAddress || (order as any).deliveryAddress || null;
       const challan = await storage.createDeliveryChallan({
@@ -4799,13 +4795,13 @@ export async function registerRoutes(
         sourceType,
         sourceId,
         status: "draft",
-        physicalChallanNumber: physicalChallanNumber.trim(),
         vehicleNumber: vehicleNumber.trim(),
         vehicleOwnerName: vehicleOwnerName.trim(),
         driverName: driverName.trim(),
         driverPhone: driverPhone.trim(),
         notes: notes || null,
         deliveryAddress: challanAddr,
+        printedBy: printedBy || null,
         dispatchBatchId: null,
         dispatchDate: null,
         deliveryDate: null,

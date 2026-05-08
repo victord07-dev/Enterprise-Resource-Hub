@@ -34,7 +34,7 @@ import {
 type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount, Employee } from "@shared/schema";
 import { Banknote, Landmark } from "lucide-react";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
@@ -1240,6 +1240,7 @@ export default function Sales() {
   }, [bundleComponentsMap]);
   const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
+  const { data: employees } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
@@ -1337,7 +1338,10 @@ export default function Sales() {
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
-  const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "", cashAccountId: "" });
+  type PaymentRow = { method: string; amount: string; cashAccountId: string; reference: string };
+  const [paymentRows, setPaymentRows] = useState<PaymentRow[]>([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
+  const [collapsedPaymentRows, setCollapsedPaymentRows] = useState<number[]>([]);
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
   const [orderDispatchSummaryMap, setOrderDispatchSummaryMap] = useState<Record<string, Array<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }>>>({});
@@ -1656,16 +1660,19 @@ export default function Sales() {
       toast({ title: "Payment recorded" });
       setPaymentDialogOpen(false);
       setPaymentOrderId(null);
-      setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
+      setPaymentRows([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
+      setPaymentDate(new Date().toISOString().slice(0, 10));
+      setCollapsedPaymentRows([]);
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
-  // Phase 4B: cash accounts list for Record Payment dropdown (smart-filtered by method)
+  // Phase 4B: cash accounts list for Record Payment dropdown
   const { data: cashAccountsForPayment } = useQuery<(CashAccount & { balance?: number })[]>({ queryKey: ["/api/cash-accounts"] });
-  const paymentAccounts = (cashAccountsForPayment ?? []).filter(a => a.isActive && (paymentForm.method === "cash" ? a.type === "cash" : a.type === "bank"));
+  const getPaymentAccounts = (method: string) =>
+    (cashAccountsForPayment ?? []).filter(a => a.isActive && (method === "cash" ? a.type === "cash" : a.type === "bank"));
 
   const generateInvoiceMutation = useMutation({
     mutationFn: async (orderId: string) => {
@@ -1682,21 +1689,6 @@ export default function Sales() {
     },
   });
 
-  const confirmPickupMutation = useMutation({
-    mutationFn: async (orderId: string) => {
-      const res = await apiRequest("POST", `/api/sales-orders/${orderId}/confirm-pickup`);
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
-      toast({ title: "Pickup confirmed", description: "Order marked as delivered and stock deducted." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
 
   const customerMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -2018,7 +2010,9 @@ export default function Sales() {
 
   const openRecordPayment = (orderId: string) => {
     setPaymentOrderId(orderId);
-    setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
+    setPaymentRows([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
+    setPaymentDate(new Date().toISOString().slice(0, 10));
+    setCollapsedPaymentRows([]);
     setPaymentDialogOpen(true);
   };
 
@@ -2612,18 +2606,6 @@ export default function Sales() {
                                           <CreditCard className="w-3 h-3 mr-1" /> Record Payment
                                         </Button>
                                       )}
-                                      {!isReadOnly && order.status === "ready_to_ship" && (order as any).deliveryMethod === "pickup" && (
-                                        <Button
-                                          size="sm"
-                                          variant="default"
-                                          className="bg-green-600 hover:bg-green-700 text-white"
-                                          data-testid={`button-confirm-pickup-${order.id}`}
-                                          disabled={confirmPickupMutation.isPending}
-                                          onClick={() => { if (confirm("Confirm pickup? This will deduct stock and mark the order as delivered.")) confirmPickupMutation.mutate(order.id); }}
-                                        >
-                                          <Check className="w-3 h-3 mr-1" /> Confirm Pickup
-                                        </Button>
-                                      )}
                                       {INVOICE_ELIGIBLE_STATUSES.includes(order.status) && (
                                         <Button
                                           size="sm"
@@ -2803,13 +2785,14 @@ export default function Sales() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Valid Until</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Next Follow-up</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Issued By</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {quotationsLoading ? (
-                      <tr><td colSpan={8} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={9} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : quotations && quotations.length > 0 ? (
                       quotations.map((q) => {
                         const nextFu = getNextFollowup(q.id);
@@ -2838,6 +2821,12 @@ export default function Sales() {
                               ) : (
                                 <span className="text-muted-foreground text-xs">—</span>
                               )}
+                            </td>
+                            <td className="p-3 text-muted-foreground text-sm" data-testid={`text-quote-issued-by-${q.id}`}>
+                              {(() => {
+                                const emp = (employees ?? []).find((e: any) => e.userId === (q as any).createdBy);
+                                return emp ? `${emp.firstName} ${emp.lastName}` : "—";
+                              })()}
                             </td>
                             <td className="p-3 text-right font-medium">₹{Number(q.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
@@ -3791,76 +3780,158 @@ export default function Sales() {
       </Dialog>
 
       <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Record Payment</DialogTitle>
-            <DialogDescription>Enter payment details for this order</DialogDescription>
+            <DialogDescription>Add one or more payment lines for this order</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="paymentAmount">Amount (₹)</Label>
-              <Input id="paymentAmount" data-testid="input-payment-amount" type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="paymentMethod">Method</Label>
-              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v, cashAccountId: "" })}>
-                <SelectTrigger data-testid="select-payment-method">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="cheque">Cheque</SelectItem>
-                  <SelectItem value="upi">UPI</SelectItem>
-                  <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="paymentAccount">Account *</Label>
-              <Select value={paymentForm.cashAccountId} onValueChange={(v) => setPaymentForm({ ...paymentForm, cashAccountId: v })}>
-                <SelectTrigger id="paymentAccount" data-testid="select-payment-account">
-                  <SelectValue placeholder="Select account" />
-                </SelectTrigger>
-                <SelectContent>
-                  {paymentAccounts.length === 0 ? (
-                    <SelectItem value="__no_match__" disabled>No active {paymentForm.method === "cash" ? "cash" : "bank"} account — create one in Accounts → Cash Accounts</SelectItem>
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+            {paymentRows.map((row, idx) => {
+              const isCollapsed = collapsedPaymentRows.includes(idx);
+              const accounts = getPaymentAccounts(row.method);
+              const accountName = accounts.find(a => a.id === row.cashAccountId)?.name;
+              const updateRow = (patch: Partial<PaymentRow>) =>
+                setPaymentRows(rows => rows.map((r, i) => i === idx ? { ...r, ...patch } : r));
+              return (
+                <div key={idx} className="border rounded-md">
+                  {isCollapsed ? (
+                    <div
+                      className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-muted/40"
+                      data-testid={`payment-row-collapsed-${idx}`}
+                      onClick={() => setCollapsedPaymentRows(prev => prev.filter(i => i !== idx))}
+                    >
+                      <span className="text-sm font-medium">
+                        {row.method.replace("_", " ").replace(/\b\w/g, c => c.toUpperCase())} — ₹{Number(row.amount || 0).toLocaleString()}
+                        {accountName ? ` · ${accountName}` : ""}
+                      </span>
+                      <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                    </div>
                   ) : (
-                    paymentAccounts.map(a => (
-                      <SelectItem key={a.id} value={a.id} data-testid={`option-payment-account-${a.id}`}>
-                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
-                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
-                      </SelectItem>
-                    ))
+                    <div className="p-3 space-y-3">
+                      {paymentRows.length > 1 && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-muted-foreground">Payment {idx + 1}</span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            data-testid={`button-remove-payment-row-${idx}`}
+                            onClick={() => {
+                              setPaymentRows(rows => rows.filter((_, i) => i !== idx));
+                              setCollapsedPaymentRows(prev => prev.filter(i => i !== idx).map(i => i > idx ? i - 1 : i));
+                            }}
+                          >
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      )}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Method</Label>
+                          <Select value={row.method} onValueChange={(v) => updateRow({ method: v, cashAccountId: "" })}>
+                            <SelectTrigger data-testid={`select-payment-method-${idx}`} className="h-8 text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="cash">Cash</SelectItem>
+                              <SelectItem value="cheque">Cheque</SelectItem>
+                              <SelectItem value="upi">UPI</SelectItem>
+                              <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Amount (₹)</Label>
+                          <Input
+                            data-testid={`input-payment-amount-${idx}`}
+                            type="number" min="0" step="0.01"
+                            className="h-8 text-sm"
+                            value={row.amount}
+                            onChange={(e) => updateRow({ amount: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Account *</Label>
+                        <Select value={row.cashAccountId} onValueChange={(v) => updateRow({ cashAccountId: v })}>
+                          <SelectTrigger data-testid={`select-payment-account-${idx}`} className="h-8 text-sm">
+                            <SelectValue placeholder="Select account" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {accounts.length === 0 ? (
+                              <SelectItem value="__no_match__" disabled>No active {row.method === "cash" ? "cash" : "bank"} account</SelectItem>
+                            ) : (
+                              accounts.map(a => (
+                                <SelectItem key={a.id} value={a.id} data-testid={`option-payment-account-${a.id}`}>
+                                  {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                                  {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Reference</Label>
+                        <Input
+                          data-testid={`input-payment-reference-${idx}`}
+                          className="h-8 text-sm"
+                          placeholder="Transaction ID, cheque no., etc."
+                          value={row.reference}
+                          onChange={(e) => updateRow({ reference: e.target.value })}
+                        />
+                      </div>
+                    </div>
                   )}
-                </SelectContent>
-              </Select>
-              {!paymentForm.cashAccountId && (
-                <p className="text-xs text-muted-foreground" data-testid="text-payment-account-required">Required — pick the account where this payment was received.</p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="paymentReference">Reference</Label>
-              <Input id="paymentReference" data-testid="input-payment-reference" placeholder="Transaction ID, cheque no., etc." value={paymentForm.reference} onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })} />
+                </div>
+              );
+            })}
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              data-testid="button-add-payment-row"
+              onClick={() => {
+                const lastIdx = paymentRows.length - 1;
+                setCollapsedPaymentRows(prev => [...prev, lastIdx]);
+                setPaymentRows(rows => [...rows, { method: "cash", amount: "", cashAccountId: "", reference: "" }]);
+              }}
+            >
+              <Plus className="w-3 h-3 mr-1" /> Add Payment
+            </Button>
+            <div className="space-y-1 pt-1">
+              <Label className="text-xs">Payment Date</Label>
+              <Input
+                data-testid="input-payment-date"
+                type="date"
+                className="h-8 text-sm"
+                value={paymentDate}
+                onChange={(e) => setPaymentDate(e.target.value)}
+              />
             </div>
           </div>
           <DialogFooter>
             <Button
               data-testid="button-submit-payment"
-              disabled={recordPaymentMutation.isPending || !paymentForm.amount || !paymentForm.cashAccountId}
-              onClick={() => {
-                if (!paymentForm.cashAccountId) {
-                  toast({ title: "Account required", description: "Select the account where this payment was received.", variant: "destructive" });
+              disabled={recordPaymentMutation.isPending || paymentRows.some(r => !r.amount || !r.cashAccountId)}
+              onClick={async () => {
+                const invalid = paymentRows.find(r => !r.cashAccountId);
+                if (invalid) {
+                  toast({ title: "Account required", description: "Select an account for every payment line.", variant: "destructive" });
                   return;
                 }
-                if (paymentOrderId) {
-                  recordPaymentMutation.mutate({
-                    orderId: paymentOrderId,
-                    data: { amount: paymentForm.amount, method: paymentForm.method, reference: paymentForm.reference, cashAccountId: paymentForm.cashAccountId },
+                if (!paymentOrderId) return;
+                for (const row of paymentRows) {
+                  await new Promise<void>((resolve, reject) => {
+                    recordPaymentMutation.mutate(
+                      { orderId: paymentOrderId, data: { amount: row.amount, method: row.method, reference: row.reference, cashAccountId: row.cashAccountId, paymentDate } },
+                      { onSuccess: () => resolve(), onError: (e) => reject(e) }
+                    );
                   });
                 }
               }}
             >
-              {recordPaymentMutation.isPending ? "Recording..." : "Record Payment"}
+              {recordPaymentMutation.isPending ? "Recording..." : paymentRows.length > 1 ? `Record ${paymentRows.length} Payments` : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>

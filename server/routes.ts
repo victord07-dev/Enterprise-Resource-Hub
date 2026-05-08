@@ -8404,6 +8404,24 @@ export async function registerRoutes(
         totalAmount: number;
       }> = [];
 
+      // Helper: resolve the standard selling price for a component product
+      // Primary: products.unit_price → Fallback 1: latest approved daily_price_sheets.proposed_price
+      // → Fallback 2: products.distributor_price → Fallback 3: null (triggers equal allocation)
+      const resolveComponentStandardPrice = async (productId: string): Promise<number | null> => {
+        const pRes = await db.execute(sql`SELECT unit_price, distributor_price FROM products WHERE id = ${productId} LIMIT 1`);
+        const p = pRes.rows[0] as any;
+        if (p?.unit_price != null && Number(p.unit_price) > 0) return Number(p.unit_price);
+        const sheetRes = await db.execute(sql`
+          SELECT proposed_price FROM daily_price_sheets
+          WHERE product_id = ${productId} AND status IN ('approved','confirmed') AND proposed_price > 0
+          ORDER BY sheet_date DESC LIMIT 1
+        `);
+        const sheet = sheetRes.rows[0] as any;
+        if (sheet?.proposed_price != null && Number(sheet.proposed_price) > 0) return Number(sheet.proposed_price);
+        if (p?.distributor_price != null && Number(p.distributor_price) > 0) return Number(p.distributor_price);
+        return null;
+      };
+
       for (const ci of challanItems) {
         // Use qtyDispatched if > 0, else qtyToDispatch if > 0, else fall back to quantity (legacy/seeded data)
         const qtyDispatched = Number(ci.qty_dispatched ?? 0);
@@ -8412,9 +8430,76 @@ export async function registerRoutes(
         const qty = qtyDispatched > 0 ? qtyDispatched : qtyToDispatch > 0 ? qtyToDispatch : qtyFallback;
         if (qty <= 0) continue;
 
-        // Look up product for HSN / GST rate
+        // Look up product for type / HSN / GST rate
         const prodResult = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
         const prod = prodResult.rows[0] as any;
+
+        // ── P1: Bundle expansion ─────────────────────────────────────────────
+        if (prod?.type === "bundle") {
+          const bundleUnitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
+          const bundleQty = qty; // bundles dispatched
+
+          // Load components
+          const compRes = await db.execute(sql`
+            SELECT pbi.component_product_id, pbi.quantity AS qty_per_bundle,
+                   p.name, p.hsn_code, p.gst_rate
+            FROM product_bundle_items pbi
+            JOIN products p ON p.id = pbi.component_product_id
+            WHERE pbi.bundle_product_id = ${ci.product_id}
+          `);
+          const components = compRes.rows as any[];
+
+          // Resolve standard prices for all components
+          const compPrices: number[] = await Promise.all(
+            components.map(c => resolveComponentStandardPrice(c.component_product_id).then(v => v ?? 0))
+          );
+
+          // sum_of_weights = Σ(standard_price × qty_per_bundle) — qty-weighted denominator
+          const sumOfWeights = components.reduce((acc, c, i) => acc + compPrices[i] * Number(c.qty_per_bundle), 0);
+          const useEqualAllocation = sumOfWeights === 0;
+
+          for (let i = 0; i < components.length; i++) {
+            const c = components[i];
+            const compQtyPerBundle = Number(c.qty_per_bundle);
+            const invoiceQty = compQtyPerBundle * bundleQty;
+
+            // P1 formula — component_invoice_total with qty-weighted proportional share
+            let compInvoiceTotal: number;
+            if (useEqualAllocation) {
+              compInvoiceTotal = (bundleUnitPrice * bundleQty) / components.length;
+            } else {
+              compInvoiceTotal =
+                (compPrices[i] * compQtyPerBundle / sumOfWeights) * bundleUnitPrice * bundleQty;
+            }
+
+            const compUnitPrice = invoiceQty > 0 ? compInvoiceTotal / invoiceQty : 0;
+            const hsnCode: string | null = c.hsn_code ?? null;
+            const gstRate = Number(c.gst_rate ?? 0);
+            const taxableAmount = compInvoiceTotal;
+            const tax = taxableAmount * gstRate / 100;
+            const cgst = isInterState ? 0 : tax / 2;
+            const sgst = isInterState ? 0 : tax / 2;
+            const igst = isInterState ? tax : 0;
+
+            lineItems.push({
+              productId: c.component_product_id,
+              description: c.name,
+              qty: invoiceQty,
+              unitPrice: compUnitPrice,
+              hsnCode,
+              gstRate,
+              taxableAmount,
+              cgst,
+              sgst,
+              igst,
+              taxAmount: tax,
+              totalAmount: taxableAmount + tax,
+            });
+          }
+          continue; // bundle handled — skip the standard single-line push below
+        }
+
+        // ── Standard (non-bundle) line item ─────────────────────────────────
         const unitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
         const hsnCode: string | null = prod?.hsn_code ?? null;
         const gstRate = Number(prod?.gst_rate ?? 0);

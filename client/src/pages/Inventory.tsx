@@ -2433,6 +2433,12 @@ export default function Inventory() {
               <Textarea data-testid="input-challan-notes" className="resize-none text-sm" rows={2} placeholder="Delivery notes..." value={challanForm.notes} onChange={(e) => setChallanForm({ ...challanForm, notes: e.target.value })} />
             </div>
 
+            {user && (
+              <p className="text-xs text-muted-foreground" data-testid="text-challan-printed-by">
+                Printed by: <span className="font-medium text-foreground">{(user as any).fullName || user.username}</span>
+              </p>
+            )}
+
             <div className="space-y-3">
               <Label className="text-sm font-semibold">Items</Label>
               {!challanForm.orderId ? (
@@ -2507,6 +2513,7 @@ export default function Inventory() {
                           driverPhone: challanForm.driverPhone.trim(),
                           notes: challanForm.notes || null,
                           deliveryAddress: challanForm.deliveryAddress.trim() || null,
+                          printedBy: (user as any)?.fullName || user?.username || null,
                           items: challanItems.filter(it => it.quantity > 0).map(it => ({
                             productId: it.productId,
                             description: it.description,

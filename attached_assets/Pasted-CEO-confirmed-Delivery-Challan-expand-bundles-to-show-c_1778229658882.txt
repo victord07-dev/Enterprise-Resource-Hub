@@ -1,0 +1,228 @@
+CEO confirmed:
+- Delivery Challan: expand bundles to show components in UI 
+  + PDF (Option B)
+- Sales Invoices: expand to component lines with own HSN, 
+  GST rate, qty, price per component (Option B)
+- Supplier invoice expanded view: join through GRN items 
+  (no new table)
+- PO bundle expansion: bundle selected → fan out to N 
+  component lines
+- Manual PR: same expansion as auto-PR flow
+
+Standing Rule #11: any new aggregation logic in 
+financial-aggregations.ts first if applicable.
+Standing Rule #6: touch only files listed per fix.
+Standing Rule #1: throwaway test records only, audit log, 
+hard delete after.
+
+══════════════════════════════════════════════════════════════
+FIX 1 — Purchase Order: bundle → component expansion
+Files: SupplyChain.tsx, routes.ts
+══════════════════════════════════════════════════════════════
+
+UI (SupplyChain.tsx — PO line item editor):
+
+When a product with type='bundle' is selected from 
+HierarchicalProductPicker:
+- Do NOT add it as a single PO line item
+- Immediately fetch its components via 
+  GET /api/products/:bundleId/bundle-items
+- For each component, add a PO line item row with:
+    productId = component.componentProductId
+    description = component product name
+    quantity = bundle_qty × component.quantity
+    unitCost = component product's supplier price for the 
+      currently selected supplier (from supplier_products 
+      WHERE supplierId = selected AND productId = 
+      componentProductId) — if no supplier link exists 
+      for that component, pre-fill 0 and highlight the 
+      field as required
+    hsnCode + gstRate = from component product record
+- Show each component as a separate editable row
+- Add a visual group label above the rows: 
+  "Bundle: [bundle name] × [qty]" as a non-editable 
+  separator row so the user can see the source
+- The bundle product itself does not appear as a PO line
+
+Server (routes.ts — POST /api/purchase-orders and 
+PATCH items route):
+- Server receives component product IDs as normal PO items
+- No special bundle handling needed server-side — 
+  the expansion happens in the UI before submission
+- Validate that no item has productId pointing to a 
+  bundle type product (type='bundle') — reject with 
+  clear error if so
+
+══════════════════════════════════════════════════════════════
+FIX 2 — Supplier Invoice expanded view: show GRN items
+Files: Accounts.tsx
+══════════════════════════════════════════════════════════════
+
+Current: expanded supplier invoice shows header only.
+Fix: join through supplier_invoices.grnId → 
+goodsReceiptNoteItems to display received products.
+
+In Accounts.tsx, when a supplier invoice row is expanded:
+- Fetch GET /api/supplier-invoices/:id (already exists)
+- Additionally fetch GET /api/grns/:grnId/items using 
+  the invoice's grnId field
+  (check if this route exists; if not, add it to routes.ts 
+  returning goodsReceiptNoteItems joined to products for 
+  name/SKU/HSN)
+
+Display a sub-table under the invoice header:
+Columns: Product | SKU | HSN | Qty Received | 
+  Buying Price | Total Cost
+
+Indian number formatting on currency columns.
+If grnId is null on the invoice, show "No GRN linked".
+
+══════════════════════════════════════════════════════════════
+FIX 3 — Delivery Challan UI: expand bundle items to components
+Files: Sales.tsx (challan view in SO detail), 
+       Inventory.tsx (challan list/detail view)
+══════════════════════════════════════════════════════════════
+
+Current: challan shows bundle productId as one line.
+
+Fix (both files wherever challan items are rendered):
+
+When rendering challan line items, for each item:
+- Look up the product type for item.productId
+- If type = 'bundle': fetch components via 
+  GET /api/products/:productId/bundle-items
+- Render the bundle as a parent row:
+    [Bundle] Solar Kit 2KVA × 2  
+- Render each component as an indented child row:
+    ↳ Panel 400W — 4 pcs (2 × 2 per bundle)
+    ↳ Inverter 3kW — 2 pcs (1 × 2 per bundle)
+    ↳ MC4 Connectors — 8 pcs (4 × 2 per bundle)
+  qty shown = challan_item.qty × component.quantity
+- If type = 'product' or 'physical': render as normal 
+  single row (no change)
+
+Component rows are display-only — not editable on the 
+challan view.
+
+══════════════════════════════════════════════════════════════
+FIX 4 — Delivery Challan PDF: show components under bundle
+Files: client/src/lib/challan-pdf.ts
+══════════════════════════════════════════════════════════════
+
+Before generating the PDF, for each challan item:
+- If the product type = 'bundle': fetch components from 
+  product_bundle_items (or pass them from the caller 
+  who already has them)
+- In the PDF items table, render:
+    Row 1 (bundle header): SR# | Bundle: [name] | — | 
+      [bundle qty] | [bundle rate] | [bundle amount] | 
+      (tax columns for the bundle)
+    Row 2..N (component sub-rows, indented description):
+      (blank SR#) | ↳ [Component name] | [HSN] | 
+        [qty = challan_qty × comp_qty] | — | — | —
+      Component rows show qty only, no price (price is 
+      at bundle level)
+- Normal product items render exactly as they do today
+
+Use the component's HSN code in the sub-row HSN column.
+Component rows should use a lighter font weight or 
+slightly smaller text to visually distinguish from 
+bundle headers.
+
+══════════════════════════════════════════════════════════════
+STOP CHECKPOINT — Invoice pricing decision needed
+══════════════════════════════════════════════════════════════
+
+Before implementing Fix 5 (sales invoice expansion), 
+post your answer to this question:
+
+When a bundle is sold at ₹40,000 (e.g., Solar Kit 2KVA) 
+and the invoice must list individual components, what 
+price should each component carry on the invoice?
+
+Option P1 — Proportional distribution (recommended):
+Each component's invoice value = 
+  (component_standard_price ÷ sum_of_all_component_prices) 
+  × bundle_sold_price × qty_in_bundle
+This ensures invoice total = SO total exactly. Each 
+component gets its own HSN + GST rate applied to its 
+proportional share.
+
+Option P2 — Component own price:
+Each component's invoice value = its own product 
+selling price × qty. Invoice total may differ from 
+SO total if the bundle had a custom price. GST is 
+applied to each component's standard price.
+
+Post your recommendation and await operator approval 
+before writing Fix 5.
+
+══════════════════════════════════════════════════════════════
+FIX 5 — Sales Invoices: expand bundle → component lines
+(implement AFTER pricing decision approved above)
+Files: routes.ts (invoice creation from challan)
+══════════════════════════════════════════════════════════════
+
+Current: one invoice item per challan item (bundleProductId).
+
+Fix: in the invoice generation route, when iterating 
+challan items and the challan item's product type = 'bundle':
+- Fetch bundle components from product_bundle_items
+- For each component, write ONE salesInvoiceItem row:
+    productId = componentProductId
+    description = "[component name] (part of [bundle name])"
+    qty = challan_item.qty × component.quantity
+    unitPrice = [per pricing decision above]
+    hsnCode = component product's HSN
+    gstRate = component product's GST rate
+    taxableAmount, cgst, sgst, igst, totalAmount = 
+      calculated from above
+- Do NOT write a salesInvoiceItem for the bundle product 
+  itself
+- Grand total of all component lines must reconcile to 
+  the bundle's SO line total
+
+══════════════════════════════════════════════════════════════
+FIX 6 — Manual Purchase Request: bundle expansion
+Files: SupplyChain.tsx (manual PR form)
+══════════════════════════════════════════════════════════════
+
+The auto-PR flow already correctly expands bundles. 
+The manual PR product picker does not.
+
+Apply the same expansion logic as Fix 1 (PO):
+When a bundle is selected in the manual PR product picker:
+- Fetch components
+- Add one PR item row per component with:
+    qty = entered_qty × component.quantity
+    unitCost = component's supplier price (if available)
+- Show bundle group label as separator
+- Do not allow the bundle product itself as a PR item
+
+══════════════════════════════════════════════════════════════
+CONSTRAINTS
+══════════════════════════════════════════════════════════════
+
+Files touched (exhaustive):
+- SupplyChain.tsx (Fix 1 PO expansion, Fix 6 PR expansion)
+- Accounts.tsx (Fix 2 supplier invoice view)
+- Sales.tsx (Fix 3 challan display)
+- Inventory.tsx (Fix 3 challan display)
+- challan-pdf.ts (Fix 4 PDF)
+- routes.ts (Fix 2 GRN items route if missing, Fix 5 
+  invoice creation)
+- No schema changes expected — confirm in your 
+  checkpoint reply
+
+Standing Rule #6: nothing else touched.
+Standing Rule #1: test with throwaway records only.
+
+STOP CHECKPOINT ORDER:
+1. After Fixes 1-4 and 6: post screenshots showing 
+   PO component rows, supplier invoice expanded view 
+   with GRN items, challan UI with bundle components, 
+   challan PDF with component sub-rows
+2. Post pricing recommendation (P1 or P2) for Fix 5
+3. Await operator approval of pricing before Fix 5
+4. After Fix 5: post a sample sales invoice showing 
+   component lines for a bundle item

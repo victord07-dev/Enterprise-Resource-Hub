@@ -1,0 +1,195 @@
+READ-ONLY AUDIT ONLY. Do not write any code. No migrations. 
+No route changes. Surface findings only.
+
+Goal: fully understand how bundles/sets flow (or fail to flow) 
+through every affected module so the operator and PM can 
+design the fix before any development begins.
+
+══════════════════════════════════════════════════════════════
+SECTION 1 — BUNDLE SCHEMA
+══════════════════════════════════════════════════════════════
+
+From shared/schema.ts, answer:
+
+A. How are bundles defined? Find the bundle composition table 
+   (bundle_components, product_components, or similar). 
+   List all columns, types, nullable/not-null.
+
+B. How is a product identified as a bundle? Is it 
+   products.type = 'bundle'? Any other flag?
+
+C. What does one bundle component record look like — does it 
+   store: parent bundle product ID, child product ID, 
+   quantity per bundle, and anything else?
+
+D. Do bundle components have their own supplier price / 
+   distributor price, or do they inherit from the child 
+   product's own price fields?
+
+E. Is there any concept of a "bundle quantity multiplier" — 
+   e.g., if you order 3 bundles of a kit that contains 
+   2 panels, does the system know to order 6 panels?
+
+══════════════════════════════════════════════════════════════
+SECTION 2 — QUOTATIONS (currently working — understand the pattern)
+══════════════════════════════════════════════════════════════
+
+From Sales.tsx and routes.ts:
+
+A. When a bundle is added to a quotation, how are its 
+   components stored? Are they stored as individual line 
+   items in quotation_items, or as a single bundle line 
+   with a reference to the bundle product?
+
+B. What does the quotation line item table look like for 
+   a bundle — show the schema of quotation_items.
+
+C. How does the quotation UI expand and display bundle 
+   components to the user?
+
+D. Find the route that returns quotation detail with 
+   line items — show what it returns for a bundle line.
+
+══════════════════════════════════════════════════════════════
+SECTION 3 — SALES ORDERS (currently working — understand pattern)
+══════════════════════════════════════════════════════════════
+
+A. Same questions as Section 2 but for sales_orders and 
+   sales_order_items. How are bundle components stored 
+   in SO items?
+
+B. When a quotation with a bundle is converted to a SO, 
+   what happens to the bundle line items — do they 
+   stay as a bundle reference, or expand to components?
+
+C. Show the schema of sales_order_items — specifically 
+   any bundle-related fields.
+
+══════════════════════════════════════════════════════════════
+SECTION 4 — DELIVERY CHALLAN (broken for bundles)
+══════════════════════════════════════════════════════════════
+
+A. How are delivery_challan_items populated from a SO? 
+   Find the code that creates challan items from SO items.
+
+B. Specifically: when the SO item is a bundle type, what 
+   happens? Does the challan creation code handle bundles? 
+   Does it skip them? Does it throw?
+
+C. Show the schema of delivery_challan_items — are there 
+   any bundle-related fields?
+
+D. Find any existing UI code in Sales.tsx or Inventory.tsx 
+   that renders challan line items — does it handle 
+   bundle types or only show type='product'?
+
+══════════════════════════════════════════════════════════════
+SECTION 5 — PURCHASE REQUEST (incompatible with bundles)
+══════════════════════════════════════════════════════════════
+
+A. Show the schema of purchase_requests and 
+   purchase_request_items.
+
+B. Find the UI code (SupplyChain.tsx or similar) where 
+   purchase requests are created — specifically the 
+   product selector. Does it filter out bundles? 
+   Does it allow bundles? What happens if a bundle 
+   is selected?
+
+C. Find the route that creates purchase request items — 
+   does it handle bundles in any way?
+
+══════════════════════════════════════════════════════════════
+SECTION 6 — PURCHASE ORDER (cannot add bundles)
+══════════════════════════════════════════════════════════════
+
+A. Show the schema of purchase_orders and 
+   purchase_order_items.
+
+B. Find the UI code where PO line items are added — 
+   does the product selector allow bundles? If a bundle 
+   is selected, what currently happens?
+
+C. The requirement: when a bundle is added to a PO, 
+   it should expand into its component products with:
+   - Each component product as a separate PO line item
+   - Quantity = bundle quantity × component quantity per bundle
+   - Unit cost = each component's supplier/distributor price
+   Find where supplier price comes from for normal products 
+   in a PO today — which field and which table.
+
+D. Find the route that creates PO line items.
+
+══════════════════════════════════════════════════════════════
+SECTION 7 — GRN (should reflect bundle components)
+══════════════════════════════════════════════════════════════
+
+A. Show schema of goods_receipt_notes and 
+   goods_receipt_note_items.
+
+B. How are GRN items created from a PO — find the code 
+   that populates GRN items from PO line items.
+
+C. If bundles were expanded into components at PO level 
+   (per Section 6 requirement), would GRN automatically 
+   handle them correctly, or would additional changes be 
+   needed?
+
+══════════════════════════════════════════════════════════════
+SECTION 8 — SALES INVOICES (bundles not showing)
+══════════════════════════════════════════════════════════════
+
+A. Show schema of sales_invoices and sales_invoice_items.
+
+B. How are sales invoice items generated — from SO items 
+   directly, from challan items, or manually? Find the 
+   creation flow.
+
+C. When the SO has bundle line items, what currently 
+   gets written to sales_invoice_items? Find the exact 
+   code path.
+
+D. Find the UI code that renders sales invoice line items 
+   in the expanded view — does it filter out or skip 
+   bundle-type items?
+
+══════════════════════════════════════════════════════════════
+SECTION 9 — SUPPLIER INVOICES (expanded form shows nothing)
+══════════════════════════════════════════════════════════════
+
+A. Show schema of supplier_invoices and 
+   supplier_invoice_items.
+
+B. Find the UI code that renders the expanded/detail 
+   view of a supplier invoice. What does it currently 
+   show in the line items section?
+
+C. Find the route that returns supplier invoice detail 
+   with line items. Does it return items at all? 
+   Are supplier_invoice_items populated when a 
+   supplier invoice is created?
+
+D. Find where supplier invoices are created — are 
+   supplier_invoice_items populated at creation time, 
+   or is the items table always empty?
+
+══════════════════════════════════════════════════════════════
+SECTION 10 — SUMMARY TABLE
+══════════════════════════════════════════════════════════════
+
+After completing all sections above, produce a summary 
+table like this:
+
+Module | Bundle Support | Current Behavior | Gap
+Quotations | ? | ? | ?
+Sales Orders | ? | ? | ?
+Delivery Challan | ? | ? | ?
+Purchase Request | ? | ? | ?
+Purchase Order | ? | ? | ?
+GRN | ? | ? | ?
+Sales Invoices | ? | ? | ?
+Supplier Invoices | ? | ? | ?
+
+STOP. Post all findings. No implementation. No code changes. 
+No migrations. Operator and PM will design the fix after 
+reviewing this audit.

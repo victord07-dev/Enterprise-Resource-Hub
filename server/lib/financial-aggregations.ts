@@ -1785,3 +1785,394 @@ export async function getCashLedger(accountId: string, p: PeriodFilter): Promise
     closingBalance: running,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 4B — CEO Reports B1–B4
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type Granularity = "daily" | "weekly" | "monthly" | "yearly";
+
+function deriveGranularity(from?: string, to?: string): Granularity {
+  if (!from || !to) return "monthly";
+  const diffDays = Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86400000);
+  if (diffDays <= 31) return "daily";
+  if (diffDays <= 180) return "weekly";
+  if (diffDays <= 730) return "monthly";
+  return "yearly";
+}
+
+function bucketLabelSql(col: string, gran: Granularity): string {
+  switch (gran) {
+    case "daily":   return `TO_CHAR(DATE_TRUNC('day',   ${col}::date), 'DD Mon YYYY')`;
+    case "weekly":  return `TO_CHAR(DATE_TRUNC('week',  ${col}::date), 'DD Mon YYYY')`;
+    case "monthly": return `TO_CHAR(DATE_TRUNC('month', ${col}::date), 'Mon YYYY')`;
+    case "yearly":  return `TO_CHAR(DATE_TRUNC('year',  ${col}::date), 'YYYY')`;
+  }
+}
+
+function bucketStartSql(col: string, gran: Granularity): string {
+  const trunc = gran === "daily" ? "day" : gran === "weekly" ? "week" : gran === "monthly" ? "month" : "year";
+  return `DATE_TRUNC('${trunc}', ${col}::date)`;
+}
+
+// ── B1: Period Sales ──────────────────────────────────────────────────────────
+
+export interface PeriodSalesBucket {
+  period_label: string;
+  period_start: string;
+  total_sales: number;
+  invoice_count: number;
+}
+
+export interface PeriodSalesResult {
+  buckets: PeriodSalesBucket[];
+  summary: { grand_total: number; avg_per_bucket: number; peak_label: string; peak_amount: number };
+  period: { from: string | null; to: string | null };
+  granularity: Granularity;
+}
+
+export async function getPeriodSales(
+  from?: string,
+  to?: string,
+  granularity?: Granularity,
+): Promise<PeriodSalesResult> {
+  const fromNorm = normIso(from) ?? null;
+  const toNorm   = normIso(to)   ?? null;
+  const gran = granularity ?? deriveGranularity(fromNorm ?? undefined, toNorm ?? undefined);
+
+  const whereFrom = fromNorm ? sql`AND si.invoice_date >= ${fromNorm + "T00:00:00"}::timestamp` : sql``;
+  const whereTo   = toNorm   ? sql`AND si.invoice_date <= ${toNorm   + "T23:59:59.999"}::timestamp` : sql``;
+
+  const res = await db.execute(sql`
+    SELECT
+      ${sql.raw(bucketLabelSql("si.invoice_date", gran))} AS period_label,
+      ${sql.raw(bucketStartSql("si.invoice_date", gran))} AS period_start,
+      COALESCE(SUM(si.grand_total::numeric), 0)           AS total_sales,
+      COUNT(*)::int                                        AS invoice_count
+    FROM sales_invoices si
+    WHERE si.status != 'cancelled'
+      ${whereFrom}
+      ${whereTo}
+    GROUP BY period_label, period_start
+    ORDER BY period_start ASC
+  `);
+
+  const buckets: PeriodSalesBucket[] = (res.rows as any[]).map(r => ({
+    period_label:  String(r.period_label),
+    period_start:  String(r.period_start),
+    total_sales:   Number(r.total_sales),
+    invoice_count: Number(r.invoice_count),
+  }));
+
+  const grand_total    = buckets.reduce((s, b) => s + b.total_sales, 0);
+  const avg_per_bucket = buckets.length ? grand_total / buckets.length : 0;
+  const peak = buckets.reduce(
+    (best, b) => b.total_sales > best.total_sales ? b : best,
+    { period_label: "—", total_sales: 0 } as Pick<PeriodSalesBucket, "period_label" | "total_sales">,
+  );
+
+  return {
+    buckets,
+    summary: { grand_total, avg_per_bucket, peak_label: peak.period_label, peak_amount: peak.total_sales },
+    period: { from: fromNorm, to: toNorm },
+    granularity: gran,
+  };
+}
+
+// ── B2: Period Profit ─────────────────────────────────────────────────────────
+
+export interface PeriodProfitBucket {
+  period_label: string;
+  period_start: string;
+  revenue: number;
+  purchases: number;
+  expenses: number;
+  profit: number;
+  margin_pct: number | null;
+}
+
+export interface PeriodProfitResult {
+  buckets: PeriodProfitBucket[];
+  summary: { total_revenue: number; total_profit: number; avg_margin_pct: number | null };
+  period: { from: string | null; to: string | null };
+  granularity: Granularity;
+}
+
+export async function getPeriodProfit(
+  from?: string,
+  to?: string,
+  granularity?: Granularity,
+): Promise<PeriodProfitResult> {
+  const fromNorm = normIso(from) ?? null;
+  const toNorm   = normIso(to)   ?? null;
+  const gran = granularity ?? deriveGranularity(fromNorm ?? undefined, toNorm ?? undefined);
+
+  const siFrom = fromNorm ? sql`AND si.invoice_date >= ${fromNorm + "T00:00:00"}::timestamp` : sql``;
+  const siTo   = toNorm   ? sql`AND si.invoice_date <= ${toNorm   + "T23:59:59.999"}::timestamp` : sql``;
+  const supFrom = fromNorm ? sql`AND sup.invoice_date >= ${fromNorm + "T00:00:00"}::timestamp` : sql``;
+  const supTo   = toNorm   ? sql`AND sup.invoice_date <= ${toNorm   + "T23:59:59.999"}::timestamp` : sql``;
+  const expFrom = fromNorm ? sql`AND e.expense_date >= ${fromNorm}::date` : sql``;
+  const expTo   = toNorm   ? sql`AND e.expense_date <= ${toNorm}::date`   : sql``;
+
+  const [revRes, purRes, expRes] = await Promise.all([
+    db.execute(sql`
+      SELECT
+        ${sql.raw(bucketLabelSql("si.invoice_date", gran))} AS period_label,
+        ${sql.raw(bucketStartSql("si.invoice_date", gran))} AS period_start,
+        COALESCE(SUM(si.grand_total::numeric), 0) AS total
+      FROM sales_invoices si
+      WHERE si.status != 'cancelled'
+        ${siFrom} ${siTo}
+      GROUP BY period_label, period_start
+    `),
+    db.execute(sql`
+      SELECT
+        ${sql.raw(bucketLabelSql("sup.invoice_date", gran))} AS period_label,
+        ${sql.raw(bucketStartSql("sup.invoice_date", gran))} AS period_start,
+        COALESCE(SUM(sup.total_amount::numeric), 0) AS total
+      FROM supplier_invoices sup
+      WHERE sup.upload_status != 'cancelled'
+        ${supFrom} ${supTo}
+      GROUP BY period_label, period_start
+    `),
+    db.execute(sql`
+      SELECT
+        ${sql.raw(bucketLabelSql("e.expense_date", gran))} AS period_label,
+        ${sql.raw(bucketStartSql("e.expense_date", gran))} AS period_start,
+        COALESCE(SUM(e.amount::numeric), 0) AS total
+      FROM expenses e
+      WHERE 1=1
+        ${expFrom} ${expTo}
+      GROUP BY period_label, period_start
+    `),
+  ]);
+
+  // Merge into a keyed map by period_label, ordering by period_start
+  const map = new Map<string, { period_start: string; revenue: number; purchases: number; expenses: number }>();
+  for (const r of revRes.rows as any[]) {
+    const key = String(r.period_label);
+    map.set(key, { period_start: String(r.period_start), revenue: Number(r.total), purchases: 0, expenses: 0 });
+  }
+  for (const r of purRes.rows as any[]) {
+    const key = String(r.period_label);
+    const existing = map.get(key) ?? { period_start: String(r.period_start), revenue: 0, purchases: 0, expenses: 0 };
+    existing.purchases = Number(r.total);
+    map.set(key, existing);
+  }
+  for (const r of expRes.rows as any[]) {
+    const key = String(r.period_label);
+    const existing = map.get(key) ?? { period_start: String(r.period_start), revenue: 0, purchases: 0, expenses: 0 };
+    existing.expenses = Number(r.total);
+    map.set(key, existing);
+  }
+
+  const buckets: PeriodProfitBucket[] = Array.from(map.entries())
+    .map(([period_label, v]) => {
+      const profit = v.revenue - v.purchases - v.expenses;
+      const margin_pct = v.revenue > 0 ? (profit / v.revenue) * 100 : null;
+      return { period_label, period_start: v.period_start, revenue: v.revenue, purchases: v.purchases, expenses: v.expenses, profit, margin_pct };
+    })
+    .sort((a, b) => a.period_start.localeCompare(b.period_start));
+
+  const total_revenue = buckets.reduce((s, b) => s + b.revenue, 0);
+  const total_profit  = buckets.reduce((s, b) => s + b.profit,  0);
+  const withMargin = buckets.filter(b => b.margin_pct !== null);
+  const avg_margin_pct = withMargin.length
+    ? withMargin.reduce((s, b) => s + (b.margin_pct ?? 0), 0) / withMargin.length
+    : null;
+
+  return {
+    buckets,
+    summary: { total_revenue, total_profit, avg_margin_pct },
+    period: { from: fromNorm, to: toNorm },
+    granularity: gran,
+  };
+}
+
+// ── B3: Product Sales ─────────────────────────────────────────────────────────
+
+export interface ProductSalesRow {
+  product_id: string;
+  product_name: string;
+  sku: string;
+  category: string;
+  qty_sold: number;
+  total_sales: number;
+  invoice_count: number;
+}
+
+export interface ProductSalesResult {
+  rows: ProductSalesRow[];
+  summary: { total_sales: number; total_qty: number; product_count: number };
+  period: { from: string | null; to: string | null };
+}
+
+export async function getProductSales(
+  from?: string,
+  to?: string,
+  productId?: string,
+): Promise<ProductSalesResult> {
+  const fromNorm = normIso(from) ?? null;
+  const toNorm   = normIso(to)   ?? null;
+
+  const whereFrom = fromNorm ? sql`AND si.invoice_date >= ${fromNorm + "T00:00:00"}::timestamp` : sql``;
+  const whereTo   = toNorm   ? sql`AND si.invoice_date <= ${toNorm   + "T23:59:59.999"}::timestamp` : sql``;
+  const whereProduct = productId ? sql`AND p.id = ${productId}` : sql``;
+
+  const res = await db.execute(sql`
+    SELECT
+      p.id                                                 AS product_id,
+      p.name                                               AS product_name,
+      p.sku,
+      p.category,
+      COALESCE(SUM(sii.qty::numeric), 0)                   AS qty_sold,
+      COALESCE(SUM(sii.total_amount::numeric), 0)          AS total_sales,
+      COUNT(DISTINCT sii.invoice_id)::int                  AS invoice_count
+    FROM sales_invoice_items sii
+    JOIN sales_invoices si ON si.id = sii.invoice_id
+    JOIN products p        ON p.id  = sii.product_id
+    WHERE si.status != 'cancelled'
+      AND sii.product_id IS NOT NULL
+      AND p.type != 'bundle'
+      ${whereFrom}
+      ${whereTo}
+      ${whereProduct}
+    GROUP BY p.id, p.name, p.sku, p.category
+    ORDER BY total_sales DESC
+  `);
+
+  const rows: ProductSalesRow[] = (res.rows as any[]).map(r => ({
+    product_id:    String(r.product_id),
+    product_name:  String(r.product_name),
+    sku:           String(r.sku),
+    category:      String(r.category),
+    qty_sold:      Number(r.qty_sold),
+    total_sales:   Number(r.total_sales),
+    invoice_count: Number(r.invoice_count),
+  }));
+
+  return {
+    rows,
+    summary: {
+      total_sales:   rows.reduce((s, r) => s + r.total_sales, 0),
+      total_qty:     rows.reduce((s, r) => s + r.qty_sold, 0),
+      product_count: rows.length,
+    },
+    period: { from: fromNorm, to: toNorm },
+  };
+}
+
+// ── B4: Product-wise Profit (FIFO dispatch-time) ──────────────────────────────
+
+async function fifoBlendedCostPerUnit(
+  productId: string,
+  qty: number,
+): Promise<{ costPerUnit: number; hasGrnData: boolean }> {
+  if (qty <= 0) return { costPerUnit: 0, hasGrnData: false };
+
+  const res = await db.execute(sql`
+    SELECT
+      gi.received_quantity::numeric                                                        AS received_qty,
+      gi.buying_price::numeric                                                             AS buying_price,
+      COALESCE(grn.delivery_cost::numeric, 0)                                              AS delivery_cost,
+      GREATEST(
+        (SELECT COALESCE(SUM(i2.received_quantity)::numeric, 1)
+           FROM goods_receipt_note_items i2
+          WHERE i2.grn_id = grn.id),
+        1
+      )                                                                                    AS total_grn_qty
+    FROM goods_receipt_note_items gi
+    JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+    WHERE gi.product_id = ${productId}
+      AND grn.status = 'confirmed'
+    ORDER BY grn.received_date ASC, grn.id ASC
+  `);
+
+  if (res.rows.length === 0) return { costPerUnit: 0, hasGrnData: false };
+
+  let remaining  = qty;
+  let totalCost  = 0;
+  for (const row of res.rows as any[]) {
+    if (remaining <= 0) break;
+    const lotQty    = Number(row.received_qty);
+    const perUnit   = Number(row.buying_price) + Number(row.delivery_cost) / Number(row.total_grn_qty);
+    const used      = Math.min(remaining, lotQty);
+    totalCost      += used * perUnit;
+    remaining      -= used;
+  }
+
+  return { costPerUnit: totalCost / qty, hasGrnData: true };
+}
+
+export interface ProductWiseProfitRow {
+  product_name: string;
+  sku: string;
+  qty_sold: number;
+  revenue: number;
+  cost: number;
+  gross_profit: number;
+  margin_pct: number | null;
+  has_grn_data: boolean;
+}
+
+export interface ProductWiseProfitResult {
+  rows: ProductWiseProfitRow[];
+  period: { from: string | null; to: string | null };
+}
+
+export async function getProductWiseProfit(
+  from?: string,
+  to?: string,
+): Promise<ProductWiseProfitResult> {
+  const fromNorm = normIso(from) ?? null;
+  const toNorm   = normIso(to)   ?? null;
+
+  const whereFrom = fromNorm ? sql`AND dc.dispatch_date >= ${fromNorm + "T00:00:00"}::timestamp` : sql``;
+  const whereTo   = toNorm   ? sql`AND dc.dispatch_date <= ${toNorm   + "T23:59:59.999"}::timestamp` : sql``;
+
+  const res = await db.execute(sql`
+    SELECT
+      p.id                                                                    AS product_id,
+      p.name                                                                  AS product_name,
+      p.sku,
+      COALESCE(SUM(dci.qty_dispatched::numeric), 0)                          AS qty_dispatched,
+      COALESCE(SUM(dci.qty_dispatched::numeric
+                   * COALESCE(dci.unit_price::numeric, 0)), 0)               AS revenue
+    FROM delivery_challans dc
+    JOIN delivery_challan_items dci ON dci.challan_id = dc.id
+    JOIN products p                 ON p.id           = dci.product_id
+    WHERE dc.status = 'dispatched'
+      AND p.type NOT IN ('bundle', 'service')
+      AND dci.qty_dispatched > 0
+      ${whereFrom}
+      ${whereTo}
+    GROUP BY p.id, p.name, p.sku
+    ORDER BY revenue DESC
+  `);
+
+  const rows: ProductWiseProfitRow[] = await Promise.all(
+    (res.rows as any[]).map(async (r) => {
+      const qtySold  = Number(r.qty_dispatched);
+      const revenue  = Number(r.revenue);
+      const { costPerUnit, hasGrnData } = await fifoBlendedCostPerUnit(String(r.product_id), qtySold);
+      const cost         = costPerUnit * qtySold;
+      const gross_profit = revenue - cost;
+      const margin_pct   = hasGrnData && revenue > 0 ? (gross_profit / revenue) * 100 : null;
+      return {
+        product_name: String(r.product_name),
+        sku:          String(r.sku),
+        qty_sold:     qtySold,
+        revenue,
+        cost,
+        gross_profit,
+        margin_pct,
+        has_grn_data: hasGrnData,
+      };
+    }),
+  );
+
+  return {
+    rows: rows.sort((a, b) => b.gross_profit - a.gross_profit),
+    period: { from: fromNorm, to: toNorm },
+  };
+}

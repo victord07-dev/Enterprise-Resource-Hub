@@ -11943,5 +11943,229 @@ export async function registerRoutes(
     }
   });
 
+  // ── B1: Period Sales ────────────────────────────────────────────────────────
+  app.get("/api/reports/period-sales", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPeriodSales } = await import("./lib/financial-aggregations");
+      const data = await getPeriodSales(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+        req.query.granularity as any,
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate period sales" });
+    }
+  });
+
+  app.get("/api/reports/period-sales/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPeriodSales } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getPeriodSales(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+        req.query.granularity as any,
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"} | Granularity: ${data.granularity}`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Period Sales",
+          title: "Period Sales Report",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Period",         key: "period_label",  width: 20 },
+            { header: "Total Sales (₹)", key: "total_sales",  width: 22, type: "currency" },
+            { header: "Invoice Count",  key: "invoice_count", width: 16, type: "number" },
+          ],
+          rows: data.buckets,
+          totals: {
+            period_label:  `TOTAL (${data.buckets.length} periods)`,
+            total_sales:   data.summary.grand_total,
+            invoice_count: data.buckets.reduce((s, b) => s + b.invoice_count, 0),
+          },
+        }],
+      });
+      sendExcel(res, buf, `Period-Sales-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export period sales Excel" });
+    }
+  });
+
+  // ── B2: Period Profit ────────────────────────────────────────────────────────
+  app.get("/api/reports/period-profit", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPeriodProfit } = await import("./lib/financial-aggregations");
+      const data = await getPeriodProfit(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+        req.query.granularity as any,
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate period profit" });
+    }
+  });
+
+  app.get("/api/reports/period-profit/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getPeriodProfit } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getPeriodProfit(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+        req.query.granularity as any,
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"} | Granularity: ${data.granularity}`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Period Profit",
+          title: "Period Profit Report",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Period",         key: "period_label", width: 20 },
+            { header: "Revenue (₹)",    key: "revenue",      width: 20, type: "currency" },
+            { header: "Purchases (₹)",  key: "purchases",    width: 20, type: "currency" },
+            { header: "Expenses (₹)",   key: "expenses",     width: 18, type: "currency" },
+            { header: "Profit (₹)",     key: "profit",       width: 20, type: "currency" },
+            { header: "Margin %",       key: "margin_pct",   width: 14, type: "pct" },
+          ],
+          rows: data.buckets.map(b => ({ ...b, margin_pct: b.margin_pct != null ? b.margin_pct / 100 : null })),
+          totals: {
+            period_label: `TOTAL (${data.buckets.length} periods)`,
+            revenue:   data.summary.total_revenue,
+            purchases: data.buckets.reduce((s, b) => s + b.purchases, 0),
+            expenses:  data.buckets.reduce((s, b) => s + b.expenses, 0),
+            profit:    data.summary.total_profit,
+            margin_pct: data.summary.avg_margin_pct != null ? data.summary.avg_margin_pct / 100 : null,
+          },
+        }],
+      });
+      sendExcel(res, buf, `Period-Profit-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export period profit Excel" });
+    }
+  });
+
+  // ── B3: Product Sales ────────────────────────────────────────────────────────
+  app.get("/api/reports/product-sales", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getProductSales } = await import("./lib/financial-aggregations");
+      const data = await getProductSales(
+        req.query.from      as string | undefined,
+        req.query.to        as string | undefined,
+        req.query.productId as string | undefined,
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate product sales" });
+    }
+  });
+
+  app.get("/api/reports/product-sales/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getProductSales } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getProductSales(
+        req.query.from      as string | undefined,
+        req.query.to        as string | undefined,
+        req.query.productId as string | undefined,
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"}`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Product Sales",
+          title: "Product Sales Report",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Product",        key: "product_name",  width: 32 },
+            { header: "SKU",            key: "sku",           width: 18 },
+            { header: "Category",       key: "category",      width: 20 },
+            { header: "Qty Sold",       key: "qty_sold",      width: 14, type: "number" },
+            { header: "Total Sales (₹)", key: "total_sales",  width: 22, type: "currency" },
+            { header: "Invoices",       key: "invoice_count", width: 12, type: "number" },
+          ],
+          rows: data.rows,
+          totals: {
+            product_name:  `TOTAL (${data.rows.length} products)`,
+            sku:           "",
+            category:      "",
+            qty_sold:      data.summary.total_qty,
+            total_sales:   data.summary.total_sales,
+            invoice_count: data.rows.reduce((s, r) => s + r.invoice_count, 0),
+          },
+        }],
+      });
+      sendExcel(res, buf, `Product-Sales-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export product sales Excel" });
+    }
+  });
+
+  // ── B4: Product Profit ───────────────────────────────────────────────────────
+  app.get("/api/reports/product-profit", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getProductWiseProfit } = await import("./lib/financial-aggregations");
+      const data = await getProductWiseProfit(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+      );
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to generate product profit" });
+    }
+  });
+
+  app.get("/api/reports/product-profit/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { getProductWiseProfit } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const data = await getProductWiseProfit(
+        req.query.from as string | undefined,
+        req.query.to   as string | undefined,
+      );
+      const subtitle = `Period: ${data.period.from ?? "All"} → ${data.period.to ?? "All"} | Bundle products excluded`;
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Product Profit",
+          title: "Product Profit Report (FIFO)",
+          subtitle,
+          headerStyle: "compact",
+          columns: [
+            { header: "Product",         key: "product_name",  width: 32 },
+            { header: "SKU",             key: "sku",           width: 18 },
+            { header: "Qty Sold",        key: "qty_sold",      width: 12, type: "number" },
+            { header: "Revenue (₹)",     key: "revenue",       width: 20, type: "currency" },
+            { header: "Cost (₹)",        key: "cost",          width: 20, type: "currency" },
+            { header: "Gross Profit (₹)", key: "gross_profit", width: 22, type: "currency" },
+            { header: "Margin %",        key: "margin_pct",    width: 14, type: "pct" },
+            { header: "GRN Data",        key: "grn_status",    width: 14 },
+          ],
+          rows: data.rows.map(r => ({
+            ...r,
+            grn_status: r.has_grn_data ? "Yes" : "No GRN cost",
+            margin_pct: r.margin_pct != null ? r.margin_pct / 100 : null,
+          })),
+          totals: {
+            product_name:  `TOTAL (${data.rows.length} products)`,
+            sku:           "",
+            qty_sold:      data.rows.reduce((s, r) => s + r.qty_sold, 0),
+            revenue:       data.rows.reduce((s, r) => s + r.revenue, 0),
+            cost:          data.rows.reduce((s, r) => s + r.cost, 0),
+            gross_profit:  data.rows.reduce((s, r) => s + r.gross_profit, 0),
+            margin_pct:    null,
+            grn_status:    "",
+          },
+        }],
+      });
+      sendExcel(res, buf, `Product-Profit-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export product profit Excel" });
+    }
+  });
+
   return httpServer;
 }

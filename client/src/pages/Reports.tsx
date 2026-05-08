@@ -31,7 +31,11 @@ const AccountStatement = lazy(() => import("@/components/reports/AccountStatemen
 const ConsolidatedCash = lazy(() => import("@/components/reports/ConsolidatedCash").then(m => ({ default: m.ConsolidatedCash })));
 const CashLedger = lazy(() => import("@/components/reports/CashLedger").then(m => ({ default: m.CashLedger })));
 const TaxSummary = lazy(() => import("@/components/reports/TaxSummary").then(m => ({ default: m.TaxSummary })));
-const SalesRegister = lazy(() => import("@/components/reports/SalesRegister").then(m => ({ default: m.SalesRegister })));
+const SalesRegister  = lazy(() => import("@/components/reports/SalesRegister").then(m => ({ default: m.SalesRegister })));
+const PeriodSales    = lazy(() => import("@/components/reports/PeriodSales").then(m => ({ default: m.PeriodSales })));
+const PeriodProfit   = lazy(() => import("@/components/reports/PeriodProfit").then(m => ({ default: m.PeriodProfit })));
+const ProductSales   = lazy(() => import("@/components/reports/ProductSales").then(m => ({ default: m.ProductSales })));
+const ProductProfit  = lazy(() => import("@/components/reports/ProductProfit").then(m => ({ default: m.ProductProfit })));
 const PurchaseRegister = lazy(() => import("@/components/reports/PurchaseRegister").then(m => ({ default: m.PurchaseRegister })));
 const ExpenseReport = lazy(() => import("@/components/reports/ExpenseReport").then(m => ({ default: m.ExpenseReport })));
 
@@ -1193,11 +1197,26 @@ export default function Reports() {
           <TabsContent value="sales-revenue" className="mt-4">
             <Tabs defaultValue="sales-register">
               <TabsList className="mb-4 flex flex-wrap gap-1 h-auto" data-testid="tablist-sales-revenue">
-                <TabsTrigger value="sales-register" className="text-xs" data-testid="tab-sr-sales-register">Sales Register</TabsTrigger>
-                {/* Phase B: Period Sales, Period Profit, Product Sales, Product Profit */}
+                <TabsTrigger value="sales-register"   className="text-xs" data-testid="tab-sr-sales-register">Sales Register</TabsTrigger>
+                <TabsTrigger value="period-sales"     className="text-xs" data-testid="tab-sr-period-sales">Period Sales</TabsTrigger>
+                <TabsTrigger value="period-profit"    className="text-xs" data-testid="tab-sr-period-profit">Period Profit</TabsTrigger>
+                <TabsTrigger value="product-sales"    className="text-xs" data-testid="tab-sr-product-sales">Product Sales</TabsTrigger>
+                <TabsTrigger value="product-profit"   className="text-xs" data-testid="tab-sr-product-profit">Product Profit</TabsTrigger>
               </TabsList>
               <TabsContent value="sales-register">
                 <Suspense fallback={<PageLoader />}><SalesRegister /></Suspense>
+              </TabsContent>
+              <TabsContent value="period-sales">
+                <Suspense fallback={<PageLoader />}><PeriodSales /></Suspense>
+              </TabsContent>
+              <TabsContent value="period-profit">
+                <Suspense fallback={<PageLoader />}><PeriodProfit /></Suspense>
+              </TabsContent>
+              <TabsContent value="product-sales">
+                <Suspense fallback={<PageLoader />}><ProductSales /></Suspense>
+              </TabsContent>
+              <TabsContent value="product-profit">
+                <Suspense fallback={<PageLoader />}><ProductProfit /></Suspense>
               </TabsContent>
             </Tabs>
           </TabsContent>

@@ -1,0 +1,168 @@
+Phase A approved. Proceed with Phase B — CEO Reports 1-4.
+
+The Sales & Revenue tab already has placeholder comments 
+for Phase B slots. Replace those placeholders with the 
+4 new lazy-loaded components built below.
+
+══════════════════════════════════════════════════════════════
+WHAT TO BUILD
+══════════════════════════════════════════════════════════════
+
+4 aggregators in financial-aggregations.ts
+4 routes in routes.ts  
+4 new component files in client/src/components/reports/
+1 update to Reports.tsx (wire the 4 new lazy imports + 
+  replace placeholder comments with TabsContent blocks)
+
+All 4 reports:
+- DateRangeFilter (from/to)
+- Granularity auto-bucket from range span:
+    ≤31d → daily | 31–180 → weekly | 
+    180–730 → monthly | >730 → yearly
+  Plus an override toggle: Daily/Weekly/Monthly/Yearly
+- 3 download buttons: CSV (raw), Excel (ExcelJS server-
+  side branded), PDF (jsPDF + Noto Sans + drawLetterhead)
+- Charts on-screen via Recharts (import inside each 
+  component — NOT in Reports.tsx)
+- No charts in Excel
+- Indian number formatting ₹X,XX,XXX.XX (en-IN) 
+  everywhere
+- Auth gate: admin + accountant only on all 4 routes
+- Standing Rule #11: aggregators in 
+  financial-aggregations.ts first, routes second
+- Standing Rule #10: canonical helpers only
+
+══════════════════════════════════════════════════════════════
+REPORT 1 — Period Sales
+══════════════════════════════════════════════════════════════
+
+Aggregator: getPeriodSales(from, to, granularity?)
+- Auto-derive bucket from range if no granularity passed
+- SUM(sales_invoices.grand_total) per bucket, 
+  exclude cancelled
+- Return: { buckets: [{period_label, period_start, 
+  total_sales, invoice_count}], summary: {grand_total, 
+  avg_per_bucket, peak_label, peak_amount} }
+
+Route: GET /api/reports/period-sales?from=&to=&granularity=
+
+Component: PeriodSales.tsx
+- DateRangeFilter + granularity toggle
+- Bar chart: x=period_label, y=₹ sales (blue bars)
+- Summary cards: Total Sales | Avg per Period | 
+  Peak Period (label + amount)
+- Table: Period | Total Sales | Invoice Count
+- 3 download buttons
+
+══════════════════════════════════════════════════════════════
+REPORT 2 — Period Profit
+══════════════════════════════════════════════════════════════
+
+Aggregator: getPeriodProfit(from, to, granularity?)
+- Same bucketing as Report 1
+- Per bucket:
+    revenue = SUM(sales_invoices.grand_total) excl. cancelled
+    purchases = SUM(supplier_invoices.total_amount) excl. 
+      cancelled (proxy COGS, matched by date bucket)
+    expenses = SUM(expenses.amount)
+    profit = revenue - purchases - expenses
+    margin_pct = profit / revenue × 100 (null if revenue=0)
+- Return: { buckets: [{period_label, revenue, purchases, 
+  expenses, profit, margin_pct}], summary: {total_revenue, 
+  total_profit, avg_margin_pct} }
+
+Route: GET /api/reports/period-profit?from=&to=&granularity=
+
+Component: PeriodProfit.tsx
+- DateRangeFilter + granularity toggle
+- Grouped bar chart: Revenue (blue) / Purchases (orange) / 
+  Profit (green or red depending on sign)
+- Summary cards: Total Revenue | Total Profit | Avg Margin %
+- Table: Period | Revenue | Purchases | Expenses | 
+  Profit | Margin %
+- Profit cell: green text if positive, red if negative
+- 3 download buttons
+
+══════════════════════════════════════════════════════════════
+REPORT 3 — Product Sales
+══════════════════════════════════════════════════════════════
+
+Aggregator: getProductSales(from, to, productId?)
+- JOIN sales_invoice_items → sales_invoices (date filter, 
+  excl. cancelled) → products
+- Exclude type='bundle'
+- Group by productId: SUM(qty), SUM(totalAmount), 
+  COUNT(distinct invoice_id)
+- Sort by total_sales DESC
+- Optional productId filter for single-product drill-down
+
+Route: GET /api/reports/product-sales?from=&to=&productId=
+
+Component: ProductSales.tsx
+- DateRangeFilter + optional product search/filter
+- Horizontal bar chart: top 10 products by total_sales
+- Table: Product | SKU | Category | Qty Sold | 
+  Total Sales | Invoice Count
+- 3 download buttons
+
+══════════════════════════════════════════════════════════════
+REPORT 4 — Product Profit (FIFO dispatch-time)
+══════════════════════════════════════════════════════════════
+
+Aggregator: getProductWiseProfit(from, to)
+Design constraints locked — implement exactly:
+
+1. Fetch delivery_challans WHERE status='dispatched' 
+   AND dispatch_date BETWEEN from AND to
+2. For each challan item where product.type = 'product' 
+   or 'physical' (exclude 'bundle' and 'service'):
+   - FIFO cost at dispatch date via computeFifoLots
+   - revenue = qty_dispatched × SO item unitPrice
+   - cost = FIFO blended cost × qty_dispatched
+   - gross_profit = revenue - cost
+   - has_grn_data = cost > 0
+3. Group by productId, aggregate across period
+4. Return: [{product_name, sku, qty_sold, revenue, 
+  cost, gross_profit, margin_pct, has_grn_data}]
+
+Route: GET /api/reports/product-profit?from=&to=
+
+Component: ProductProfit.tsx
+- DateRangeFilter only (no granularity — product-level)
+- Bar chart: top 10 products by gross_profit
+- Table: Product | SKU | Qty | Revenue | Cost | 
+  Gross Profit | Margin % | GRN Status
+  (flag icon + "No GRN cost data" on rows where 
+   has_grn_data = false — never show 100% margin silently)
+- Footer note always visible: "Bundle products excluded 
+  — component-level costing deferred to Phase 4D"
+- 3 download buttons
+
+══════════════════════════════════════════════════════════════
+REPORTS.TSX WIRING
+══════════════════════════════════════════════════════════════
+
+Add 4 lazy imports at top of Reports.tsx:
+const PeriodSales = lazy(() => import(...))
+const PeriodProfit = lazy(() => import(...))
+const ProductSales = lazy(() => import(...))
+const ProductProfit = lazy(() => import(...))
+
+Replace the Phase B placeholder comments in the 
+Sales & Revenue tab with proper TabsTrigger entries 
+and TabsContent blocks for all 4 new components.
+
+══════════════════════════════════════════════════════════════
+STOP CHECKPOINT
+══════════════════════════════════════════════════════════════
+
+After build, post screenshots of:
+1. Sales & Revenue tab showing all 5 sub-tabs 
+   (Sales Register + 4 new CEO tabs)
+2. Period Sales with real data + bar chart
+3. Period Profit with real data + grouped bars
+4. Product Sales with real data + horizontal bar chart
+5. Product Profit with real data + GRN flag where 
+   applicable
+
+TypeScript clean, no n

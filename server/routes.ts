@@ -5460,6 +5460,57 @@ export async function registerRoutes(
               await storage.createSalesInvoiceItem({ invoiceId: autoInvoice.id, productId: li.productId, description: li.description, qty: String(li.qty), unitPrice: String(li.unitPrice), hsnCode: li.hsnCode, gstRate: String(li.gstRate), taxableAmount: String(li.taxableAmount), cgst: String(li.cgst), sgst: String(li.sgst), igst: String(li.igst), taxAmount: String(li.taxAmount), totalAmount: String(li.totalAmount) });
             }
             await logAction(req.user.id, "sales_invoice_auto_created", "sales", `Invoice ${invoiceNumber} auto-created from dispatch of ${challan.challanNumber}`);
+
+            // Fix B: propagate pre-existing SO advance payments to the newly auto-created invoice.
+            // Mirrors Fix A (manual challan path). Runs inside the non-fatal try so any failure
+            // does not block the dispatch response.
+            if (challan.orderId) {
+              try {
+                const soResB = await db.execute(sql`SELECT * FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1`);
+                const soRowB = soResB.rows[0] as any;
+                if (soRowB && Number(soRowB.paid_amount) > 0) {
+                  const matchedResB = await db.execute(sql`
+                    SELECT * FROM payments
+                    WHERE invoice_id IS NULL
+                      AND reference ILIKE ${'%' + soRowB.order_number + '%'}
+                  `);
+                  const matchedPmtsB = matchedResB.rows as any[];
+                  let totalCreditedB = 0;
+                  if (matchedPmtsB.length > 0) {
+                    for (const mp of matchedPmtsB) {
+                      await storage.createCustomerPayment({
+                        invoiceId: autoInvoice.id,
+                        customerId: resolvedCustomerId,
+                        amount: String(mp.amount),
+                        paymentDate: mp.payment_date ? new Date(mp.payment_date) : new Date(),
+                        method: mp.method || "bank_transfer",
+                        reference: mp.reference || `SO ${soRowB.order_number}`,
+                        notes: null,
+                        createdBy: req.user.id,
+                        cashAccountId: mp.cash_account_id,
+                      });
+                      totalCreditedB += Number(mp.amount);
+                    }
+                  } else {
+                    // No reference-matched payment rows found.
+                    // Cannot create a customer_payments row without a valid cashAccountId.
+                    // Fall back to updating credited_amount directly so Accounts + AR Aging
+                    // (customer-aging route) reflect the correct balance.
+                    totalCreditedB = Number(soRowB.paid_amount);
+                  }
+                  const grandTotalNumB = subtotal + totalTax;
+                  const newStatusB = totalCreditedB >= grandTotalNumB ? "paid" : totalCreditedB > 0 ? "partial_paid" : "pending";
+                  await storage.updateSalesInvoice(autoInvoice.id, {
+                    creditedAmount: totalCreditedB.toFixed(2),
+                    status: newStatusB,
+                  });
+                  await logAction(req.user.id, "sales_invoice_payment_propagated", "sales",
+                    `Fix B: propagated SO paid_amount ₹${totalCreditedB} to invoice ${invoiceNumber} (${matchedPmtsB.length} payment rows matched)`);
+                }
+              } catch (fixBErr) {
+                console.error("Fix B: failed to propagate SO payments to auto-created invoice:", fixBErr);
+              }
+            }
           }
         }
       } catch (invErr) {
@@ -8025,7 +8076,7 @@ export async function registerRoutes(
           .filter(p => p.invoiceId === inv.id)
           .reduce((sum, p) => sum + Number(p.amount), 0);
 
-        const balance = Math.max(0, Number(inv.grandTotal) - totalPaid);
+        const balance = Math.max(0, Number(inv.grandTotal) - totalPaid - Number(inv.creditedAmount ?? 0));
 
         const dueDate = inv.dueDate ? new Date(inv.dueDate) : null;
         // daysOverdue: negative = not yet due (current), positive = overdue

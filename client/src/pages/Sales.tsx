@@ -34,7 +34,7 @@ import {
 type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount, Employee } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount } from "@shared/schema";
 import { Banknote, Landmark } from "lucide-react";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
@@ -1240,7 +1240,6 @@ export default function Sales() {
   }, [bundleComponentsMap]);
   const { data: warehouses } = useQuery<Warehouse[]>({ queryKey: ["/api/warehouses"] });
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
-  const { data: employees } = useQuery<Employee[]>({ queryKey: ["/api/employees"] });
   const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
@@ -2823,10 +2822,7 @@ export default function Sales() {
                               )}
                             </td>
                             <td className="p-3 text-muted-foreground text-sm" data-testid={`text-quote-issued-by-${q.id}`}>
-                              {(() => {
-                                const emp = (employees ?? []).find((e: any) => e.userId === (q as any).createdBy);
-                                return emp ? `${emp.firstName} ${emp.lastName}` : "—";
-                              })()}
+                              {(q as any).createdByName ?? "—"}
                             </td>
                             <td className="p-3 text-right font-medium">₹{Number(q.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>

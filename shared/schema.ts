@@ -208,6 +208,8 @@ export const quotations = pgTable("quotations", {
   // Phase 4 Cleanup A — strict floor override audit (parent-level)
   floorOverrideBy: varchar("floor_override_by"),
   floorOverrideAt: timestamp("floor_override_at"),
+  // Issued By — user who created this quotation
+  createdBy: varchar("created_by"),
 });
 
 export const quotationItems = pgTable("quotation_items", {

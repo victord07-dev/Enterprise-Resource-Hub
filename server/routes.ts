@@ -2245,7 +2245,20 @@ export async function registerRoutes(
   app.get("/api/quotations", authenticateToken, async (_req, res) => {
     try {
       const data = await storage.getQuotations();
-      res.json(data);
+      // Enrich with creator username via a single lookup map
+      const allUsers = await storage.getUsers();
+      const allEmployees = await storage.getEmployees();
+      const userMap = new Map(allUsers.map(u => [u.id, u]));
+      const empByUserId = new Map(allEmployees.filter(e => e.userId).map(e => [e.userId!, e]));
+      const enriched = data.map(q => {
+        const createdBy = (q as any).createdBy as string | null;
+        if (!createdBy) return q;
+        const emp = empByUserId.get(createdBy);
+        const user = userMap.get(createdBy);
+        const createdByName = emp?.name ?? user?.username ?? null;
+        return { ...q, createdByName };
+      });
+      res.json(enriched);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch quotations" });
     }
@@ -2268,7 +2281,7 @@ export async function registerRoutes(
       const fyStr = getFinancialYear(new Date());
       const created = await db.transaction(async (tx) => {
           const quoteNumber = await nextDocNumberInTx(tx, "ITFI-Q", fyStr);
-          const parsed = insertQuotationSchema.parse({ ...body, quoteNumber });
+          const parsed = insertQuotationSchema.parse({ ...body, quoteNumber, createdBy: req.user.id });
           const [row] = await tx.insert(quotationsTable).values(parsed as any).returning();
           return row;
         });

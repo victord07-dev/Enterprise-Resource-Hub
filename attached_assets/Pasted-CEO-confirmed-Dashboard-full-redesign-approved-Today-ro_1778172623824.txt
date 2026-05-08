@@ -1,0 +1,177 @@
+CEO confirmed:
+- Dashboard full redesign approved
+- Today row + Monthly row: fixed labels, not filter-driven
+- Outstanding cards: both rows show all-time total unpaid 
+  (intentional — same number serves as anchor in both rows)
+- Profit = Sale - Purchase - Expenses (cash basis, no FIFO)
+- Fake Revenue Overview chart → replace with real 30-day 
+  daily sales bar chart
+- All new finance sections: admin + accountant only
+
+══════════════════════════════════════════════════════════════
+PRE-WORK (read-only, before any code — mandatory)
+══════════════════════════════════════════════════════════════
+
+Read these before writing anything:
+1. client/src/pages/Dashboard.tsx — full file. Note exact 
+   location of every finance-gated section (isFinanceUser), 
+   the existing snapshot query, and the fake revenueData chart.
+2. All components in client/src/components/dashboard/ — 
+   understand what each currently renders.
+3. financial-aggregations.ts — getTodaySnapshot() and 
+   getPeriodTotals() — identify what's already computed to 
+   avoid duplication in the new aggregator.
+4. storage.ts — sumOpenCustomerOutstanding(), 
+   sumOpenSupplierPayable(), computeAccountBalance() — 
+   confirm signatures.
+
+Post implementation plan after PRE-WORK. Wait for approval 
+before writing any code.
+
+══════════════════════════════════════════════════════════════
+SPEC
+══════════════════════════════════════════════════════════════
+
+KEEP — do not touch:
+- Payroll alert banner
+- All-roles 4 metric cards (Total Revenue, Total Orders, 
+  Active Projects, Total Customers)
+- CashPositionStrip
+- RecentActivityFeed
+- PendingActionsWidget
+- Today's Follow-ups card
+- Audit Trail card
+
+REPLACE:
+- Entire existing Financial Snapshot section (TodaySnapshotCards, 
+  MetricCardsRow, TopCustomersWidget, TopSuppliersWidget) 
+  → new layout below
+- Fake revenueData AreaChart → real 30-day bar chart
+
+──────────────────────────────────────────────────────────────
+SERVER: New aggregator getDashboardKPIs() in 
+financial-aggregations.ts → route GET /api/dashboard/kpis
+(admin + accountant only)
+──────────────────────────────────────────────────────────────
+
+TODAY block (date = today):
+- today_outstanding_receivables: sumOpenCustomerOutstanding()
+- today_outstanding_payables: sumOpenSupplierPayable()
+- today_net_working_capital: 
+    SUM(computeAccountBalance all accounts) 
+    + today_outstanding_receivables 
+    - today_outstanding_payables
+- today_sale: SUM(sales_invoices.grand_total) WHERE 
+  DATE(invoice_date) = today
+- today_purchase: SUM(supplier_invoices.total_amount) WHERE 
+  DATE(invoice_date) = today
+- today_expenses: SUM(expenses.amount) WHERE 
+  DATE(expense_date) = today
+- today_profit: today_sale - today_purchase - today_expenses
+
+MONTHLY block (current calendar month):
+- monthly_outstanding_receivables: same as 
+  today_outstanding_receivables (all-time unpaid — same query)
+- monthly_outstanding_payables: same as 
+  today_outstanding_payables
+- monthly_net_working_capital: same as today_net_working_capital
+- monthly_sale: SUM(sales_invoices.grand_total) WHERE 
+  invoice_date IN current month
+- monthly_purchase: SUM(supplier_invoices.total_amount) WHERE 
+  invoice_date IN current month
+- monthly_expenses: SUM(expenses.amount) WHERE 
+  expense_date IN current month
+- monthly_profit: monthly_sale - monthly_purchase - 
+  monthly_expenses
+
+TOTALS:
+- total_bank_balance: SUM(computeAccountBalance(id)) WHERE 
+  accounts.type = 'bank'
+- total_cash_capital: SUM(computeAccountBalance(id)) ALL 
+  active accounts
+
+LISTS:
+- top_customers_monthly: top 5 by SUM(sales_invoices.grand_total) 
+  this month → {customer_name, total_sales}
+- customer_outstanding_list: all customers with outstanding > 0 
+  using computeCustomerInvoiceOutstanding per invoice, 
+  grouped by customer, sorted DESC → {customer_name, outstanding}
+- today_sales_list: sales_invoices WHERE DATE(invoice_date) = 
+  today → {customer_name, invoice_no, amount, status}
+- today_purchase_list: supplier_invoices WHERE 
+  DATE(invoice_date) = today → {supplier_name, invoice_no, 
+  amount, status}
+- daily_sales_30d: SUM(grand_total) GROUP BY DATE(invoice_date) 
+  for last 30 calendar days. Fill missing dates with 0. 
+  → [{date: "YYYY-MM-DD", total: number}] sorted ASC
+
+Rules: all logic in getDashboardKPIs() in 
+financial-aggregations.ts first (Standing Rule #11). 
+Canonical helpers mandatory — no inline math.
+
+──────────────────────────────────────────────────────────────
+CLIENT: Dashboard.tsx — finance-gated section redesign
+──────────────────────────────────────────────────────────────
+
+Single new useQuery for /api/dashboard/kpis:
+- refetchInterval: 60_000
+- refetchOnWindowFocus: true
+- enabled: isFinanceUser
+
+New layout inside the finance-gated section:
+
+SECTION HEADER: "Today's Overview" + today's date (right-aligned)
+
+ROW 1 — 7 cards, label "Today":
+[Outstanding Receivables] [Outstanding Payables] [Net Working Capital]
+[Today Sale] [Today Purchase] [Today Expenses] [Today Profit]
+Profit card: green text if positive, red if negative.
+
+ROW 2 — 7 cards, label "This Month":
+[Monthly Receivables] [Monthly Payables] [Net Working Capital]
+[Monthly Sale] [Monthly Purchase] [Monthly Expenses] [Monthly Profit]
+Same green/red on Monthly Profit.
+
+ROW 3 — 2 summary cards:
+[Total Bank Balance] [Total Cash on Hand (all accounts)]
+
+ROW 4 — 2 widgets side by side:
+Left — "Top Customers This Month":
+  List of 5 rows: customer name + ₹ sales amount this month
+Right — "Customer Outstanding":
+  List of all customers with balance > 0: name + ₹ outstanding
+  Sorted by outstanding DESC
+
+ROW 5 — 2 lists side by side:
+Left — "Today's Sales":
+  Rows: customer name | invoice no | ₹ amount | status badge
+  Empty state: "No sales today"
+Right — "Today's Purchases":
+  Rows: supplier name | invoice no | ₹ amount | status badge
+  Empty state: "No purchases today"
+
+ROW 6 — Full-width chart card (replaces fake Revenue Overview):
+Title: "Sales — Last 30 Days"
+Recharts BarChart: x-axis = date (DD MMM format), 
+  y-axis = ₹ sales, Indian number format on Y axis (en-IN)
+Data source: daily_sales_30d from /api/dashboard/kpis
+Bar color: blue (consistent with existing chart styling)
+Empty/zero days render as 0-height bar (do not skip dates)
+
+──────────────────────────────────────────────────────────────
+STANDARDS:
+- Indian number formatting ₹X,XX,XXX.XX (en-IN locale) 
+  on all currency values
+- Skeleton loaders on all 7+7 cards while query loads
+- data-testid on all cards and list rows
+- Recharts only (no Chart.js)
+- TypeScript clean — no new `any`
+- Standing Rule #6: touch only Dashboard.tsx, 
+  financial-aggregations.ts, routes.ts 
+  (new /api/dashboard/kpis route only)
+- Do NOT modify: existing snapshot route, stats route, 
+  CashPositionStrip, RecentActivityFeed, PendingActionsWidget, 
+  Follow-ups card, Audit Trail card, any report file
+
+STOP CHECKPOINT: Post full implementation plan after PRE-WORK. 
+No code until approved.

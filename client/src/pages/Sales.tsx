@@ -34,7 +34,7 @@ import {
 type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount, SalesInvoice } from "@shared/schema";
 import { Banknote, Landmark } from "lucide-react";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
@@ -1656,6 +1656,7 @@ export default function Sales() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
       toast({ title: "Payment recorded" });
       setPaymentDialogOpen(false);
       setPaymentOrderId(null);
@@ -1670,6 +1671,13 @@ export default function Sales() {
 
   // Phase 4B: cash accounts list for Record Payment dropdown
   const { data: cashAccountsForPayment } = useQuery<(CashAccount & { balance?: number })[]>({ queryKey: ["/api/cash-accounts"] });
+
+  // Sales invoices — used to detect if an SO already has an invoice (soId match)
+  const { data: allSalesInvoices } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
+  const soInvoiceMap = (allSalesInvoices ?? []).reduce<Record<string, SalesInvoice>>((acc, inv) => {
+    if (inv.soId) acc[inv.soId] = inv;
+    return acc;
+  }, {});
   const getPaymentAccounts = (method: string) =>
     (cashAccountsForPayment ?? []).filter(a => a.isActive && (method === "cash" ? a.type === "cash" : a.type === "bank"));
 
@@ -2606,15 +2614,27 @@ export default function Sales() {
                                         </Button>
                                       )}
                                       {INVOICE_ELIGIBLE_STATUSES.includes(order.status) && (
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
-                                          data-testid={`button-generate-invoice-${order.id}`}
-                                          disabled={generateInvoiceMutation.isPending}
-                                          onClick={() => { if (confirm("Generate invoice for this order?")) generateInvoiceMutation.mutate(order.id); }}
-                                        >
-                                          <Receipt className="w-3 h-3 mr-1" /> Generate Invoice
-                                        </Button>
+                                        soInvoiceMap[order.id] ? (
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="border-emerald-400 text-emerald-600 dark:text-emerald-400 dark:border-emerald-600"
+                                            data-testid={`button-view-invoice-${order.id}`}
+                                            onClick={() => navigate(`/sales-invoices`)}
+                                          >
+                                            <Receipt className="w-3 h-3 mr-1" /> View Invoice
+                                          </Button>
+                                        ) : (
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            data-testid={`button-generate-invoice-${order.id}`}
+                                            disabled={generateInvoiceMutation.isPending}
+                                            onClick={() => { if (confirm("Generate invoice for this order?")) generateInvoiceMutation.mutate(order.id); }}
+                                          >
+                                            <Receipt className="w-3 h-3 mr-1" /> Generate Invoice
+                                          </Button>
+                                        )
                                       )}
                                     </div>
                                   </div>

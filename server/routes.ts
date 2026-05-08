@@ -3099,6 +3099,36 @@ export async function registerRoutes(
 
       await logAction(req.user.id, "create", "sales", `Recorded payment ₹${paymentAmount} for order ${order.orderNumber}`);
 
+      // Propagate payment to linked sales_invoice (soId match) so AR Aging and Accounts reflect it
+      try {
+        const allSalesInvs = await storage.getSalesInvoices();
+        const linkedInv = allSalesInvs.find(inv => inv.soId === order.id);
+        if (linkedInv) {
+          await storage.createCustomerPayment({
+            invoiceId: linkedInv.id,
+            customerId: order.customerId,
+            amount: paymentAmount.toFixed(2),
+            method,
+            reference: reference || `SO ${order.orderNumber}`,
+            cashAccountId,
+            createdBy: req.user.id,
+            paymentDate: req.body.paymentDate ? new Date(req.body.paymentDate) : new Date(),
+          });
+          // Recompute creditedAmount and status on the invoice
+          const allPaymentsForInv = await storage.getAllCustomerPayments();
+          const paymentsForInv = allPaymentsForInv.filter(p => p.invoiceId === linkedInv.id);
+          const totalCredited = paymentsForInv.reduce((sum, p) => sum + Number(p.amount), 0);
+          const grandTotal = Number(linkedInv.grandTotal);
+          const newStatus = totalCredited >= grandTotal ? "paid" : totalCredited > 0 ? "partial_paid" : "pending";
+          await storage.updateSalesInvoice(linkedInv.id, {
+            creditedAmount: totalCredited.toFixed(2),
+            status: newStatus,
+          });
+        }
+      } catch (propErr) {
+        console.error("Failed to propagate SO payment to sales_invoice:", propErr);
+      }
+
       res.status(201).json({ order: updatedOrder, payment });
     } catch (error) {
       res.status(500).json({ message: "Failed to record payment" });

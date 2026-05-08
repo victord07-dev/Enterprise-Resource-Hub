@@ -8868,6 +8868,68 @@ export async function registerRoutes(
         await storage.createSalesInvoiceItem({ invoiceId: invoice.id, productId: li.productId, description: li.description, qty: String(li.qty), unitPrice: String(li.unitPrice), hsnCode: li.hsnCode, gstRate: String(li.gstRate), taxableAmount: String(li.taxableAmount), cgst: String(li.cgst), sgst: String(li.sgst), igst: String(li.igst), taxAmount: String(li.taxAmount), totalAmount: String(li.totalAmount) });
       }
       await logAction(req.user.id, "sales_invoice_manually_created", "sales", `Invoice ${invoiceNumber} manually created for challan ${challanRow.challan_number}`);
+
+      // Fix A: propagate pre-existing SO payments to the newly created invoice.
+      // If the parent SO already has paidAmount > 0 at the time the invoice is created,
+      // find the actual payment rows (by reference matching the SO order number) and
+      // create customer_payments entries so AR Aging / Accounts reflect them immediately.
+      const parentSoId = soId ?? challanRow.order_id ?? null;
+      if (parentSoId) {
+        try {
+          const soRes2 = await db.execute(sql`SELECT * FROM sales_orders WHERE id = ${parentSoId} LIMIT 1`);
+          const soRow = soRes2.rows[0] as any;
+          if (soRow && Number(soRow.paid_amount) > 0) {
+            // Look up payments linked to this SO by reference field
+            const matchedRes = await db.execute(sql`
+              SELECT * FROM payments
+              WHERE invoice_id IS NULL
+                AND reference ILIKE ${'%' + soRow.order_number + '%'}
+            `);
+            const matchedPmts = matchedRes.rows as any[];
+            let totalCredited = 0;
+            if (matchedPmts.length > 0) {
+              for (const mp of matchedPmts) {
+                await storage.createCustomerPayment({
+                  invoiceId: invoice.id,
+                  customerId: resolvedCustomerId,
+                  amount: String(mp.amount),
+                  paymentDate: mp.payment_date ? new Date(mp.payment_date) : new Date(),
+                  method: mp.method || "bank_transfer",
+                  reference: mp.reference || `SO ${soRow.order_number}`,
+                  notes: null,
+                  createdBy: req.user.id,
+                  cashAccountId: mp.cash_account_id || null,
+                });
+                totalCredited += Number(mp.amount);
+              }
+            } else {
+              // Fallback: no reference-matched rows — use paidAmount scalar with a clear note
+              const paidAmt = Number(soRow.paid_amount);
+              await storage.createCustomerPayment({
+                invoiceId: invoice.id,
+                customerId: resolvedCustomerId,
+                amount: String(paidAmt),
+                paymentDate: new Date(),
+                method: "bank_transfer",
+                reference: `Pre-existing payment — ${soRow.order_number}`,
+                notes: "Auto-propagated from SO paid_amount at invoice creation (no reference-matched payment rows found)",
+                createdBy: req.user.id,
+                cashAccountId: null,
+              });
+              totalCredited = paidAmt;
+            }
+            const grandTotalNum = subtotal + totalTax;
+            const newStatus = totalCredited >= grandTotalNum ? "paid" : totalCredited > 0 ? "partial_paid" : "pending";
+            await storage.updateSalesInvoice(invoice.id, {
+              creditedAmount: totalCredited.toFixed(2),
+              status: newStatus,
+            });
+          }
+        } catch (fixAErr) {
+          console.error("Fix A: failed to propagate SO payments to new invoice:", fixAErr);
+        }
+      }
+
       res.status(201).json(invoice);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to create sales invoice" });

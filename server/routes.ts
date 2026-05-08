@@ -3114,16 +3114,9 @@ export async function registerRoutes(
             createdBy: req.user.id,
             paymentDate: req.body.paymentDate ? new Date(req.body.paymentDate) : new Date(),
           });
-          // Recompute creditedAmount and status on the invoice
-          const allPaymentsForInv = await storage.getAllCustomerPayments();
-          const paymentsForInv = allPaymentsForInv.filter(p => p.invoiceId === linkedInv.id);
-          const totalCredited = paymentsForInv.reduce((sum, p) => sum + Number(p.amount), 0);
-          const grandTotal = Number(linkedInv.grandTotal);
-          const newStatus = totalCredited >= grandTotal ? "paid" : totalCredited > 0 ? "partial_paid" : "pending";
-          await storage.updateSalesInvoice(linkedInv.id, {
-            creditedAmount: totalCredited.toFixed(2),
-            status: newStatus,
-          });
+          // Recompute invoice status — creditedAmount stays as credit notes only;
+          // the new customer_payments row is accounted for separately.
+          await storage.recomputeInvoiceCreditedAmount(linkedInv.id);
         }
       } catch (propErr) {
         console.error("Failed to propagate SO payment to sales_invoice:", propErr);
@@ -5500,8 +5493,12 @@ export async function registerRoutes(
                   }
                   const grandTotalNumB = subtotal + totalTax;
                   const newStatusB = totalCreditedB >= grandTotalNumB ? "paid" : totalCreditedB > 0 ? "partial_paid" : "pending";
+                  // creditedAmount tracks credit notes only — when customer_payments rows were created
+                  // they already account for the cash; set credited_amount=0 to avoid double-counting.
+                  // Only use credited_amount as a stand-in when no customer_payments row could be made.
+                  const creditedAmtB = matchedPmtsB.length > 0 ? "0.00" : totalCreditedB.toFixed(2);
                   await storage.updateSalesInvoice(autoInvoice.id, {
-                    creditedAmount: totalCreditedB.toFixed(2),
+                    creditedAmount: creditedAmtB,
                     status: newStatusB,
                   });
                   await logAction(req.user.id, "sales_invoice_payment_propagated", "sales",
@@ -8954,25 +8951,17 @@ export async function registerRoutes(
                 totalCredited += Number(mp.amount);
               }
             } else {
-              // Fallback: no reference-matched rows — use paidAmount scalar with a clear note
-              const paidAmt = Number(soRow.paid_amount);
-              await storage.createCustomerPayment({
-                invoiceId: invoice.id,
-                customerId: resolvedCustomerId,
-                amount: String(paidAmt),
-                paymentDate: new Date(),
-                method: "bank_transfer",
-                reference: `Pre-existing payment — ${soRow.order_number}`,
-                notes: "Auto-propagated from SO paid_amount at invoice creation (no reference-matched payment rows found)",
-                createdBy: req.user.id,
-                cashAccountId: null,
-              });
-              totalCredited = paidAmt;
+              // Fallback: no reference-matched rows and no cashAccountId traceable.
+              // Cannot create a customer_payments row (schema requires cashAccountId NOT NULL).
+              // Use credited_amount as a stand-in so Accounts + AR Aging reflect the balance.
+              totalCredited = Number(soRow.paid_amount);
             }
             const grandTotalNum = subtotal + totalTax;
             const newStatus = totalCredited >= grandTotalNum ? "paid" : totalCredited > 0 ? "partial_paid" : "pending";
+            // creditedAmount tracks credit notes only; set to 0 when customer_payments rows exist.
+            const creditedAmtA = matchedPmts.length > 0 ? "0.00" : totalCredited.toFixed(2);
             await storage.updateSalesInvoice(invoice.id, {
-              creditedAmount: totalCredited.toFixed(2),
+              creditedAmount: creditedAmtA,
               status: newStatus,
             });
           }

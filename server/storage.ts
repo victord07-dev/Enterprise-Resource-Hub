@@ -1895,7 +1895,12 @@ export class DatabaseStorage implements IStorage {
     const inv = await this.getSalesInvoice(invoiceId);
     if (!inv) return undefined;
     const cns = await this.getCreditNotesByInvoice(invoiceId);
-    const totalCredited = cns.reduce((sum, cn) => sum + Number(cn.grandTotal), 0);
+    const creditNotesTotal = cns.reduce((sum, cn) => sum + Number(cn.grandTotal), 0);
+    // Preserve a higher existing credited_amount — Fix B/A may have stored an advance
+    // payment stand-in there when no cashAccountId was traceable. Never lower it below
+    // the credit-notes total; only raise it if credit notes exceed the stand-in.
+    const existingCredited = Number(inv.creditedAmount ?? 0);
+    const totalCredited = Math.max(creditNotesTotal, existingCredited);
     const payments = await this.getCustomerPayments(invoiceId);
     const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount), 0);
     const grandTotal = Number(inv.grandTotal);

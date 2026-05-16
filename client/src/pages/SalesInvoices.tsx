@@ -211,6 +211,22 @@ function RecordPaymentDialog({
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split("T")[0]);
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
+  const [cashAccountId, setCashAccountId] = useState("");
+
+  const { data: cashAccountsData } = useQuery<{ id: string; name: string; type: string; isActive: boolean }[]>({
+    queryKey: ["/api/cash-accounts"],
+  });
+
+  // Filter accounts by method: cash method → cash-type accounts; everything else → bank-type
+  const accountOptions = (cashAccountsData ?? []).filter(a =>
+    a.isActive && (method === "cash" ? a.type === "cash" : a.type === "bank")
+  );
+
+  // Reset cash account when method changes
+  const handleMethodChange = (val: string) => {
+    setMethod(val);
+    setCashAccountId("");
+  };
 
   const payMut = useMutation({
     mutationFn: () =>
@@ -222,21 +238,25 @@ function RecordPaymentDialog({
         method,
         reference: reference || undefined,
         notes: notes || undefined,
+        cashAccountId,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices", invoice.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/customer-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
       toast({ title: "Payment Recorded", description: `₹${parseFloat(amount).toLocaleString("en-IN")} recorded for ${invoice.invoiceNumber}` });
       onClose();
     },
     onError: async (err: any) => {
       let msg = "Failed to record payment";
-      try { const b = await err.response?.json?.(); msg = b?.message ?? msg; } catch {}
+      try { const b = await (err as any).response?.json?.(); msg = b?.message ?? msg; } catch {}
       toast({ title: "Error", description: msg, variant: "destructive" });
     },
   });
 
   const maxAmount = invoice.balance;
+  const canSubmit = !!amount && parseFloat(amount) > 0 && !!cashAccountId && !payMut.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -273,7 +293,7 @@ function RecordPaymentDialog({
           </div>
           <div className="space-y-1">
             <Label>Method</Label>
-            <Select value={method} onValueChange={setMethod}>
+            <Select value={method} onValueChange={handleMethodChange}>
               <SelectTrigger data-testid="select-payment-method">
                 <SelectValue />
               </SelectTrigger>
@@ -284,6 +304,22 @@ function RecordPaymentDialog({
                 <SelectItem value="upi">UPI</SelectItem>
                 <SelectItem value="neft">NEFT</SelectItem>
                 <SelectItem value="rtgs">RTGS</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label>Received Into Account *</Label>
+            <Select value={cashAccountId} onValueChange={setCashAccountId}>
+              <SelectTrigger data-testid="select-cash-account">
+                <SelectValue placeholder="Select account…" />
+              </SelectTrigger>
+              <SelectContent>
+                {accountOptions.length === 0 && (
+                  <SelectItem value="_none" disabled>No active accounts for this method</SelectItem>
+                )}
+                {accountOptions.map(a => (
+                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -309,7 +345,7 @@ function RecordPaymentDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-payment">Cancel</Button>
           <Button
-            disabled={!amount || parseFloat(amount) <= 0 || payMut.isPending}
+            disabled={!canSubmit}
             onClick={() => payMut.mutate()}
             data-testid="button-record-payment"
           >

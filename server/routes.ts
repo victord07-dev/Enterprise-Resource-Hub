@@ -3069,13 +3069,19 @@ export async function registerRoutes(
       }
       const newPaidAmount = (currentPaid + paymentAmount).toFixed(2);
 
+      // Always embed the SO order number in the reference so Fix B can locate this
+      // payment row by reference search, even when a custom reference is provided.
+      const paymentReference = reference
+        ? `${reference} [${order.orderNumber}]`
+        : `Order ${order.orderNumber}`;
+
       const payment = await storage.createPayment({
         invoiceId: null,
         amount: paymentAmount.toFixed(2),
         method,
         status: "completed",
         paymentDate: new Date(),
-        reference: reference || `Order ${order.orderNumber}`,
+        reference: paymentReference,
         cashAccountId,
       });
 

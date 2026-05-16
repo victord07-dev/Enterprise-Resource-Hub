@@ -1563,7 +1563,19 @@ export default function Inventory() {
                                     data-testid={`button-pdf-challan-${challan.id}`}
                                     title="Download PDF"
                                     onClick={async () => {
-                                      const items = challanItemsMap[challan.id] || [];
+                                      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+                                      // Fetch items on-demand if not yet loaded (row not expanded)
+                                      let items = challanItemsMap[challan.id];
+                                      if (!items) {
+                                        try {
+                                          const res = await fetch(`/api/delivery-challans/${challan.id}/items`, { headers });
+                                          const fetched = await res.json();
+                                          items = Array.isArray(fetched) ? fetched : [];
+                                          setChallanItemsMap(prev => ({ ...prev, [challan.id]: items as any }));
+                                        } catch {
+                                          items = [];
+                                        }
+                                      }
                                       const customer = customers?.find(c => c.id === challan.customerId);
                                       await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap);
                                     }}

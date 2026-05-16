@@ -3,6 +3,18 @@ import type jsPDF from "jspdf";
 import type { DeliveryChallan, DeliveryChallanItem, Customer, Product } from "@shared/schema";
 import { drawLetterhead } from "@shared/pdf-letterhead";
 import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
+import logoAssetUrl from "@assets/ITFI-LOGO-FIN_1778914024535.png";
+
+async function loadLogoDataUrl(): Promise<string> {
+  const res = await fetch(logoAssetUrl);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 async function loadJsPDF() {
   const mod = await import("jspdf");
@@ -58,6 +70,9 @@ export async function generateChallanPDF(
   const doc: jsPDF = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   await ensureNotoSansRegistered(doc);
 
+  // Load the ITFI logo — prefer caller-supplied, otherwise fetch from Vite asset
+  const resolvedLogoUrl = logoDataUrl ?? await loadLogoDataUrl().catch(() => undefined);
+
   const pageWidth  = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 12;
@@ -69,7 +84,7 @@ export async function generateChallanPDF(
     pageWidth,
     margin,
     title: `DELIVERY CHALLAN  \u00b7  ${challan.challanNumber}`,
-    logoDataUrl,
+    logoDataUrl: resolvedLogoUrl,
     bannerSubtitle: fmtDate(challan.createdAt),
   });
 
@@ -143,13 +158,48 @@ export async function generateChallanPDF(
   } else {
     doc.text("\u2014", rx2 + 3, y + 9.5);
   }
-  if (challan.driverName) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(6.5);
-    doc.setTextColor(...C.textSecondary);
-    doc.text(`Driver: ${challan.driverName}${challan.driverPhone ? "  " + challan.driverPhone : ""}`, rx2 + 3, y + 15);
+  y += addrBoxH + 2;
+
+  // ── Driver highlight strip ───────────────────────────────────────────────────
+  // Shown below address boxes whenever driver info is present; amber background
+  // so it stands out clearly on the printed challan.
+  const driverStripH = 11;
+  const driverAccent: [number, number, number] = [251, 191, 36];   // amber-400
+  const driverBg:     [number, number, number] = [255, 251, 235];  // amber-50
+  const driverText:   [number, number, number] = [120, 53, 15];    // amber-900
+
+  doc.setFillColor(...driverBg);
+  doc.setDrawColor(...driverAccent);
+  doc.rect(margin, y, contentW, driverStripH, "FD");
+
+  // Left accent bar
+  doc.setFillColor(...driverAccent);
+  doc.rect(margin, y, 2.5, driverStripH, "F");
+
+  const driverMid = y + driverStripH / 2 + 1;
+  doc.setFontSize(6);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...driverText);
+  doc.text("DRIVER / TRANSPORT", margin + 4.5, y + 4);
+
+  const driverName = challan.driverName || "\u2014";
+  const driverPhone = challan.driverPhone || "";
+
+  // Name — large bold
+  doc.setFontSize(8.5);
+  doc.setFont("helvetica", "bold");
+  doc.setTextColor(...driverText);
+  doc.text(driverName, margin + 4.5, driverMid + 1);
+
+  // Phone — right-aligned, large
+  if (driverPhone) {
+    doc.setFontSize(8.5);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(...driverText);
+    doc.text(driverPhone, margin + contentW - 3, driverMid + 1, { align: "right" });
   }
-  y += addrBoxH + 3;
+
+  y += driverStripH + 3;
 
   // ── GST Items Table ─────────────────────────────────────────────────────────
   // Columns: SR | Description | HSN/SAC | Qty | Price/Item | Taxable Value | CGST Rate | CGST Amt | SGST Rate | SGST Amt | IGST Rate | IGST Amt

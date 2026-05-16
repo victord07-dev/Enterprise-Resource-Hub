@@ -160,43 +160,32 @@ export async function generateChallanPDF(
   }
   y += addrBoxH + 2;
 
-  // ── Driver highlight strip ───────────────────────────────────────────────────
-  // Shown below address boxes whenever driver info is present; amber background
-  // so it stands out clearly on the printed challan.
+  // ── Driver strip ────────────────────────────────────────────────────────────
   const driverStripH = 11;
-  const driverAccent: [number, number, number] = [251, 191, 36];   // amber-400
-  const driverBg:     [number, number, number] = [255, 251, 235];  // amber-50
-  const driverText:   [number, number, number] = [120, 53, 15];    // amber-900
 
-  doc.setFillColor(...driverBg);
-  doc.setDrawColor(...driverAccent);
+  doc.setFillColor(...C.infoBg);
+  doc.setDrawColor(...C.tableBorder);
   doc.rect(margin, y, contentW, driverStripH, "FD");
 
-  // Left accent bar
-  doc.setFillColor(...driverAccent);
-  doc.rect(margin, y, 2.5, driverStripH, "F");
-
   const driverMid = y + driverStripH / 2 + 1;
-  doc.setFontSize(6);
-  doc.setFont("helvetica", "bold");
-  doc.setTextColor(...driverText);
-  doc.text("DRIVER / TRANSPORT", margin + 4.5, y + 4);
+  doc.setFontSize(5.5);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(...C.textSecondary);
+  doc.text("Driver / Transport", margin + 3, y + 4);
 
   const driverName = challan.driverName || "\u2014";
   const driverPhone = challan.driverPhone || "";
 
-  // Name — large bold
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setFont("helvetica", "bold");
-  doc.setTextColor(...driverText);
-  doc.text(driverName, margin + 4.5, driverMid + 1);
+  doc.setTextColor(...C.textPrimary);
+  doc.text(driverName, margin + 3, driverMid + 1.5);
 
-  // Phone — right-aligned, large
   if (driverPhone) {
-    doc.setFontSize(8.5);
+    doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
-    doc.setTextColor(...driverText);
-    doc.text(driverPhone, margin + contentW - 3, driverMid + 1, { align: "right" });
+    doc.setTextColor(...C.textPrimary);
+    doc.text(driverPhone, margin + contentW - 3, driverMid + 1.5, { align: "right" });
   }
 
   y += driverStripH + 3;

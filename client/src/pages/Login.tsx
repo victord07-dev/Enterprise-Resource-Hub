@@ -21,8 +21,8 @@ export default function Login() {
     try {
       const res = await apiRequest("POST", "/api/auth/login", { username, password });
       const data = await res.json();
-      localStorage.setItem("token", data.token);
-      localStorage.setItem("user", JSON.stringify(data.user));
+      sessionStorage.setItem("token", data.token);
+      sessionStorage.setItem("user", JSON.stringify(data.user));
       if (data.user?.role === "kiosk") {
         window.location.href = "/kiosk";
       } else {
@@ -45,7 +45,7 @@ export default function Login() {
               <Shield className="w-8 h-8 text-primary-foreground" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold" data-testid="text-app-title">ITFI Group</h1>
+          <h1 className="text-2xl font-bold" data-testid="text-app-title">Hussain Enterprise</h1>
           <p className="text-muted-foreground text-sm">Enterprise Resource Planning System</p>
         </CardHeader>
         <CardContent>

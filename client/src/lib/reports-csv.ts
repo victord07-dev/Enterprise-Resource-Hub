@@ -60,7 +60,7 @@ export function downloadCSV(filename: string, csv: string): void {
 // ─── P&L Statement CSV (Statement family) ────────────────────────────────────
 export interface PLCSVData {
   revenue: { salesRevenue: number; salesReturns: number; netRevenue: number };
-  cogs: { purchases: number; label: string };
+  cogs: { amount: number; label: string };
   grossProfit: number;
   operatingExpenses: {
     byCategory: { categoryName: string; total: number }[];
@@ -75,7 +75,7 @@ export function generatePLStatementCSV(d: PLCSVData): string {
     { Section: "REVENUE", Label: "Sales Revenue (ex-GST)", Amount: round(d.revenue.salesRevenue) },
     { Section: "REVENUE", Label: "Sales Returns", Amount: round(-d.revenue.salesReturns) },
     { Section: "REVENUE", Label: "Net Revenue", Amount: round(d.revenue.netRevenue) },
-    { Section: "COGS", Label: "Purchases", Amount: round(-d.cogs.purchases) },
+    { Section: "COGS", Label: d.cogs.label, Amount: round(-d.cogs.amount) },
     { Section: "GROSS_PROFIT", Label: "Gross Profit", Amount: round(d.grossProfit) },
     ...d.operatingExpenses.byCategory.map((c) => ({
       Section: "OPEX",

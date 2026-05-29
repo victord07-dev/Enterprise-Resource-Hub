@@ -1,4 +1,4 @@
-import { useState, Fragment, useEffect, useMemo } from "react";
+﻿import { useState, Fragment, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, PackagePlus, Sparkles, CreditCard, Banknote, Landmark } from "lucide-react";
+import { Plus, Search, Truck, Users, ClipboardList, Pencil, Trash2, X, ChevronDown, ChevronRight, Star, FileText, Check, ArrowRightCircle, AlertTriangle, Warehouse, Package, ShoppingCart, MapPin, Download, Ban, CheckCircle, CheckCircle2, PackagePlus, PackageCheck, ExternalLink, Sparkles, CreditCard, Banknote, Landmark } from "lucide-react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -270,7 +270,7 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
     }
     try {
       const res = await fetch(`/api/products/${pid}/bundle-items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       if (!res.ok) {
         poToast({ title: "Failed to load bundle components", variant: "destructive" });
@@ -784,7 +784,8 @@ function SupplierProductCatalog({ supplierId, suppliers }: { supplierId: string;
   );
 }
 
-function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress, poTotal, supplierPaidAmount, poStatus, canCreditOverride, onCreateGrn, onRecordPayment }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string; deliveryAddress?: string | null; poTotal: number; supplierPaidAmount: number; poStatus: string; canCreditOverride: boolean; onCreateGrn: () => void; onRecordPayment: () => void }) {
+function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress, poTotal, supplierPaidAmount, poStatus, canCreditOverride, poInvoice, onCreateGrn, onRecordPayment, onViewInvoice }: { poId: string; linkedSalesOrder?: { orderNumber: string; id: string } | null; deliveryType?: string; deliveryAddress?: string | null; poTotal: number; supplierPaidAmount: number; poStatus: string; canCreditOverride: boolean; poInvoice?: { id: string; invoiceNumber: string | null } | null; onCreateGrn: () => void; onRecordPayment: () => void; onViewInvoice?: () => void }) {
+  const [, navigateTo] = useLocation();
   const { data: items, isLoading } = useQuery<PurchaseOrderItem[]>({
     queryKey: ["/api/purchase-orders", poId, "items"],
     queryFn: () => apiRequest("GET", `/api/purchase-orders/${poId}/items`).then(r => r.json()),
@@ -900,28 +901,131 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
           </tfoot>
         </table>
       </div>
-      {!["cancelled", "received"].includes(poStatus) && (() => {
+      {/* ── GRN section (mirrors Sales "Delivery Challans" section) ─────── */}
+      {confirmedGrns.length > 0 && (
+        <div className="mt-3 pt-3 border-t space-y-2">
+          <h4 className="text-xs font-semibold flex items-center gap-1.5 text-muted-foreground">
+            <PackageCheck className="w-3.5 h-3.5" /> Goods Receipt Notes
+          </h4>
+          <div className="space-y-2">
+            {confirmedGrns.map((grn) => {
+              const grnItems = grnItemsCache[grn.id] ?? [];
+              return (
+                <div key={grn.id} className="border rounded-md p-3 bg-background space-y-2" data-testid={`grn-card-${grn.id}`}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold font-mono">{grn.grnNumber}</span>
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700 dark:bg-green-950/30 dark:text-green-400">
+                      <PackageCheck className="w-3 h-3" /> Confirmed
+                    </span>
+                    {grn.receivedDate && (
+                      <span className="text-[11px] text-muted-foreground">
+                        Received {new Date(grn.receivedDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                      </span>
+                    )}
+                    {(grn as any).supplierChallanNumber && (
+                      <span className="text-[11px] text-muted-foreground">
+                        Supplier Challan: <span className="font-medium">{(grn as any).supplierChallanNumber}</span>
+                      </span>
+                    )}
+                    {/* View button — deep-links to Inventory → GRN tab, highlights + expands this GRN */}
+                    <button
+                      className="ml-auto text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+                      data-testid={`link-view-grn-${grn.id}`}
+                      onClick={(e) => { e.stopPropagation(); navigateTo(`/inventory?tab=grn&highlightGrn=${grn.id}`); }}
+                    >
+                      <ExternalLink className="w-3 h-3" /> View
+                    </button>
+                  </div>
+                  {grnItems.length > 0 && (
+                    <div className="rounded border overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-muted/40 border-b">
+                            <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">Product</th>
+                            <th className="text-center px-3 py-1.5 font-medium text-muted-foreground">Ordered</th>
+                            <th className="text-center px-3 py-1.5 font-medium text-green-600 dark:text-green-400">Received</th>
+                            <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Unit Cost</th>
+                            <th className="text-right px-3 py-1.5 font-medium text-muted-foreground">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {grnItems.map((gi) => {
+                            const prod = productMap.get(gi.productId);
+                            return (
+                              <tr key={gi.id} className="border-b last:border-0">
+                                <td className="px-3 py-1.5 font-medium">{prod?.name ?? gi.description ?? "—"}</td>
+                                <td className="px-3 py-1.5 text-center text-muted-foreground">{gi.orderedQuantity}</td>
+                                <td className="px-3 py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{gi.receivedQuantity}</td>
+                                <td className="px-3 py-1.5 text-right">₹{Number(gi.buyingPrice).toLocaleString()}</td>
+                                <td className="px-3 py-1.5 text-right font-medium">₹{Number(gi.totalCost ?? Number(gi.buyingPrice) * gi.receivedQuantity).toLocaleString()}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Footer: financials + action buttons ───────────────────────────── */}
+      {(() => {
         const balance = Math.max(0, poTotal - supplierPaidAmount);
         const paymentComplete = poTotal === 0 || supplierPaidAmount >= poTotal;
         const grnEligible = deliveryType !== "direct_delivery" && ["approved", "shipped", "partial"].includes(poStatus);
+        const showFooter = !["cancelled"].includes(poStatus);
+        if (!showFooter) return null;
         return (
-          <div className="mt-3 pt-3 border-t flex items-center justify-between flex-wrap gap-3">
+          <div className="mt-3 pt-3 border-t flex flex-wrap items-center gap-4">
+            {/* Left: financials */}
             <div className="flex items-center gap-4 text-xs">
-              <span className="font-semibold" data-testid={`text-po-expanded-total-${poId}`}>Total: ₹{poTotal.toLocaleString()}</span>
-              <span className="text-green-600 dark:text-green-400 font-medium" data-testid={`text-po-expanded-paid-${poId}`}>Paid: ₹{supplierPaidAmount.toLocaleString()}</span>
-              <span className={`font-medium ${balance > 0 ? "text-amber-600 dark:text-amber-400" : "text-green-600 dark:text-green-400"}`} data-testid={`text-po-expanded-balance-${poId}`}>
+              <span className="font-semibold" data-testid={`text-po-expanded-total-${poId}`}>
+                Total: ₹{poTotal.toLocaleString()}
+              </span>
+              <span className="text-green-600 dark:text-green-400 font-medium" data-testid={`text-po-expanded-paid-${poId}`}>
+                Paid: ₹{supplierPaidAmount.toLocaleString()}
+              </span>
+              <span
+                className={`font-medium ${balance > 0 ? "text-amber-600 dark:text-amber-400" : "text-green-600 dark:text-green-400"}`}
+                data-testid={`text-po-expanded-balance-${poId}`}
+              >
                 Balance: ₹{balance.toLocaleString()}
               </span>
             </div>
-            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-              <Button
-                size="sm"
-                variant="outline"
-                data-testid={`button-expanded-record-payment-${poId}`}
-                onClick={onRecordPayment}
-              >
-                <CreditCard className="w-3 h-3 mr-1" /> Record Payment
-              </Button>
+
+            {/* Right: action buttons — all independent, mirror SO pattern */}
+            <div className="flex items-center gap-2 ml-auto flex-wrap" onClick={(e) => e.stopPropagation()}>
+              {/* Record Payment — visible as long as balance > 0 */}
+              {balance > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid={`button-expanded-record-payment-${poId}`}
+                  onClick={onRecordPayment}
+                >
+                  <CreditCard className="w-3 h-3 mr-1" /> Record Payment
+                </Button>
+              )}
+
+              {/* View Supplier Invoice — always shown once invoice exists */}
+              {poInvoice && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-blue-400 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/20"
+                  data-testid={`button-expanded-view-invoice-${poId}`}
+                  onClick={onViewInvoice}
+                >
+                  <FileText className="w-3 h-3 mr-1" />
+                  {poInvoice.invoiceNumber ? `Invoice ${poInvoice.invoiceNumber}` : "View Supplier Invoice"}
+                </Button>
+              )}
+
+              {/* Create GRN / Create GRN (Credit) / disabled GRN */}
               {grnEligible && (
                 paymentComplete ? (
                   <Button
@@ -944,7 +1048,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
                     <PackagePlus className="w-3 h-3 mr-1" /> Create GRN (Credit)
                   </Button>
                 ) : (
-                  <span title={`Full supplier payment required (paid ₹${supplierPaidAmount.toLocaleString()} of ₹${poTotal.toLocaleString()})`}>
+                  <span title={`Full payment required before GRN — paid ₹${supplierPaidAmount.toLocaleString()} of ₹${poTotal.toLocaleString()}`}>
                     <Button size="sm" variant="outline" disabled className="opacity-50 cursor-not-allowed" data-testid={`button-expanded-create-grn-disabled-${poId}`}>
                       <PackagePlus className="w-3 h-3 mr-1" /> Create GRN
                     </Button>
@@ -952,6 +1056,13 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
                 )
               )}
             </div>
+
+            {/* Payment complete banner */}
+            {paymentComplete && poStatus === "received" && (
+              <div className="w-full flex items-center gap-1.5 text-[11px] text-green-700 dark:text-green-400 font-medium">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Fully paid & received
+              </div>
+            )}
           </div>
         );
       })()}
@@ -1029,26 +1140,33 @@ function PRExpandedItems({ prId }: { prId: string }) {
 function SupplierOutstandingInline({ supplierId }: { supplierId: string }) {
   const { data: invoices } = useQuery<any[]>({ queryKey: ["/api/supplier-invoices"] });
   const { data: payments } = useQuery<any[]>({ queryKey: ["/api/supplier-payments"] });
-  const { data: pos } = useQuery<any[]>({ queryKey: ["/api/purchase-orders"] });
 
+  // B5: Match server-side computeSupplierInvoiceOutstanding — count ALL payments
+  // linked to the invoice (any paymentType), not just "regular" ones.
+  // Do NOT add po.advancePaid as a credit: advance payments have no
+  // supplier_invoice_id, so the server formula never credits them against an
+  // invoice outstanding either.
   const outstanding = useMemo(() => {
-    if (!invoices || !payments || !pos) return null;
-    const poMap = new Map((pos).map((p: any) => [p.id, p]));
+    if (!invoices || !payments) return null;
     const payPerInv: Record<string, number> = {};
-    (payments || []).filter((p: any) => p.paymentType === "regular" && p.supplierInvoiceId).forEach((p: any) => {
+    (payments || []).filter((p: any) => p.supplierInvoiceId).forEach((p: any) => {
       payPerInv[p.supplierInvoiceId] = (payPerInv[p.supplierInvoiceId] || 0) + Number(p.amount);
     });
     let totalPayable = 0;
     let totalInvoiced = 0;
-    (invoices || []).filter((inv: any) => inv.supplierId === supplierId && (inv.uploadStatus ?? "pending_upload") !== "cancelled").forEach((inv: any) => {
-      const advance = inv.purchaseOrderId ? Number(poMap.get(inv.purchaseOrderId)?.advancePaid ?? 0) : 0;
-      const paid = (payPerInv[inv.id] ?? 0) + advance;
+    (invoices || []).filter((inv: any) =>
+      inv.supplierId === supplierId &&
+      inv.status !== "paid" &&          // match aging: exclude fully-paid invoices
+      inv.status !== "cancelled" &&
+      (inv.uploadStatus ?? "pending_upload") !== "cancelled"
+    ).forEach((inv: any) => {
+      const paid = payPerInv[inv.id] ?? 0;
       const balance = Math.max(0, Number(inv.totalAmount) - paid);
       totalInvoiced += Number(inv.totalAmount);
       totalPayable += balance;
     });
     return { outstanding: totalPayable, total: totalInvoiced, paid: totalInvoiced - totalPayable };
-  }, [invoices, payments, pos, supplierId]);
+  }, [invoices, payments, supplierId]);
 
   if (!outstanding) return null;
   if (outstanding.outstanding <= 0) return (
@@ -1068,12 +1186,27 @@ function SupplierOutstandingInline({ supplierId }: { supplierId: string }) {
 export default function SupplyChain() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
+
+  // Deep-link support: ?tab=purchase-orders&expand=PO_ID (from Supplier Aging "Pay Now" / PO links)
+  const [activeScTab, setActiveScTab] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("tab") || "purchase-requests";
+  });
   const { data: currentUser } = useCurrentUser();
   const { data: suppliers, isLoading: suppliersLoading } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
   const { data: purchaseOrders, isLoading: poLoading } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: allProducts } = useQuery<Product[]>({ queryKey: ["/api/products"] });
+  // Primary supplier price per product across all suppliers — used by PR form for unit cost auto-fill.
+  // Rule: supplierPrice > 0 → use it; else distributorPrice → use it; else blank.
+  const { data: primarySupplierPrices } = useQuery<Record<string, { supplierId: string; supplierPrice: string; lastPriceUpdatedAt: string | null }>>({
+    queryKey: ["/api/products/primary-supplier-prices"],
+    staleTime: 5 * 60 * 1000,
+  });
   const { data: purchaseRequests, isLoading: prLoading } = useQuery<PurchaseRequest[]>({ queryKey: ["/api/purchase-requests"] });
   const { data: salesOrders } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
+  // B2 + B5: shared supplier invoice / payment data (also consumed by SupplierOutstandingInline via cache)
+  const { data: supplierInvoices } = useQuery<any[]>({ queryKey: ["/api/supplier-invoices"] });
+  const { data: supplierPayments } = useQuery<any[]>({ queryKey: ["/api/supplier-payments"] });
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
@@ -1087,11 +1220,28 @@ export default function SupplyChain() {
   const [creditGrnDialog, setCreditGrnDialog] = useState<{ poId: string; warehouseId: string; supplierChallanNumber: string; outstanding: number } | null>(null);
   const [creditGrnReason, setCreditGrnReason] = useState("");
 
-  const [expandedPoId, setExpandedPoId] = useState<string | null>(null);
+  const [expandedPoId, setExpandedPoId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("expand") || null;
+  });
   const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
+
+  // Deep-link: scroll expanded PO into view shortly after mount (data may not be loaded yet)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const expandId = params.get("expand");
+    if (!expandId) return;
+    const timer = setTimeout(() => {
+      const el = document.querySelector(`[data-po-id="${expandId}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, []);
 
   const [spDialogPoId, setSpDialogPoId] = useState<string | null>(null);
   const [spDialogSupplierId, setSpDialogSupplierId] = useState<string | null>(null);
+  const [spDialogBalance, setSpDialogBalance] = useState<number>(0);
+  const [spDialogInvoiceId, setSpDialogInvoiceId] = useState<string | null>(null); // B2: auto-detected invoice
   const [spForm, setSpForm] = useState({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
   const [expandedPrId, setExpandedPrId] = useState<string | null>(null);
   const [poSearch, setPoSearch] = useState("");
@@ -1107,6 +1257,11 @@ export default function SupplyChain() {
   const [prAutoFilledItemIds, setPrAutoFilledItemIds] = useState<Set<string>>(new Set());
   const [prStatusFilter, setPrStatusFilter] = useState("all");
   const [prPriorityFilter, setPrPriorityFilter] = useState("all");
+
+  // M1: New (manual) Purchase Request dialog
+  const [newPrDialogOpen, setNewPrDialogOpen] = useState(false);
+  const [newPrForm, setNewPrForm] = useState({ priority: "medium", notes: "", salesOrderId: "" });
+  const [newPrItems, setNewPrItems] = useState<Array<{ productId: string; requiredQuantity: string; unitCost: string; _priceSource?: "supplier" | "distributor" | "manual" }>>([{ productId: "", requiredQuantity: "", unitCost: "" }]);
 
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
   const [convertPrId, setConvertPrId] = useState<string | null>(null);
@@ -1148,11 +1303,15 @@ export default function SupplyChain() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });   // re-computes supplierPaidAmount
+      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });     // cash position
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] }); // invoice status/balance
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });         // AP + cash dashboard stats
+      queryClient.invalidateQueries({ queryKey: ["/api/reports/supplier-aging"] }); // aging report
       toast({ title: "Payment recorded successfully" });
       setSpDialogPoId(null);
       setSpDialogSupplierId(null);
+      setSpDialogInvoiceId(null);
       setSpForm({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
     },
     onError: (error: Error) => {
@@ -1306,7 +1465,7 @@ export default function SupplyChain() {
   const createGrnFromPoMutation = useMutation({
     mutationFn: async ({ poId, warehouseId, supplierChallanNumber, creditOverride, creditReason }: { poId: string; warehouseId: string; supplierChallanNumber: string; creditOverride?: boolean; creditReason?: string }) => {
       setCreatingGrnPoId(poId);
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token"); // fix: was localStorage (token is stored in sessionStorage)
       const body: any = { warehouseId, supplierChallanNumber };
       if (creditOverride) { body.creditOverride = true; body.creditReason = creditReason; }
       const res = await fetch(`/api/grns/create-from-po/${poId}`, {
@@ -1425,6 +1584,28 @@ export default function SupplyChain() {
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // M1: Create a manual (ad-hoc) purchase request
+  const createPrMutation = useMutation({
+    mutationFn: async (data: any) => {
+      const resp = await apiRequest("POST", "/api/purchase-requests", data);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error((err as any).message || "Failed to create purchase request");
+      }
+      return resp.json();
+    },
+    onSuccess: (pr: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/purchase-requests"] });
+      toast({ title: `Purchase request ${pr.requestNumber} created` });
+      setNewPrDialogOpen(false);
+      setNewPrForm({ priority: "medium", notes: "", salesOrderId: "" });
+      setNewPrItems([{ productId: "", requiredQuantity: "", unitCost: "" }]);
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create purchase request", description: error.message, variant: "destructive" });
     },
   });
 
@@ -1587,10 +1768,12 @@ export default function SupplyChain() {
           description: item.description || "",
           quantity: item.quantity,
           unitCost: Number(item.unitCost),
-          totalCost: Number(item.totalCost),
+          // server stores total_cost as GST-inclusive; frontend totalCost means taxable (ex-GST).
+          // Use taxableAmount when available, otherwise recompute from unitCost × quantity.
+          totalCost: Number((item as any).taxableAmount ?? (Number(item.unitCost) * item.quantity)),
           hsnCode: (item as any).hsnCode || "",
           gstRate: (item as any).gstRate != null ? Number((item as any).gstRate) : 18,
-          taxableAmount: Number((item as any).taxableAmount ?? item.totalCost),
+          taxableAmount: Number((item as any).taxableAmount ?? (Number(item.unitCost) * item.quantity)),
           gstAmount: Number((item as any).gstAmount ?? 0),
         })));
       } else {
@@ -1705,7 +1888,7 @@ export default function SupplyChain() {
         </Card>
       </div>
 
-      <Tabs defaultValue="purchase-requests" className="space-y-4">
+      <Tabs value={activeScTab} onValueChange={setActiveScTab} className="space-y-4">
         <TabsList>
           <TabsTrigger value="purchase-requests" data-testid="tab-pr">
             Purchase Requests
@@ -1721,6 +1904,7 @@ export default function SupplyChain() {
           <div className="flex items-center gap-2 flex-wrap">
             <Select value={prStatusFilter} onValueChange={setPrStatusFilter}>
               <SelectTrigger className="w-[140px]" data-testid="select-pr-status-filter">
+
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -1743,6 +1927,19 @@ export default function SupplyChain() {
                 <SelectItem value="urgent">Urgent</SelectItem>
               </SelectContent>
             </Select>
+            <Button
+              size="sm"
+              className="ml-auto"
+              data-testid="button-new-pr"
+              onClick={() => {
+                setNewPrForm({ priority: "medium", notes: "", salesOrderId: "" });
+                setNewPrItems([{ productId: "", requiredQuantity: "", unitCost: "" }]);
+                setNewPrDialogOpen(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              New Purchase Request
+            </Button>
           </div>
           <Card>
             <CardContent className="p-0">
@@ -1930,6 +2127,7 @@ export default function SupplyChain() {
                             <tr
                               className="border-b last:border-0 cursor-pointer"
                               data-testid={`row-po-${po.id}`}
+                              data-po-id={po.id}
                               onClick={() => setExpandedPoId(isExpanded ? null : po.id)}
                             >
                               <td className="p-3">
@@ -2096,6 +2294,12 @@ export default function SupplyChain() {
                             {isExpanded && (() => {
                               const linkedPR = purchaseRequests?.find(pr => pr.purchaseOrderId === po.id);
                               const linkedSO = linkedPR?.salesOrderId ? salesOrders?.find(so => so.id === linkedPR.salesOrderId) : null;
+                              // Find any non-cancelled supplier invoice for this PO (to show View Invoice button)
+                              const poInv = (supplierInvoices ?? []).find(
+                                (inv: any) => inv.purchaseOrderId === po.id
+                                  && (inv.uploadStatus ?? "pending_upload") !== "cancelled"
+                                  && inv.status !== "cancelled"
+                              );
                               return (
                                 <tr>
                                   <td colSpan={9} className="bg-muted/30 border-b">
@@ -2126,10 +2330,35 @@ export default function SupplyChain() {
                                         setGrnSupplierChallan("");
                                       }}
                                       onRecordPayment={() => {
+                                        // B2: auto-detect an open supplier invoice for this PO.
+                                        // If one exists, record as a regular invoice payment;
+                                        // otherwise fall back to advance payment against the PO.
+                                        const openInv = (supplierInvoices ?? []).find(
+                                          (inv: any) => inv.purchaseOrderId === po.id
+                                            && inv.status !== "paid"
+                                            && (inv.uploadStatus ?? "pending_upload") !== "cancelled"
+                                        );
+                                        let bal: number;
+                                        if (openInv) {
+                                          // Balance = invoice outstanding (payments linked to invoice only)
+                                          const invPaid = (supplierPayments ?? [])
+                                            .filter((p: any) => p.supplierInvoiceId === openInv.id)
+                                            .reduce((sum: number, p: any) => sum + Number(p.amount ?? 0), 0);
+                                          bal = Math.max(0, Number(openInv.totalAmount ?? 0) - invPaid);
+                                        } else {
+                                          // No invoice yet — use PO balance for advance
+                                          const poTotalAmt = Number((po as any).grandTotal ?? po.totalAmount ?? 0);
+                                          const paidAmt = Number((po as any).supplierPaidAmount ?? 0);
+                                          bal = Math.max(0, poTotalAmt - paidAmt);
+                                        }
+                                        setSpDialogInvoiceId(openInv?.id ?? null);
                                         setSpDialogPoId(po.id);
                                         setSpDialogSupplierId(po.supplierId);
+                                        setSpDialogBalance(bal);
                                         setSpForm({ amount: "", paymentMethod: "bank_transfer", paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "" });
                                       }}
+                                      poInvoice={poInv ? { id: poInv.id, invoiceNumber: poInv.invoiceNumber ?? null } : null}
+                                      onViewInvoice={() => navigate(`/accounts?tab=supplier-invoices&highlight=${poInv?.id ?? ""}`)}
                                     />
                                   </td>
                                 </tr>
@@ -2763,6 +2992,197 @@ export default function SupplyChain() {
         </DialogContent>
       </Dialog>
 
+      {/* ── M1: New (manual) Purchase Request ──────────────────────────────── */}
+      <Dialog open={newPrDialogOpen} onOpenChange={(open) => { setNewPrDialogOpen(open); if (!open) { setNewPrForm({ priority: "medium", notes: "", salesOrderId: "" }); setNewPrItems([{ productId: "", requiredQuantity: "", unitCost: "" }]); } }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>New Purchase Request</DialogTitle>
+            <DialogDescription>Create an ad-hoc purchase request. Items will be set to "shortfall = required qty" since no stock check is done here.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Priority</Label>
+                <Select value={newPrForm.priority} onValueChange={v => setNewPrForm({ ...newPrForm, priority: v })}>
+                  <SelectTrigger data-testid="select-new-pr-priority">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    <SelectItem value="urgent">Urgent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Linked Sales Order <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                <Select value={newPrForm.salesOrderId || "_none"} onValueChange={v => setNewPrForm({ ...newPrForm, salesOrderId: v === "_none" ? "" : v })}>
+                  <SelectTrigger data-testid="select-new-pr-so">
+                    <SelectValue placeholder="None" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_none">None</SelectItem>
+                    {(salesOrders ?? []).filter(so => so.status !== "cancelled").map(so => (
+                      <SelectItem key={so.id} value={so.id}>{so.orderNumber}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={newPrForm.notes}
+                onChange={e => setNewPrForm({ ...newPrForm, notes: e.target.value })}
+                placeholder="Optional notes..."
+                rows={2}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label>Items <span className="text-red-500">*</span></Label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setNewPrItems(prev => [...prev, { productId: "", requiredQuantity: "", unitCost: "" }])}
+                >
+                  <Plus className="w-3 h-3 mr-1" /> Add Item
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                {newPrItems.map((item, idx) => (
+                  <div key={idx} className="border rounded-lg p-3 space-y-2 bg-muted/30">
+
+                    {/* Row 1: Hierarchical picker + delete */}
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1">
+                        <HierarchicalProductPicker
+                          lineIndex={idx}
+                          products={(allProducts ?? []).filter(p => !(p as any).isBundle)}
+                          hidePrice={true}
+                          currentProductId={item.productId}
+                          onProductSelect={(pid) => {
+                            const prod = allProducts?.find(p => p.id === pid);
+                            let unitCost = "";
+                            let priceSource: "supplier" | "distributor" | undefined;
+                            if (prod) {
+                              const sp = primarySupplierPrices?.[pid];
+                              if (sp && Number(sp.supplierPrice) > 0) {
+                                unitCost = String(Number(sp.supplierPrice));
+                                priceSource = "supplier";
+                              } else if ((prod as any).distributorPrice && Number((prod as any).distributorPrice) > 0) {
+                                unitCost = String(Number((prod as any).distributorPrice));
+                                priceSource = "distributor";
+                              }
+                            }
+                            const updated = [...newPrItems];
+                            updated[idx] = { ...updated[idx], productId: pid, unitCost, _priceSource: priceSource };
+                            setNewPrItems(updated);
+                          }}
+                        />
+                      </div>
+                      {newPrItems.length > 1 && (
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="shrink-0 mt-6"
+                          onClick={() => setNewPrItems(prev => prev.filter((_, i) => i !== idx))}
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Row 2: Qty + Est. Unit Cost */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Qty <span className="text-red-500">*</span></Label>
+                        <Input
+                          type="number"
+                          placeholder="Qty"
+                          className="h-8 text-xs"
+                          value={item.requiredQuantity}
+                          onChange={e => {
+                            const updated = [...newPrItems];
+                            updated[idx] = { ...updated[idx], requiredQuantity: e.target.value };
+                            setNewPrItems(updated);
+                          }}
+                          min="1"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground mb-1 block">Est. Unit Cost (₹)</Label>
+                        <Input
+                          type="number"
+                          placeholder="0.00"
+                          className="h-8 text-xs text-right"
+                          value={item.unitCost}
+                          onChange={e => {
+                            const updated = [...newPrItems];
+                            updated[idx] = { ...updated[idx], unitCost: e.target.value, _priceSource: "manual" };
+                            setNewPrItems(updated);
+                          }}
+                          step="0.01"
+                        />
+                        {/* Price source hint — same logic as PO form */}
+                        {item._priceSource && item._priceSource !== "manual" && (
+                          <p className={`text-[10px] mt-0.5 leading-tight ${
+                            item._priceSource === "supplier"
+                              ? "text-green-700 dark:text-green-400"
+                              : "text-amber-700 dark:text-amber-400"
+                          }`}>
+                            {item._priceSource === "supplier"
+                              ? "↑ From supplier price list"
+                              : "↑ From distributor price (no supplier price set)"}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewPrDialogOpen(false)}>Cancel</Button>
+            <Button
+              data-testid="button-new-pr-submit"
+              onClick={() => {
+                const validItems = newPrItems.filter(item => item.productId && item.productId !== "_none" && Number(item.requiredQuantity) > 0);
+                if (validItems.length === 0) {
+                  toast({ title: "Add at least one item with a product and quantity", variant: "destructive" });
+                  return;
+                }
+                createPrMutation.mutate({
+                  priority: newPrForm.priority,
+                  notes: newPrForm.notes || null,
+                  salesOrderId: newPrForm.salesOrderId || null,
+                  items: validItems.map(item => ({
+                    productId: item.productId,
+                    requiredQuantity: Number(item.requiredQuantity),
+                    shortfallQuantity: Number(item.requiredQuantity),
+                    availableStock: 0,
+                    unitCost: item.unitCost ? Number(item.unitCost) : null,
+                  })),
+                });
+              }}
+              disabled={createPrMutation.isPending}
+            >
+              {createPrMutation.isPending ? "Creating..." : "Create Purchase Request"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={convertDialogOpen} onOpenChange={(open) => { setConvertDialogOpen(open); if (!open) setConvertPrId(null); }}>
         <DialogContent>
           <DialogHeader>
@@ -2917,15 +3337,21 @@ export default function SupplyChain() {
       </Dialog>
 
       {/* Record Supplier Payment dialog — opened from expanded PO row */}
-      <Dialog open={!!spDialogPoId} onOpenChange={(open) => { if (!open) { setSpDialogPoId(null); setSpDialogSupplierId(null); } }}>
+      <Dialog open={!!spDialogPoId} onOpenChange={(open) => { if (!open) { setSpDialogPoId(null); setSpDialogSupplierId(null); setSpDialogInvoiceId(null); } }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Record Supplier Payment</DialogTitle>
             <DialogDescription>
-              Advance payment against{" "}
+              {spDialogInvoiceId ? "Invoice payment against" : "Advance payment against"}{" "}
               {spDialogPoId ? (() => { const po = purchaseOrders?.find(p => p.id === spDialogPoId); return po ? <strong>{po.poNumber}</strong> : "this PO"; })() : "this PO"}
             </DialogDescription>
           </DialogHeader>
+          {spDialogInvoiceId && (
+            <div className="flex items-center gap-2 px-1 py-1.5 rounded-md bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 text-xs text-blue-700 dark:text-blue-400">
+              <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
+              Supplier invoice found — this payment will be recorded against the invoice and update its status.
+            </div>
+          )}
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>Supplier</Label>
@@ -2941,7 +3367,15 @@ export default function SupplyChain() {
                 value={spForm.amount}
                 onChange={e => setSpForm({ ...spForm, amount: e.target.value })}
                 placeholder="0"
+                max={spDialogBalance}
+                className={Number(spForm.amount) > spDialogBalance && spForm.amount !== "" ? "border-red-400 focus-visible:ring-red-400" : ""}
               />
+              <p className="text-xs text-muted-foreground">
+                Outstanding balance: <span className="font-medium text-foreground">₹{spDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+              </p>
+              {Number(spForm.amount) > spDialogBalance && spForm.amount !== "" && (
+                <p className="text-xs text-red-600">Amount cannot exceed the outstanding balance of ₹{spDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}.</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Payment Method</Label>
@@ -2997,17 +3431,23 @@ export default function SupplyChain() {
             <Button variant="outline" onClick={() => { setSpDialogPoId(null); setSpDialogSupplierId(null); }}>Cancel</Button>
             <Button
               data-testid="button-submit-sp-expanded"
-              disabled={recordSpMutation.isPending || !spForm.amount || !spForm.cashAccountId}
+              disabled={recordSpMutation.isPending || !spForm.amount || !spForm.cashAccountId || Number(spForm.amount) > spDialogBalance}
               onClick={() => {
                 if (!spForm.cashAccountId) {
                   toast({ title: "Account required", description: "Select the account this payment was made from.", variant: "destructive" });
                   return;
                 }
+                if (Number(spForm.amount) > spDialogBalance) {
+                  toast({ title: "Amount exceeds balance", description: `Maximum payable is ₹${spDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}.`, variant: "destructive" });
+                  return;
+                }
                 recordSpMutation.mutate({
-                  paymentType: "advance",
+                  // B2: if an invoice was auto-detected, record as regular invoice payment;
+                  // otherwise record as advance against the PO.
+                  paymentType: spDialogInvoiceId ? "regular" : "advance",
                   supplierId: spDialogSupplierId,
-                  purchaseOrderId: spDialogPoId,
-                  supplierInvoiceId: null,
+                  purchaseOrderId: spDialogInvoiceId ? null : spDialogPoId,
+                  supplierInvoiceId: spDialogInvoiceId ?? null,
                   amount: spForm.amount,
                   paymentMethod: spForm.paymentMethod,
                   paymentDate: spForm.paymentDate,

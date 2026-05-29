@@ -1,8 +1,13 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import compression from "compression";
+import path from "path";
 import { registerRoutes } from "./routes";
-import { initDocNumberTable } from "./lib/doc-numbers";
+import { initDocNumberTable, migrateCustomerPaymentsSchema } from "./lib/doc-numbers";
+import { db } from "./db";
+import { sql } from "drizzle-orm";
+import { ensureUploadsDir, UPLOADS_DIR } from "./lib/local-file-storage";
 import { slowRequestLogger } from "./lib/request-logger";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -21,12 +26,29 @@ declare module "http" {
   }
 }
 
+// Security headers — must be before routes
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Vite/React needs these in dev; tighten in prod
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:", "https:"],
+      connectSrc: ["'self'", "wss:", "ws:", "https:"],
+      fontSrc: ["'self'", "data:"],
+      objectSrc: ["'none'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Disable so PDF previews / object storage URLs work
+}));
+
 app.use(cors({
   origin: [
     "capacitor://localhost",
     "https://localhost",
     "http://localhost",
-    "https://erp.itfi.co.in",
+    "https://erp.hussainenterprise.cloud",
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -49,6 +71,12 @@ app.use(compression());
 
 // Log slow API requests (>300ms) so the next round of perf work has data.
 app.use(slowRequestLogger());
+
+// Local file uploads — served unauthenticated at /uploads/<uuid>.<ext>.
+// Only used when PRIVATE_OBJECT_DIR is not set (local development).
+// In Replit production the ObjectStorageService handles all file storage.
+ensureUploadsDir();
+app.use("/uploads", express.static(UPLOADS_DIR));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -79,6 +107,275 @@ app.use((req, res, next) => {
   // Ensure the doc_number_sequences table exists before any request is served.
   // This is a no-op if the table was already created by drizzle-kit push.
   await initDocNumberTable();
+
+  // Apply customer_payments schema migrations (nullable invoice_id + sales_order_id column).
+  // Each statement is idempotent — safe to run on every startup.
+  await migrateCustomerPaymentsSchema();
+
+  // ── inventory_lots table — Option C accounting architecture ─────────────────
+  // Idempotent: IF NOT EXISTS. Creates the perpetual inventory cost ledger
+  // decoupled from daily_price_sheets. Auto-populated at GRN confirmation.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS inventory_lots (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      grn_id varchar NOT NULL,
+      grn_item_id varchar NOT NULL,
+      product_id varchar NOT NULL,
+      warehouse_id varchar NOT NULL,
+      grn_number text NOT NULL,
+      received_date timestamp NOT NULL,
+      received_qty numeric(12,4) NOT NULL,
+      remaining_qty numeric(12,4) NOT NULL,
+      unit_cost numeric(14,4) NOT NULL,
+      total_cost numeric(16,4) NOT NULL,
+      status text NOT NULL DEFAULT 'active',
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_inventory_lots_product_id   ON inventory_lots(product_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_inventory_lots_grn_id        ON inventory_lots(grn_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_inventory_lots_status        ON inventory_lots(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_inventory_lots_warehouse_id  ON inventory_lots(warehouse_id)`);
+
+  // ── Backfill: create inventory_lots for confirmed GRNs that predate Option C ─
+  // Idempotent: inserts only GRN items with no existing lot row (grn_item_id check).
+  // unit_cost = buying_price + (delivery_cost / item_count_in_grn) — same formula
+  // used by the GRN confirm route going forward.
+  await db.execute(sql`
+    INSERT INTO inventory_lots
+      (grn_id, grn_item_id, product_id, warehouse_id, grn_number,
+       received_date, received_qty, remaining_qty, unit_cost, total_cost, status)
+    SELECT
+      gi.grn_id,
+      gi.id                                                    AS grn_item_id,
+      gi.product_id,
+      grn.warehouse_id,
+      grn.grn_number,
+      grn.received_date,
+      gi.received_quantity::numeric                            AS received_qty,
+      gi.received_quantity::numeric                            AS remaining_qty,
+      gi.buying_price::numeric
+        + COALESCE(grn.delivery_cost::numeric, 0)
+          / GREATEST(
+              (SELECT COUNT(*) FROM goods_receipt_note_items i2 WHERE i2.grn_id = gi.grn_id),
+              1
+            )                                                  AS unit_cost,
+      gi.received_quantity::numeric * (
+        gi.buying_price::numeric
+        + COALESCE(grn.delivery_cost::numeric, 0)
+          / GREATEST(
+              (SELECT COUNT(*) FROM goods_receipt_note_items i2 WHERE i2.grn_id = gi.grn_id),
+              1
+            )
+      )                                                        AS total_cost,
+      'active'
+    FROM goods_receipt_note_items gi
+    JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+    WHERE grn.status = 'confirmed'
+      AND NOT EXISTS (
+        SELECT 1 FROM inventory_lots il WHERE il.grn_item_id = gi.id
+      )
+  `);
+
+  // ── Backfill FIFO depletion: apply pre-existing dispatches to inventory_lots ─
+  // For dispatches that occurred BEFORE the inventory_lots system was introduced,
+  // remaining_qty was set to received_qty by the lot creation backfill above.
+  // This step retroactively depletes lots FIFO per product to reflect goods that
+  // were already dispatched, restoring accounting accuracy.
+  //
+  // Idempotent guard: only depletes if SUM(remaining_qty) > 0 across lots.
+  // For each product: total_dispatched = SUM of finalized challan dispatch quantities.
+  // Apply FIFO: oldest lots first (by received_date, then created_at).
+  await db.execute(sql`
+    WITH
+    -- Total dispatched per product (all finalized challans)
+    dispatched AS (
+      SELECT dci.product_id, SUM(dci.quantity::numeric) AS total_dispatched
+      FROM delivery_challan_items dci
+      JOIN delivery_challans dc ON dc.id = dci.challan_id
+      WHERE dc.status IN ('dispatched', 'delivered', 'completed')
+      GROUP BY dci.product_id
+    ),
+    -- Current total remaining per product in inventory_lots
+    current_remaining AS (
+      SELECT product_id, SUM(remaining_qty::numeric) AS total_remaining
+      FROM inventory_lots
+      WHERE status = 'active'
+      GROUP BY product_id
+    ),
+    -- How much depletion is still needed (dispatched - already depleted)
+    -- already_depleted = received_qty - remaining_qty summed per product
+    already_depleted AS (
+      SELECT product_id,
+             SUM(received_qty::numeric - remaining_qty::numeric) AS depleted_so_far
+      FROM inventory_lots
+      GROUP BY product_id
+    ),
+    needed AS (
+      SELECT d.product_id,
+             GREATEST(d.total_dispatched - COALESCE(ad.depleted_so_far, 0), 0) AS still_needed
+      FROM dispatched d
+      LEFT JOIN already_depleted ad ON ad.product_id = d.product_id
+    ),
+    -- Rank lots FIFO per product
+    ranked_lots AS (
+      SELECT il.id, il.product_id, il.remaining_qty::numeric AS rq,
+             SUM(il.remaining_qty::numeric) OVER (
+               PARTITION BY il.product_id
+               ORDER BY il.received_date ASC, il.created_at ASC
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+             ) AS cumulative_rq
+      FROM inventory_lots il
+      WHERE il.status = 'active' AND il.remaining_qty > 0
+    )
+    UPDATE inventory_lots
+    SET remaining_qty = GREATEST(
+          ranked_lots.rq - GREATEST(
+            LEAST(
+              needed.still_needed - GREATEST(ranked_lots.cumulative_rq - ranked_lots.rq, 0),
+              ranked_lots.rq
+            ), 0
+          ), 0
+        )::numeric(12,4),
+        status = CASE
+          WHEN GREATEST(
+                 ranked_lots.rq - GREATEST(
+                   LEAST(
+                     needed.still_needed - GREATEST(ranked_lots.cumulative_rq - ranked_lots.rq, 0),
+                     ranked_lots.rq
+                   ), 0
+                 ), 0
+               ) <= 0 THEN 'depleted'
+          ELSE 'active'
+        END,
+        updated_at = now()
+    FROM ranked_lots
+    JOIN needed ON needed.product_id = ranked_lots.product_id
+    WHERE inventory_lots.id = ranked_lots.id
+      AND needed.still_needed > 0
+  `);
+
+  // ── cogs_entries table — Phase 2 immutable COGS journal ─────────────────────
+  // One row per (challan_item × inventory_lot) consumed at dispatch time.
+  // unit_cost and cogs_amount are FROZEN at dispatch — never updated.
+  // This is the single source of truth for P&L COGS from this point forward.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS cogs_entries (
+      id                varchar      PRIMARY KEY DEFAULT gen_random_uuid(),
+      challan_id        varchar      NOT NULL,
+      challan_item_id   varchar      NOT NULL,
+      inventory_lot_id  varchar      NOT NULL,
+      product_id        varchar      NOT NULL,
+      grn_id            varchar,
+      grn_number        text,
+      challan_number    text         NOT NULL,
+      dispatched_at     timestamp    NOT NULL,
+      qty_consumed      decimal(12,4) NOT NULL,
+      unit_cost         decimal(14,4) NOT NULL,
+      cogs_amount       decimal(16,4) NOT NULL,
+      created_at        timestamp    NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cogs_entries_challan_id        ON cogs_entries(challan_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cogs_entries_product_id        ON cogs_entries(product_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cogs_entries_dispatched_at     ON cogs_entries(dispatched_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cogs_entries_inventory_lot_id  ON cogs_entries(inventory_lot_id)`);
+
+  // ── Backfill: populate cogs_entries for dispatches that predate Phase 2 ─────
+  // Creates one row per (challan_item, product) using weighted-average GRN cost.
+  // inventory_lot_id references the oldest active lot for the product (FIFO approx).
+  // Idempotent: skips challan_items that already have cogs_entries rows.
+  await db.execute(sql`
+    INSERT INTO cogs_entries
+      (challan_id, challan_item_id, inventory_lot_id, product_id,
+       grn_id, grn_number, challan_number, dispatched_at,
+       qty_consumed, unit_cost, cogs_amount)
+    WITH grn_avg AS (
+      SELECT
+        gi.product_id,
+        SUM(gi.buying_price::numeric * gi.received_quantity::numeric)
+          / NULLIF(SUM(gi.received_quantity::numeric), 0)
+        + COALESCE(
+            SUM(
+              COALESCE(grn.delivery_cost::numeric, 0)
+              / GREATEST(
+                  (SELECT COUNT(*) FROM goods_receipt_note_items i2 WHERE i2.grn_id = gi.grn_id),
+                  1
+                )
+              * gi.received_quantity::numeric
+            ) / NULLIF(SUM(gi.received_quantity::numeric), 0),
+            0
+          ) AS unit_cost
+      FROM goods_receipt_note_items gi
+      JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+      WHERE grn.status = 'confirmed'
+      GROUP BY gi.product_id
+    ),
+    oldest_lot AS (
+      SELECT DISTINCT ON (product_id)
+        product_id,
+        id           AS lot_id,
+        grn_id,
+        grn_number
+      FROM inventory_lots
+      ORDER BY product_id, received_date ASC, created_at ASC
+    )
+    SELECT
+      dc.id                                                   AS challan_id,
+      dci.id                                                  AS challan_item_id,
+      COALESCE(ol.lot_id, '00000000-0000-0000-0000-000000000000') AS inventory_lot_id,
+      dci.product_id,
+      ol.grn_id,
+      ol.grn_number,
+      dc.challan_number,
+      COALESCE(dc.dispatch_date, dc.created_at)::timestamp   AS dispatched_at,
+      dci.quantity::numeric                                   AS qty_consumed,
+      COALESCE(ga.unit_cost, 0)                              AS unit_cost,
+      dci.quantity::numeric * COALESCE(ga.unit_cost, 0)      AS cogs_amount
+    FROM delivery_challan_items dci
+    JOIN delivery_challans dc ON dc.id = dci.challan_id
+    LEFT JOIN grn_avg    ga ON ga.product_id  = dci.product_id
+    LEFT JOIN oldest_lot ol ON ol.product_id  = dci.product_id
+    WHERE dc.status IN ('dispatched', 'delivered', 'completed')
+      AND NOT EXISTS (
+        SELECT 1 FROM cogs_entries ce WHERE ce.challan_item_id = dci.id
+      )
+  `);
+
+  // ── products.non_dcr_compliant column — additive migration ──────────────────
+  // Idempotent: ADD COLUMN IF NOT EXISTS. All existing products default to false (unclassified).
+  await db.execute(sql`
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS non_dcr_compliant boolean NOT NULL DEFAULT false
+  `);
+
+  // ── Repair: sync supplier_invoices rows that got out of step with their GRN ──
+  // This happens when the GRN's goods_receipt_notes row was updated (supplier
+  // invoice uploaded) but the matching supplier_invoices sync query failed mid-
+  // flight (e.g. due to a missing ::text cast before that fix landed).  We heal
+  // those rows once at startup so the Accounts tab shows the correct status.
+  try {
+    const repairResult = await db.execute(sql`
+      UPDATE supplier_invoices si
+      SET upload_status      = 'recorded',
+          ext_invoice_number = COALESCE(si.ext_invoice_number, grn.supplier_invoice_number),
+          ext_invoice_date   = COALESCE(si.ext_invoice_date,   grn.supplier_invoice_date),
+          signed_copy_url    = COALESCE(si.signed_copy_url,    grn.supplier_invoice_url),
+          signed_copy_uploaded_by = COALESCE(si.signed_copy_uploaded_by, grn.supplier_invoice_uploaded_by),
+          signed_copy_uploaded_at = COALESCE(si.signed_copy_uploaded_at, grn.supplier_invoice_uploaded_at)
+      FROM goods_receipt_notes grn
+      WHERE si.grn_id           = grn.id
+        AND si.upload_status   != 'recorded'
+        AND si.upload_status   != 'cancelled'
+        AND grn.supplier_invoice_url IS NOT NULL
+    `);
+    const repaired = (repairResult as any).rowCount ?? 0;
+    if (repaired > 0) {
+      console.log(`[STARTUP REPAIR] Synced ${repaired} supplier_invoice(s) whose upload_status was out of step with their GRN`);
+    }
+  } catch (err) {
+    console.error("[STARTUP REPAIR] supplier_invoices sync repair failed:", err);
+  }
 
   await registerRoutes(httpServer, app);
 
@@ -540,7 +837,7 @@ app.use((req, res, next) => {
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      ...(process.platform !== "win32" && { reusePort: true }),
     },
     () => {
       log(`serving on port ${port}`);

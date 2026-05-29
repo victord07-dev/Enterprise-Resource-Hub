@@ -1,0 +1,107 @@
+[1G[0K⠙[1G[0K
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K⠙[1G[0K[WA] webhook URL: WHATSAPP_WEBHOOK_BASE_URL not set (set WHATSAPP_WEBHOOK_BASE_URL to enable)
+[WA] webhook signing secret OK
+[WA WORKER] Started — poll=1500ms stuck-threshold=300000ms maxAttempts=5
+2:35:19 PM [express] serving on port 5000
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: Connection terminated unexpectedly
+    at Connection.<anonymous> [90m(/home/runner/workspace/[39mnode_modules/[4mpg[24m/lib/client.js:136:73[90m)[39m
+[90m    at Object.onceWrapper (node:events:638:28)[39m
+[90m    at Connection.emit (node:events:524:28)[39m
+    at Socket.<anonymous> [90m(/home/runner/workspace/[39mnode_modules/[4mpg[24m/lib/connection.js:62:12[90m)[39m
+[90m    at Socket.emit (node:events:524:28)[39m
+[90m    at TCP.<anonymous> (node:net:343:12)[39m
+Emitted 'error' event on BoundPool instance at:
+    at Client.idleListener [90m(/home/runner/workspace/[39mnode_modules/[4mpg-pool[24m/index.js:62:10[90m)[39m
+[90m    at Client.emit (node:events:524:28)[39m
+    at Client._handleErrorEvent [90m(/home/runner/workspace/[39mnode_modules/[4mpg[24m/lib/client.js:350:10[90m)[39m
+    at Connection.<anonymous> [90m(/home/runner/workspace/[39mnode_modules/[4mpg[24m/lib/client.js:154:16[90m)[39m
+[90m    at Object.onceWrapper (node:events:638:28)[39m
+    [... lines matching original stack trace ...]
+[90m    at TCP.<anonymous> (node:net:343:12)[39m {
+  client: Client {
+    _events: [Object: null prototype] { error: [36m[Function (anonymous)][39m },
+    _eventsCount: [33m1[39m,
+    _maxListeners: [90mundefined[39m,
+    connectionParameters: ConnectionParameters {
+      user: [32m'postgres'[39m,
+      database: [32m'heliumdb'[39m,
+      port: [33m5432[39m,
+      host: [32m'helium'[39m,
+      binary: [33mfalse[39m,
+      options: [90mundefined[39m,
+      ssl: [33mfalse[39m,
+      client_encoding: [32m''[39m,
+      replication: [90mundefined[39m,
+      isDomainSocket: [33mfalse[39m,
+      application_name: [90mundefined[39m,
+      fallback_application_name: [90mundefined[39m,
+      statement_timeout: [33mfalse[39m,
+      lock_timeout: [33mfalse[39m,
+      idle_in_transaction_session_timeout: [33mfalse[39m,
+      query_timeout: [33mfalse[39m,
+      connect_timeout: [33m0[39m
+    },
+    user: [32m'postgres'[39m,
+    database: [32m'heliumdb'[39m,
+    port: [33m5432[39m,
+    host: [32m'helium'[39m,
+    replication: [90mundefined[39m,
+    _Promise: [36m[Function: Promise][39m,
+    _types: TypeOverrides {
+      _types: {
+        getTypeParser: [36m[Function: getTypeParser][39m,
+        setTypeParser: [36m[Function: setTypeParser][39m,
+        arrayParser: { create: [36m[Function: create][39m },
+        builtins: {
+          BOOL: [33m16[39m,
+          BYTEA: [33m17[39m,
+          CHAR: [33m18[39m,
+          INT8: [33m20[39m,
+          INT2: [33m21[39m,
+          INT4: [33m23[39m,
+          REGPROC: [33m24[39m,
+          TEXT: [33m25[39m,
+          OID: [33m26[39m,
+          TID: [33m27[39m,
+          XID: [33m28[39m,
+          CID: [33m29[39m,
+          JSON: [33m114[39m,
+          XML: [33m142[39m,
+          PG_NODE_TREE: [33m194[39m,
+          SMGR: [33m210[39m,
+          PATH: [33m602[39m,
+          POLYGON: [33m604[39m,
+          CIDR: [33m650[39m,
+          FLOAT4: [33m700[39m,
+          FLOAT8: [33m701[39m,
+          ABSTIME: [33m702[39m,
+          RELTIME: [33m703[39m,
+          TINTERVAL: [33m704[39m,
+          CIRCLE: [33m718[39m,
+          MACADDR8: [33m774[39m,
+          MONEY: [33m790[39m,
+          MACADDR: [33m829[39m,
+          INET: [33m869[39m,
+          ACLITEM: [33m1033[39m,
+          BPCHAR: [33m1042[39m,
+          VARCHAR: [33m1043[39m,
+          DATE: [33m1082[39m,
+          TIME: [33m1083[39m,
+          TIMESTAMP: [33m1114[39m,
+          TIMESTAMPTZ: [33m1184[39m,
+          INTERVAL: [33m1186[39m,
+          TIMETZ: [33m1266[39m,
+          BIT: [33m1560[39m,
+          VARBIT: [33m1562[39m,
+          NUMERIC: [33m1700[39m,
+          REFCURSOR: [33m1790[39m,
+          REGPROCEDURE: [33m2202[39m,
+          REGOPER: [33m2203[39m,
+          REGOPERATOR: [33m22

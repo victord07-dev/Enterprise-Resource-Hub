@@ -142,7 +142,7 @@ export async function downloadIdCardPDF(employee: Employee) {
   doc.setFontSize(4.5);
   doc.setTextColor(120, 150, 190);
   doc.text(employee.phone || employee.email || "", 4, H - 3.5);
-  doc.text("ITFI ERP System", W - 4, H - 3.5, { align: "right" });
+  doc.text("HE ERP System", W - 4, H - 3.5, { align: "right" });
 
   const safeName = employee.name.replace(/\s+/g, "-");
   doc.save(`ID-Card-${safeName}.pdf`);

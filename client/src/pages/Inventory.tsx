@@ -1,4 +1,4 @@
-import { useState, Fragment, useCallback, useEffect, useRef } from "react";
+﻿import { useState, Fragment, useCallback, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,14 +11,20 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, ApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import { getUser } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt, ScanLine, History } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem, Customer } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { generateChallanPDF } from "@/lib/challan-pdf";
+import SerialEntryDialog, { type SerialEntryItem } from "@/components/inventory/SerialEntryDialog";
+import SerialDispatchDialog, {
+  type SerialAssignmentSpec,
+  type ConfirmedAssignment,
+} from "@/components/inventory/SerialDispatchDialog";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -30,7 +36,7 @@ async function uploadFileToStorage(
   entityId: string,
   documentType: string,
 ): Promise<string> {
-  const token = localStorage.getItem("token");
+  const token = sessionStorage.getItem("token");
   const formData = new FormData();
   formData.append("file", file);
   formData.append("entityType", entityType);
@@ -54,6 +60,7 @@ export default function Inventory() {
   const { toast } = useToast();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const isSalesManager = user?.role === "sales_manager";
   const [location, navigate] = useLocation();
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const [productSearch, setProductSearch] = useState("");
@@ -71,7 +78,9 @@ export default function Inventory() {
   const SHOW_STOCK_ADJUSTMENT = false; // Phase 3: hidden from UI; keep to re-enable later
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
-  const [activeTab, setActiveTab] = useState("products");
+  // getUser() reads synchronously from sessionStorage so the correct default tab
+  // is set on the very first render — before the useAuth query resolves.
+  const [activeTab, setActiveTab] = useState(getUser()?.role === "sales_manager" ? "challans" : "products");
 
   const urlParamsHandled = useRef(false);
   const [movementFilterProduct, setMovementFilterProduct] = useState("all");
@@ -137,7 +146,9 @@ export default function Inventory() {
     if (p.type === "service") return false;
     const totalStock = getProductTotalStock(p.id);
     const reserved = reservedStockData?.[p.id]?.total ?? 0;
-    const available = Math.max(0, totalStock - reserved);
+    // M-4: Do NOT clamp to 0 — negative available stock is a discrepancy that
+    // must be surfaced (it is always below any minStockLevel threshold).
+    const available = totalStock - reserved;
     return available < (p.minStockLevel ?? 0);
   }) ?? [];
 
@@ -266,9 +277,16 @@ export default function Inventory() {
   const [requestedBundleComps, setRequestedBundleComps] = useState<Set<string>>(new Set());
   const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
-  // C2: Credit override dialog state
+  // C2: Credit override dialog state (challan dispatch)
   const [creditOverrideDialog, setCreditOverrideDialog] = useState<{ challanId: string; challanNumber: string; outstanding: number } | null>(null);
   const [creditOverrideReason, setCreditOverrideReason] = useState("");
+
+  // H-3: Credit override dialog state (GRN creation when supplier has outstanding balance)
+  // pendingGrnPayload stores the EXACT payload from the initial submission so the retry
+  // is bit-for-bit identical — line items, qty, rates, warehouse, notes all preserved.
+  const [grnCreditOverrideDialog, setGrnCreditOverrideDialog] = useState<{ outstanding: number; poNumber?: string } | null>(null);
+  const [grnCreditOverrideReason, setGrnCreditOverrideReason] = useState("");
+  const [pendingGrnPayload, setPendingGrnPayload] = useState<any>(null);
 
   // Challan lifecycle dialog state
   const [challanSignedCopyDialog, setChallanSignedCopyDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
@@ -285,6 +303,59 @@ export default function Inventory() {
   const [grnCancelReason, setGrnCancelReason] = useState("");
   const [grnChallanFile, setGrnChallanFile] = useState<File | null>(null);
   const [grnChallanFileUrl, setGrnChallanFileUrl] = useState<string>("");
+
+  // ── Phase 4E: Serial Number state ────────────────────────────────────────────
+  const [serialEntryGrnId, setSerialEntryGrnId]         = useState<string | null>(null);
+  const [serialEntryItem, setSerialEntryItem]           = useState<SerialEntryItem | null>(null);
+  const [serialEntryQueue, setSerialEntryQueue]         = useState<SerialEntryItem[]>([]);
+  // Tracks which GRN is currently having its items fetched before confirm
+  const [fetchingItemsForGrn, setFetchingItemsForGrn]   = useState<string | null>(null);
+  const [serialDispatchChallanId, setSerialDispatchChallanId] = useState<string | null>(null);
+  const [serialDispatchSoId, setSerialDispatchSoId]           = useState<string | null>(null);
+  const [serialDispatchCustomerId, setSerialDispatchCustomerId] = useState<string>("");
+  /** All serial-assignment specs for the challan currently being dispatched. */
+  const [serialDispatchSpecs, setSerialDispatchSpecs]         = useState<SerialAssignmentSpec[]>([]);
+  // (dialog open-state is derived from serialDispatchSpecs.length > 0)
+  const [serialSearch, setSerialSearch]                 = useState("");
+  const [serialStatusFilter, setSerialStatusFilter]     = useState("all");
+
+  const { data: allSerials = [], isLoading: serialsLoading } = useQuery<any[]>({
+    queryKey: ["/api/serial-numbers", serialSearch, serialStatusFilter],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (serialSearch)                           params.set("search", serialSearch);
+      if (serialStatusFilter !== "all")           params.set("status", serialStatusFilter);
+      return apiRequest("GET", `/api/serial-numbers?${params}`).then(r => r.json());
+    },
+  });
+
+  // After all serials for a GRN are entered, proceed to confirm
+  function handleSerialEntrySaved(grnItemId: string) {
+    const remaining = serialEntryQueue.filter(q => q.grnItemId !== grnItemId);
+    setSerialEntryQueue(remaining);
+    if (remaining.length > 0) {
+      setSerialEntryItem(remaining[0]);
+    } else {
+      setSerialEntryItem(null);
+      setSerialEntryGrnId(null);
+      // Now actually confirm the GRN
+      if (serialEntryGrnId) confirmGrnMutation.mutate(serialEntryGrnId);
+    }
+  }
+
+  /**
+   * Called by SerialDispatchDialog when the user confirms all serial selections.
+   * Closes the dialog and fires the single atomic dispatch request.
+   */
+  function handleSerialDispatchConfirm(assignments: ConfirmedAssignment[], warrantyMonths: number) {
+    const challanId = serialDispatchChallanId;
+    // Close dialog immediately
+    setSerialDispatchSpecs([]);
+    setSerialDispatchChallanId(null);
+    if (challanId) {
+      dispatchChallanMutation.mutate({ id: challanId, assignments, warrantyMonths });
+    }
+  }
 
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
@@ -329,7 +400,7 @@ export default function Inventory() {
     });
     if (!challanItemsMap[challanId]) {
       try {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
         const res = await fetch(`/api/delivery-challans/${challanId}/items`, { headers });
         const items = await res.json();
         setChallanItemsMap(prev => ({ ...prev, [challanId]: Array.isArray(items) ? items : [] }));
@@ -342,7 +413,7 @@ export default function Inventory() {
   // Load bundle components whenever new challan items are fetched
   useEffect(() => {
     if (!products) return;
-    const token = localStorage.getItem("token");
+    const token = sessionStorage.getItem("token");
     const headers = { Authorization: `Bearer ${token}` };
     const toLoad: string[] = [];
     Object.values(challanItemsMap).flat().forEach(item => {
@@ -372,7 +443,7 @@ export default function Inventory() {
   };
 
   const loadOrderItems = async (orderId: string) => {
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
     try {
       const [itemsRes, remainingRes] = await Promise.all([
         fetch(`/api/sales-orders/${orderId}/items`, { headers }),
@@ -421,8 +492,17 @@ export default function Inventory() {
   });
 
   const dispatchChallanMutation = useMutation({
-    mutationFn: async (challanId: string) => {
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/dispatch`);
+    mutationFn: async (payload: string | { id: string; assignments?: ConfirmedAssignment[]; warrantyMonths?: number }) => {
+      const id   = typeof payload === "string" ? payload : payload.id;
+      const body = typeof payload === "string" ? {} : {
+        assignments:    payload.assignments,
+        warrantyMonths: payload.warrantyMonths,
+      };
+      const res = await apiRequest("POST", `/api/delivery-challans/${id}/dispatch`, body);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Dispatch failed");
+      }
       return res.json();
     },
     onSuccess: () => {
@@ -467,8 +547,11 @@ export default function Inventory() {
       toast({ title: "Challan marked ready for signature" });
     },
     onError: (e: any, variables: { challanId: string }) => {
-      const outstanding = e?.body?.outstanding ?? e?.outstanding;
-      if (e?.status === 400 && outstanding !== undefined) {
+      // H-2: ApiError.body contains the full server JSON response.
+      // Guard against NaN by requiring a finite number before opening the dialog.
+      const rawOutstanding = e?.body?.outstanding ?? e?.outstanding;
+      const outstanding = rawOutstanding !== undefined ? Number(rawOutstanding) : undefined;
+      if (e?.status === 400 && outstanding !== undefined && !isNaN(outstanding)) {
         const challan = (deliveryChallans ?? []).find(c => c.id === variables.challanId);
         setCreditOverrideDialog({
           challanId: variables.challanId,
@@ -537,7 +620,7 @@ export default function Inventory() {
     },
     onSuccess: (_data, { challanId }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       fetch(`/api/delivery-challans/${challanId}/items`, { headers })
         .then(r => r.json())
         .then(items => setChallanItemsMap(prev => ({ ...prev, [challanId]: items })));
@@ -561,8 +644,14 @@ export default function Inventory() {
 
   useEffect(() => {
     if (!highlightedGrnId) return;
-    const t = setTimeout(() => setHighlightedGrnId(null), 3000);
-    return () => clearTimeout(t);
+    // Scroll highlighted GRN row into view
+    const scrollTimer = setTimeout(() => {
+      const el = document.getElementById(`grn-row-${highlightedGrnId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 400);
+    // Fade out highlight after 3s
+    const fadeTimer = setTimeout(() => setHighlightedGrnId(null), 3000);
+    return () => { clearTimeout(scrollTimer); clearTimeout(fadeTimer); };
   }, [highlightedGrnId]);
 
   useEffect(() => {
@@ -577,10 +666,21 @@ export default function Inventory() {
       if (highlightGrn) {
         setHighlightedGrnId(highlightGrn);
         setExpandedGrnIds(prev => { const next = new Set(prev); next.add(highlightGrn); return next; });
+        // Pre-fetch items for the highlighted GRN so Confirm works immediately without a full refresh
+        fetch(`/api/grns/${highlightGrn}/items`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } })
+          .then(r => r.json())
+          .then(items => setGrnItemsMap(prev => ({ ...prev, [highlightGrn]: Array.isArray(items) ? items : [] })))
+          .catch(() => setGrnItemsMap(prev => ({ ...prev, [highlightGrn]: [] })));
       }
       if (challanId) {
         setHighlightedChallanId(challanId);
         setExpandedChallanIds(prev => { const next = new Set(prev); next.add(challanId); return next; });
+        // Pre-fetch items immediately so Dispatch works correctly (serial tracking, etc.)
+        // without requiring a manual expand or page refresh — mirrors GRN deep-link behaviour.
+        fetch(`/api/delivery-challans/${challanId}/items`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } })
+          .then(r => r.json())
+          .then(items => setChallanItemsMap(prev => ({ ...prev, [challanId]: Array.isArray(items) ? items : [] })))
+          .catch(() => setChallanItemsMap(prev => ({ ...prev, [challanId]: [] })));
       }
       navigate("/inventory", { replace: true });
     }
@@ -617,7 +717,7 @@ export default function Inventory() {
     });
     if (!grnItemsMap[grnId]) {
       try {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
         const res = await fetch(`/api/grns/${grnId}/items`, { headers });
         const items = await res.json();
         setGrnItemsMap(prev => ({ ...prev, [grnId]: Array.isArray(items) ? items : [] }));
@@ -628,7 +728,7 @@ export default function Inventory() {
   }, [grnItemsMap]);
 
   const loadPOItemsForGRN = async (poId: string) => {
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
     try {
       const res = await fetch(`/api/purchase-orders/${poId}/items`, { headers });
       const items: PurchaseOrderItem[] = await res.json();
@@ -652,23 +752,50 @@ export default function Inventory() {
 
   const grnMutation = useMutation({
     mutationFn: async (data: any) => {
-      const { lineItems: _lineItems, deliveryCost: _dc, totalAmount: _ta, ...grnData } = data;
+      // C-2: include edited line items (receivedQuantity + buyingPrice) so the server
+      // persists actual received values instead of PO defaults.
+      // H-3: creditOverride + creditReason are passed on the retry path; stripped here
+      // so they don't pollute grnData but forwarded explicitly in the body.
+      const { lineItems, deliveryCost: _dc, totalAmount: _ta, creditOverride, creditReason, ...grnData } = data;
       const poId = grnData.purchaseOrderId;
-      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`, {
+      const body: Record<string, any> = {
         warehouseId: grnData.warehouseId,
         supplierChallanNumber: grnData.supplierChallanNumber,
         supplierChallanDate: grnData.supplierChallanDate || undefined,
         notes: grnData.notes || undefined,
-      });
+        lineItems: Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : undefined,
+      };
+      if (creditOverride) {
+        body.creditOverride = true;
+        body.creditReason = creditReason;
+      }
+      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`, body);
       return res.json();
     },
     onSuccess: (grn: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
       toast({ title: "GRN created", description: `GRN ${grn.grnNumber} created as draft` });
       setGrnDialogOpen(false);
+      // H-3: clear credit override state on success
+      setGrnCreditOverrideDialog(null);
+      setGrnCreditOverrideReason("");
+      setPendingGrnPayload(null);
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: (error: any, variables: any) => {
+      // H-3: if the server returns 400 with outstanding supplier balance data,
+      // open the credit override dialog instead of a generic toast.
+      // `variables` is the EXACT payload passed to mutate() — stored as-is so
+      // the retry sends an identical request with creditOverride: true appended.
+      const rawOutstanding = error?.body?.outstanding ?? error?.outstanding;
+      const outstanding = rawOutstanding !== undefined ? Number(rawOutstanding) : undefined;
+      if (error?.status === 400 && outstanding !== undefined && !isNaN(outstanding) && isFinite(outstanding)) {
+        const po = (purchaseOrders ?? []).find((p: any) => p.id === variables.purchaseOrderId);
+        setPendingGrnPayload(variables);
+        setGrnCreditOverrideDialog({ outstanding, poNumber: po?.poNumber });
+        setGrnCreditOverrideReason("");
+      } else {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -938,9 +1065,10 @@ export default function Inventory() {
         className="space-y-4"
       >
         <TabsList>
+          {/* sales_manager sees: Products & Services, Challans, Serial Numbers */}
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
-          <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
-          <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
+          {!isSalesManager && <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>}
+          {!isSalesManager && <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>}
           <TabsTrigger value="challans" data-testid="tab-challans">
             Challans
             {(deliveryChallans?.filter(c => c.status === "draft").length ?? 0) > 0 && (
@@ -949,7 +1077,10 @@ export default function Inventory() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>
+          {!isSalesManager && <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>}
+          <TabsTrigger value="serial-numbers" data-testid="tab-serial-numbers" className="flex items-center gap-1">
+            <ScanLine className="w-3 h-3" />Serial Numbers
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -1008,7 +1139,8 @@ export default function Inventory() {
                         const totalStock = isProduct ? getProductTotalStock(product.id) : null;
                         const reservedInfo = isProduct ? reservedStockData?.[product.id] : null;
                         const reservedStock = reservedInfo?.total ?? 0;
-                        const availableStock = isProduct && totalStock !== null ? Math.max(0, totalStock - reservedStock) : null;
+                        // M-4: No Math.max clamp — negative stock must be visible, not hidden as 0.
+                        const availableStock = isProduct && totalStock !== null ? (totalStock - reservedStock) : null;
                         const incomingInfo = isProduct ? incomingStockData?.[product.id] : null;
                         const incomingStock = incomingInfo?.total ?? 0;
                         const isLowStock = isProduct && availableStock !== null && availableStock < (product.minStockLevel ?? 0);
@@ -1074,12 +1206,30 @@ export default function Inventory() {
                               </td>
                               <td className="p-3 text-right" data-testid={`text-product-available-${product.id}`}>
                                 {isProduct && availableStock !== null ? (
-                                  <span className={`font-medium ${availableStock <= 0 ? "text-red-600 dark:text-red-400" : isLowStock ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                                    {availableStock}
-                                    {isLowStock && (
+                                  // M-4: Negative stock renders red + ⚠ tooltip — discrepancy, not hidden as 0.
+                                  // Low-but-positive stock renders amber + ⚠. Zero renders muted. Positive renders green.
+                                  availableStock < 0 ? (
+                                    <span
+                                      className="font-medium text-red-600 dark:text-red-400 cursor-help"
+                                      title="Inventory discrepancy — available stock is negative. A stock adjustment is recommended."
+                                    >
+                                      {availableStock}
                                       <AlertTriangle className="w-3.5 h-3.5 inline-block ml-1" />
-                                    )}
-                                  </span>
+                                    </span>
+                                  ) : (
+                                    <span className={`font-medium ${
+                                      isLowStock
+                                        ? "text-amber-600 dark:text-amber-400"
+                                        : availableStock === 0
+                                          ? "text-muted-foreground"
+                                          : "text-emerald-600 dark:text-emerald-400"
+                                    }`}>
+                                      {availableStock}
+                                      {isLowStock && (
+                                        <AlertTriangle className="w-3.5 h-3.5 inline-block ml-1" />
+                                      )}
+                                    </span>
+                                  )
                                 ) : "—"}
                               </td>
                               <td className="p-3 text-right" data-testid={`text-product-incoming-${product.id}`}>
@@ -1563,7 +1713,7 @@ export default function Inventory() {
                                     data-testid={`button-pdf-challan-${challan.id}`}
                                     title="Download PDF"
                                     onClick={async () => {
-                                      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+                                      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
                                       // Fetch items on-demand if not yet loaded (row not expanded)
                                       let items = challanItemsMap[challan.id];
                                       if (!items) {
@@ -1577,7 +1727,31 @@ export default function Inventory() {
                                         }
                                       }
                                       const customer = customers?.find(c => c.id === challan.customerId);
-                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap);
+
+                                      // Build SO item GST map so the PDF uses the rate locked on the SO
+                                      // (not the product master which may differ)
+                                      let soItemGstMap: Record<string, { gstRate: number; hsnCode?: string | null }> | undefined;
+                                      if (challan.orderId) {
+                                        try {
+                                          const soRes = await fetch(`/api/sales-orders/${challan.orderId}/items`, { headers });
+                                          const soItems = await soRes.json();
+                                          if (Array.isArray(soItems)) {
+                                            soItemGstMap = {};
+                                            for (const si of soItems) {
+                                              if (si.productId) {
+                                                soItemGstMap[si.productId] = {
+                                                  gstRate: Number(si.gstRate ?? si.gst_rate ?? 0),
+                                                  hsnCode: si.hsnCode ?? si.hsn_code ?? null,
+                                                };
+                                              }
+                                            }
+                                          }
+                                        } catch {
+                                          // non-fatal — fall back to product master
+                                        }
+                                      }
+
+                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap, undefined, soItemGstMap);
                                     }}
                                   >
                                     <Download className="w-3 h-3" />
@@ -1685,8 +1859,75 @@ export default function Inventory() {
                                       variant="outline"
                                       className="border-blue-400 text-blue-600 dark:text-blue-400"
                                       data-testid={`button-dispatch-challan-${challan.id}`}
-                                      disabled={dispatchChallanMutation.isPending}
-                                      onClick={() => { if (confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) dispatchChallanMutation.mutate(challan.id); }}
+                                      disabled={dispatchChallanMutation.isPending || challanItemsMap[challan.id] === undefined}
+                                      title={challanItemsMap[challan.id] === undefined ? "Loading items — please wait" : undefined}
+                                      onClick={async () => {
+                                        if (!confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) return;
+                                        // Phase 4E v2: build serial-assignment specs covering both
+                                        // regular tracked products and serialised bundle components.
+                                        try {
+                                          const challanItems = challanItemsMap[challan.id] ?? [];
+                                          const warehouseId  = challan.sourceType === "warehouse" ? challan.sourceId : null;
+                                          const token        = sessionStorage.getItem("token");
+                                          const headers      = { Authorization: `Bearer ${token}` };
+                                          const specs: SerialAssignmentSpec[] = [];
+
+                                          for (const item of challanItems) {
+                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                            if (!prod) continue;
+                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+
+                                            if ((prod as any).type === "bundle") {
+                                              // Fetch bundle components on-demand if not cached
+                                              let comps: any[] = challanBundleCompsMap[item.productId];
+                                              if (!comps) {
+                                                try {
+                                                  const r = await fetch(`/api/products/${item.productId}/bundle-items`, { headers });
+                                                  comps = await r.json();
+                                                  if (Array.isArray(comps)) {
+                                                    setChallanBundleCompsMap(prev => ({ ...prev, [item.productId]: comps }));
+                                                  } else {
+                                                    comps = [];
+                                                  }
+                                                } catch { comps = []; }
+                                              }
+                                              for (const comp of (comps ?? [])) {
+                                                const compProd = (products ?? []).find((p: any) => p.id === comp.componentProductId);
+                                                if (compProd?.requiresSerialTracking) {
+                                                  const reqQty = Math.round(Number(comp.quantity) * dispatchQty);
+                                                  specs.push({
+                                                    challanItemId:      item.id,
+                                                    componentProductId: comp.componentProductId,
+                                                    displayName:        (compProd as any).name ?? "Component",
+                                                    parentBundleName:   (prod as any).name,
+                                                    requiredQty:        reqQty,
+                                                    warehouseId,
+                                                  });
+                                                }
+                                              }
+                                            } else if ((prod as any).requiresSerialTracking) {
+                                              specs.push({
+                                                challanItemId:      item.id,
+                                                componentProductId: item.productId,
+                                                displayName:        (prod as any).name ?? "Product",
+                                                requiredQty:        dispatchQty,
+                                                warehouseId,
+                                              });
+                                            }
+                                          }
+
+                                          if (specs.length > 0 && challan.customerId) {
+                                            setSerialDispatchChallanId(challan.id);
+                                            setSerialDispatchSoId(challan.orderId ?? null);
+                                            setSerialDispatchCustomerId(challan.customerId);
+                                            setSerialDispatchSpecs(specs);
+                                          } else {
+                                            dispatchChallanMutation.mutate(challan.id);
+                                          }
+                                        } catch {
+                                          dispatchChallanMutation.mutate(challan.id);
+                                        }
+                                      }}
                                     >
                                       <Send className="w-3 h-3 mr-1" /> Dispatch
                                     </Button>
@@ -1978,10 +2219,63 @@ export default function Inventory() {
                                         size="sm"
                                         variant="outline"
                                         data-testid={`button-confirm-grn-${grn.id}`}
-                                        disabled={confirmGrnMutation.isPending}
-                                        onClick={() => { if (confirm("Confirm this GRN? Stock will be added to the warehouse.")) confirmGrnMutation.mutate(grn.id); }}
+                                        disabled={confirmGrnMutation.isPending || fetchingItemsForGrn === grn.id}
+                                        onClick={async () => {
+                                          if (!confirm("Confirm this GRN? Stock will be added to the warehouse.")) return;
+
+                                          // Phase 4E: ensure items are loaded before checking serial tracking.
+                                          // Items are lazily fetched on row-expand; if not yet loaded, fetch now.
+                                          let items: GoodsReceiptNoteItem[] = grnItemsMap[grn.id] !== undefined
+                                            ? grnItemsMap[grn.id]
+                                            : [];
+
+                                          if (grnItemsMap[grn.id] === undefined) {
+                                            setFetchingItemsForGrn(grn.id);
+                                            try {
+                                              const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+                                              const res = await fetch(`/api/grns/${grn.id}/items`, { headers });
+                                              const fetched = await res.json();
+                                              items = Array.isArray(fetched) ? fetched : [];
+                                              setGrnItemsMap(prev => ({ ...prev, [grn.id]: items }));
+                                            } catch {
+                                              setFetchingItemsForGrn(null);
+                                              toast({ title: "Error", description: "Could not load GRN items. Please refresh and try again.", variant: "destructive" });
+                                              return; // Never confirm if items failed to load
+                                            } finally {
+                                              setFetchingItemsForGrn(null);
+                                            }
+                                          }
+
+                                          // Check which items need serial entry
+                                          const trackedItems: SerialEntryItem[] = items
+                                            .filter((item: any) => {
+                                              const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                              return prod?.requiresSerialTracking;
+                                            })
+                                            .map((item: any) => {
+                                              const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                              return {
+                                                grnItemId:   item.id,
+                                                productId:   item.productId,
+                                                productName: prod?.name ?? item.description ?? "Product",
+                                                receivedQty: Number(item.receivedQuantity),
+                                                warehouseId: grn.warehouseId,
+                                              };
+                                            });
+
+                                          if (trackedItems.length > 0) {
+                                            setSerialEntryGrnId(grn.id);
+                                            setSerialEntryQueue(trackedItems);
+                                            setSerialEntryItem(trackedItems[0]);
+                                          } else {
+                                            confirmGrnMutation.mutate(grn.id);
+                                          }
+                                        }}
                                       >
-                                        <CheckCircle className="w-3 h-3 mr-1" /> Confirm
+                                        {fetchingItemsForGrn === grn.id
+                                          ? <><span className="w-3 h-3 mr-1 animate-spin inline-block border-2 border-current border-t-transparent rounded-full" /> Loading…</>
+                                          : <><CheckCircle className="w-3 h-3 mr-1" /> Confirm</>
+                                        }
                                       </Button>
                                       {/* Cancel — admin only */}
                                       {isAdmin && (
@@ -1997,21 +2291,29 @@ export default function Inventory() {
                                       )}
                                     </>
                                   )}
-                                  {/* Confirmed: upload supplier invoice */}
+                                  {/* Confirmed: view or upload supplier invoice */}
                                   {grn.status === "confirmed" && (
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      data-testid={`button-upload-supp-inv-grn-${grn.id}`}
-                                      onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
-                                    >
-                                      <Receipt className="w-3 h-3 mr-1" />
-                                      {(grn as any).supplierInvoiceUrl
-                                        ? "Re-upload Invoice"
-                                        : (grn as any).supplierInvoiceNumber
-                                          ? "Update Invoice"
-                                          : "Supplier Invoice"}
-                                    </Button>
+                                    (grn as any).supplierInvoiceUrl ? (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        data-testid={`button-view-supp-inv-grn-${grn.id}`}
+                                        onClick={() => window.open((grn as any).supplierInvoiceUrl, "_blank")}
+                                      >
+                                        <FileText className="w-3 h-3 mr-1" />
+                                        View Supplier Invoice
+                                      </Button>
+                                    ) : (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        data-testid={`button-upload-supp-inv-grn-${grn.id}`}
+                                        onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
+                                      >
+                                        <Receipt className="w-3 h-3 mr-1" />
+                                        {(grn as any).supplierInvoiceNumber ? "Update Invoice" : "Supplier Invoice"}
+                                      </Button>
+                                    )
                                   )}
                                 </div>
                               </td>
@@ -2104,7 +2406,7 @@ export default function Inventory() {
                                           className="h-7 text-xs"
                                           data-testid={`button-pdf-grn-${grn.id}`}
                                           onClick={async () => {
-                                            const token = localStorage.getItem("token");
+                                            const token = sessionStorage.getItem("token");
                                             const res = await fetch(`/api/grns/${grn.id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
                                             if (!res.ok) { toast({ title: "Failed to download PDF", variant: "destructive" }); return; }
                                             const blob = await res.blob();
@@ -2141,7 +2443,133 @@ export default function Inventory() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── Phase 4E: Serial Numbers tab ── */}
+        <TabsContent value="serial-numbers" className="space-y-4">
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              <div className="flex flex-wrap items-center gap-3 justify-between">
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <ScanLine className="w-4 h-4 text-blue-600" />
+                  Serial Number Registry
+                </h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Input
+                    placeholder="Search serial number..."
+                    value={serialSearch}
+                    onChange={e => setSerialSearch(e.target.value)}
+                    className="w-52 h-8 text-sm"
+                    data-testid="input-serial-search"
+                  />
+                  <Select value={serialStatusFilter} onValueChange={setSerialStatusFilter}>
+                    <SelectTrigger className="w-36 h-8 text-sm" data-testid="select-serial-status">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Statuses</SelectItem>
+                      <SelectItem value="in_stock">In Stock</SelectItem>
+                      <SelectItem value="dispatched">Dispatched</SelectItem>
+                      <SelectItem value="delivered">Delivered</SelectItem>
+                      <SelectItem value="returned">Returned</SelectItem>
+                      <SelectItem value="scrapped">Scrapped</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {serialsLoading ? (
+                <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+              ) : allSerials.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  <ScanLine className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  No serial numbers found. Enable serial tracking on a product and confirm a GRN to register units.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/30">
+                        <th className="text-left p-2 font-medium text-muted-foreground">Serial Number</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Barcode Value</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Product</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Warehouse</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Sales Order</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Customer</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Warranty Expires</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Dispatched</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allSerials.map((s: any, i: number) => {
+                        const prod = (products ?? []).find((p: any) => p.id === s.productId);
+                        const wh   = (warehouses ?? []).find((w: any) => w.id === s.warehouseId);
+                        const cust = (customers ?? []).find((c: any) => c.id === s.customerId);
+                        const so = s.salesOrderId ? (salesOrders ?? []).find((o: any) => o.id === s.salesOrderId) : null;
+                        const statusColors: Record<string, string> = {
+                          in_stock:   "bg-green-100 text-green-700 border-green-200",
+                          dispatched: "bg-blue-100 text-blue-700 border-blue-200",
+                          delivered:  "bg-emerald-100 text-emerald-700 border-emerald-200",
+                          returned:   "bg-amber-100 text-amber-700 border-amber-200",
+                          scrapped:   "bg-red-100 text-red-700 border-red-200",
+                        };
+                        return (
+                          <tr key={s.id} className={`border-b ${i % 2 === 0 ? "bg-muted/10" : ""}`}>
+                            <td className="p-2 font-mono font-medium">{s.serialNumber}</td>
+                            <td className="p-2 font-mono text-muted-foreground">{s.barcodeValue ?? "—"}</td>
+                            <td className="p-2">{prod?.name ?? s.productId}</td>
+                            <td className="p-2">
+                              <Badge variant="outline" className={`text-xs ${statusColors[s.status] ?? ""}`}>
+                                {s.status.replace("_", " ")}
+                              </Badge>
+                            </td>
+                            <td className="p-2 text-muted-foreground">{wh?.name ?? (s.warehouseId ? "—" : (s.status === "delivered" ? "Delivered" : "Dispatched"))}</td>
+                            <td className="p-2 font-mono text-xs">{so?.orderNumber ?? (s.salesOrderId ? "—" : "—")}</td>
+                            <td className="p-2">{cust?.name ?? (s.customerId ? s.customerId.slice(0, 8) + "…" : "—")}</td>
+                            <td className="p-2 text-muted-foreground">
+                              {s.warrantyExpiresAt
+                                ? new Date(s.warrantyExpiresAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                                : "—"}
+                            </td>
+                            <td className="p-2 text-muted-foreground">
+                              {s.dispatchedAt
+                                ? new Date(s.dispatchedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                                : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* Phase 4E: Serial Entry Dialog (GRN confirmation) */}
+      <SerialEntryDialog
+        open={!!serialEntryItem}
+        grnId={serialEntryGrnId ?? ""}
+        item={serialEntryItem}
+        onClose={() => { setSerialEntryItem(null); setSerialEntryGrnId(null); setSerialEntryQueue([]); }}
+        onSaved={handleSerialEntrySaved}
+      />
+
+      {/* Phase 4E v2: Serial Dispatch Dialog — atomic multi-component serial assignment */}
+      <SerialDispatchDialog
+        open={serialDispatchSpecs.length > 0}
+        challanId={serialDispatchChallanId ?? ""}
+        salesOrderId={serialDispatchSoId}
+        customerId={serialDispatchCustomerId}
+        specs={serialDispatchSpecs}
+        onClose={() => {
+          setSerialDispatchSpecs([]);
+          setSerialDispatchChallanId(null);
+        }}
+        onConfirm={handleSerialDispatchConfirm}
+      />
 
       <Dialog open={grnDialogOpen} onOpenChange={setGrnDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -2829,6 +3257,76 @@ export default function Inventory() {
               }}
             >
               {readyForSignatureMutation.isPending ? "Authorizing..." : "Authorize Credit Dispatch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── H-3: GRN Credit Override Dialog (admin/accountant authorize GRN on credit) ── */}
+      <Dialog
+        open={!!grnCreditOverrideDialog}
+        onOpenChange={(o) => {
+          if (!o) {
+            setGrnCreditOverrideDialog(null);
+            setGrnCreditOverrideReason("");
+            setPendingGrnPayload(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Credit GRN Authorization</DialogTitle>
+            <DialogDescription>
+              {grnCreditOverrideDialog?.poNumber && (
+                <>PO <strong>{grnCreditOverrideDialog.poNumber}</strong> — </>
+              )}
+              This supplier has an outstanding balance of{" "}
+              <strong>₹{grnCreditOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>{" "}
+              that has not been fully paid. As admin or accountant, you can authorize receiving goods on credit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="grn-credit-override-reason">
+              Credit Authorization Reason <span className="text-red-500">*</span>{" "}
+              <span className="text-muted-foreground text-xs">(min 10 chars)</span>
+            </Label>
+            <Textarea
+              id="grn-credit-override-reason"
+              data-testid="input-grn-credit-override-reason"
+              value={grnCreditOverrideReason}
+              onChange={(e) => setGrnCreditOverrideReason(e.target.value)}
+              placeholder="e.g. Goods already received at warehouse. Supplier payment in process. Authorized by accounts manager."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setGrnCreditOverrideDialog(null);
+                setGrnCreditOverrideReason("");
+                setPendingGrnPayload(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              data-testid="button-confirm-grn-credit-override"
+              disabled={grnCreditOverrideReason.trim().length < 10 || grnMutation.isPending}
+              onClick={() => {
+                if (pendingGrnPayload) {
+                  // Re-submit the EXACT original payload — all line items, quantities,
+                  // rates, warehouse, challan details and notes are preserved from
+                  // pendingGrnPayload. Only creditOverride flag + reason are appended.
+                  grnMutation.mutate({
+                    ...pendingGrnPayload,
+                    creditOverride: true,
+                    creditReason: grnCreditOverrideReason.trim(),
+                  });
+                }
+              }}
+            >
+              {grnMutation.isPending ? "Authorizing..." : "Authorize Credit GRN"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -4,11 +4,23 @@
  * Returns a Buffer for streaming as application/pdf.
  */
 
+import fs from "fs";
+import path from "path";
 import { jsPDF } from "jspdf";
 import type { PurchaseOrder, PurchaseOrderItem, Supplier, Product } from "@shared/schema";
 import { COMPANY, SHIP_TO, SIGNATORY } from "@shared/letterhead";
 import { drawLetterhead } from "@shared/pdf-letterhead";
 import { ensureNotoSansRegistered } from "./lib/pdf-fonts";
+
+// ── Logo — loaded once at startup, embedded in every PO PDF ──────────────────
+let _logoDataUrl: string | undefined;
+try {
+  const logoPath = path.resolve("attached_assets", "HE-LOGO.jpeg");
+  const buf = fs.readFileSync(logoPath);
+  _logoDataUrl = `data:image/jpeg;base64,${buf.toString("base64")}`;
+} catch {
+  // file not found — drawLetterhead falls back to text wordmark
+}
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -28,8 +40,8 @@ const PO_TERMS = [
   "This PO constitutes a binding purchase commitment upon supplier acknowledgement.",
 ];
 
-function fmtINR(val: number | string): string {
-  return `Rs. ${Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function fmt(val: number | string): string {
+  return `₹${Number(val).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function drawRR(doc: any, x: number, y: number, w: number, h: number, r: number) {
@@ -52,14 +64,15 @@ export function generatePOPdfBuffer(
   const productMap = new Map<string, Product>();
   products.forEach((p: Product) => productMap.set(p.id, p));
 
-  // Phase 4C P6-EXT — canonical letterhead (returns body-start y = 43)
+  // ── Letterhead with real logo ────────────────────────────────────────────────
   let y = drawLetterhead(doc, {
     pageWidth,
     margin,
     title: "PURCHASE ORDER",
+    logoDataUrl: _logoDataUrl,
   });
 
-  // ── Meta box ──────────────────────────────────────────────────────────────────
+  // ── Meta box (PO# / Date / Expected Delivery / Status) ───────────────────────
   const metaBoxH = 22;
   doc.setFillColor(...COLORS.infoBg);
   drawRR(doc, margin, y, contentWidth, metaBoxH, 2);
@@ -81,7 +94,7 @@ export function generatePOPdfBuffer(
   doc.text(po.poNumber, c1, y + 13);
   doc.setFont("helvetica", "normal");
   doc.text(new Date(po.orderDate).toLocaleDateString("en-IN"), c2, y + 13);
-  doc.text(po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString("en-IN") : "\u2014", c3, y + 13);
+  doc.text(po.expectedDelivery ? new Date(po.expectedDelivery).toLocaleDateString("en-IN") : "—", c3, y + 13);
   const statusLabel = po.status.split("_").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
   doc.setTextColor(...COLORS.accent);
   doc.text(statusLabel, c4, y + 13);
@@ -89,12 +102,26 @@ export function generatePOPdfBuffer(
 
   y += metaBoxH + 5;
 
-  // ── Supplier + Ship-to ────────────────────────────────────────────────────────
-  const partyBoxH = 44;
+  // ── Supplier + Ship-to — dynamic height so long addresses don't overflow ─────
+  const half = contentWidth / 2;
+  let supplierLines = 0;
+  if (supplier) {
+    supplierLines += 2; // name
+    if (supplier.contactPerson) supplierLines++;
+    if (supplier.phone)         supplierLines++;
+    if (supplier.email)         supplierLines++;
+    if (supplier.gstNumber)     supplierLines++;
+    if (supplier.address) {
+      const addrSplit = doc.splitTextToSize(supplier.address, half - 10);
+      supplierLines += Math.min(addrSplit.length, 3);
+    }
+  }
+  const supplierContentH = supplierLines * 3.8 + 11; // label (6) + name gap (4.5) + top pad (6) - overlap correction
+  const partyBoxH = Math.max(44, supplierContentH + 8);
+
   doc.setFillColor(...COLORS.infoBg);
   drawRR(doc, margin, y, contentWidth, partyBoxH, 2);
 
-  const half = contentWidth / 2;
   const leftX  = margin + 4;
   const rightX = margin + half + 4;
   let lY = y + 6;
@@ -114,18 +141,18 @@ export function generatePOPdfBuffer(
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7);
     doc.setTextColor(...COLORS.textSecondary);
-    if (supplier.contactPerson) { doc.text(supplier.contactPerson, leftX, lY); lY += 3.5; }
-    if (supplier.phone)         { doc.text(supplier.phone,         leftX, lY); lY += 3.5; }
-    if (supplier.email)         { doc.text(supplier.email,         leftX, lY); lY += 3.5; }
-    if (supplier.gstNumber)     { doc.text(`GSTIN: ${supplier.gstNumber}`, leftX, lY); lY += 3.5; }
+    if (supplier.contactPerson) { doc.text(supplier.contactPerson, leftX, lY); lY += 3.8; }
+    if (supplier.phone)         { doc.text(supplier.phone,         leftX, lY); lY += 3.8; }
+    if (supplier.email)         { doc.text(supplier.email,         leftX, lY); lY += 3.8; }
+    if (supplier.gstNumber)     { doc.text(`GSTIN: ${supplier.gstNumber}`, leftX, lY); lY += 3.8; }
     if (supplier.address) {
       const lines = doc.splitTextToSize(supplier.address, half - 10);
-      doc.text(lines.slice(0, 2), leftX, lY);
+      doc.text(lines.slice(0, 3), leftX, lY);
     }
   } else {
     doc.setFontSize(8);
     doc.setTextColor(...COLORS.textPrimary);
-    doc.text("\u2014", leftX, lY);
+    doc.text("—", leftX, lY);
   }
 
   let rY = y + 6;
@@ -148,21 +175,24 @@ export function generatePOPdfBuffer(
   // ── Compute GST per line ──────────────────────────────────────────────────────
   type LG = { taxable: number; gstRate: number; gstAmt: number; total: number; hsn: string; unit: string };
   const lineGsts: LG[] = items.map((item: PurchaseOrderItem) => {
-    const prod     = item.productId ? productMap.get(item.productId) : undefined;
-    const gstRate  = prod ? Number(prod.gstRate) : 0;
-    const hsn      = prod?.hsnCode ?? "";
-    const unit     = prod?.unit ?? "pcs";
-    const qty      = Number(item.quantity);
+    const prod    = item.productId ? productMap.get(item.productId) : undefined;
+    const gstRate = (item as any).gstRate != null ? Number((item as any).gstRate) : (prod ? Number(prod.gstRate) : 0);
+    const hsn     = (item as any).hsnCode ?? prod?.hsnCode ?? "";
+    const unit    = prod?.unit ?? "pcs";
+    const qty     = Number(item.quantity);
     const unitCost = Number(item.unitCost);
-    const taxable  = qty * unitCost;
-    const gstAmt   = Math.round(taxable * gstRate) / 100;
-    const total    = taxable + gstAmt;
+    const taxable = (item as any).taxableAmount != null ? Number((item as any).taxableAmount) : qty * unitCost;
+    const gstAmt  = (item as any).gstAmount != null ? Number((item as any).gstAmount) : Math.round(taxable * gstRate) / 100;
+    const total   = taxable + gstAmt;
     return { taxable, gstRate, gstAmt, total, hsn, unit };
   });
 
+  // K10-B: delivery cost
+  const deliveryCost = Number((po as any).deliveryCost ?? 0);
+  const lineItemsTotal = lineGsts.reduce((s: number, g: LG) => s + g.total, 0);
+  const grandTotal   = lineItemsTotal + deliveryCost;
   const totalTaxable = lineGsts.reduce((s: number, g: LG) => s + g.taxable, 0);
   const totalGst     = lineGsts.reduce((s: number, g: LG) => s + g.gstAmt, 0);
-  const grandTotal   = lineGsts.reduce((s: number, g: LG) => s + g.total, 0);
 
   const gstGroups = new Map<number, { taxable: number; gst: number }>();
   lineGsts.forEach((g: LG) => {
@@ -171,24 +201,29 @@ export function generatePOPdfBuffer(
   });
   const multiRate = gstGroups.size > 1;
 
-  // ── Table ─────────────────────────────────────────────────────────────────────
+  // ── Table columns — spaced to eliminate overlap ───────────────────────────────
+  // Content width = 180 mm (margin 15 each side on A4 210 mm)
+  // Columns (absolute mm):
+  //  #15  desc23  hsn77  qty95↵  uom97  rate119↵  taxable140↵  gst%157  gstAmt176↵  total195↵
+  // (↵ = right-aligned)
   const col = {
-    no:      margin,
-    desc:    margin + 8,
-    hsn:     margin + 82,
-    qty:     margin + 104,
-    uom:     margin + 116,
-    rate:    margin + 130,
-    taxable: margin + 152,
-    gstPct:  margin + 162,
-    gstAmt:  margin + 172,
-    total:   pageWidth - margin,
+    no:      margin,              // 15
+    desc:    margin + 8,          // 23  — 54 mm wide
+    hsn:     margin + 62,         // 77
+    qty:     margin + 80,         // 95  right-aligned
+    uom:     margin + 82,         // 97  left-aligned
+    rate:    margin + 104,        // 119 right-aligned
+    taxable: margin + 125,        // 140 right-aligned
+    gstPct:  margin + 142,        // 157 left-aligned
+    gstAmt:  margin + 161,        // 176 right-aligned
+    total:   pageWidth - margin,  // 195 right-aligned
   };
 
   const checkPageBreak = (needed: number) => {
     if (y + needed > pageHeight - 40) { doc.addPage(); y = 20; }
   };
 
+  // Table header row
   const tableHeaderH = 9;
   checkPageBreak(tableHeaderH + 10);
   doc.setFillColor(...COLORS.tableHeader);
@@ -196,21 +231,40 @@ export function generatePOPdfBuffer(
   doc.setFontSize(6);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(...COLORS.textSecondary);
-  doc.text("#",        col.no + 2,  y + 6);
-  doc.text("Item Description", col.desc, y + 6);
-  doc.text("HSN",      col.hsn,     y + 6);
-  doc.text("Qty",      col.qty,     y + 6, { align: "right" });
-  doc.text("UoM",      col.uom + 1, y + 6);
-  doc.text("Rate",     col.rate,    y + 6, { align: "right" });
-  doc.text("Taxable",  col.taxable, y + 6, { align: "right" });
-  doc.text("GST%",     col.gstPct + 1, y + 6);
-  doc.text("GST Amt",  col.gstAmt,  y + 6, { align: "right" });
-  doc.text("Total",    col.total - 2, y + 6, { align: "right" });
+  doc.text("#",             col.no + 2,         y + 6);
+  doc.text("Item / Description", col.desc,      y + 6);
+  doc.text("HSN",           col.hsn,            y + 6);
+  doc.text("Qty",           col.qty,            y + 6, { align: "right" });
+  doc.text("UoM",           col.uom + 1,        y + 6);
+  doc.text("Rate",          col.rate,           y + 6, { align: "right" });
+  doc.text("Taxable",       col.taxable,        y + 6, { align: "right" });
+  doc.text("GST%",          col.gstPct + 1,     y + 6);
+  doc.text("GST Amt",       col.gstAmt,         y + 6, { align: "right" });
+  doc.text("Total",         col.total - 2,      y + 6, { align: "right" });
   y += tableHeaderH;
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7);
 
+  // K10-C: legacy PO with no line items
+  const poGrandTotal = Number((po as any).grandTotal ?? 0);
+  if (lineGsts.length === 0) {
+    checkPageBreak(20);
+    doc.setFontSize(6.5);
+    if (poGrandTotal > 0) {
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("Line items not available — header total only", col.desc, y + 5);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...COLORS.textPrimary);
+      doc.text(fmt(poGrandTotal), col.total - 2, y + 5, { align: "right" });
+      doc.setFont("helvetica", "normal");
+    } else {
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("No line items", col.desc, y + 5);
+    }
+    y += 10;
+  }
+
+  // Data rows
   items.forEach((item: PurchaseOrderItem, idx: number) => {
     const g    = lineGsts[idx];
     const prod = item.productId ? productMap.get(item.productId) : undefined;
@@ -224,48 +278,66 @@ export function generatePOPdfBuffer(
     doc.setDrawColor(...COLORS.tableBorder);
     doc.line(margin, y + rowH, pageWidth - margin, y + rowH);
 
+    doc.setFontSize(6.5);
     doc.setTextColor(...COLORS.textPrimary);
-    doc.text(String(idx + 1), col.no + 2, y + 5);
-    const descT = doc.splitTextToSize(item.description || prod?.name || "\u2014", 70);
-    doc.text(descT[0], col.desc, y + 5);
-    doc.text(g.hsn || "\u2014",        col.hsn,    y + 5);
-    doc.text(String(item.quantity),    col.qty,    y + 5, { align: "right" });
-    doc.text(g.unit,                   col.uom + 1, y + 5);
-    doc.text(fmtINR(item.unitCost),    col.rate,   y + 5, { align: "right" });
-    doc.text(fmtINR(g.taxable),        col.taxable, y + 5, { align: "right" });
-    doc.text(`${g.gstRate}%`,          col.gstPct + 1, y + 5);
-    doc.text(fmtINR(g.gstAmt),         col.gstAmt, y + 5, { align: "right" });
+    doc.text(String(idx + 1),     col.no + 2,    y + 4.8);
+    const descT = doc.splitTextToSize(item.description || prod?.name || "—", 50);
+    doc.text(descT[0],            col.desc,      y + 4.8);
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text(g.hsn || "—",   col.hsn,       y + 4.8);
+    doc.setTextColor(...COLORS.textPrimary);
+    doc.text(String(item.quantity), col.qty,     y + 4.8, { align: "right" });
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text(g.unit,              col.uom + 1,   y + 4.8);
+    doc.setTextColor(...COLORS.textPrimary);
+    doc.text(fmt(item.unitCost),  col.rate,      y + 4.8, { align: "right" });
+    doc.text(fmt(g.taxable),      col.taxable,   y + 4.8, { align: "right" });
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text(`${g.gstRate}%`,     col.gstPct + 1, y + 4.8);
+    doc.setTextColor(...COLORS.textPrimary);
+    doc.text(fmt(g.gstAmt),       col.gstAmt,    y + 4.8, { align: "right" });
     doc.setFont("helvetica", "bold");
-    doc.text(fmtINR(g.total),          col.total - 2, y + 5, { align: "right" });
+    doc.text(fmt(g.total),        col.total - 2, y + 4.8, { align: "right" });
     doc.setFont("helvetica", "normal");
+
     y += rowH;
   });
 
   y += 5;
 
   // ── Summary / Totals ──────────────────────────────────────────────────────────
+  const effectiveGrandTotal = lineGsts.length === 0 ? poGrandTotal : grandTotal;
   const summaryX = pageWidth - margin - 92;
   const sumW     = 92;
 
   type SRow = { label: string; value: string; bold?: boolean; color?: [number,number,number] };
   const summaryRows: SRow[] = [];
-  summaryRows.push({ label: "Taxable Amount", value: fmtINR(totalTaxable) });
 
-  if (multiRate) {
-    Array.from(gstGroups.entries())
-      .sort(([a]: [number, any], [b]: [number, any]) => a - b)
-      .forEach(([rate, { taxable, gst }]: [number, { taxable: number; gst: number }]) => {
-        summaryRows.push({ label: `  Taxable @ ${rate}%`, value: fmtINR(taxable), color: COLORS.textSecondary as [number,number,number] });
-        summaryRows.push({ label: `  GST @ ${rate}%`,     value: fmtINR(gst),     color: COLORS.textSecondary as [number,number,number] });
-      });
-    summaryRows.push({ label: "Total GST", value: fmtINR(totalGst) });
+  if (lineGsts.length === 0) {
+    summaryRows.push({ label: "Total as per PO", value: fmt(poGrandTotal > 0 ? poGrandTotal : 0), bold: true });
   } else {
-    const rate = gstGroups.size > 0 ? Array.from(gstGroups.keys())[0] : 0;
-    summaryRows.push({ label: `GST (${rate}%)`, value: fmtINR(totalGst) });
-  }
-  summaryRows.push({ label: "Grand Total", value: fmtINR(grandTotal), bold: true });
+    summaryRows.push({ label: "Taxable Amount", value: fmt(totalTaxable) });
 
-  const sRowH  = 6;
+    if (multiRate) {
+      Array.from(gstGroups.entries())
+        .sort(([a]: [number, any], [b]: [number, any]) => a - b)
+        .forEach(([rate, { taxable, gst }]: [number, { taxable: number; gst: number }]) => {
+          summaryRows.push({ label: `  Taxable @ ${rate}%`, value: fmt(taxable), color: COLORS.textSecondary as [number,number,number] });
+          summaryRows.push({ label: `  GST @ ${rate}%`,     value: fmt(gst),     color: COLORS.textSecondary as [number,number,number] });
+        });
+      summaryRows.push({ label: "Total GST", value: fmt(totalGst) });
+    } else {
+      const rate = gstGroups.size > 0 ? Array.from(gstGroups.keys())[0] : 0;
+      summaryRows.push({ label: `GST (${rate}%)`, value: fmt(totalGst) });
+    }
+
+    if (deliveryCost > 0) {
+      summaryRows.push({ label: "Delivery / Freight Cost", value: fmt(deliveryCost) });
+    }
+    summaryRows.push({ label: "Grand Total", value: fmt(effectiveGrandTotal), bold: true });
+  }
+
+  const sRowH    = 6;
   const summaryH = summaryRows.length * sRowH + 4;
   checkPageBreak(summaryH + 25);
 
@@ -317,7 +389,7 @@ export function generatePOPdfBuffer(
   const termLH = 3.4;
   doc.setFont("helvetica", "normal");
   PO_TERMS.forEach((term: string) => {
-    const wrapped = doc.splitTextToSize(`\u2022 ${term}`, contentWidth);
+    const wrapped = doc.splitTextToSize(`• ${term}`, contentWidth);
     doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
     doc.text(wrapped, margin, y);
@@ -346,20 +418,18 @@ export function generatePOPdfBuffer(
   doc.setFontSize(6);
   doc.setTextColor(180, 190, 210);
   doc.text(
-    "System-generated Purchase Order \u2014 IT Futuristic Industries Pvt. Ltd.",
+    "System-generated Purchase Order — M/s Hussain Enterprise",
     pageWidth / 2, pageHeight - 5, { align: "center" }
   );
 
-  // ── Watermark ────────────────────────────────────────────────────────────────
+  // ── Watermark ─────────────────────────────────────────────────────────────────
   const wm = po.status === "pending" ? "DRAFT" : po.status === "cancelled" ? "CANCELLED" : null;
   if (wm) {
     const totalPgs: number = (doc.internal as any).pages.length - 1;
     for (let pg = 1; pg <= Math.max(1, totalPgs); pg++) {
       doc.setPage(pg);
       doc.saveGraphicsState();
-      try {
-        (doc as any).setGState((doc as any).GState({ opacity: 0.12 }));
-      } catch {}
+      try { (doc as any).setGState((doc as any).GState({ opacity: 0.12 })); } catch {}
       doc.setFont("helvetica", "bold");
       doc.setFontSize(72);
       const wmColor: [number,number,number] = wm === "CANCELLED" ? [185, 28, 28] : [220, 38, 38];
@@ -369,7 +439,5 @@ export function generatePOPdfBuffer(
     }
   }
 
-  // Return as buffer
-  const ab = doc.output("arraybuffer");
-  return Buffer.from(ab);
+  return Buffer.from(doc.output("arraybuffer"));
 }

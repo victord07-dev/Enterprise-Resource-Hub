@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import jwt from "jsonwebtoken";
 import { URL } from "url";
 
-const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
+const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-dev-only-secret-do-not-use-in-prod";
 const WHATSAPP_ROLES = new Set(["admin", "sales_manager", "field_staff"]);
 
 export type WhatsappEvent =

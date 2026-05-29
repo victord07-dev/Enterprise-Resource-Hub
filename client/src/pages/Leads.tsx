@@ -1,4 +1,4 @@
-import { useState, useCallback, Fragment } from "react";
+﻿import { useState, useCallback, Fragment } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -184,7 +184,7 @@ export default function Leads() {
     setWaDialogOpen(true);
     if (lead.phone) {
       try {
-        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
         if (convs.ok) {
           const list = await convs.json();
           const phone = lead.phone.replace(/\D/g, "");
@@ -270,7 +270,7 @@ export default function Leads() {
       return;
     }
     try {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const headers = { Authorization: `Bearer ${token}` };
       const [activitiesRes, followupsRes] = await Promise.all([
         fetch(`/api/leads/${leadId}/activities`, { headers }),
@@ -293,7 +293,7 @@ export default function Leads() {
 
   const fetchFollowupsForLead = useCallback(async (leadId: string) => {
     try {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const res = await fetch(`/api/leads/${leadId}/followups`, {
         headers: { Authorization: `Bearer ${token}` },
       });

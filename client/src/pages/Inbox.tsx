@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+﻿import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -86,7 +86,7 @@ export default function Inbox() {
   const { data: messagesData } = useQuery<{ messages: WhatsappMessage[]; hasMore: boolean }>({
     queryKey: ["/api/whatsapp/conversations", selectedConvId, "messages"],
     queryFn: () => fetch(`/api/whatsapp/conversations/${selectedConvId}/messages?limit=50`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
     }).then(r => r.json()),
     enabled: !!selectedConvId,
   });
@@ -97,7 +97,7 @@ export default function Inbox() {
   useEffect(() => { selectedConvIdRef.current = selectedConvId; }, [selectedConvId]);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
+    const token = sessionStorage.getItem("token");
     if (!token) return;
 
     let ws: WebSocket | null = null;

@@ -3,7 +3,7 @@ import type jsPDF from "jspdf";
 import type { DeliveryChallan, DeliveryChallanItem, Customer, Product } from "@shared/schema";
 import { drawLetterhead } from "@shared/pdf-letterhead";
 import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
-import logoAssetUrl from "@assets/ITFI-LOGO-FIN_1778914024535.png";
+import logoAssetUrl from "@assets/HE-LOGO.jpeg";
 
 async function loadLogoDataUrl(): Promise<string> {
   const res = await fetch(logoAssetUrl);
@@ -65,12 +65,14 @@ export async function generateChallanPDF(
   products: Product[],
   bundleCompsMap?: Record<string, Array<{ componentProductId: string; quantity: number; unit?: string }>>,
   logoDataUrl?: string,
+  /** GST rates locked on the linked sales order, keyed by productId */
+  soItemGstMap?: Record<string, { gstRate: number; hsnCode?: string | null }>,
 ) {
   const JsPDF = await loadJsPDF();
   const doc: jsPDF = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   await ensureNotoSansRegistered(doc);
 
-  // Load the ITFI logo — prefer caller-supplied, otherwise fetch from Vite asset
+  // Load the HE logo — prefer caller-supplied, otherwise fetch from Vite asset
   const resolvedLogoUrl = logoDataUrl ?? await loadLogoDataUrl().catch(() => undefined);
 
   const pageWidth  = doc.internal.pageSize.getWidth();
@@ -251,7 +253,9 @@ export async function generateChallanPDF(
     const qty     = Number(item.qtyToDispatch ?? item.quantity ?? 0);
     const rate    = Number(item.unitPrice ?? 0);
     const taxable = qty * rate;
-    const gstRate = Number((prod as any)?.gstRate ?? 0);
+    // Prefer the GST rate locked on the SO line item; fall back to product master
+    const gstRate = soItemGstMap?.[item.productId]?.gstRate
+      ?? Number((prod as any)?.gstRate ?? 0);
     const halfGst = gstRate / 2;
     const cgstAmt = taxable * halfGst / 100;
     const sgstAmt = taxable * halfGst / 100;
@@ -280,7 +284,7 @@ export async function generateChallanPDF(
     doc.text(descTxt[0], COL.desc.x + 2, rowMid);
     // HSN
     doc.setTextColor(...C.textSecondary);
-    doc.text(prod?.hsnCode || "\u2014", COL.hsn.x + 2, rowMid);
+    doc.text(soItemGstMap?.[item.productId]?.hsnCode || prod?.hsnCode || "\u2014", COL.hsn.x + 2, rowMid);
     doc.setTextColor(...C.textPrimary);
     // Qty
     doc.text(String(qty),                                         COL.qty.x + COL.qty.w - 1.5,     rowMid, { align: "right" });

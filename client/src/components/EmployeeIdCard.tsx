@@ -54,7 +54,7 @@ export default function EmployeeIdCard({ employee }: EmployeeIdCardProps) {
           >
             I
           </div>
-          <span className="text-white font-bold text-sm tracking-wide">ITFI Group</span>
+          <span className="text-white font-bold text-sm tracking-wide">Hussain Enterprise</span>
         </div>
         <span className="text-xs font-medium tracking-widest" style={{ color: "#93c5fd" }}>
           EMPLOYEE ID
@@ -139,7 +139,7 @@ export default function EmployeeIdCard({ employee }: EmployeeIdCardProps) {
           {employee.phone || employee.email || ""}
         </span>
         <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.35)", fontSize: 9 }}>
-          ITFI ERP System
+          HE ERP System
         </span>
       </div>
     </div>

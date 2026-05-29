@@ -143,7 +143,7 @@ function addPageFooter(doc: jsPDF) {
     doc.setFontSize(6.5);
     doc.setTextColor(...C.textMuted);
     doc.text(`Page ${i} of ${pages}`, PW / 2, PH - 5, { align: "center" });
-    doc.text("ITFI Group \u2014 Confidential", M, PH - 5);
+    doc.text("Hussain Enterprise \u2014 Confidential", M, PH - 5);
     doc.text(new Date().toISOString().slice(0, 10), PW - M, PH - 5, { align: "right" });
   }
 }
@@ -765,7 +765,7 @@ export interface PLStatementPDFData {
     salesInvoiceCount: number;
     creditNoteCount: number;
   };
-  cogs: { purchases: number; label: string; caveat: string; supplierInvoiceCount: number };
+  cogs: { amount: number; label: string; caveat: string; challanCount: number; productCount: number };
   grossProfit: number;
   operatingExpenses: {
     byCategory: { categoryId: string | null; categoryName: string; total: number }[];
@@ -844,7 +844,7 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
   y += 3;
 
   drawRow(d.cogs.label.toUpperCase(), null, { bold: true, bg: C.tableHeaderBg, height: 7 });
-  drawRow(`Purchases — ${d.cogs.supplierInvoiceCount} supplier invoices`, -d.cogs.purchases, { indent: 3 });
+  drawRow(`Cost of Goods Sold — ${d.cogs.challanCount} challans · ${d.cogs.productCount} products`, -d.cogs.amount, { indent: 3 });
   y += 3;
 
   drawRow("GROSS PROFIT", d.grossProfit, { bold: true, bg: C.summaryBg, topBorder: true, height: 7 });

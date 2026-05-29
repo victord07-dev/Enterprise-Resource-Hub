@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,7 +46,7 @@ export default function MyPortal() {
     queryFn: async () => {
       if (!employeeId) return undefined;
       const res = await fetch(`/api/employees/${employeeId}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       return res.json();
     },
@@ -57,7 +57,7 @@ export default function MyPortal() {
     queryFn: async () => {
       if (!employeeId) return [];
       const res = await fetch(`/api/attendance?employeeId=${employeeId}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       return res.json();
     },
@@ -81,7 +81,7 @@ export default function MyPortal() {
     queryFn: async () => {
       if (!employeeId) return [];
       const res = await fetch(`/api/travel-expenses/employee/${employeeId}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       return res.json();
     },
@@ -526,7 +526,7 @@ export default function MyPortal() {
           <div className="flex gap-3 p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-800">
             <div className="w-2 h-2 rounded-full bg-blue-500 mt-1.5 shrink-0" />
             <div>
-              <p className="text-sm font-medium">Welcome to ITFI Group ERP</p>
+              <p className="text-sm font-medium">Welcome to Hussain Enterprise ERP</p>
               <p className="text-xs text-muted-foreground mt-0.5">Please update your profile information and ensure your attendance is recorded daily via the kiosk system.</p>
             </div>
           </div>

@@ -8,6 +8,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar, isRouteAllowedForRole } from "@/components/app-sidebar";
 import { isAuthenticated, getUser } from "@/lib/auth";
+import { useInactivityLogout } from "@/hooks/use-inactivity-logout";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -41,6 +42,7 @@ const Inbox = lazy(() => import("@/pages/Inbox"));
 const Campaigns = lazy(() => import("@/pages/Campaigns"));
 const WhatsAppTemplates = lazy(() => import("@/pages/WhatsAppTemplates"));
 const CashAccountDetail = lazy(() => import("@/pages/CashAccountDetail"));
+const Countdown = lazy(() => import("@/pages/Countdown"));
 
 interface NotificationBellProps {
   open: boolean;
@@ -260,6 +262,22 @@ function AuthenticatedLayout() {
 function App() {
   const [location] = useLocation();
   const authenticated = isAuthenticated();
+
+  // Auto-logout after 30 minutes of inactivity
+  useInactivityLogout();
+
+  if (location === "/countdown") {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <Toaster />
+          <Suspense fallback={<PageLoader />}>
+            <Countdown />
+          </Suspense>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+  }
 
   if (location === "/kiosk") {
     return (

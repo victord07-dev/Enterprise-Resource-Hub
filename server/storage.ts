@@ -1,9 +1,9 @@
 import { db } from "./db";
-import { eq, desc, sql, and, or, gte, lte, lt } from "drizzle-orm";
+import { eq, desc, sql, and, or, gte, lte, lt, isNull } from "drizzle-orm";
 import {
   users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
-  invoices, payments, employees, employeeAdvances, employeeIncentives, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems,
+  invoices, payments, employees, employeeAdvances, employeeIncentives, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems, monthlyTargets,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -392,6 +392,7 @@ export interface IStorage {
 
   // Customer Payments
   getCustomerPayments(invoiceId: string): Promise<CustomerPayment[]>;
+  getSalesOrderAdvancePayments(soId: string): Promise<CustomerPayment[]>;
   getAllCustomerPayments(): Promise<CustomerPayment[]>;
   createCustomerPayment(data: Omit<CustomerPayment, "id" | "createdAt">): Promise<CustomerPayment>;
   deleteCustomerPayment(id: string): Promise<boolean>;
@@ -1734,6 +1735,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(customerPayments).where(eq(customerPayments.invoiceId, invoiceId)).orderBy(desc(customerPayments.createdAt));
   }
 
+  async getSalesOrderAdvancePayments(soId: string): Promise<CustomerPayment[]> {
+    return db.select().from(customerPayments)
+      .where(and(eq(customerPayments.salesOrderId, soId), isNull(customerPayments.invoiceId)))
+      .orderBy(desc(customerPayments.createdAt));
+  }
+
   async getAllCustomerPayments(): Promise<CustomerPayment[]> {
     return db.select().from(customerPayments).orderBy(desc(customerPayments.createdAt));
   }
@@ -2840,10 +2847,26 @@ export class DatabaseStorage implements IStorage {
   }
 
   async computeSupplierInvoiceOutstanding(invoiceId: string): Promise<number> {
+    // Credits against this invoice come from two sources (must not double-count):
+    //
+    //   1. Payments directly linked to the invoice (supplier_invoice_id = invoiceId)
+    //      — covers regular payments AND advances that B3 has already migrated
+    //
+    //   2. The PO's advance_paid field
+    //      — covers advances still stored against the PO (purchase_order_id set,
+    //        supplier_invoice_id NULL) when B3 hasn't run for this PO yet, OR when
+    //        an advance was recorded AFTER the GRN was confirmed but before the next
+    //        server restart runs the B3 backfill.
+    //
+    // B3 ensures these two sources are mutually exclusive:
+    //   • When B3 runs it moves the payment to supplier_invoice_id AND zeroes advance_paid.
+    //   • Until then: advance_paid > 0, payment has purchase_order_id (not invoice_id).
+    // So summing both is always safe and always accurate.
     const r = await db.execute(sql`
       SELECT GREATEST(
         si.total_amount::numeric
-        - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0),
+        - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0)
+        - COALESCE((SELECT po.advance_paid::numeric FROM purchase_orders po WHERE po.id = si.purchase_order_id), 0),
         0
       ) AS outstanding
       FROM supplier_invoices si
@@ -2890,7 +2913,8 @@ export class DatabaseStorage implements IStorage {
       FROM (
         SELECT GREATEST(
           si.total_amount::numeric
-          - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0),
+          - COALESCE((SELECT SUM(amount::numeric) FROM supplier_payments WHERE supplier_invoice_id = si.id), 0)
+          - COALESCE((SELECT po.advance_paid::numeric FROM purchase_orders po WHERE po.id = si.purchase_order_id), 0),
           0
         ) AS outstanding
         FROM supplier_invoices si
@@ -3148,6 +3172,40 @@ export class DatabaseStorage implements IStorage {
       recentOrders,
       recentActivities,
     };
+  }
+
+  // ─── Monthly Targets (Countdown Display) ──────────────────────────────────
+  async getMonthlyTarget(month: string) {
+    const rows = await db.select().from(monthlyTargets).where(eq(monthlyTargets.month, month)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  async upsertMonthlyTarget(month: string, data: {
+    salesTarget?: string;
+    salesAchieved?: string;
+    solarCustomersTarget?: number;
+    solarCustomersAchieved?: number;
+  }) {
+    const existing = await this.getMonthlyTarget(month);
+    if (existing) {
+      const update: Record<string, any> = { updatedAt: new Date() };
+      if (data.salesTarget        !== undefined) update.salesTarget             = data.salesTarget;
+      if (data.salesAchieved      !== undefined) update.salesAchieved           = data.salesAchieved;
+      if (data.solarCustomersTarget   !== undefined) update.solarCustomersTarget   = data.solarCustomersTarget;
+      if (data.solarCustomersAchieved !== undefined) update.solarCustomersAchieved = data.solarCustomersAchieved;
+      const rows = await db.update(monthlyTargets).set(update).where(eq(monthlyTargets.month, month)).returning();
+      return rows[0];
+    } else {
+      const rows = await db.insert(monthlyTargets).values({
+        month,
+        salesTarget:            data.salesTarget            ?? "50000000",
+        salesAchieved:          data.salesAchieved          ?? "0",
+        solarCustomersTarget:   data.solarCustomersTarget   ?? 35,
+        solarCustomersAchieved: data.solarCustomersAchieved ?? 0,
+        updatedAt: new Date(),
+      }).returning();
+      return rows[0];
+    }
   }
 }
 

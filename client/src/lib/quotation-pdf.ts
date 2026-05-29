@@ -461,7 +461,7 @@ export async function generateQuotationPDF(
   doc.setFontSize(6);
   doc.setTextColor(180, 190, 210);
   doc.text(
-    "This is a system-generated quotation — IT Futuristic Industries Pvt. Ltd.",
+    "This is a system-generated quotation — M/s Hussain Enterprise",
     pageWidth / 2,
     pageHeight - 5,
     { align: "center" }

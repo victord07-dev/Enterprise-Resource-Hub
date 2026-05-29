@@ -18,7 +18,7 @@ import {
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
   Flame, TrendingDown, Shield, Search, ChevronDown,
 } from "lucide-react";
-import { useCurrentUser } from "@/lib/auth";
+import { useCurrentUser, getUser } from "@/lib/auth";
 import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF } from "@/lib/reports-pdf";
 
 // Lazy-loaded so heavy code only downloads when the tab is opened.
@@ -38,6 +38,8 @@ const ProductSales   = lazy(() => import("@/components/reports/ProductSales").th
 const ProductProfit  = lazy(() => import("@/components/reports/ProductProfit").then(m => ({ default: m.ProductProfit })));
 const PurchaseRegister = lazy(() => import("@/components/reports/PurchaseRegister").then(m => ({ default: m.PurchaseRegister })));
 const ExpenseReport = lazy(() => import("@/components/reports/ExpenseReport").then(m => ({ default: m.ExpenseReport })));
+const BalanceSheet    = lazy(() => import("@/components/reports/BalanceSheet"));
+const FinancialRatios = lazy(() => import("@/components/reports/FinancialRatios"));
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
 
@@ -193,7 +195,7 @@ function APAgingTab() {
 
   const handleExportCSV = () => {
     downloadCSV(
-      `itfi-ap-aging-${todayISO()}.csv`,
+      `he-ap-aging-${todayISO()}.csv`,
       ["Supplier", "Invoice #", "PO #", "Invoice Date", "Due Date", "Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
       filtered.map(r => [r.supplierName, r.invoiceNumber, r.poNumber ?? "", r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.totalAmount, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
     );
@@ -201,7 +203,7 @@ function APAgingTab() {
 
   const handleExportPDF = async () => {
     const blob = await generateAPAgingPDF(filtered, summary, supplierFilter === "all" ? "All Suppliers" : (filtered[0]?.supplierName ?? ""));
-    downloadPDF(`itfi-ap-aging-${todayISO()}.pdf`, blob);
+    downloadPDF(`he-ap-aging-${todayISO()}.pdf`, blob);
   };
 
   const summaryCards = [
@@ -437,7 +439,7 @@ function ARAgingTab() {
 
   const handleExportCSV = () => {
     downloadCSV(
-      `itfi-ar-aging-${todayISO()}.csv`,
+      `he-ar-aging-${todayISO()}.csv`,
       ["Customer", "Type", "GSTIN", "Invoice #", "Invoice Date", "Due Date", "Grand Total (₹)", "Paid (₹)", "Balance (₹)", "Days Overdue", "Bucket", "Status"],
       filtered.map(r => [r.customerName, r.customerType, r.customerGSTIN ?? "", r.invoiceNumber, r.invoiceDate?.slice(0, 10) ?? "", r.dueDate?.slice(0, 10) ?? "", r.grandTotal, r.totalPaid, r.balance, r.daysOverdue > 0 ? r.daysOverdue : "Current", r.bucket, r.status])
     );
@@ -445,7 +447,7 @@ function ARAgingTab() {
 
   const handleExportPDF = async () => {
     const blob = await generateARAgingPDF(filtered, summary, customerFilter === "all" ? "All Customers" : (filtered[0]?.customerName ?? ""));
-    downloadPDF(`itfi-ar-aging-${todayISO()}.pdf`, blob);
+    downloadPDF(`he-ar-aging-${todayISO()}.pdf`, blob);
   };
 
   const summaryCards = [
@@ -738,7 +740,7 @@ function DailyPricingTab() {
 
   const handleExportCSV = () => {
     downloadCSV(
-      `itfi-daily-pricing-${todayISO()}.csv`,
+      `he-daily-pricing-${todayISO()}.csv`,
       ["Product", "SKU", "Category", "Stock", "Blended Cost (₹)", "Global Floor (₹)", "Strict Floor (₹)", "Confirmed Price (₹)", "Margin %", "Pressure Level", "Source", "Pricing Status", "Sell Priority"],
       filtered.map(p => [p.productName, p.sku, p.category, p.totalStock, p.blendedCost ?? "", p.globalFloor ?? "", p.strictFloor ?? "", p.confirmedPrice, p.marginPct != null ? p.marginPct.toFixed(1) : "", p.pressureLevel, p.source, pricingStatus(p), p.sellPriority ? "Yes" : "No"])
     );
@@ -746,7 +748,7 @@ function DailyPricingTab() {
 
   const handleExportPDF = async () => {
     const blob = await generatePricingPDF(filtered, portfolio, search || category !== "all" || !!activeInsight ? "Filtered view" : "All Products");
-    downloadPDF(`itfi-daily-pricing-${todayISO()}.pdf`, blob);
+    downloadPDF(`he-daily-pricing-${todayISO()}.pdf`, blob);
   };
 
   if (search) {
@@ -1025,9 +1027,13 @@ const TAB_LABELS: Record<string, string> = {
 
 export default function Reports() {
   const { data: currentUser } = useCurrentUser();
-  const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
+  // getUser() reads synchronously from sessionStorage — safe to use in useState initialiser
+  // so the correct default tab is set on the very first render before the query resolves.
+  const initialRole = getUser()?.role ?? "";
+  const isSalesManager = currentUser?.role === "sales_manager" || initialRole === "sales_manager";
+  const canManagePricing = ["admin", "accountant"].includes(currentUser?.role ?? "");
   const isFinanceUser = ["admin", "accountant"].includes(currentUser?.role ?? "");
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState(initialRole === "sales_manager" ? "receivables" : "overview");
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
@@ -1078,9 +1084,10 @@ export default function Reports() {
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="flex flex-wrap gap-1 h-auto" data-testid="tabs-reports">
-          <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
+          {/* sales_manager: Receivables and Payables only */}
+          {!isSalesManager && <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>}
           <TabsTrigger value="receivables" data-testid="tab-receivables">Receivables</TabsTrigger>
-          <TabsTrigger value="payables" data-testid="tab-payables">Payables</TabsTrigger>
+          {!isSalesManager && <TabsTrigger value="payables" data-testid="tab-payables">Payables</TabsTrigger>}
           {isFinanceUser && <TabsTrigger value="cash-banking" data-testid="tab-cash-banking">Cash &amp; Banking</TabsTrigger>}
           {isFinanceUser && <TabsTrigger value="sales-revenue" data-testid="tab-sales-revenue">Sales &amp; Revenue</TabsTrigger>}
           {isFinanceUser && <TabsTrigger value="tax-compliance" data-testid="tab-tax-compliance">Tax &amp; Compliance</TabsTrigger>}
@@ -1251,12 +1258,20 @@ export default function Reports() {
               <TabsList className="mb-4" data-testid="tablist-financial-statements">
                 <TabsTrigger value="pl-statement" data-testid="tab-fs-pl-statement">P&amp;L Statement</TabsTrigger>
                 <TabsTrigger value="cash-flow" data-testid="tab-fs-cash-flow">Cash Flow</TabsTrigger>
+                <TabsTrigger value="balance-sheet" data-testid="tab-fs-balance-sheet">Balance Sheet</TabsTrigger>
+                <TabsTrigger value="financial-ratios" data-testid="tab-fs-financial-ratios">Financial Ratios</TabsTrigger>
               </TabsList>
               <TabsContent value="pl-statement">
                 <Suspense fallback={<PageLoader />}><PLStatement /></Suspense>
               </TabsContent>
               <TabsContent value="cash-flow">
                 <Suspense fallback={<PageLoader />}><CashFlowStatement /></Suspense>
+              </TabsContent>
+              <TabsContent value="balance-sheet">
+                <Suspense fallback={<PageLoader />}><BalanceSheet /></Suspense>
+              </TabsContent>
+              <TabsContent value="financial-ratios">
+                <Suspense fallback={<PageLoader />}><FinancialRatios /></Suspense>
               </TabsContent>
             </Tabs>
           </TabsContent>

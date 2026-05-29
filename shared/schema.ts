@@ -74,6 +74,7 @@ export const products = pgTable("products", {
   packSize: text("pack_size"),
   almm: boolean("almm").notNull().default(false),
   dcrCompliant: boolean("dcr_compliant").notNull().default(false),
+  nonDcrCompliant: boolean("non_dcr_compliant").notNull().default(false),
   modelSeries: text("model_series"),
   lifecycleStatus: text("lifecycle_status").notNull().default("active"),
   replacedByProductId: varchar("replaced_by_product_id"),
@@ -93,6 +94,10 @@ export const products = pgTable("products", {
   // Valid values: 'off_grid' | 'on_grid' | 'hybrid' | 'others'
   // Defaults to 'others' for all existing & new products; operator upgrades via CSV or edit form.
   gridType: text("grid_type").notNull().default("others"),
+  // Phase 4E — Serial Number Tracking
+  // When true, every GRN receipt and challan dispatch for this product
+  // requires serial numbers to be recorded unit-by-unit.
+  requiresSerialTracking: boolean("requires_serial_tracking").notNull().default(false),
 });
 
 /** Roles allowed to view product cost data (distributor price, logistics, landed cost, margins). */
@@ -836,7 +841,8 @@ export const salesInvoiceItems = pgTable("sales_invoice_items", {
 
 export const customerPayments = pgTable("customer_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  invoiceId: varchar("invoice_id").notNull(),
+  invoiceId: varchar("invoice_id"),           // nullable — NULL for SO-level advance payments
+  salesOrderId: varchar("sales_order_id"),    // set when payment is advance (no invoice yet)
   customerId: varchar("customer_id").notNull(),
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
   paymentDate: timestamp("payment_date").notNull().defaultNow(),
@@ -1464,4 +1470,296 @@ export const docNumberSequences = pgTable(
   },
   (t) => [primaryKey({ columns: [t.docType, t.fyStr] })],
 );
+
+// ── Phase 4D-A: Balance Sheet Foundation Tables ───────────────────────────────
+
+// TABLE 1: Fixed Assets
+// Depreciation is computed at report time (never stored).
+// SLM formula: annual_dep = (purchase_value - salvage_value) / useful_life_years
+// Pro-rata from month of purchase.
+export const fixedAssets = pgTable("fixed_assets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  category: text("category").notNull(), // machinery|vehicle|equipment|furniture|other
+  purchaseDate: date("purchase_date").notNull(),
+  purchaseValue: decimal("purchase_value", { precision: 14, scale: 2 }).notNull(),
+  salvageValue: decimal("salvage_value", { precision: 14, scale: 2 }).notNull().default("0"),
+  usefulLifeYears: integer("useful_life_years").notNull(),
+  depreciationMethod: text("depreciation_method").notNull().default("slm"),
+  accumulatedDepOverride: decimal("accumulated_dep_override", { precision: 14, scale: 2 }),
+  accumulatedDepOverrideDate: date("accumulated_dep_override_date"),
+  accumulatedDepOverrideBy: varchar("accumulated_dep_override_by").references(() => users.id),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_fixed_assets_category").on(t.category),
+  index("idx_fixed_assets_is_active").on(t.isActive),
+]);
+
+export const insertFixedAssetSchema = createInsertSchema(fixedAssets).omit({ id: true, createdAt: true, updatedAt: true });
+export type FixedAsset = typeof fixedAssets.$inferSelect;
+export type InsertFixedAsset = z.infer<typeof insertFixedAssetSchema>;
+
+// TABLE 2: Loans
+// loan_type is auto-classified at report time based on remaining maturity:
+//   remaining ≤ 12 months → short_term
+//   remaining > 12 months → long_term
+//   NULL maturity → always short_term
+export const loans = pgTable("loans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  lenderName: text("lender_name").notNull(),
+  sanctionedAmount: decimal("sanctioned_amount", { precision: 14, scale: 2 }).notNull(),
+  outstandingAmount: decimal("outstanding_amount", { precision: 14, scale: 2 }).notNull(),
+  interestRatePct: decimal("interest_rate_pct", { precision: 6, scale: 3 }).notNull(),
+  disbursementDate: date("disbursement_date").notNull(),
+  maturityDate: date("maturity_date"),
+  repaymentScheduleNotes: text("repayment_schedule_notes"),
+  linkedCashAccountId: varchar("linked_cash_account_id").references(() => cashAccounts.id),
+  status: text("status").notNull().default("active"), // active|closed|written_off
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_loans_status").on(t.status),
+  index("idx_loans_maturity").on(t.maturityDate),
+]);
+
+export const insertLoanSchema = createInsertSchema(loans).omit({ id: true, createdAt: true, updatedAt: true });
+export type Loan = typeof loans.$inferSelect;
+export type InsertLoan = z.infer<typeof insertLoanSchema>;
+
+// TABLE 3: Equity Accounts
+// Soft-deleted (is_active flag). retained_earnings rows are supplemented
+// automatically by ERP P&L on the Balance Sheet.
+export const equityAccounts = pgTable("equity_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  accountType: text("account_type").notNull(), // share_capital|retained_earnings|owners_capital|other
+  openingBalance: decimal("opening_balance", { precision: 14, scale: 2 }).notNull().default("0"),
+  openingBalanceDate: date("opening_balance_date").notNull(),
+  notes: text("notes"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  updatedBy: varchar("updated_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_equity_accounts_type").on(t.accountType),
+  index("idx_equity_accounts_active").on(t.isActive),
+]);
+
+export const insertEquityAccountSchema = createInsertSchema(equityAccounts).omit({ id: true, createdAt: true, updatedAt: true });
+export type EquityAccount = typeof equityAccounts.$inferSelect;
+export type InsertEquityAccount = z.infer<typeof insertEquityAccountSchema>;
+
+// TABLE 4: Opening Balances
+// Pre-ERP balances for go-live. Always positive; sign determined by
+// account_type placement on Balance Sheet.
+// UNIQUE(account_type, label) prevents accidental duplicate stacking.
+export const openingBalances = pgTable("opening_balances", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  accountType: text("account_type").notNull(),
+  // accounts_receivable|advance_to_suppliers|prepaid_expenses|other_current_asset
+  // accounts_payable|advance_from_customers|other_current_liability
+  label: text("label").notNull(),
+  amount: decimal("amount", { precision: 14, scale: 2 }).notNull(),
+  asOfDate: date("as_of_date").notNull(),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_opening_balances_type_label").on(t.accountType, t.label),
+  index("idx_opening_balances_date").on(t.asOfDate),
+]);
+
+export const insertOpeningBalanceSchema = createInsertSchema(openingBalances).omit({ id: true, createdAt: true, updatedAt: true });
+export type OpeningBalance = typeof openingBalances.$inferSelect;
+export type InsertOpeningBalance = z.infer<typeof insertOpeningBalanceSchema>;
+
+// ── Phase 4E: Serial Number Tracking ─────────────────────────────────────────
+//
+// Tracks individual physical units by manufacturer serial number.
+// Product linkage comes from transaction context (GRN line / challan line),
+// NOT from barcode parsing.
+//
+// Uniqueness: UNIQUE(product_id, serial_number) — same serial allowed across
+// different products (manufacturer collision prevention), but not twice for
+// the same product.
+//
+// Lifecycle:  in_stock → dispatched → returned → in_stock / scrapped
+//             in_stock → scrapped
+//
+// Phase 4F foundation: returnedAt, returnReason, referenceType/referenceId on
+// events table are pre-built for Service / Warranty Management.
+
+export const serialNumbers = pgTable("serial_numbers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productId: varchar("product_id").notNull().references(() => products.id),
+  serialNumber: varchar("serial_number", { length: 100 }).notNull(),
+  // Barcode value scanned from the physical label (e.g. GS1-128 numeric code).
+  // Nullable — stored alongside serialNumber when both exist on the same label.
+  barcodeValue: varchar("barcode_value", { length: 150 }),
+  // Status lifecycle: in_stock | dispatched | returned | scrapped
+  status: text("status").notNull().default("in_stock"),
+  warehouseId: varchar("warehouse_id").references(() => warehouses.id),
+  // Inbound references
+  grnId: varchar("grn_id").references(() => goodsReceiptNotes.id),
+  grnItemId: varchar("grn_item_id").references(() => goodsReceiptNoteItems.id),
+  // Outbound references — preserved on return for audit (never wiped)
+  challanId: varchar("challan_id").references(() => deliveryChallans.id),
+  salesOrderId: varchar("sales_order_id").references(() => salesOrders.id),
+  customerId: varchar("customer_id").references(() => customers.id),
+  dispatchedAt: timestamp("dispatched_at"),
+  // Warranty — set at dispatch time by staff confirming months for this unit
+  warrantyMonths: integer("warranty_months"),
+  warrantyExpiresAt: date("warranty_expires_at"),
+  // Phase 4F foundation — return/service fields (nullable)
+  returnedAt: timestamp("returned_at"),
+  returnReason: text("return_reason"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_serial_numbers_product_serial").on(t.productId, t.serialNumber),
+  index("idx_serial_numbers_product_id").on(t.productId),
+  index("idx_serial_numbers_status").on(t.status),
+  index("idx_serial_numbers_customer_id").on(t.customerId),
+  index("idx_serial_numbers_grn_id").on(t.grnId),
+  index("idx_serial_numbers_challan_id").on(t.challanId),
+  index("idx_serial_numbers_warehouse_id").on(t.warehouseId),
+]);
+
+export const insertSerialNumberSchema = createInsertSchema(serialNumbers).omit({ id: true, createdAt: true, updatedAt: true });
+export type SerialNumber = typeof serialNumbers.$inferSelect;
+export type InsertSerialNumber = z.infer<typeof insertSerialNumberSchema>;
+
+// Lightweight lifecycle event log for every serial number status change.
+// Each transition writes one immutable row. Never updated or deleted.
+// Phase 4F will query this for warranty/service history.
+// ─── Monthly Targets (Countdown Display) ─────────────────────────────────────
+// Standalone table — no relation to ERP business data.
+// Admin manually updates achieved values daily/weekly via the ERP settings form.
+// The /countdown public page reads from /api/public/countdown (no auth required).
+export const monthlyTargets = pgTable("monthly_targets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // YYYY-MM format, e.g. "2026-05". One row per month.
+  month: text("month").notNull().unique(),
+  salesTarget:              decimal("sales_target",              { precision: 15, scale: 2 }).notNull().default("50000000"),
+  salesAchieved:            decimal("sales_achieved",            { precision: 15, scale: 2 }).notNull().default("0"),
+  solarCustomersTarget:     integer("solar_customers_target").notNull().default(35),
+  solarCustomersAchieved:   integer("solar_customers_achieved").notNull().default(0),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_monthly_targets_month").on(t.month),
+]);
+
+export type MonthlyTarget = typeof monthlyTargets.$inferSelect;
+export type InsertMonthlyTarget = typeof monthlyTargets.$inferInsert;
+export const insertMonthlyTargetSchema = createInsertSchema(monthlyTargets).omit({ id: true, updatedAt: true });
+
+export const serialNumberEvents = pgTable("serial_number_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  serialId: varchar("serial_id").notNull().references(() => serialNumbers.id),
+  fromStatus: text("from_status"),   // null on initial creation
+  toStatus: text("to_status").notNull(),
+  actorId: varchar("actor_id").notNull().references(() => users.id),
+  notes: text("notes"),
+  // Phase 4F foundation — reference type + id for service/warranty linkage
+  // referenceType: 'grn' | 'challan' | 'return' | 'manual' | 'service'
+  referenceType: text("reference_type"),
+  referenceId: varchar("reference_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_serial_events_serial_id").on(t.serialId),
+  index("idx_serial_events_actor_id").on(t.actorId),
+  index("idx_serial_events_created_at").on(t.createdAt),
+]);
+
+// ─── Inventory Lots ───────────────────────────────────────────────────────────
+// Accounting-layer perpetual inventory cost ledger. Decoupled from pricing
+// documents (daily_price_sheets). One lot row per GRN item line.
+//
+// Created automatically and atomically when a GRN is confirmed — no manual
+// secondary step required. remaining_qty is decremented FIFO at dispatch time.
+//
+// This table is the single source of truth for:
+//   • Balance sheet inventory asset value   (SUM remaining_qty × unit_cost)
+//   • Available stock check at dispatch     (SUM remaining_qty per product)
+//   • Phase 2 immutable COGS journaling     (unit_cost frozen at receipt time)
+//
+// unit_cost = buying_price + pro-rata delivery charge per unit at time of GRN.
+// It is IMMUTABLE once written — future GRNs never alter historical lot costs.
+export const inventoryLots = pgTable("inventory_lots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  grnId: varchar("grn_id").notNull(),           // source GRN
+  grnItemId: varchar("grn_item_id").notNull(),  // source GRN line item
+  productId: varchar("product_id").notNull(),
+  warehouseId: varchar("warehouse_id").notNull(),
+  grnNumber: text("grn_number").notNull(),       // denormalized for display / audit
+  receivedDate: timestamp("received_date").notNull(),
+  receivedQty: decimal("received_qty", { precision: 12, scale: 4 }).notNull(),
+  remainingQty: decimal("remaining_qty", { precision: 12, scale: 4 }).notNull(),
+  // unit_cost is frozen at GRN confirmation time and NEVER updated.
+  // = buying_price + (grn.delivery_cost / item_count_in_grn)
+  // This is the per-unit cost inclusive of inbound delivery apportionment.
+  unitCost: decimal("unit_cost", { precision: 14, scale: 4 }).notNull(),
+  totalCost: decimal("total_cost", { precision: 16, scale: 4 }).notNull(), // unit_cost × received_qty
+  status: text("status").notNull().default("active"), // 'active' | 'depleted'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_inventory_lots_product_id").on(t.productId),
+  index("idx_inventory_lots_grn_id").on(t.grnId),
+  index("idx_inventory_lots_status").on(t.status),
+  index("idx_inventory_lots_warehouse_id").on(t.warehouseId),
+]);
+
+export type InventoryLot = typeof inventoryLots.$inferSelect;
+export type InsertInventoryLot = typeof inventoryLots.$inferInsert;
+
+// ─── COGS Entries ─────────────────────────────────────────────────────────────
+// Immutable dispatch-time COGS journal. One row per lot depletion event.
+//
+// Written atomically inside the dispatch transaction alongside inventory_lot
+// depletion. NEVER updated or deleted — these records are the frozen accounting
+// history of cost of goods sold.
+//
+// unit_cost is copied from inventory_lots.unit_cost at dispatch time and locked.
+// Future GRNs with different buying prices DO NOT affect this record.
+// Historical P&L reads from this table → periods are stable and immutable.
+//
+// cogs_amount = qty_consumed × unit_cost  (computed at write time, stored for
+// direct aggregation without re-multiplication).
+export const cogsEntries = pgTable("cogs_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  challanId: varchar("challan_id").notNull(),
+  challanItemId: varchar("challan_item_id").notNull(),
+  inventoryLotId: varchar("inventory_lot_id").notNull(),
+  productId: varchar("product_id").notNull(),
+  grnId: varchar("grn_id"),              // source GRN of the depleted lot
+  grnNumber: text("grn_number"),         // denormalized for audit
+  challanNumber: text("challan_number").notNull(), // denormalized for audit
+  dispatchedAt: timestamp("dispatched_at").notNull(), // frozen at dispatch time
+  qtyConsumed: decimal("qty_consumed", { precision: 12, scale: 4 }).notNull(),
+  unitCost: decimal("unit_cost", { precision: 14, scale: 4 }).notNull(),  // FROZEN
+  cogsAmount: decimal("cogs_amount", { precision: 16, scale: 4 }).notNull(), // FROZEN
+  // No updatedAt — this record is immutable by design.
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_cogs_entries_challan_id").on(t.challanId),
+  index("idx_cogs_entries_product_id").on(t.productId),
+  index("idx_cogs_entries_dispatched_at").on(t.dispatchedAt),
+  index("idx_cogs_entries_inventory_lot_id").on(t.inventoryLotId),
+]);
+
+export type CogsEntry = typeof cogsEntries.$inferSelect;
+export type InsertCogsEntry = typeof cogsEntries.$inferInsert;
 

@@ -1,0 +1,48 @@
+To:      [email protected]
+Subject: BSP API: 3 technical questions on inbound media webhooks, media retrieval, and rate limits
+
+Hi Interakt support,
+
+We are building production WhatsApp CRM functionality on top of Interakt for our
+Advanced-plan account (account ID / WABA: <FILL IN BEFORE SENDING>). Three
+specific questions where the public documentation
+(interakt.shop/resource-center, docs.interakt.ai) does not give us a definitive
+answer. Authoritative answers from your team would let us close out the build
+correctly.
+
+1. Inbound media webhook payload shape
+   For an incoming customer message of type image, video, audio, voice, sticker,
+   or document, what fields does the `message_received` webhook payload contain
+   inside `data.message` (or wherever media metadata lives)? Specifically:
+   does it include a directly downloadable HTTPS URL (e.g. `media_url`, `link`,
+   `url`), a media identifier only (e.g. `id`, `media_id`) requiring a separate
+   API call, or both? A single real sample payload for an inbound image and an
+   inbound document would resolve this completely.
+
+2. Media retrieval / resolution endpoint
+   If the inbound webhook only contains a media ID, what is the exact endpoint
+   to call to either (a) retrieve a downloadable URL for that media, or (b)
+   stream the media bytes directly? Please confirm: full URL with version,
+   HTTP method, required Authorization header format (Basic with our API key,
+   Bearer token, or other), response content type and shape, and any URL
+   expiry window we should plan for.
+
+3. Rate limits — confirmation across surfaces
+   Public documentation indicates 600 messages/minute default on Advanced plan,
+   upgradeable to 1000/minute on request. Please confirm: (a) does this same
+   600/min limit apply only to outbound message-send endpoints
+   (`POST /v1/public/message/`), or also to read/utility endpoints such as
+   user/event tracking and any media-retrieval endpoint from question 2?
+   (b) Are there separate per-second burst caps we should respect on top of
+   the per-minute number? (c) What HTTP response code and headers do you return
+   when the limit is hit, so we can implement correct backoff?
+
+Context: our integration is live, signed-HMAC webhook verification is in
+place, and we are about to enable inbound media handling for customer support
+attachments. We want to implement this against your documented behaviour
+rather than guess. Happy to share request IDs from our account if useful.
+
+Thanks,
+<YOUR NAME>
+ITFI Group
+<YOUR EMAIL / PHONE>

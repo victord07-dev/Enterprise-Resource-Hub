@@ -62,8 +62,8 @@ const ROLE_NAV: Record<string, string[]> = {
   admin: ALL_ITEMS.map(i => i.url),
   hr_manager: ["/my-portal", "/employees", "/field-staff", "/reports", "/accounts"],
   field_staff: ["/my-portal", "/field-staff", "/inbox"],
-  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/pricing", "/sales-invoices", "/inbox", "/campaigns", "/reports", "/accounts", "/inventory", "/supply-chain"],
-  warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/reports", "/accounts"],
+  sales_manager: ["/my-portal", "/leads", "/sales", "/products", "/sales-invoices", "/inbox", "/campaigns", "/reports", "/accounts", "/inventory"],
+  warehouse_manager: ["/my-portal", "/inventory", "/supply-chain", "/accounts"],
   accountant: ["/my-portal", "/accounts", "/sales", "/sales-invoices", "/pricing", "/reports", "/supply-chain", "/inventory"],
 };
 
@@ -119,9 +119,9 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="p-4 pb-2">
         <div className="flex items-center gap-3">
-          <img src="/favicon.png" alt="ITFI Group" className="w-9 h-9 rounded-md object-contain" />
+          <img src="/favicon.png" alt="Hussain Enterprise" className="w-9 h-9 rounded-md object-contain" />
           <div>
-            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">ITFI Group</h2>
+            <h2 className="text-sm font-bold text-sidebar-foreground" data-testid="text-sidebar-brand">Hussain Enterprise</h2>
             <p className="text-xs text-sidebar-foreground/60">Enterprise Solution</p>
           </div>
         </div>

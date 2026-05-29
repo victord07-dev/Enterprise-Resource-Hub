@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+﻿import { useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +61,7 @@ type ProductForm = {
   packSize: string;
   almm: boolean;
   dcrCompliant: boolean;
+  nonDcrCompliant: boolean;
   modelSeries: string;
   lifecycleStatus: string;
   applicableRegions: string[];
@@ -76,6 +77,8 @@ type ProductForm = {
   pricingMode: "manual" | "auto";
   // Ticket #78 Phase B — Grid Type
   gridType: string;
+  // Phase 4E — Serial Number Tracking
+  requiresSerialTracking: boolean;
 };
 
 // Phase 7: a single component row inside a bundle. Same component allowed multiple times.
@@ -111,6 +114,7 @@ const emptyProductForm = (): ProductForm => ({
   packSize: "",
   almm: false,
   dcrCompliant: false,
+  nonDcrCompliant: false,
   modelSeries: "",
   lifecycleStatus: "active",
   applicableRegions: [],
@@ -122,6 +126,7 @@ const emptyProductForm = (): ProductForm => ({
   specs: {},
   pricingMode: "manual",
   gridType: "others",
+  requiresSerialTracking: false,
 });
 
 const emptyServiceForm = (): ProductForm => ({
@@ -164,9 +169,9 @@ const CSV_TEMPLATE_HEADERS = [
   "distributorPrice","logisticsCost","unitPrice","targetMarginPct","gstRate","hsnCode",
   "mrp","minMarginPct","minStockLevel","unit","packSize","warrantyPeriod",
   "lifecycleStatus","priceListVersion","productFamily","modelSeries",
-  "almm","dcrCompliant","applicableRegions",
-  "gridType",
-  "customerTierPrice","specs","supplierSku",
+  "almm","dcrCompliant","nonDcrCompliant","applicableRegions",
+  "gridType","requiresSerialTracking",
+  "customerTierPrice","specs","supplierSku","supplier",
 ];
 
 const CSV_VALID_CATEGORIES = productCategoryValues.join(" | ");
@@ -196,11 +201,14 @@ const EXAMPLE_ROW: Record<string, string> = {
   modelSeries: "HiKu6 Mono PERC",
   almm: "true",
   dcrCompliant: "true",
+  nonDcrCompliant: "false",
   applicableRegions: "Assam, Meghalaya",
   gridType: "off_grid",
   customerTierPrice: '{"end_user":11000,"business":10000}',
   specs: '{"wattage":"400Wp","efficiency":"20.9%","cellType":"Mono PERC"}',
   supplierSku: "ADN-SP400W",
+  supplier: "Adani Solar Pvt Ltd",
+  requiresSerialTracking: "false",
 };
 
 function generateTemplateCsv(): string {
@@ -226,6 +234,7 @@ type WouldUpdateEntry = { row_number: number; sku: string; product_name: string;
 type FlagChangeEntry = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
 type ImmutableWarning = { row_number: number; sku: string; product_name: string; field: string; old_value: any; new_value: any };
 type PossibleDuplicate = { row_number: number; incoming_sku: string; incoming_name: string; existing_sku: string; existing_name: string; similarity_pct: number };
+type SerialTrackingWarning = { sku: string; product_name: string; severity: "warning" | "high"; warning: string };
 
 type ImportDryRunResult = {
   mode: "dry_run";
@@ -239,6 +248,7 @@ type ImportDryRunResult = {
   possible_duplicates: PossibleDuplicate[];
   duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
   brands_to_auto_create: string[];
+  serial_tracking_warnings: SerialTrackingWarning[];
 };
 
 type ImportCommitResult = {
@@ -248,6 +258,7 @@ type ImportCommitResult = {
   skipped: number;
   errors: ImportErrorRow[];
   duplicates_within_file: { row_number: number; sku: string; first_occurrence_row: number }[];
+  serial_tracking_warnings: SerialTrackingWarning[];
 };
 
 type ImportErrorRow = {
@@ -282,7 +293,7 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
       fd.append("file", selectedFile);
       if (priceListVersion.trim()) fd.append("priceListVersion", priceListVersion.trim());
       if (defaultMargin.trim()) fd.append("defaultTargetMarginPct", defaultMargin.trim());
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const res = await fetch(`/api/products/import?mode=${mode}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -394,9 +405,9 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                 Preview (Dry Run)
               </Button>
               {hasDryRun && (
-                <Button className="flex-1" data-testid="button-commit-import" disabled={loading || ((dryRunResult?.would_import ?? 0) === 0 && (dryRunResult?.would_update?.length ?? 0) === 0)} onClick={() => runImport("commit")}>
+                <Button className="flex-1" data-testid="button-commit-import" disabled={loading || ((dryRunResult?.would_import ?? 0) === 0 && (dryRunResult?.would_update_count ?? 0) === 0)} onClick={() => runImport("commit")}>
                   {loading ? <span className="animate-spin mr-2 w-4 h-4 border-2 border-current border-t-transparent rounded-full inline-block" /> : null}
-                  Commit Import ({(dryRunResult?.would_import ?? 0) + (dryRunResult?.would_update?.length ?? 0)} rows: {dryRunResult?.would_import ?? 0} new, {dryRunResult?.would_update?.length ?? 0} updates)
+                  Commit Import ({(dryRunResult?.would_import ?? 0) + (dryRunResult?.would_update_count ?? 0)} rows: {dryRunResult?.would_import ?? 0} new, {dryRunResult?.would_update_count ?? 0} updates)
                 </Button>
               )}
             </div>
@@ -449,6 +460,24 @@ function ImportCSVDialog({ open, onClose, onSuccess }: { open: boolean; onClose:
                         <span className="text-red-600 dark:text-red-400">{String(f.old_value)}</span>
                         <span>→</span>
                         <span className="text-green-700 dark:text-green-400">{String(f.new_value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {/* Serial tracking transition warnings — high visibility */}
+              {dryRunResult!.serial_tracking_warnings?.length > 0 && (
+                <details className="rounded border border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-950" open>
+                  <summary className="cursor-pointer p-2 text-sm font-medium text-red-700 dark:text-red-300 flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Serial tracking warnings ({dryRunResult!.serial_tracking_warnings.length})
+                  </summary>
+                  <div className="max-h-40 overflow-y-auto text-xs px-2 pb-2" data-testid="panel-serial-tracking-warnings">
+                    {dryRunResult!.serial_tracking_warnings.map((w, i) => (
+                      <div key={i} className={`flex gap-2 py-1 border-t first:border-0 ${w.severity === "high" ? "text-red-700 dark:text-red-300" : "text-orange-700 dark:text-orange-300"}`}>
+                        <span className="font-mono w-36 shrink-0">{w.sku}</span>
+                        <span>{w.warning}</span>
                       </div>
                     ))}
                   </div>
@@ -597,7 +626,7 @@ export default function Products() {
   const { data: effectivePricesMap } = useQuery<Record<string, { effectivePrice: string; sheetDate: string; noConfirmedPrice: boolean; hasConfirmedToday: boolean; source: string; blendedCost: string | null; globalFloorPrice: string | null; strictFloorPrice: string | null }>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
-      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
       if (!res.ok) return {};
       return res.json();
     },
@@ -821,6 +850,7 @@ export default function Products() {
       packSize: p.packSize || "",
       almm: !!p.almm,
       dcrCompliant: !!p.dcrCompliant,
+      nonDcrCompliant: !!(p as any).nonDcrCompliant,
       modelSeries: p.modelSeries || "",
       lifecycleStatus: p.lifecycleStatus || "active",
       applicableRegions: (p.applicableRegions as string[] | null) ?? [],
@@ -835,13 +865,14 @@ export default function Products() {
       specs: (p.specs as SpecsValue | null) ?? {},
       pricingMode: ((p as any).pricingMode === "auto" ? "auto" : "manual"),
       gridType: (p as any).gridType || "others",
+      requiresSerialTracking: !!(p as any).requiresSerialTracking,
     });
     // Phase 7: pre-load bundle components for edit
     setBundleItems([]);
     if (p.type === "bundle") {
       try {
         const res = await fetch(`/api/products/${p.id}/bundle-items`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
         });
         if (res.ok) {
           const items = await res.json();
@@ -918,6 +949,7 @@ export default function Products() {
       if (cat !== PANEL_CATEGORY) {
         next.almm = false;
         next.dcrCompliant = false;
+        next.nonDcrCompliant = false;
       }
     }
     setProductForm(next);
@@ -1034,6 +1066,7 @@ export default function Products() {
       pricingMode: isBundleSubmit ? productForm.pricingMode : "manual",
       lifecycleStatus: productForm.lifecycleStatus || "active",
       gridType: productForm.gridType || "others",
+      requiresSerialTracking: !!productForm.requiresSerialTracking,
     };
 
     if (isProd) {
@@ -1043,6 +1076,7 @@ export default function Products() {
       data.packSize = productForm.packSize || null;
       data.almm = isPanel ? productForm.almm : false;
       data.dcrCompliant = isPanel ? productForm.dcrCompliant : false;
+      data.nonDcrCompliant = isPanel ? productForm.nonDcrCompliant : false;
       data.modelSeries = productForm.modelSeries || null;
       data.applicableRegions = productForm.applicableRegions.length > 0 ? productForm.applicableRegions : null;
       data.priceListVersion = productForm.priceListVersion || null;
@@ -1145,6 +1179,9 @@ export default function Products() {
                         )}
                         {!isServiceTab && item.dcrCompliant && (
                           <Badge variant="outline" className="text-xs border-blue-500 text-blue-700 dark:text-blue-400" data-testid={`badge-dcr-${item.id}`}>DCR ✓</Badge>
+                        )}
+                        {!isServiceTab && (item as any).nonDcrCompliant && (
+                          <Badge variant="outline" className="text-xs border-orange-500 text-orange-700 dark:text-orange-400" data-testid={`badge-non-dcr-${item.id}`}>Non-DCR</Badge>
                         )}
                         {!isServiceTab && !!item.specs && typeof item.specs === "object" && Object.keys(item.specs as object).length > 0 ? (
                           <TooltipProvider>
@@ -1642,7 +1679,7 @@ export default function Products() {
               ) : (
                 <div className="space-y-2">
                   <Label htmlFor="prodBrand">Brand / Company</Label>
-                  <Input id="prodBrand" data-testid="input-product-brand" value={productForm.brand} onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })} placeholder="e.g. ITFI" />
+                  <Input id="prodBrand" data-testid="input-product-brand" value={productForm.brand} onChange={(e) => setProductForm({ ...productForm, brand: e.target.value })} placeholder="e.g. Adani Solar" />
                 </div>
               )}
               <div className="space-y-2">
@@ -2103,12 +2140,35 @@ export default function Products() {
                         <span>ALMM-listed</span>
                       </label>
                       <label className="flex items-center gap-2 text-sm cursor-pointer">
-                        <Checkbox checked={productForm.dcrCompliant} onCheckedChange={(v) => setProductForm({ ...productForm, dcrCompliant: !!v })} data-testid="checkbox-dcr" />
+                        <Checkbox
+                          checked={productForm.dcrCompliant}
+                          onCheckedChange={(v) => setProductForm({ ...productForm, dcrCompliant: !!v, nonDcrCompliant: !!v ? false : productForm.nonDcrCompliant })}
+                          data-testid="checkbox-dcr"
+                        />
                         <span>DCR-compliant</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <Checkbox
+                          checked={productForm.nonDcrCompliant}
+                          onCheckedChange={(v) => setProductForm({ ...productForm, nonDcrCompliant: !!v, dcrCompliant: !!v ? false : productForm.dcrCompliant })}
+                          data-testid="checkbox-non-dcr"
+                        />
+                        <span>Non-DCR-compliant</span>
                       </label>
                     </div>
                   </div>
                 )}
+
+                {/* Serial Number Tracking — available for all product types */}
+                <div className="rounded-md border p-3 bg-muted/30">
+                  <label className="flex items-center gap-3 cursor-pointer" title="Requires serial number entry on every GRN receipt and challan dispatch for this product">
+                    <Checkbox checked={productForm.requiresSerialTracking} onCheckedChange={(v) => setProductForm({ ...productForm, requiresSerialTracking: !!v })} data-testid="checkbox-serial-tracking" />
+                    <div>
+                      <span className="text-sm font-medium">Serial Number Tracking</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">Requires serial number entry on every GRN receipt and challan dispatch for this product.</p>
+                    </div>
+                  </label>
+                </div>
 
                 {/* Lifecycle + Price List Version */}
                 <div className="grid grid-cols-2 gap-4">

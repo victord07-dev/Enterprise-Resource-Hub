@@ -1,0 +1,106 @@
+[1G[0K⠙[1G[0K⠹[1G[0K
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K⠹[1G[0K[WA] webhook URL: WHATSAPP_WEBHOOK_BASE_URL not set (set WHATSAPP_WEBHOOK_BASE_URL to enable)
+[WA] webhook signing secret OK
+[WA WORKER] Started — poll=1500ms stuck-threshold=300000ms maxAttempts=5
+5:30:55 AM [express] serving on port 5000
+5:53:56 AM [express] GET /api/notifications 403 in 4ms
+5:53:57 AM [express] GET /api/followups/today 403 in 1ms
+5:53:57 AM [express] GET /api/dashboard/snapshot 403 in 1ms
+5:53:57 AM [express] GET /api/followups/summary 403 in 0ms
+5:53:57 AM [express] GET /api/payroll-status/3/2026 403 in 1ms
+5:53:57 AM [express] GET /api/dashboard/stats 403 in 1ms
+5:54:37 AM [slow] POST /api/auth/login 200 in 621ms (role=anon user=-)
+5:54:37 AM [express] POST /api/auth/login 200 in 622ms
+5:54:41 AM [express] GET /api/notifications 200 in 6ms
+5:54:42 AM [express] GET /api/payroll-status/3/2026 200 in 8ms
+5:54:42 AM [express] GET /api/followups/summary 200 in 114ms
+5:54:42 AM [express] GET /api/followups/today 200 in 121ms
+5:54:42 AM [express] GET /api/dashboard/snapshot 200 in 134ms
+5:54:42 AM [express] GET /api/dashboard/stats 200 in 136ms
+5:55:41 AM [express] GET /api/notifications 304 in 3ms
+5:55:43 AM [express] GET /api/dashboard/snapshot 304 in 44ms
+5:56:42 AM [express] GET /api/notifications 304 in 4ms
+5:56:43 AM [express] GET /api/dashboard/snapshot 304 in 42ms
+5:56:53 AM [express] GET /api/sales-orders 304 in 5ms
+5:56:53 AM [express] GET /api/customers 304 in 3ms
+5:56:53 AM [express] GET /api/auth/me 304 in 5ms
+5:56:53 AM [express] GET /api/quotations 304 in 7ms
+5:56:53 AM [express] GET /api/inventory-stock 304 in 4ms
+5:56:53 AM [express] GET /api/products 304 in 105ms
+5:56:53 AM [express] GET /api/suppliers 304 in 3ms
+5:56:53 AM [express] GET /api/warehouses 304 in 3ms
+5:56:53 AM [express] GET /api/cash-accounts 304 in 9ms
+5:56:53 AM [express] GET /api/daily-price-sheets/effective-prices-today 304 in 8ms
+5:56:53 AM [express] GET /api/sales-invoices 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/54996505-ad16-4232-9e5c-84eb52d3dba0/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/6156773b-c00c-4aeb-8e63-6cf78daeb724/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/c2fe0b79-89d1-4d4d-bba5-4469338ef226/followups 304 in 3ms
+5:56:54 AM [express] GET /api/quotations/3ccb5c8f-1ca8-4836-8b1c-3aedc67d7ba7/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/31fd9e2f-7762-4d0c-b8d3-2e51110fe0f8/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/dba04ebe-6ed1-49bf-a539-fc91483e5d38/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/4d9f59a1-c01a-4fb1-afcc-dcb614064e99/followups 304 in 3ms
+5:56:54 AM [express] GET /api/quotations/ace70072-7b4a-4d30-aae2-dbbcb6e5f6f4/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/e9043511-11ab-462e-a0f5-56fbbe49d866/followups 304 in 5ms
+5:56:54 AM [express] GET /api/quotations/92ba8c3f-5bcc-46bd-9b84-2a3f8bde1b5a/followups 304 in 3ms
+5:56:54 AM [express] GET /api/quotations/28959f8b-4e8d-4c22-b34f-128e05208ff1/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/6d674c6f-3e86-475d-88d8-2180fed614fa/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/6fbef1fb-bd2f-41d8-8e47-1afd553a1458/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/31c6edd3-4b75-4219-a6f0-657ae3fc8101/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/dd3ba33f-8342-47e2-986b-f311394c1023/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/6ad0e896-8f76-4831-a1c1-0e07a748ebea/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/58e2780a-87fe-4265-9054-1d3d3c081fc1/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/0e0242f1-7135-40da-9935-0a5c0db01441/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/93a740c3-9415-4bdb-97d9-3513f49cb1d3/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/d33da5ff-d51a-46c1-a42e-393607ee4b0f/followups 304 in 2ms
+5:56:54 AM [express] GET /api/quotations/01022cae-2592-46da-a1e9-3e39bdd2571e/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/f296904b-1bdc-4441-8335-0bc71c96c98c/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/ead9dde8-ef71-462d-b716-6ea0e3ccef7a/followups 304 in 1ms
+5:56:54 AM [express] GET /api/quotations/e994285d-c78d-480d-88b0-50add41ceb80/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/42cbd6f9-4c7a-4229-bd7a-5db69df705f6/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/ef839cf3-710b-461c-bc46-241fee20a193/followups 304 in 3ms
+5:56:55 AM [express] GET /api/quotations/06bf8cc5-59de-46d7-8eba-01979938dd8a/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/e04aee9f-d890-4608-8266-b5eb86aba6bb/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/3a795fca-0fc7-46f4-ac2b-98d33b5ef056/followups 304 in 4ms
+5:56:55 AM [express] GET /api/quotations/a7758bfc-7f4c-4d18-880f-d4d2c158fab9/followups 304 in 1ms
+5:56:55 AM [express] GET /api/quotations/692f1064-6055-49e5-8d22-21f3635035fc/followups 304 in 3ms
+5:56:55 AM [express] GET /api/quotations/5c52dadd-4bd5-47ec-b48e-41cf959b077a/followups 304 in 3ms
+5:56:55 AM [express] GET /api/quotations/25d329da-d283-461f-9f6d-c458f4f5a104/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/e6c9fe15-a750-499d-b61a-e57614058d50/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/22fd7b85-6baf-4398-aa4d-379521d11626/followups 304 in 1ms
+5:56:55 AM [express] GET /api/quotations/37440e38-26cf-4a3f-bc64-6e2648f737dd/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/cba06a59-fa41-49f7-8634-19e6e0c383eb/followups 304 in 3ms
+5:56:55 AM [express] GET /api/quotations/6c989c41-800d-4cde-8682-0c67dc334741/followups 304 in 4ms
+5:56:55 AM [express] GET /api/quotations/11dd1543-1582-468d-9263-697aa94f65c3/followups 304 in 4ms
+5:56:55 AM [express] GET /api/quotations/534a4f46-862a-4f60-83a0-ff944635f974/followups 304 in 2ms
+5:56:55 AM [express] GET /api/quotations/7ff67ddc-1f6f-48f6-8d67-a06d922aae1e/followups 304 in 1ms
+5:56:55 AM [express] GET /api/quotations/e1618778-4edc-40d1-8c3b-016877d6eb23/followups 304 in 1ms
+5:56:56 AM [express] GET /api/quotations/cae8cd6f-414a-4649-a1a3-0f5b4beee136/followups 304 in 2ms
+5:56:56 AM [express] GET /api/quotations/cfbb7156-4121-4b7a-b00b-136cc5e18647/followups 304 in 2ms
+5:56:56 AM [express] GET /api/quotations/5880b446-98e7-45b1-93de-8355a0d2c259/followups 304 in 3ms
+5:56:56 AM [express] GET /api/quotations/a9e25da3-ccd5-42a5-9d53-276e54ae690a/followups 304 in 1ms
+5:56:56 AM [express] GET /api/quotations/3fb54bb0-c92d-4b9d-a06e-e63edfc7cb7f/followups 304 in 1ms
+5:56:56 AM [express] GET /api/quotations/55617db2-53a3-4403-acd0-a7fc45dc0307/followups 304 in 2ms
+5:56:56 AM [express] GET /api/quotations/5625995d-8b24-4bb7-9cba-15df4331c25e/followups 304 in 2ms
+5:56:56 AM [express] GET /api/quotations/bd9dae16-dfae-4270-a41e-b36de3eb9f39/followups 304 in 2ms
+5:57:42 AM [express] GET /api/notifications 304 in 3ms
+5:58:43 AM [express] GET /api/notifications 304 in 3ms
+5:59:43 AM [express] GET /api/notifications 304 in 4ms
+6:00:43 AM [express] GET /api/notifications 304 in 2ms
+6:01:44 AM [express] GET /api/notifications 304 in 3ms
+6:02:44 AM [express] GET /api/notifications 304 in 4ms
+6:03:44 AM [express] GET /api/notifications 304 in 3ms
+6:04:45 AM [express] GET /api/notifications 304 in 3ms
+6:05:45 AM [express] GET /api/notifications 304 in 4ms
+6:06:45 AM [express] GET /api/notifications 304 in 2ms
+6:07:46 AM [express] GET /api/notifications 304 in 2ms
+6:08:46 AM [express] GET /api/notifications 304 in 2ms
+6:09:46 AM [express] GET /api/notifications 304 in 3ms
+6:10:47 AM [express] GET /api/notifications 304 in 3ms
+6:11:47 AM [express] GET /api/notifications 304 in 2ms
+6:12:47 AM [express] GET /api/notifications 304 in 4ms
+6:13:48 AM [express] GET /api/notifications 304 in 3ms
+6:14:48 AM [express] GET /api/notifications 304 in 2ms
+[WA SILENCE] Alert dispatched to 1 admin(s) — last webhook 714.7h ago

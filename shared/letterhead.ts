@@ -8,44 +8,57 @@
  */
 
 export const COMPANY = {
-  name:    "IT Futuristic Industries Pvt. Ltd.",
-  shortName: "ITFI Group",
-  gstin:   "18AAICI6408B1ZR",
-  phone:   "+91 80115 35537",
-  email:   "info@itfi.co.in",
-  website: "www.itfi.co.in",
-  address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam",
-  addressShort: "Dag No: 471, Goroimaria Pathar Aibheti, Nagaon — 782002, Assam",
+  name:    "Hussain Enterprise",
+  shortName: "Hussain Enterprise",
+  gstin:   "18AMYPN1891LZO",
+  phone:   "+91 9365647772",
+  email:   "info@hussainenterprise.cloud",
+  website: "erp.hussainenterprise.cloud",
+  address: "Rangagorah Huz, PO: Haibargaon, Nagaon, Assam, India, PIN: 782002",
+  addressShort: "Rangagorah Huz, Haibargaon, Nagaon — 782002, Assam",
   tagline: "Enterprise Resource Planning",
 } as const;
 
 export const SHIP_TO =
-  "IT Futuristic Industries Pvt. Ltd.\n" +
-  "Dag No: 471, Goroimaria Pathar Aibheti\n" +
+  "Hussain Enterprise\n" +
+  "Rangagorah Huz, PO: Haibargaon\n" +
   "Nagaon — 782002, Assam\n" +
-  "GSTIN: 18AAICI6408B1ZR";
+  "GSTIN: 18AMYPN1891LZO";
 
 export const SIGNATORY = {
   name:        "Authorised Signatory",
-  designation: "For IT Futuristic Industries Pvt. Ltd.",
+  designation: "For M/s Hussain Enterprise",
 } as const;
 
 export const BANKING = [
   {
     bank:   "HDFC Bank",
-    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    holder: "HUSSAIN ENTERPRISE",
     branch: "Haibargaon, Nagaon",
     acNo:   "99999365647772",
     ifsc:   "HDFC0002036",
   },
   {
     bank:   "State Bank of India",
-    holder: "IT FUTURISTIC INDUSTRIES PVT. LTD.",
+    holder: "HUSSAIN ENTERPRISE",
     branch: "Nagaon",
     acNo:   "44833748463",
     ifsc:   "SBIN0000146",
   },
 ] as const;
+
+// ─── ITFI details preserved for future restoration ──────────────────────────
+// name:    "IT Futuristic Industries Pvt. Ltd."
+// shortName: "ITFI Group"
+// gstin:   "18AAICI6408B1ZR"
+// phone:   "+91 80115 35537"
+// email:   "info@itfi.co.in"
+// website: "www.itfi.co.in"
+// address: "Dag No: 471, Patta Number: 250, Goroimaria Pathar Aibheti, Nagaon: 782002, Assam"
+// SIGNATORY: "For IT Futuristic Industries Pvt. Ltd."
+// BANKING holder: "IT FUTURISTIC INDUSTRIES PVT. LTD."
+// HDFC acNo: 99999365647772 | IFSC: HDFC0002036
+// SBI  acNo: 44833748463    | IFSC: SBIN0000146
 
 /** Shared theme palette — RGB tuples for jsPDF setFillColor/setTextColor/setDrawColor */
 export const PDF_COLORS = {

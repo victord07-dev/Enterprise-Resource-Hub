@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,7 @@ function fmtINR(val: number | string | null | undefined) {
 
 function fmtDate(iso: string | null | undefined) {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" });
 }
 
 export default function Pricing() {
@@ -46,7 +46,8 @@ export default function Pricing() {
   const canManagePricing = ["admin", "sales_manager", "accountant"].includes(currentUser?.role ?? "");
   const canConfirmPricing = ["admin", "accountant"].includes(currentUser?.role ?? "");
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // Use IST date so the sheet date matches what the user sees on their calendar
+  const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   const { data: products } = useQuery<Product[]>({ queryKey: ["/api/products"] });
 
@@ -59,7 +60,7 @@ export default function Pricing() {
     queryKey: ["/api/daily-price-sheets", todayStr],
     queryFn: async () => {
       const res = await fetch(`/api/daily-price-sheets?sheetDate=${todayStr}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       if (!res.ok) return [];
       return res.json();
@@ -71,7 +72,7 @@ export default function Pricing() {
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
       const res = await fetch("/api/daily-price-sheets/effective-prices-today", {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       if (!res.ok) return {};
       return res.json();
@@ -117,7 +118,7 @@ export default function Pricing() {
     setPricingDialogOpen(true);
     try {
       const res = await fetch(`/api/daily-price-sheets?productId=${product.id}&sheetDate=${todayStr}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       const sheets = await res.json();
       if (Array.isArray(sheets) && sheets.length > 0) {
@@ -143,7 +144,7 @@ export default function Pricing() {
     (async () => {
       try {
         const res = await fetch(`/api/daily-price-sheets/${sheetId}`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+          headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
         });
         if (!res.ok) return;
         const sheet = await res.json();
@@ -179,7 +180,7 @@ export default function Pricing() {
         if (jsonStart !== -1) {
           const body = JSON.parse(msg.slice(jsonStart));
           if (body?.sheetId) {
-            const res = await fetch(`/api/daily-price-sheets/${body.sheetId}`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+            const res = await fetch(`/api/daily-price-sheets/${body.sheetId}`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
             if (res.ok) {
               const s = await res.json();
               setPricingSheet(s);
@@ -294,7 +295,7 @@ export default function Pricing() {
         <div>
           <h1 className="text-xl font-bold flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-blue-500" />
-            Daily Pricing — {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+            Daily Pricing — {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })}
           </h1>
           <p className="text-sm text-muted-foreground">Set and approve selling prices based on FIFO lot costs</p>
         </div>
@@ -487,7 +488,7 @@ export default function Pricing() {
               Daily Pricing — {pricingProduct?.name}
             </DialogTitle>
             <DialogDescription>
-              {pricingProduct?.sku} · {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+              {pricingProduct?.sku} · {new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "Asia/Kolkata" })}
             </DialogDescription>
           </DialogHeader>
 
@@ -540,7 +541,7 @@ export default function Pricing() {
                           return (
                             <tr key={lot.id} className={`border-b last:border-0 ${belowFloor ? "bg-red-50/60 dark:bg-red-950/20" : ""}`}>
                               <td className="p-2 font-medium">{lot.grnNumber}</td>
-                              <td className="p-2 text-muted-foreground">{lot.lotDate ? new Date(lot.lotDate).toLocaleDateString("en-IN") : "—"}</td>
+                              <td className="p-2 text-muted-foreground">{lot.lotDate ? new Date(lot.lotDate + "T00:00:00").toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }) : "—"}</td>
                               <td className="p-2 text-right">{Number(lot.remainingQty).toLocaleString("en-IN")}</td>
                               <td className="p-2 text-right">{fmtINR(lot.landedCost)}</td>
                               <td className={`p-2 text-right font-medium ${belowFloor ? "text-red-600 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}>

@@ -2,6 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Quagga2 LiveStream: make the injected <video> and debug <canvas> fill the container */
+#quagga-viewport video,
+#quagga-viewport canvas,
+[data-quagga] video,
+[data-quagga] canvas {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+  object-fit: cover;
+}
+/* Hide Quagga2's debug overlay canvas (red boxes around detected regions) */
+#quagga-viewport canvas.drawingBuffer {
+  display: none;
+}
+
 .leaflet-container {
   width: 100% !important;
   font-family: inherit;

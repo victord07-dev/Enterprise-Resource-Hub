@@ -4,7 +4,7 @@ import { storage, IStorage, type ExpenseFilters } from "./storage";
 import { getFinancialYear, nextDocNumberInTx } from "./lib/doc-numbers";
 import { todayIST } from "@shared/datetime";
 import { db } from "./db";
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, and, ne, inArray, desc } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import QRCode from "qrcode";
@@ -31,8 +31,18 @@ import {
   productSpecsSchema, customerTierPriceSchema, productCategorySchema,
   productCategoryValues, productCategoryDefaults, productLifecycleValues,
   brands as brandsTable, supplierProducts as supplierProductsTable,
+  fixedAssets, insertFixedAssetSchema,
+  loans, insertLoanSchema,
+  equityAccounts, insertEquityAccountSchema,
+  openingBalances, insertOpeningBalanceSchema,
+  serialNumbers, serialNumberEvents,
+  products as productsTable,
+  goodsReceiptNotes, goodsReceiptNoteItems,
+  deliveryChallans,
+  warehouses as warehousesTable,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
+import { getEntitlement, countLeaveDays, PAID_LEAVE_TYPES } from "@shared/leavePolicy";
 
 const CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD = (() => {
   const parsed = Number(process.env.CAMPAIGN_MISSING_FIELD_BLOCK_THRESHOLD);
@@ -43,20 +53,29 @@ import { generatePOPdfBuffer } from "./po-pdf";
 import { generateGrnPdf } from "./grn-pdf";
 import { registerObjectStorageRoutes } from "./replit_integrations/object_storage";
 import { ObjectStorageService } from "./replit_integrations/object_storage/objectStorage";
+import { saveFile, getLocalFilePath } from "./lib/local-file-storage";
 import { normalisePhone, verifyInteraktSignature, sendTextMessage, sendTemplateMessage, sendDocumentMessage, checkRateLimit, syncInteraktTemplates, getTemplateSyncStatus, getWebhookUrl } from "./whatsapp";
 import { broadcastWhatsappEvent } from "./wsHub";
 import crypto from "crypto";
 import multer from "multer";
 import { parse as csvParse } from "csv-parse/sync";
 
-const JWT_SECRET = process.env.SESSION_SECRET || "nexerp-secret-key-change-in-production";
+const JWT_SECRET = process.env.SESSION_SECRET;
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("FATAL: SESSION_SECRET environment variable is not set. Set it before starting the server.");
+  } else {
+    console.warn("[AUTH] WARNING: SESSION_SECRET not set — using insecure dev-only fallback. Set SESSION_SECRET in .env before deploying.");
+  }
+}
+const _JWT_SECRET = JWT_SECRET || "nexerp-dev-only-secret-do-not-use-in-prod";
 
 function authenticateToken(req: any, res: any, next: any) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Authentication required" });
 
-  jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+  jwt.verify(token, _JWT_SECRET, (err: any, user: any) => {
     if (err) return res.status(403).json({ message: "Invalid or expired token" });
     req.user = user;
     next();
@@ -444,6 +463,21 @@ interface FifoLot {
   floorPrice: number;
 }
 
+/**
+ * Convert a Date to a YYYY-MM-DD string in IST, using the Intl API.
+ * This is timezone-safe: it works correctly regardless of the Node process TZ env var
+ * because Intl always applies the requested timeZone explicitly.
+ *
+ * Why this matters: node-postgres reads `timestamp without timezone` columns as local time.
+ * If the server process TZ is wrong, the Date object's getTime() will be off — but
+ * toLocaleDateString with an explicit timeZone bypasses that by formatting in Intl.
+ */
+function toISTDateStr(d: Date | null | undefined): string | null {
+  if (!d) return null;
+  // en-CA locale produces YYYY-MM-DD which is the ISO date format
+  return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
+
 async function computeFifoLots(
   productId: string,
   opts: { warehouseId?: string; minMarginPct?: number } = {}
@@ -621,16 +655,16 @@ export async function registerRoutes(
   // Seed kiosk user
   const existingKiosk = await storage.getUserByUsername("kiosk");
   if (!existingKiosk) {
-    const kioskPassword = await bcrypt.hash("kiosk@itfi2026", 10);
+    const kioskPassword = await bcrypt.hash("kiosk@he2026", 10);
     await storage.createUser({
       username: "kiosk",
       password: kioskPassword,
       fullName: "Kiosk Terminal",
-      email: "kiosk@itfi.co.in",
+      email: "kiosk@erp.hussainenterprise.cloud",
       role: "kiosk",
       isActive: true,
     });
-    console.log("Kiosk user seeded: kiosk / kiosk@itfi2026");
+    console.log("Kiosk user seeded: kiosk / kiosk@he2026");
   }
 
   // Seed admin user and demo data
@@ -641,7 +675,7 @@ export async function registerRoutes(
       username: "admin",
       password: hashedPassword,
       fullName: "Admin User",
-      email: "admin@itfi.co.in",
+      email: "admin@erp.hussainenterprise.cloud",
       role: "admin",
       isActive: true,
     });
@@ -748,6 +782,11 @@ export async function registerRoutes(
   }
 
   // ======================== AUTH ========================
+  // In-memory login attempt tracker: username → { count, lockedUntil }
+  const loginAttempts = new Map<string, { count: number; lockedUntil: number }>();
+  const LOGIN_MAX_ATTEMPTS = 5;
+  const LOGIN_LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+
   app.post("/api/auth/login", async (req, res) => {
     try {
       const parsed = loginSchema.safeParse(req.body);
@@ -755,6 +794,14 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Invalid credentials" });
       }
       const { username, password } = parsed.data;
+
+      // Check lockout
+      const attempt = loginAttempts.get(username);
+      if (attempt && attempt.lockedUntil > Date.now()) {
+        const minutesLeft = Math.ceil((attempt.lockedUntil - Date.now()) / 60000);
+        return res.status(429).json({ message: `Too many failed attempts. Account locked for ${minutesLeft} more minute${minutesLeft === 1 ? "" : "s"}.` });
+      }
+
       const user = await storage.getUserByUsername(username);
       if (!user) {
         return res.status(401).json({ message: "Invalid username or password" });
@@ -764,12 +811,25 @@ export async function registerRoutes(
       }
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) {
-        return res.status(401).json({ message: "Invalid username or password" });
+        // Increment attempt counter
+        const current = loginAttempts.get(username) ?? { count: 0, lockedUntil: 0 };
+        const newCount = current.count + 1;
+        if (newCount >= LOGIN_MAX_ATTEMPTS) {
+          loginAttempts.set(username, { count: newCount, lockedUntil: Date.now() + LOGIN_LOCKOUT_MS });
+          return res.status(429).json({ message: `Too many failed attempts. Account locked for 15 minutes.` });
+        }
+        loginAttempts.set(username, { count: newCount, lockedUntil: 0 });
+        const remaining = LOGIN_MAX_ATTEMPTS - newCount;
+        return res.status(401).json({ message: `Invalid username or password. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining before lockout.` });
       }
+
+      // Successful login — clear attempt counter
+      loginAttempts.delete(username);
+
       const token = jwt.sign(
         { id: user.id, username: user.username, role: user.role },
-        JWT_SECRET,
-        { expiresIn: "24h" }
+        _JWT_SECRET,
+        { expiresIn: "12h" }
       );
 
       await logAction(user.id, "login", "auth", `User ${user.username} logged in`);
@@ -1152,16 +1212,19 @@ export async function registerRoutes(
           hsn_code: string | null; gst_rate: string | null;
           distributor_price: string | null; unit_price: string | null; mrp: string | null;
           specs: any; warranty_period: string | null; applicable_regions: string[] | null;
-          almm: boolean | null; dcr_compliant: boolean | null; model_series: string | null;
+          almm: boolean | null; dcr_compliant: boolean | null; non_dcr_compliant: boolean | null;
+          model_series: string | null;
           lifecycle_status: string | null; price_list_version: string | null; pack_size: string | null;
           logistics_cost: string | null; min_margin_pct: string | null; target_margin_pct: string | null;
           customer_tier_price: any; grid_type: string | null;
+          requires_serial_tracking: boolean | null;
         };
         const existingProductRows = (await db.execute(sql`
           SELECT id, sku, name, brand_id, category, hsn_code, gst_rate,
                  distributor_price, unit_price, mrp, specs, warranty_period, applicable_regions,
-                 almm, dcr_compliant, model_series, lifecycle_status, price_list_version, pack_size,
-                 logistics_cost, min_margin_pct, target_margin_pct, customer_tier_price, grid_type
+                 almm, dcr_compliant, non_dcr_compliant, model_series, lifecycle_status, price_list_version, pack_size,
+                 logistics_cost, min_margin_pct, target_margin_pct, customer_tier_price, grid_type,
+                 requires_serial_tracking
           FROM products WHERE sku IS NOT NULL
         `)).rows as ExistingProduct[];
         const existingProductBySku = new Map<string, ExistingProduct>(existingProductRows.map(r => [r.sku, r]));
@@ -1172,7 +1235,7 @@ export async function registerRoutes(
         const duplicatesWithinFile: DupEntry[] = [];
         const seenSkusInFile = new Map<string, number>();
         const brandsToAutoCreate = new Map<string, string>(); // lowerName → actual brand name
-        // Phase 6.5 A1: track suppliers we'll auto-create from the brand column
+        // Supplier column: track suppliers to auto-create from the explicit supplier column (not brand)
         const suppliersToAutoCreate = new Map<string, string>(); // lowerName → actual supplier name
 
         type ValidRow = {
@@ -1183,12 +1246,13 @@ export async function registerRoutes(
           distributorPrice: number | null; logisticsCost: number | null; unitPrice: number;
           targetMarginPct: number | null; gstRate: number; hsnCode: string | null; unit: string | null;
           minStockLevel: number | null; minMarginPct: number | null; warrantyPeriod: string | null;
-          mrp: number | null; type: string; packSize: string | null; almm: boolean; dcrCompliant: boolean;
+          mrp: number | null; type: string; packSize: string | null; almm: boolean; dcrCompliant: boolean; nonDcrCompliant: boolean;
           modelSeries: string | null; lifecycleStatus: string; applicableRegions: string[] | null;
           priceListVersion: string | null; productFamily: string | null;
           customerTierPrice: Record<string, number> | null; specs: Record<string, any> | null;
-          supplierSku: string | null; supplierIdForAutoLink: string | null;
+          supplierSku: string | null; supplierIdsForAutoLink: string[];
           gridType: string;
+          requiresSerialTracking: boolean | null; // null = omitted in CSV (UPDATE: skip field; INSERT: default false)
           warnings: string[];
           // Phase 6.6 A1: UPDATE-mode bookkeeping
           isUpdate: boolean;
@@ -1388,6 +1452,25 @@ export async function registerRoutes(
           // ── Booleans, lifecycle, type ─────────────────────────────────────────
           const almm = parseBoolCsv(row["almm"]) ?? false;
           const dcrCompliant = parseBoolCsv(row["dcrCompliant"]) ?? false;
+          const nonDcrCompliant = parseBoolCsv(row["nonDcrCompliant"]) ?? false;
+          // Server-side mutual exclusivity guard — a product cannot be both DCR-compliant and Non-DCR-compliant.
+          if (dcrCompliant && nonDcrCompliant) {
+            errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_compliance", error_message: "dcrCompliant and nonDcrCompliant cannot both be true simultaneously" });
+            continue;
+          }
+
+          // requiresSerialTracking: null = omitted (UPDATE → skip; INSERT → default false)
+          // non-empty + parseBoolCsv returns null → invalid text → hard error
+          const rawSerialTracking = (row["requiresSerialTracking"] ?? "").trim();
+          let requiresSerialTracking: boolean | null = null;
+          if (rawSerialTracking !== "") {
+            const parsedST = parseBoolCsv(rawSerialTracking);
+            if (parsedST === null) {
+              errors.push({ row_number: rowNum, sku: finalSku ?? "", product_name: rowName, error_type: "invalid_boolean", error_message: `requiresSerialTracking "${rawSerialTracking}" is not a valid boolean. Use true/false, yes/no, or 1/0` });
+              continue;
+            }
+            requiresSerialTracking = parsedST;
+          }
           const rawLifecycle = (row["lifecycleStatus"] ?? "").trim().toLowerCase();
           const lifecycleStatus = (productLifecycleValues as readonly string[]).includes(rawLifecycle) ? rawLifecycle : "active";
           // Bug 11: accept "product", "service", "bundle"; anything else defaults to "product"
@@ -1406,16 +1489,29 @@ export async function registerRoutes(
             warnings.push("distributorPrice is blank — product will be stored with unitPrice ₹0");
           }
 
-          // Phase 6.5 A1: if brand is set but no supplier of the same name exists,
-          // queue a supplier auto-creation and use a placeholder id.
-          let supplierIdForAutoLink: string | null = null;
-          if (rowBrandRaw) {
-            const sLower = rowBrandRaw.toLowerCase();
-            if (supplierNameToId.has(sLower)) {
-              supplierIdForAutoLink = supplierNameToId.get(sLower)!;
-            } else {
-              suppliersToAutoCreate.set(sLower, rowBrandRaw);
-              supplierIdForAutoLink = `__new_supplier__${sLower}`;
+          // Supplier column (optional): pipe-separated supplier names — find-or-create each, link all to product.
+          // Brand and supplier are separate master entities; brand is never used to derive a supplier.
+          // Blank supplier column → no supplier links created, no error.
+          // Supports multiple suppliers per product: "Khetan Udyog | Solar Hub Pvt Ltd"
+          // Case-insensitive header: accepts "supplier" or "Supplier"
+          const supplierIdsForAutoLink: string[] = [];
+          const rowSupplierRaw = (row["supplier"] ?? row["Supplier"] ?? "").trim();
+          if (rowSupplierRaw) {
+            const supplierNames = rowSupplierRaw
+              .split("|")
+              .map((s: string) => s.trim())
+              .filter((s: string) => s.length > 0);
+            const seenSupplierNames = new Set<string>();
+            for (const supplierName of supplierNames) {
+              const sLower = supplierName.toLowerCase();
+              if (seenSupplierNames.has(sLower)) continue; // deduplicate within cell
+              seenSupplierNames.add(sLower);
+              if (supplierNameToId.has(sLower)) {
+                supplierIdsForAutoLink.push(supplierNameToId.get(sLower)!);
+              } else {
+                suppliersToAutoCreate.set(sLower, supplierName);
+                supplierIdsForAutoLink.push(`__new_supplier__${sLower}`);
+              }
             }
           }
 
@@ -1450,6 +1546,7 @@ export async function registerRoutes(
             packSize: (row["packSize"] ?? "").trim() || null,
             almm,
             dcrCompliant,
+            nonDcrCompliant,
             modelSeries: (row["modelSeries"] ?? "").trim() || null,
             lifecycleStatus,
             applicableRegions,
@@ -1458,8 +1555,9 @@ export async function registerRoutes(
             customerTierPrice,
             specs,
             supplierSku: (row["supplierSku"] ?? "").trim() || null,
-            supplierIdForAutoLink,
+            supplierIdsForAutoLink,
             gridType,
+            requiresSerialTracking,
             warnings,
           });
         }
@@ -1471,7 +1569,7 @@ export async function registerRoutes(
         const insertRows = validRows.filter(r => !r.isUpdate);
 
         // Updatable / immutable per spec
-        const UPDATABLE_FIELDS: Array<{ key: string; rowVal: (r: ValidRow) => any; existVal: (e: ExistingProduct) => any }> = [
+        const UPDATABLE_FIELDS: Array<{ key: string; rowVal: (r: ValidRow) => any; existVal: (e: ExistingProduct) => any; skipIfNull?: boolean }> = [
           { key: "distributorPrice", rowVal: r => r.distributorPrice, existVal: e => e.distributor_price != null ? Number(e.distributor_price) : null },
           { key: "unitPrice",        rowVal: r => r.unitPrice,        existVal: e => e.unit_price != null ? Number(e.unit_price) : null },
           { key: "mrp",              rowVal: r => r.mrp,              existVal: e => e.mrp != null ? Number(e.mrp) : null },
@@ -1480,6 +1578,7 @@ export async function registerRoutes(
           { key: "applicableRegions",rowVal: r => r.applicableRegions,existVal: e => e.applicable_regions },
           { key: "almm",             rowVal: r => r.almm,             existVal: e => !!e.almm },
           { key: "dcrCompliant",     rowVal: r => r.dcrCompliant,     existVal: e => !!e.dcr_compliant },
+          { key: "nonDcrCompliant",  rowVal: r => r.nonDcrCompliant,  existVal: e => !!e.non_dcr_compliant },
           { key: "modelSeries",      rowVal: r => r.modelSeries,      existVal: e => e.model_series },
           { key: "lifecycleStatus",  rowVal: r => r.lifecycleStatus,  existVal: e => e.lifecycle_status },
           { key: "priceListVersion", rowVal: r => r.priceListVersion, existVal: e => e.price_list_version },
@@ -1489,9 +1588,10 @@ export async function registerRoutes(
           { key: "minMarginPct",     rowVal: r => r.minMarginPct,     existVal: e => e.min_margin_pct != null ? Number(e.min_margin_pct) : null },
           { key: "targetMarginPct",  rowVal: r => r.targetMarginPct,  existVal: e => e.target_margin_pct != null ? Number(e.target_margin_pct) : null },
           { key: "customerTierPrice",rowVal: r => r.customerTierPrice,existVal: e => e.customer_tier_price ?? null },
-          { key: "supplierSku",      rowVal: r => r.supplierSku,      existVal: e => null }, // tracked at supplier_products, not products — info only
+          { key: "supplierSku",           rowVal: r => r.supplierSku,           existVal: e => null }, // tracked at supplier_products, not products — info only
+          { key: "requiresSerialTracking", rowVal: r => r.requiresSerialTracking, existVal: e => !!e.requires_serial_tracking, skipIfNull: true },
         ];
-        const FLAG_FIELDS = new Set(["almm", "dcrCompliant"]);
+        const FLAG_FIELDS = new Set(["almm", "dcrCompliant", "nonDcrCompliant"]);
 
         function valuesEqual(a: any, b: any): boolean {
           if (a === b) return true;
@@ -1525,8 +1625,9 @@ export async function registerRoutes(
           // Updatable fields diff
           for (const f of UPDATABLE_FIELDS) {
             if (f.key === "supplierSku") continue; // not stored on products table
-            const oldV = f.existVal(existing);
             const newV = f.rowVal(r);
+            if (f.skipIfNull && newV == null) continue; // omitted in CSV for UPDATE → leave DB value unchanged
+            const oldV = f.existVal(existing);
             if (!valuesEqual(oldV, newV)) {
               changes.push({ field: f.key, old_value: oldV, new_value: newV });
               if (FLAG_FIELDS.has(f.key)) {
@@ -1556,6 +1657,49 @@ export async function registerRoutes(
           }
           if (changes.length > 0) {
             wouldUpdate.push({ row_number: r.rowNumber, sku: r.sku ?? "", product_name: r.name, changes });
+          }
+        }
+
+        // ── Serial-tracking transition warnings ───────────────────────────────
+        type SerialTrackingWarning = { sku: string; product_name: string; severity: "warning" | "high"; warning: string };
+        const serialTrackingWarnings: SerialTrackingWarning[] = [];
+
+        // false → true: check if existing stock has no serial records (future GRNs only)
+        const falseToTrueIds = updateRows
+          .filter(r => r.requiresSerialTracking === true && !r.existingProduct!.requires_serial_tracking)
+          .map(r => r.existingProduct!.id);
+        if (falseToTrueIds.length > 0) {
+          const stockRows = (await db.execute(sql`
+            SELECT product_id FROM inventory_stock
+            WHERE product_id IN (${sql.join(falseToTrueIds.map(id => sql`${id}`), sql`, `)})
+            GROUP BY product_id HAVING SUM(quantity) > 0
+          `)).rows as { product_id: string }[];
+          const withStock = new Set(stockRows.map(r => r.product_id));
+          for (const r of updateRows) {
+            if (r.requiresSerialTracking === true && !r.existingProduct!.requires_serial_tracking && withStock.has(r.existingProduct!.id)) {
+              serialTrackingWarnings.push({ sku: r.sku ?? "", product_name: r.name, severity: "warning", warning: "Existing stock remains untracked. Serial tracking applies only to future GRNs." });
+            }
+          }
+        }
+
+        // true → false: check if active in_stock serials exist — high-visibility warning
+        const trueToFalseIds = updateRows
+          .filter(r => r.requiresSerialTracking === false && !!r.existingProduct!.requires_serial_tracking)
+          .map(r => r.existingProduct!.id);
+        if (trueToFalseIds.length > 0) {
+          const serialRows = (await db.execute(sql`
+            SELECT product_id, COUNT(*)::int AS serial_count FROM serial_numbers
+            WHERE product_id IN (${sql.join(trueToFalseIds.map(id => sql`${id}`), sql`, `)}) AND status = 'in_stock'
+            GROUP BY product_id HAVING COUNT(*) > 0
+          `)).rows as { product_id: string; serial_count: number }[];
+          const serialCountMap = new Map(serialRows.map(r => [r.product_id, r.serial_count]));
+          for (const r of updateRows) {
+            if (r.requiresSerialTracking === false && !!r.existingProduct!.requires_serial_tracking) {
+              const count = serialCountMap.get(r.existingProduct!.id);
+              if (count) {
+                serialTrackingWarnings.push({ sku: r.sku ?? "", product_name: r.name, severity: "high", warning: `Serial tracking disabled while ${count} active in-stock serial(s) exist. These serials will become orphaned.` });
+              }
+            }
           }
         }
 
@@ -1633,6 +1777,7 @@ export async function registerRoutes(
             duplicates_within_file: duplicatesWithinFile,
             brands_to_auto_create: [...brandsToAutoCreate.values()],
             suppliers_to_auto_create: [...suppliersToAutoCreate.values()],
+            serial_tracking_warnings: serialTrackingWarnings,
           });
         }
 
@@ -1681,6 +1826,7 @@ export async function registerRoutes(
                   applicable_regions  = ${r.applicableRegions?.length ? sql`ARRAY[${sql.join(r.applicableRegions.map(v => sql`${v}`), sql`, `)}]::text[]` : sql`NULL::text[]`},
                   almm                = ${r.almm},
                   dcr_compliant       = ${r.dcrCompliant},
+                  non_dcr_compliant   = ${r.nonDcrCompliant},
                   model_series        = ${r.modelSeries},
                   lifecycle_status    = ${r.lifecycleStatus},
                   price_list_version  = ${r.priceListVersion},
@@ -1690,9 +1836,35 @@ export async function registerRoutes(
                   target_margin_pct   = ${r.targetMarginPct},
                   customer_tier_price = ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb,
                   grid_type           = ${r.gridType}
+                  ${r.requiresSerialTracking !== null ? sql`, requires_serial_tracking = ${r.requiresSerialTracking}` : sql``}
                 WHERE id = ${r.existingProduct.id}
               `);
               updatedCount++;
+
+              // UPDATE path: ensure supplier links exist for all pipe-separated suppliers.
+              // Resolves __new_supplier__ placeholders, idempotent per supplier-product pair.
+              for (const rawLinkId of r.supplierIdsForAutoLink) {
+                let updateSupplierLinkId: string | null = rawLinkId;
+                if (updateSupplierLinkId.startsWith("__new_supplier__")) {
+                  const ls = updateSupplierLinkId.slice("__new_supplier__".length);
+                  updateSupplierLinkId = newSupplierIdMap.get(ls) ?? null;
+                }
+                if (!updateSupplierLinkId) continue;
+                const existingLink = await tx.execute(sql`
+                  SELECT id FROM supplier_products WHERE supplier_id = ${updateSupplierLinkId} AND product_id = ${r.existingProduct.id} LIMIT 1
+                `);
+                if (existingLink.rows.length === 0) {
+                  const anyPrimary = await tx.execute(sql`
+                    SELECT id FROM supplier_products WHERE supplier_id = ${updateSupplierLinkId} AND is_primary = true LIMIT 1
+                  `);
+                  const isPrimary = anyPrimary.rows.length === 0;
+                  await tx.execute(sql`
+                    INSERT INTO supplier_products (supplier_id, product_id, supplier_price, supplier_sku, is_primary)
+                    VALUES (${updateSupplierLinkId}, ${r.existingProduct.id}, ${r.distributorPrice ?? r.unitPrice ?? 0}, ${r.supplierSku}, ${isPrimary})
+                  `);
+                }
+              }
+
               continue;
             }
 
@@ -1706,10 +1878,10 @@ export async function registerRoutes(
                 distributor_price, logistics_cost, unit_price,
                 target_margin_pct, gst_rate, hsn_code, unit,
                 min_stock_level, min_margin_pct, warranty_period, mrp,
-                type, pack_size, almm, dcr_compliant, model_series,
+                type, pack_size, almm, dcr_compliant, non_dcr_compliant, model_series,
                 lifecycle_status, applicable_regions, price_list_version,
                 product_family, customer_tier_price, specs, needs_pricing_review,
-                grid_type
+                grid_type, requires_serial_tracking
               ) VALUES (
                 ${r.name}, ${sku}, ${brandId}, ${r.category}, ${r.description},
                 ${r.distributorPrice}, ${r.logisticsCost}, ${r.unitPrice},
@@ -1717,32 +1889,33 @@ export async function registerRoutes(
                 COALESCE(${r.unit}, 'pcs'),
                 COALESCE(${r.minStockLevel}, 10), COALESCE(${r.minMarginPct}, 5),
                 ${r.warrantyPeriod}, ${r.mrp},
-                ${r.type}, ${r.packSize}, ${r.almm}, ${r.dcrCompliant}, ${r.modelSeries},
+                ${r.type}, ${r.packSize}, ${r.almm}, ${r.dcrCompliant}, ${r.nonDcrCompliant}, ${r.modelSeries},
                 ${r.lifecycleStatus},
                 ${r.applicableRegions?.length ? sql`ARRAY[${sql.join(r.applicableRegions.map(v => sql`${v}`), sql`, `)}]::text[]` : sql`NULL::text[]`},
                 ${r.priceListVersion}, ${r.productFamily},
                 ${r.customerTierPrice ? JSON.stringify(r.customerTierPrice) : null}::jsonb,
                 ${r.specs ? JSON.stringify(r.specs) : null}::jsonb,
                 false,
-                ${r.gridType}
+                ${r.gridType}, ${r.requiresSerialTracking ?? false}
               ) RETURNING id
             `);
 
             const productId = (inserted.rows[0] as any).id as string;
             importedCount++;
 
-            // Supplier auto-link (Phase 6.5 A1: resolve __new_supplier__ placeholder)
-            let supplierLinkId = r.supplierIdForAutoLink;
-            if (supplierLinkId?.startsWith("__new_supplier__")) {
-              const ls = supplierLinkId.slice("__new_supplier__".length);
-              supplierLinkId = newSupplierIdMap.get(ls) ?? null;
-            }
-            if (supplierLinkId) {
-              const existingPrimary = await tx.execute(sql`
+            // INSERT path: create supplier links for all pipe-separated suppliers.
+            // Resolves __new_supplier__ placeholders, idempotent per supplier-product pair.
+            for (const rawLinkId of r.supplierIdsForAutoLink) {
+              let supplierLinkId: string | null = rawLinkId;
+              if (supplierLinkId.startsWith("__new_supplier__")) {
+                const ls = supplierLinkId.slice("__new_supplier__".length);
+                supplierLinkId = newSupplierIdMap.get(ls) ?? null;
+              }
+              if (!supplierLinkId) continue;
+              const existingLink = await tx.execute(sql`
                 SELECT id FROM supplier_products WHERE supplier_id = ${supplierLinkId} AND product_id = ${productId} LIMIT 1
               `);
-              if (existingPrimary.rows.length === 0) {
-                // Check if any isPrimary already exists for this supplier
+              if (existingLink.rows.length === 0) {
                 const anyPrimary = await tx.execute(sql`
                   SELECT id FROM supplier_products WHERE supplier_id = ${supplierLinkId} AND is_primary = true LIMIT 1
                 `);
@@ -1765,6 +1938,7 @@ export async function registerRoutes(
           skipped: skippedCount,
           errors,
           duplicates_within_file: duplicatesWithinFile,
+          serial_tracking_warnings: serialTrackingWarnings,
         });
 
       } catch (e: any) {
@@ -1894,40 +2068,11 @@ export async function registerRoutes(
     return Object.keys(specs).filter((k) => !tpl.has(k));
   }
 
-  // Phase 6.5 A2: silent find-or-create supplier matching the brand, then ensure
-  // a supplier_products link exists for the given product. Best-effort, non-fatal.
-  async function ensureSupplierLinkFromBrand(productId: string, brandId: string | null | undefined, distributorPrice: any) {
-    if (!brandId) return;
+  app.post("/api/products", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
-      const brandRow = (await db.execute(sql`SELECT name FROM brands WHERE id = ${brandId} LIMIT 1`)).rows[0] as { name: string } | undefined;
-      if (!brandRow?.name) return;
-      const brandName = brandRow.name;
-      const sLower = brandName.toLowerCase();
-      let supplierId: string | null = null;
-      const existingSup = (await db.execute(sql`SELECT id FROM suppliers WHERE LOWER(name) = ${sLower} LIMIT 1`)).rows[0] as { id: string } | undefined;
-      if (existingSup) {
-        supplierId = existingSup.id;
-      } else {
-        const created = (await db.execute(sql`INSERT INTO suppliers (name) VALUES (${brandName}) RETURNING id`)).rows[0] as { id: string };
-        supplierId = created.id;
+      if (req.body.dcrCompliant && req.body.nonDcrCompliant) {
+        return res.status(400).json({ message: "dcrCompliant and nonDcrCompliant cannot both be true — a product cannot be simultaneously DCR-compliant and Non-DCR-compliant" });
       }
-      if (!supplierId) return;
-      const existingLink = (await db.execute(sql`SELECT id FROM supplier_products WHERE supplier_id = ${supplierId} AND product_id = ${productId} LIMIT 1`)).rows[0];
-      if (existingLink) return;
-      const anyPrimary = (await db.execute(sql`SELECT id FROM supplier_products WHERE supplier_id = ${supplierId} AND is_primary = true LIMIT 1`)).rows[0];
-      const isPrimary = !anyPrimary;
-      const dp = (distributorPrice != null && distributorPrice !== "") ? distributorPrice : 0;
-      await db.execute(sql`
-        INSERT INTO supplier_products (supplier_id, product_id, supplier_price, is_primary)
-        VALUES (${supplierId}, ${productId}, ${dp}, ${isPrimary})
-      `);
-    } catch (e) {
-      console.warn("ensureSupplierLinkFromBrand failed (non-fatal):", e);
-    }
-  }
-
-  app.post("/api/products", authenticateToken, async (req: any, res) => {
-    try {
       const jsonbCheck = validateProductJsonbFields(req.body);
       if (!jsonbCheck.ok) return res.status(400).json({ message: jsonbCheck.message, errors: jsonbCheck.errors });
       const parsed = insertProductSchema.safeParse(req.body);
@@ -1940,8 +2085,6 @@ export async function registerRoutes(
         try { await storage.incrementCustomFieldUsage(created.category, customKeys); }
         catch (e) { console.warn("incrementCustomFieldUsage failed (non-fatal, product create):", e); }
       }
-      // Phase 6.5 A2: silent supplier auto-link
-      await ensureSupplierLinkFromBrand(created.id, (created as any).brandId, (created as any).distributorPrice);
       await logAction(req.user.id, "create", "products", `Created product ${parsed.data.name}`);
       res.status(201).json(created);
     } catch (error: any) {
@@ -1950,11 +2093,14 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/products/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/products/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
+      if (req.body.dcrCompliant === true && req.body.nonDcrCompliant === true) {
+        return res.status(400).json({ message: "dcrCompliant and nonDcrCompliant cannot both be true — a product cannot be simultaneously DCR-compliant and Non-DCR-compliant" });
+      }
       // Block unitPrice edits when a confirmed daily price sheet exists for today
       if (req.body.unitPrice !== undefined) {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
         const existingSheet = await storage.getDailyPriceSheetByProductDate(req.params.id, today);
         if (existingSheet && existingSheet.status === "confirmed") {
           return res.status(409).json({
@@ -1978,10 +2124,6 @@ export async function registerRoutes(
           catch (e) { console.warn("incrementCustomFieldUsage failed (non-fatal, product update):", e); }
         }
       }
-      // Phase 6.5 A2: if brand was set/changed, ensure supplier link exists
-      if (req.body.brandId !== undefined && (updated as any).brandId) {
-        await ensureSupplierLinkFromBrand((updated as any).id, (updated as any).brandId, (updated as any).distributorPrice);
-      }
       await logAction(req.user.id, "update", "products", `Updated product ${updated.name}`);
       res.json(updated);
     } catch (error) {
@@ -2003,7 +2145,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/products/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/products/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
     try {
       await storage.deleteProduct(req.params.id);
       await logAction(req.user.id, "delete", "products", `Deleted product ${req.params.id}`);
@@ -2164,7 +2306,7 @@ export async function registerRoutes(
       // If INSERT fails the upsert rolls back → no number is burned → no gap.
       const fyStr = getFinancialYear(new Date());
       const created = await db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "ITFI-SO", fyStr);
+          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr);
           const parsed = insertSalesOrderSchema.parse({ ...body, orderNumber });
           const [row] = await tx.insert(salesOrdersTable).values(parsed as any).returning();
           return row;
@@ -2280,7 +2422,7 @@ export async function registerRoutes(
       // If INSERT fails the upsert rolls back → no number is burned → no gap.
       const fyStr = getFinancialYear(new Date());
       const created = await db.transaction(async (tx) => {
-          const quoteNumber = await nextDocNumberInTx(tx, "ITFI-Q", fyStr);
+          const quoteNumber = await nextDocNumberInTx(tx, "HE-Q", fyStr);
           const parsed = insertQuotationSchema.parse({ ...body, quoteNumber, createdBy: req.user.id });
           const [row] = await tx.insert(quotationsTable).values(parsed as any).returning();
           return row;
@@ -2711,7 +2853,7 @@ export async function registerRoutes(
       const fyStr = getFinancialYear(new Date());
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const order = await db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "ITFI-SO", fyStr);
+          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr);
           const [row] = await tx.insert(salesOrdersTable).values({
             orderNumber,
             customerId: quotation.customerId,
@@ -2855,7 +2997,7 @@ export async function registerRoutes(
       const fyStrQ = getFinancialYear(new Date());
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const quotation = await db.transaction(async (tx) => {
-          const quoteNumber = await nextDocNumberInTx(tx, "ITFI-Q", fyStrQ);
+          const quoteNumber = await nextDocNumberInTx(tx, "HE-Q", fyStrQ);
           const [row] = await tx.insert(quotationsTable).values({
             quoteNumber,
             customerId: customer.id,
@@ -3105,27 +3247,45 @@ export async function registerRoutes(
 
       await logAction(req.user.id, "create", "sales", `Recorded payment ₹${paymentAmount} for order ${order.orderNumber}`);
 
-      // Propagate payment to linked sales_invoice (soId match) so AR Aging and Accounts reflect it
+      // Fix #7: Always create a customer_payments row for AR visibility.
+      // ‣ If a sales invoice already exists for this SO → link directly to that invoice.
+      // ‣ If not (advance payment before dispatch) → store as SO-level advance
+      //   (invoiceId = NULL, salesOrderId = order.id).  At dispatch time the
+      //   atomic transaction will UPDATE these rows to set invoiceId = new invoice.
       try {
         const allSalesInvs = await storage.getSalesInvoices();
         const linkedInv = allSalesInvs.find(inv => inv.soId === order.id);
         if (linkedInv) {
           await storage.createCustomerPayment({
             invoiceId: linkedInv.id,
+            salesOrderId: null,
             customerId: order.customerId,
             amount: paymentAmount.toFixed(2),
             method,
             reference: reference || `SO ${order.orderNumber}`,
+            notes: null,
             cashAccountId,
             createdBy: req.user.id,
             paymentDate: req.body.paymentDate ? new Date(req.body.paymentDate) : new Date(),
           });
-          // Recompute invoice status — creditedAmount stays as credit notes only;
-          // the new customer_payments row is accounted for separately.
           await storage.recomputeInvoiceCreditedAmount(linkedInv.id);
+        } else {
+          // Advance payment — no invoice yet
+          await storage.createCustomerPayment({
+            invoiceId: null,
+            salesOrderId: order.id,
+            customerId: order.customerId,
+            amount: paymentAmount.toFixed(2),
+            method,
+            reference: reference || `Advance — SO ${order.orderNumber}`,
+            notes: null,
+            cashAccountId,
+            createdBy: req.user.id,
+            paymentDate: req.body.paymentDate ? new Date(req.body.paymentDate) : new Date(),
+          });
         }
       } catch (propErr) {
-        console.error("Failed to propagate SO payment to sales_invoice:", propErr);
+        console.error("Failed to create customer_payment for SO payment:", propErr);
       }
 
       res.status(201).json({ order: updatedOrder, payment });
@@ -3228,8 +3388,18 @@ export async function registerRoutes(
       // Enrich each PO with supplier paid total so the frontend can gate "Create GRN"
       const enriched = await Promise.all(data.map(async (po: any) => {
         try {
-          const payments = await storage.getSupplierPaymentsByPO(po.id);
-          const supplierPaidAmount = payments.reduce((s: number, p: any) => s + Number(p.amount ?? 0), 0);
+          // Sum ALL payments for this PO:
+          //   1. Advance payments still directly on the PO (purchase_order_id = po.id)
+          //   2. Regular payments on supplier invoices linked to this PO
+          //      (after B3 GRN-confirm, advance is moved to invoice — purchase_order_id becomes NULL)
+          const result = await db.execute(sql`
+            SELECT COALESCE(SUM(sp.amount::numeric), 0) AS total_paid
+            FROM supplier_payments sp
+            LEFT JOIN supplier_invoices si ON si.id = sp.supplier_invoice_id
+            WHERE sp.purchase_order_id = ${po.id}
+               OR si.purchase_order_id = ${po.id}
+          `);
+          const supplierPaidAmount = Number((result.rows[0] as any)?.total_paid ?? 0);
           return { ...po, supplierPaidAmount };
         } catch { return { ...po, supplierPaidAmount: 0 }; }
       }));
@@ -3264,7 +3434,7 @@ export async function registerRoutes(
   // strict floor price (from today's confirmed daily_price_sheets, falling back to last 7 days).
   // Returns indices + breach details. Lines with no productId or no confirmed sheet are exempt.
   async function findFloorBreaches(items: any[]): Promise<Array<{ idx: number; productId: string; productName: string; unitPrice: number; floorPrice: number }>> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
     const productIds = Array.from(new Set(items.filter(i => i?.productId).map(i => String(i.productId))));
     if (productIds.length === 0) return [];
     const rows = (await db.execute(sql`
@@ -3363,7 +3533,7 @@ export async function registerRoutes(
             return storage.createPurchaseOrder(parsed as any);
           })()
         : await db.transaction(async (tx) => {
-              const poNumber = await nextDocNumberInTx(tx, "ITFI-PO", fyPO);
+              const poNumber = await nextDocNumberInTx(tx, "HE-PO", fyPO);
               const parsed = insertPurchaseOrderSchema.parse({ ...payload, poNumber });
               const [row] = await tx.insert(purchaseOrdersTable).values(parsed as any).returning();
               return row;
@@ -3493,7 +3663,7 @@ export async function registerRoutes(
         const pidsToCheck = (items as any[]).filter(it => it?.productId).map(it => String(it.productId));
         if (pidsToCheck.length > 0) {
           const bundleRows = (await db.execute(sql`
-            SELECT id, name FROM products WHERE id = ANY(${pidsToCheck}) AND type = 'bundle' LIMIT 5
+            SELECT id, name FROM products WHERE id IN (${sql.join(pidsToCheck.map(id => sql`${id}`), sql`, `)}) AND type = 'bundle' LIMIT 5
           `)).rows as { id: string; name: string }[];
           if (bundleRows.length > 0) {
             return res.status(400).json({
@@ -3865,11 +4035,46 @@ export async function registerRoutes(
 
   app.patch("/api/employees/:id", authenticateToken, async (req: any, res) => {
     try {
+      const role = req.user.role;
       const { username, password, role: accountRole, ...empFields } = req.body;
-      const updated = await storage.updateEmployee(req.params.id, empFields);
+
+      if (role === "admin" || role === "hr_manager") {
+        // Full access — allow all fields
+        const updated = await storage.updateEmployee(req.params.id, empFields);
+        if (!updated) return res.status(404).json({ message: "Employee not found" });
+        await logAction(req.user.id, "update", "employees", `Updated employee ${updated.name}`);
+        return res.json(updated);
+      }
+
+      // Non-admin/hr: self-service only — must own the employee record
+      const employees = await storage.getEmployees();
+      const linked = employees.find(e => e.userId === req.user.id);
+      if (!linked || linked.id !== req.params.id) {
+        return res.status(403).json({ message: "Access denied. You can only edit your own profile." });
+      }
+
+      // Whitelist: only personal contact fields
+      const ALLOWED_SELF_FIELDS = ["phone", "email", "address", "profilePicture", "emergencyContact"];
+      const FORBIDDEN_FIELDS = ["salary", "designation", "department", "isActive", "role", "bankAccount", "joiningDate", "payrollSettings", "basicSalary", "hra", "allowances", "deductions"];
+
+      const filteredFields: Record<string, any> = {};
+      for (const key of ALLOWED_SELF_FIELDS) {
+        if (key in empFields) filteredFields[key] = empFields[key];
+      }
+      for (const key of FORBIDDEN_FIELDS) {
+        if (key in empFields) {
+          return res.status(403).json({ message: `Access denied. You cannot modify the '${key}' field.` });
+        }
+      }
+
+      if (Object.keys(filteredFields).length === 0) {
+        return res.status(400).json({ message: "No valid fields to update." });
+      }
+
+      const updated = await storage.updateEmployee(req.params.id, filteredFields);
       if (!updated) return res.status(404).json({ message: "Employee not found" });
-      await logAction(req.user.id, "update", "employees", `Updated employee ${updated.name}`);
-      res.json(updated);
+      await logAction(req.user.id, "update", "employees", `Employee ${updated.name} updated own profile`);
+      return res.json(updated);
     } catch (error) {
       res.status(500).json({ message: "Failed to update employee" });
     }
@@ -3921,7 +4126,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/employees/:id", authenticateToken, async (req: any, res) => {
+  app.delete("/api/employees/:id", authenticateToken, requireRole("admin", "hr_manager"), async (req: any, res) => {
     try {
       await storage.deleteEmployee(req.params.id);
       await logAction(req.user.id, "delete", "employees", `Deleted employee ${req.params.id}`);
@@ -3953,8 +4158,25 @@ export async function registerRoutes(
 
   app.post("/api/attendance", authenticateToken, async (req: any, res) => {
     try {
-      const parsed = insertAttendanceSchema.safeParse(req.body);
+      // Coerce date strings to Date objects (Zod z.date() rejects raw strings)
+      const body = { ...req.body };
+      const dateFields = ["date", "checkIn", "checkOut", "lunchOut", "lunchIn", "teaOut", "teaIn", "fieldVisitOut", "fieldVisitIn"];
+      for (const f of dateFields) {
+        if (body[f] && typeof body[f] === "string") body[f] = new Date(body[f]);
+      }
+      const parsed = insertAttendanceSchema.safeParse(body);
       if (!parsed.success) return res.status(400).json({ message: "Validation error", errors: parsed.error.errors });
+
+      const role = req.user.role;
+      if (role !== "admin" && role !== "hr_manager") {
+        // Self-service: only allowed to record attendance for own linked employee
+        const employees = await storage.getEmployees();
+        const linked = employees.find(e => e.userId === req.user.id);
+        if (!linked || linked.id !== parsed.data.employeeId) {
+          return res.status(403).json({ message: "Access denied. You can only record attendance for yourself." });
+        }
+      }
+
       const created = await storage.createAttendanceRecord(parsed.data as any);
       await logAction(req.user.id, "create", "attendance", `Recorded attendance for employee ${parsed.data.employeeId}`);
       res.status(201).json(created);
@@ -4012,7 +4234,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/payroll-status", authenticateToken, async (req: any, res) => {
+  app.post("/api/payroll-status", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
       const { month, year, totalAmount } = req.body;
       const existing = await storage.getPayrollStatus(month, year);
@@ -4026,7 +4248,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/payroll-status/:id/disburse", authenticateToken, async (req: any, res) => {
+  app.patch("/api/payroll-status/:id/disburse", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
       const ps = await storage.getPayrollStatuses();
       const payrollRecord = ps.find(p => p.id === req.params.id);
@@ -4360,8 +4582,13 @@ export async function registerRoutes(
   app.get("/api/inventory/incoming-stock", authenticateToken, async (_req, res) => {
     try {
       const allPOs = await storage.getPurchaseOrders();
+      // M-5: "pending" POs are unapproved and must not be counted as incoming
+      // stock — they may be cancelled before approval. Only approved/in-flight POs
+      // ("approved", "shipped", "partial") count as genuinely incoming.
+      // For "partial" POs the receivedMap logic below already subtracts confirmed
+      // GRN quantities, so incoming reflects ordered_qty − confirmed_received_qty.
       const openWarehousePOs = allPOs.filter(
-        (po: any) => po.deliveryType === "warehouse" && ["pending", "approved", "shipped"].includes(po.status)
+        (po: any) => po.deliveryType === "warehouse" && ["approved", "shipped", "partial"].includes(po.status)
       );
 
       const result: Record<string, { total: number; orders: Array<{ poId: string; poNumber: string; quantity: number; expectedDate: string | null }> }> = {};
@@ -4609,6 +4836,27 @@ export async function registerRoutes(
         return res.status(403).json({ message: "Not authorized" });
       }
       const { items, ...challanData } = req.body;
+
+      // H-1: check order eligibility FIRST — before item/transport validation —
+      // so the duplicate-challan error is surfaced immediately on direct API calls.
+      if (challanData.orderId) {
+        // The company does not support multiple shipment cycles per order,
+        // so one active challan (draft / ready / do_issued / dispatched / delivered / …)
+        // permanently prevents a second challan until it is cancelled.
+        const allChallansCheck = await storage.getDeliveryChallans();
+        const existingActive = allChallansCheck.find(
+          (c: any) => c.orderId === challanData.orderId && c.status !== "cancelled",
+        );
+        if (existingActive) {
+          return res.status(409).json({
+            message: "A challan already exists for this order. Cancel the existing challan before creating a new one.",
+            challanId: existingActive.id,
+            challanNumber: existingActive.challanNumber,
+            status: existingActive.status,
+          });
+        }
+      }
+
       if (!items || !Array.isArray(items) || items.length === 0) {
         return res.status(400).json({ message: "At least one item is required" });
       }
@@ -4638,18 +4886,8 @@ export async function registerRoutes(
         }
       }
 
-      if (challanData.orderId) {
-        const allChallansCheck = await storage.getDeliveryChallans();
-        const existingDraft = allChallansCheck.find((c: any) => c.orderId === challanData.orderId && c.status === "draft");
-        if (existingDraft) {
-          return res.status(409).json({ message: "A draft challan already exists for this order", challanId: existingDraft.id });
-        }
-      }
-
-      const allChallans = await storage.getDeliveryChallans();
-      const itfiChallans = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
-      const nextNum = itfiChallans.length + 1;
-      const challanNumber = `ITFI-DC-${String(nextNum).padStart(4, "0")}`;
+      const fyDC1 = getFinancialYear(new Date());
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC1));
 
       let challanDeliveryAddress = challanData.deliveryAddress || null;
       if (!challanDeliveryAddress && challanData.orderId) {
@@ -4715,10 +4953,8 @@ export async function registerRoutes(
       const salesOrder = await storage.getSalesOrder(salesOrderId);
       if (!salesOrder) return res.status(400).json({ message: "Linked sales order not found" });
 
-      const allChallans = await storage.getDeliveryChallans();
-      const itfiChallans = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
-      const nextNum = itfiChallans.length + 1;
-      const challanNumber = `ITFI-DC-${String(nextNum).padStart(4, "0")}`;
+      const fyDC2 = getFinancialYear(new Date());
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC2));
 
       const challanData: any = {
         challanNumber,
@@ -4840,9 +5076,8 @@ export async function registerRoutes(
         }
       }
 
-      const itfiChallans2 = allChallans.filter((c: any) => c.challanNumber.startsWith("ITFI-DC-"));
-      const nextNum2 = itfiChallans2.length + 1;
-      const challanNumber = `ITFI-DC-${String(nextNum2).padStart(4, "0")}`;
+      const fyDC3 = getFinancialYear(new Date());
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC3));
 
       const challanAddr = deliveryAddress || (order as any).deliveryAddress || null;
       const challan = await storage.createDeliveryChallan({
@@ -5159,6 +5394,12 @@ export async function registerRoutes(
       const allowedRoles = ["sales_manager", "admin", "warehouse_manager"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
+      // Phase 4E v2 — atomic serial assignments submitted with the dispatch request.
+      // Each entry covers one (challanItem × component product) pair.
+      type SerialAssignment = { challanItemId: string; componentProductId: string; serialIds: string[] };
+      const assignments: SerialAssignment[] = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
+      const warrantyMonths: number          = Number(req.body?.warrantyMonths ?? 0);
+
       const items = await storage.getDeliveryChallanItems(challan.id);
       if (items.length === 0) return res.status(400).json({ message: "Challan has no items" });
 
@@ -5247,6 +5488,69 @@ export async function registerRoutes(
         }
       }
 
+      // ── Option C: Hard stock enforcement against inventory_lots ─────────────
+      // Check inventory_lots.remaining_qty before allowing dispatch.
+      // This is a non-bypassable server-side guard: if insufficient lots exist,
+      // the dispatch is rejected regardless of what the legacy stock ledger shows.
+      if (challan.sourceType === "warehouse") {
+        const stockShortfalls: string[] = [];
+        // Aggregate required qty per productId across all stock ops
+        const requiredByProduct: Record<string, number> = {};
+        for (const op of stockOps) {
+          requiredByProduct[op.productId] = (requiredByProduct[op.productId] ?? 0) + op.qty;
+        }
+        for (const [productId, requiredQty] of Object.entries(requiredByProduct)) {
+          const stockRes = await db.execute(sql`
+            SELECT COALESCE(SUM(remaining_qty::numeric), 0) AS available
+            FROM inventory_lots
+            WHERE product_id = ${productId}
+              AND status = 'active'
+              AND remaining_qty > 0
+          `);
+          const available = Number((stockRes.rows[0] as any)?.available ?? 0);
+          if (available < requiredQty) {
+            const prodRes = await db.execute(sql`SELECT name FROM products WHERE id = ${productId} LIMIT 1`);
+            const prodName = (prodRes.rows[0] as any)?.name ?? productId;
+            stockShortfalls.push(`${prodName}: need ${requiredQty}, available ${available.toFixed(2)} in inventory lots`);
+          }
+        }
+        if (stockShortfalls.length > 0) {
+          return res.status(400).json({
+            code: "insufficient_inventory_lots",
+            message: "Dispatch blocked: insufficient inventory lots for one or more products.",
+            details: stockShortfalls,
+          });
+        }
+      }
+
+      // ── Pre-fetch inventory_lots (FIFO order) for depletion inside transaction ─
+      // Loaded before the transaction to avoid holding locks longer than necessary.
+      const inventoryLotsPerProduct: Record<string, { id: string; remainingQty: number; unitCost: number; grnId: string | null; grnNumber: string | null }[]> = {};
+      if (challan.sourceType === "warehouse") {
+        for (const pid of uniqueProductIds) {
+          const lotsRes = await db.execute(sql`
+            SELECT id, remaining_qty::numeric AS remaining_qty, unit_cost::numeric AS unit_cost,
+                   grn_id, grn_number
+            FROM inventory_lots
+            WHERE product_id = ${pid}
+              AND status = 'active'
+              AND remaining_qty > 0
+            ORDER BY received_date ASC, created_at ASC
+          `);
+          inventoryLotsPerProduct[pid] = (lotsRes.rows as any[]).map(r => ({
+            id: String(r.id),
+            remainingQty: Number(r.remaining_qty),
+            unitCost: Number(r.unit_cost),
+            grnId: r.grn_id ?? null,
+            grnNumber: r.grn_number ?? null,
+          }));
+        }
+      }
+
+      // Fix 3+5: declare autoInvoice + FY before transaction so they're accessible after
+      let autoInvoice: any = null;
+      const fyInv = getFinancialYear(new Date());
+
       await db.transaction(async (tx) => {
         const lockedRes = await tx.execute(sql`
           SELECT status FROM delivery_challans WHERE id = ${challan.id} FOR UPDATE
@@ -5300,6 +5604,146 @@ export async function registerRoutes(
             throw err;
           }
         }
+
+        // ── Phase 4E v2: Validate + lock serial assignments (inside transaction) ──
+        // C-1 hard invariant: runs unconditionally so serial-tracked items can NEVER
+        // be dispatched without assignments, regardless of what the client submits.
+        // Step 1 throws if any tracked item is missing an assignment (empty assignments
+        // array is caught here when tracked items exist).
+        {
+          // Step 1: verify every required tracked product/component has an assignment
+          for (const item of items) {
+            const itemProd = await getCachedProduct(item.productId);
+            if (itemProd?.type === "bundle") {
+              const components = await storage.getBundleItems(item.productId);
+              for (const comp of components) {
+                const compProd = await getCachedProduct(comp.componentProductId);
+                if (compProd?.requiresSerialTracking) {
+                  const found = assignments.find(
+                    a => a.challanItemId === item.id && a.componentProductId === comp.componentProductId,
+                  );
+                  if (!found) {
+                    throw new Error(
+                      `Missing serial assignment for component "${compProd.name}" of bundle "${itemProd.name}"`,
+                    );
+                  }
+                }
+              }
+            } else if (itemProd?.requiresSerialTracking) {
+              const found = assignments.find(
+                a => a.challanItemId === item.id && a.componentProductId === item.productId,
+              );
+              if (!found) {
+                throw new Error(`Missing serial assignment for product "${itemProd.name}"`);
+              }
+            }
+          }
+
+          // Step 2: for each submitted assignment — verify qty, serial validity, warehouse, status
+          const warrantyExpiry = warrantyMonths > 0
+            ? (() => {
+                const d = new Date();
+                d.setMonth(d.getMonth() + warrantyMonths);
+                return d.toISOString().slice(0, 10);
+              })()
+            : null;
+
+          for (const asgn of assignments) {
+            const asgnItem = items.find(i => i.id === asgn.challanItemId);
+            if (!asgnItem) {
+              throw new Error(`Assignment references unknown challan item ${asgn.challanItemId}`);
+            }
+            const asgnItemProd = await getCachedProduct(asgnItem.productId);
+
+            // Compute server-authoritative expected quantity — never trust the client value
+            let serverExpected: number;
+            if (asgnItemProd?.type === "bundle") {
+              const components = await storage.getBundleItems(asgnItem.productId);
+              const comp = components.find(c => c.componentProductId === asgn.componentProductId);
+              if (!comp) {
+                throw new Error(
+                  `"${asgn.componentProductId}" is not a component of bundle "${asgnItemProd.name}"`,
+                );
+              }
+              serverExpected = Math.round(Number(comp.quantity) * Number(dispatchQtys[asgnItem.id]));
+            } else {
+              if (asgnItem.productId !== asgn.componentProductId) {
+                throw new Error(
+                  `Assignment componentProductId "${asgn.componentProductId}" does not match non-bundle item productId "${asgnItem.productId}"`,
+                );
+              }
+              serverExpected = Math.round(Number(dispatchQtys[asgnItem.id]));
+            }
+
+            if (asgn.serialIds.length !== serverExpected) {
+              throw new Error(
+                `Serial count mismatch for product "${asgn.componentProductId}": ` +
+                `expected ${serverExpected}, got ${asgn.serialIds.length}`,
+              );
+            }
+
+            // Lock and validate each serial row
+            for (const serialId of asgn.serialIds) {
+              const sRes = await tx.execute(sql`
+                SELECT id, serial_number, status, warehouse_id, product_id
+                FROM serial_numbers
+                WHERE id = ${serialId}
+                FOR UPDATE
+              `);
+              const sRow = (sRes as any).rows?.[0];
+              if (!sRow) {
+                throw new Error(`Serial ID ${serialId} not found`);
+              }
+              if (sRow.status !== "in_stock") {
+                throw new Error(
+                  `Serial "${sRow.serial_number}" is not in stock (current status: ${sRow.status})`,
+                );
+              }
+              if (challan.sourceType === "warehouse" && sRow.warehouse_id !== challan.sourceId) {
+                throw new Error(
+                  `Serial "${sRow.serial_number}" belongs to a different warehouse than the challan source`,
+                );
+              }
+              if (sRow.product_id !== asgn.componentProductId) {
+                throw new Error(
+                  `Serial "${sRow.serial_number}" belongs to product "${sRow.product_id}" ` +
+                  `but assignment targets "${asgn.componentProductId}"`,
+                );
+              }
+
+              // All checks passed — mark dispatched
+              await tx.execute(sql`
+                UPDATE serial_numbers
+                SET status          = 'dispatched',
+                    challan_id      = ${challan.id},
+                    sales_order_id  = ${challan.orderId ?? null},
+                    customer_id     = ${(challan as any).customerId ?? null},
+                    dispatched_at   = now(),
+                    warranty_months = ${warrantyMonths > 0 ? warrantyMonths : null},
+                    warranty_expires_at = ${warrantyExpiry},
+                    warehouse_id    = NULL,
+                    updated_at      = now()
+                WHERE id = ${serialId}
+              `);
+
+              // Immutable lifecycle event
+              await tx.execute(sql`
+                INSERT INTO serial_number_events (id, serial_id, from_status, to_status, actor_id, notes, reference_type, reference_id, created_at)
+                VALUES (
+                  gen_random_uuid(),
+                  ${serialId},
+                  'in_stock',
+                  'dispatched',
+                  ${req.user.id},
+                  ${'Dispatched via challan ' + challan.challanNumber + ' (atomic)'},
+                  'challan',
+                  ${challan.id},
+                  now()
+                )
+              `);
+            }
+          }
+        } // ── End serial assignments (C-1) ────────────────────────────────────
 
         if (challan.sourceType === "warehouse") {
           // Track lot consumption across ops sharing the same productId.
@@ -5357,6 +5801,70 @@ export async function registerRoutes(
           }
         }
 
+        // ── Option C: FIFO depletion of inventory_lots ───────────────────────
+        // Decrement remaining_qty on the oldest lots first (FIFO by received_date).
+        // Mark lots as 'depleted' when remaining_qty reaches 0.
+        // ── FIFO lot depletion + Phase 2 immutable COGS journaling ──────────────
+        // Runs inside the transaction — atomically with the challan status update.
+        // Iterates per stockOp (challan-item level) so each cogs_entries row carries
+        // the correct challan_item_id. A shared running-qty map prevents double-
+        // depletion when multiple ops share the same productId (bundle components).
+        if (challan.sourceType === "warehouse") {
+          // Initialise running lot quantities from the pre-fetched snapshot
+          const lotRunningQty: Record<string, number> = {};
+          for (const lots of Object.values(inventoryLotsPerProduct)) {
+            for (const lot of lots) {
+              lotRunningQty[lot.id] = lot.remainingQty;
+            }
+          }
+
+          for (const op of stockOps) {
+            const lots = inventoryLotsPerProduct[op.productId] ?? [];
+            let remaining = op.qty;
+
+            for (const lot of lots) {
+              if (remaining <= 0) break;
+              const currentQty = lotRunningQty[lot.id] ?? 0;
+              if (currentQty <= 0) continue;
+
+              const consumed      = Math.min(remaining, currentQty);
+              const newRemainingQty = currentQty - consumed;
+              const newStatus     = newRemainingQty <= 0 ? "depleted" : "active";
+
+              // Deplete lot
+              await tx.execute(sql`
+                UPDATE inventory_lots
+                SET remaining_qty = ${newRemainingQty.toFixed(4)},
+                    status        = ${newStatus},
+                    updated_at    = now()
+                WHERE id = ${lot.id}
+              `);
+
+              // ── Phase 2: immutable COGS entry (frozen at dispatch time) ──────
+              const cogsAmt = consumed * lot.unitCost;
+              await tx.execute(sql`
+                INSERT INTO cogs_entries
+                  (challan_id, challan_item_id, inventory_lot_id, product_id,
+                   grn_id, grn_number, challan_number, dispatched_at,
+                   qty_consumed, unit_cost, cogs_amount)
+                VALUES
+                  (${challan.id}, ${op.challanItemId}, ${lot.id}, ${op.productId},
+                   ${lot.grnId}, ${lot.grnNumber}, ${challan.challanNumber}, now(),
+                   ${consumed.toFixed(4)}, ${lot.unitCost.toFixed(4)}, ${cogsAmt.toFixed(4)})
+              `);
+
+              lotRunningQty[lot.id] = newRemainingQty;
+              remaining -= consumed;
+            }
+
+            if (remaining > 0) {
+              // Fallback: dispatch qty exceeded lot coverage (e.g. backfilled lots incomplete).
+              // Log a warning — does not block dispatch since stock enforcement already passed.
+              console.warn(`[INV-LOTS][DEPLETION][FALLBACK] productId=${op.productId} challanItem=${op.challanItemId} challan=${challan.challanNumber} unattributed_qty=${remaining} — no inventory_lots to deplete`);
+            }
+          }
+        }
+
         for (const item of items) {
           const qty = dispatchQtys[item.id];
           const prevDispatched = Number(item.qtyDispatched ?? 0);
@@ -5376,6 +5884,93 @@ export async function registerRoutes(
               dispatched_by = ${req.user.id}
           WHERE id = ${challan.id}
         `);
+
+        // ── Fix 3+5: Auto-create invoice atomically inside same transaction ────
+        const existingInvRes = await tx.execute(sql`
+          SELECT id FROM sales_invoices WHERE challan_id = ${challan.id} LIMIT 1
+        `);
+        if (!existingInvRes.rows[0]) {
+          let resolvedCustomerId: string = (challan as any).customerId;
+          if (!resolvedCustomerId && challan.orderId) {
+            const soResInv = await tx.execute(sql`SELECT customer_id FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1`);
+            resolvedCustomerId = (soResInv.rows[0] as any)?.customer_id ?? null;
+          }
+          if (resolvedCustomerId) {
+            const custResInv = await tx.execute(sql`SELECT * FROM customers WHERE id = ${resolvedCustomerId} LIMIT 1`);
+            const cust = custResInv.rows[0] as any;
+            const customerGSTIN = cust?.gst_number || null;
+            const customerType = customerGSTIN ? "B2B" : "B2C";
+
+            // Build GST map from SO line items (locked at order time)
+            const soItemGstMap = new Map<string, { gstRate: number; hsnCode: string | null }>();
+            if (challan.orderId) {
+              const soItemsRes = await tx.execute(sql`SELECT product_id, gst_rate, hsn_code FROM sales_order_items WHERE order_id = ${challan.orderId}`);
+              for (const row of soItemsRes.rows as any[]) {
+                soItemGstMap.set(String((row as any).product_id), { gstRate: Number((row as any).gst_rate ?? 0), hsnCode: (row as any).hsn_code ?? null });
+              }
+            }
+
+            // Build line items using the dispatch quantities computed earlier
+            let invSubtotal = 0, invTotalCgst = 0, invTotalSgst = 0, invTotalIgst = 0, invTotalTax = 0;
+            const lineItems: any[] = [];
+            const isInterStateInv: boolean = req.body?.isInterState ?? false;
+            for (const ci of items) {
+              const qty = dispatchQtys[ci.id];
+              if (!qty || qty <= 0) continue;
+              const prodResInv = await tx.execute(sql`SELECT * FROM products WHERE id = ${ci.productId} LIMIT 1`);
+              const prod = prodResInv.rows[0] as any;
+              const unitPrice = Number(ci.unitPrice ?? prod?.unit_price ?? 0);
+              const soItem = soItemGstMap.get(String(ci.productId));
+              const hsnCode = soItem?.hsnCode ?? prod?.hsn_code ?? null;
+              const gstRate = soItem !== undefined ? soItem.gstRate : Number(prod?.gst_rate ?? 0);
+              const taxableAmt = qty * unitPrice;
+              const tax = taxableAmt * gstRate / 100;
+              const cgst = isInterStateInv ? 0 : tax / 2;
+              const sgst = isInterStateInv ? 0 : tax / 2;
+              const igst = isInterStateInv ? tax : 0;
+              invSubtotal += taxableAmt; invTotalCgst += cgst; invTotalSgst += sgst; invTotalIgst += igst; invTotalTax += tax;
+              lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
+            }
+
+            const invoiceDate = new Date();
+            const invDueDate = computeDueDate(invoiceDate, cust?.payment_terms ?? null);
+            // Fix 5: atomic invoice number (same tx — no gap possible)
+            const invoiceNumber = await nextDocNumberInTx(tx, "HE-INV", fyInv);
+
+            const invInsertRes = await tx.execute(sql`
+              INSERT INTO sales_invoices (
+                id, invoice_number, invoice_date, customer_id, so_id, challan_id,
+                customer_type, customer_gstin, is_inter_state,
+                subtotal, total_cgst, total_sgst, total_igst, total_tax, grand_total,
+                credited_amount, status, due_date, notes, created_by, upload_status, created_at
+              ) VALUES (
+                gen_random_uuid(), ${invoiceNumber}, ${invoiceDate}, ${resolvedCustomerId},
+                ${challan.orderId ?? null}, ${challan.id},
+                ${customerType}, ${customerGSTIN}, ${isInterStateInv},
+                ${invSubtotal.toFixed(2)}, ${invTotalCgst.toFixed(2)}, ${invTotalSgst.toFixed(2)},
+                ${invTotalIgst.toFixed(2)}, ${invTotalTax.toFixed(2)}, ${(invSubtotal + invTotalTax).toFixed(2)},
+                ${"0"}, ${"pending"}, ${invDueDate ?? null}, ${null},
+                ${req.user.id}, ${"pending_upload"}, now()
+              ) RETURNING *
+            `);
+            autoInvoice = invInsertRes.rows[0] as any;
+
+            for (const li of lineItems) {
+              await tx.execute(sql`
+                INSERT INTO sales_invoice_items (
+                  id, invoice_id, product_id, description, qty, unit_price, hsn_code,
+                  gst_rate, taxable_amount, cgst, sgst, igst, tax_amount, total_amount
+                ) VALUES (
+                  gen_random_uuid(), ${autoInvoice.id}, ${li.productId}, ${li.description},
+                  ${String(li.qty)}, ${String(li.unitPrice)}, ${li.hsnCode ?? null},
+                  ${String(li.gstRate)}, ${String(li.taxableAmount)}, ${String(li.cgst)},
+                  ${String(li.sgst)}, ${String(li.igst)}, ${String(li.taxAmount)}, ${String(li.totalAmount)}
+                )
+              `);
+            }
+          }
+        }
+        // ── End atomic invoice creation ──────────────────────────────────────
       });
 
       const updated = await storage.getDeliveryChallan(challan.id);
@@ -5390,134 +5985,113 @@ export async function registerRoutes(
 
       await logAction(req.user.id, "challan_dispatched", "sales", `Challan ${challan.challanNumber} dispatched`);
 
-      // Auto-create sales invoice shell (upload_status = 'pending_upload')
-      let autoInvoice: any = null;
-      try {
-        const existingInv = await storage.getSalesInvoiceByChallan(challan.id);
-        if (!existingInv) {
-          // Resolve customer
-          let resolvedCustomerId: string = (challan as any).customerId;
-          if (!resolvedCustomerId && challan.orderId) {
-            const soRes = await db.execute(sql`SELECT customer_id FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1`);
-            resolvedCustomerId = (soRes.rows[0] as any)?.customer_id ?? null;
-          }
-          if (resolvedCustomerId) {
-            const custRes = await db.execute(sql`SELECT * FROM customers WHERE id = ${resolvedCustomerId} LIMIT 1`);
-            const cust = custRes.rows[0] as any;
-            const customerGSTIN = cust?.gst_number || null;
-            const customerType = customerGSTIN ? "B2B" : "B2C";
-            // Build line items for GST totals
-            const challanItemsForInv = await storage.getDeliveryChallanItems(challan.id);
-            let subtotal = 0, totalCgst = 0, totalSgst = 0, totalIgst = 0, totalTax = 0;
-            const lineItems: any[] = [];
-            for (const ci of challanItemsForInv) {
-              const qtyDispatched = Number(ci.qtyDispatched ?? 0);
-              const qty = qtyDispatched > 0 ? qtyDispatched : Number(ci.qtyToDispatch ?? ci.quantity ?? 0);
-              if (qty <= 0) continue;
-              const prodRes = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.productId} LIMIT 1`);
-              const prod = prodRes.rows[0] as any;
-              const unitPrice = Number(ci.unitPrice ?? prod?.unit_price ?? 0);
-              const hsnCode = prod?.hsn_code ?? null;
-              const gstRate = Number(prod?.gst_rate ?? 0);
-              const isInterState = req.body?.isInterState ?? false;
-              const taxableAmt = qty * unitPrice;
-              const tax = taxableAmt * gstRate / 100;
-              const cgst = isInterState ? 0 : tax / 2;
-              const sgst = isInterState ? 0 : tax / 2;
-              const igst = isInterState ? tax : 0;
-              subtotal += taxableAmt;
-              totalCgst += cgst; totalSgst += sgst; totalIgst += igst; totalTax += tax;
-              lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
-            }
-            // G1: compute dueDate from customer payment_terms
-            const invoiceDate = new Date();
-            const invDueDate = computeDueDate(invoiceDate, cust?.payment_terms ?? null);
-            const invoiceNumber = await storage.generateSalesInvoiceNumber();
-            autoInvoice = await storage.createSalesInvoice({
-              invoiceNumber,
-              invoiceDate,
-              customerId: resolvedCustomerId,
-              soId: challan.orderId ?? null,
-              challanId: challan.id,
-              customerType,
-              customerGSTIN,
-              isInterState: req.body?.isInterState ?? false,
-              subtotal: String(subtotal),
-              totalCgst: String(totalCgst),
-              totalSgst: String(totalSgst),
-              totalIgst: String(totalIgst),
-              totalTax: String(totalTax),
-              grandTotal: String(subtotal + totalTax),
-              creditedAmount: "0",
-              status: "pending",
-              dueDate: invDueDate,
-              notes: null,
-              createdBy: req.user.id,
-              uploadStatus: "pending_upload",
-            } as any);
-            for (const li of lineItems) {
-              await storage.createSalesInvoiceItem({ invoiceId: autoInvoice.id, productId: li.productId, description: li.description, qty: String(li.qty), unitPrice: String(li.unitPrice), hsnCode: li.hsnCode, gstRate: String(li.gstRate), taxableAmount: String(li.taxableAmount), cgst: String(li.cgst), sgst: String(li.sgst), igst: String(li.igst), taxAmount: String(li.taxAmount), totalAmount: String(li.totalAmount) });
-            }
-            await logAction(req.user.id, "sales_invoice_auto_created", "sales", `Invoice ${invoiceNumber} auto-created from dispatch of ${challan.challanNumber}`);
+      // Log invoice creation and link any SO advance payments to the new invoice
+      if (autoInvoice) {
+        const autoInvNumber = (autoInvoice as any).invoice_number ?? autoInvoice.invoiceNumber ?? "";
+        await logAction(req.user.id, "sales_invoice_auto_created", "sales", `Invoice ${autoInvNumber} auto-created atomically from dispatch of ${challan.challanNumber}`);
 
-            // Fix B: propagate pre-existing SO advance payments to the newly auto-created invoice.
-            // Mirrors Fix A (manual challan path). Runs inside the non-fatal try so any failure
-            // does not block the dispatch response.
-            if (challan.orderId) {
-              try {
-                const soResB = await db.execute(sql`SELECT * FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1`);
-                const soRowB = soResB.rows[0] as any;
-                if (soRowB && Number(soRowB.paid_amount) > 0) {
-                  const matchedResB = await db.execute(sql`
-                    SELECT * FROM payments
-                    WHERE invoice_id IS NULL
-                      AND reference ILIKE ${'%' + soRowB.order_number + '%'}
-                  `);
-                  const matchedPmtsB = matchedResB.rows as any[];
-                  let totalCreditedB = 0;
-                  if (matchedPmtsB.length > 0) {
-                    for (const mp of matchedPmtsB) {
-                      await storage.createCustomerPayment({
-                        invoiceId: autoInvoice.id,
-                        customerId: resolvedCustomerId,
-                        amount: String(mp.amount),
-                        paymentDate: mp.payment_date ? new Date(mp.payment_date) : new Date(),
-                        method: mp.method || "bank_transfer",
-                        reference: mp.reference || `SO ${soRowB.order_number}`,
-                        notes: null,
-                        createdBy: req.user.id,
-                        cashAccountId: mp.cash_account_id,
-                      });
-                      totalCreditedB += Number(mp.amount);
-                    }
-                  } else {
-                    // No reference-matched payment rows found.
-                    // Cannot create a customer_payments row without a valid cashAccountId.
-                    // Fall back to updating credited_amount directly so Accounts + AR Aging
-                    // (customer-aging route) reflect the correct balance.
-                    totalCreditedB = Number(soRowB.paid_amount);
-                  }
-                  const grandTotalNumB = subtotal + totalTax;
-                  const newStatusB = totalCreditedB >= grandTotalNumB ? "paid" : totalCreditedB > 0 ? "partial_paid" : "pending";
-                  // creditedAmount tracks credit notes only — when customer_payments rows were created
-                  // they already account for the cash; set credited_amount=0 to avoid double-counting.
-                  // Only use credited_amount as a stand-in when no customer_payments row could be made.
-                  const creditedAmtB = matchedPmtsB.length > 0 ? "0.00" : totalCreditedB.toFixed(2);
-                  await storage.updateSalesInvoice(autoInvoice.id, {
-                    creditedAmount: creditedAmtB,
-                    status: newStatusB,
-                  });
-                  await logAction(req.user.id, "sales_invoice_payment_propagated", "sales",
-                    `Fix B: propagated SO paid_amount ₹${totalCreditedB} to invoice ${invoiceNumber} (${matchedPmtsB.length} payment rows matched)`);
-                }
-              } catch (fixBErr) {
-                console.error("Fix B: failed to propagate SO payments to auto-created invoice:", fixBErr);
+        // Fix #7 advance linkage: UPDATE customer_payments rows that were recorded as SO
+        // advances (invoiceId IS NULL, salesOrderId = this SO) → point them at the new invoice.
+        // Runs outside the main tx (non-fatal) so a linkage failure never undoes the dispatch.
+        if (challan.orderId) {
+          try {
+            const autoInvId = (autoInvoice as any).id;
+            const invoiceGrandTotal = Number((autoInvoice as any).grand_total ?? 0);
+            let linkedCount = 0;
+            let splitCount = 0;
+
+            // Fix #7 (Option A) — incremental advance allocation with payment splitting.
+            // Processes SO advances in chronological order; allocates up to invoice total.
+            // Split strategy: UPDATE original row → Record A (linked to invoice),
+            //                 INSERT new row     → Record B (leftover SO advance).
+            // Using UPDATE-first avoids relying on a secondary UPDATE after INSERT
+            // which was observed to silently no-op inside db.transaction.
+            // Each operation uses db.execute directly (non-transactional but non-fatal).
+            const advancesRes = await db.execute(sql`
+              SELECT id, amount, reference
+              FROM customer_payments
+              WHERE sales_order_id = ${challan.orderId}
+                AND invoice_id IS NULL
+              ORDER BY payment_date ASC, created_at ASC
+            `);
+            const advances = advancesRes.rows as any[];
+
+            let remaining = invoiceGrandTotal;
+
+            for (const adv of advances) {
+              if (remaining <= 0) break;
+              const advAmount = Number(adv.amount);
+
+              if (advAmount <= remaining) {
+                // Entire advance fits — UPDATE original row to link it wholesale
+                await db.execute(sql`
+                  UPDATE customer_payments
+                  SET invoice_id = ${autoInvId}, sales_order_id = NULL
+                  WHERE id = ${adv.id}
+                    AND invoice_id IS NULL
+                `);
+                remaining -= advAmount;
+                linkedCount++;
+              } else {
+                // Advance exceeds remaining — split:
+                //   UPDATE original → Record A (allocation, linked to invoice)
+                //   INSERT new row  → Record B (leftover, stays as SO advance)
+                const allocation = remaining;
+                const leftover = advAmount - allocation;
+                const origRef: string | null = adv.reference ?? null;
+                const splitRef = origRef
+                  ? `${origRef} (split — ₹${leftover.toFixed(2)} remaining)`
+                  : `(split — ₹${leftover.toFixed(2)} remaining)`;
+
+                // Record A: update original in-place → now linked to invoice
+                await db.execute(sql`
+                  UPDATE customer_payments
+                  SET invoice_id    = ${autoInvId},
+                      sales_order_id = NULL,
+                      amount         = ${String(allocation.toFixed(2))}
+                  WHERE id = ${adv.id}
+                    AND invoice_id IS NULL
+                `);
+
+                // Record B: insert new row for the leftover, stays as SO advance
+                await db.execute(sql`
+                  INSERT INTO customer_payments (
+                    id, invoice_id, sales_order_id, customer_id, amount,
+                    payment_date, method, reference, notes, created_by,
+                    cash_account_id, created_at
+                  )
+                  SELECT
+                    gen_random_uuid(),
+                    NULL,
+                    ${challan.orderId},
+                    customer_id,
+                    ${String(leftover.toFixed(2))},
+                    payment_date,
+                    method,
+                    ${splitRef},
+                    notes,
+                    created_by,
+                    cash_account_id,
+                    now()
+                  FROM customer_payments
+                  WHERE id = ${adv.id}
+                `);
+
+                remaining = 0;
+                splitCount++;
+                linkedCount++;
               }
             }
+
+            if (linkedCount > 0) {
+              await storage.recomputeInvoiceCreditedAmount(autoInvId);
+              await logAction(req.user.id, "sales_invoice_advance_linked", "sales",
+                `Fix #7: linked ${linkedCount} advance payment(s) (${splitCount} split) from SO to invoice ${autoInvNumber}`);
+            }
+          } catch (linkErr) {
+            console.error("Fix #7: failed to link SO advance payments to new invoice:", linkErr);
           }
         }
-      } catch (invErr) {
-        console.error("Auto-invoice creation failed (non-fatal):", invErr);
       }
 
       // Notify roles
@@ -5544,6 +6118,13 @@ export async function registerRoutes(
         status: "delivered",
         deliveryDate: new Date(),
       });
+
+      // Update all serial numbers on this challan from dispatched → delivered
+      await db.execute(sql`
+        UPDATE serial_numbers
+        SET status = 'delivered', updated_at = now()
+        WHERE challan_id = ${challan.id} AND status = 'dispatched'
+      `);
 
       if (challan.orderId) {
         try {
@@ -5637,24 +6218,96 @@ export async function registerRoutes(
         return res.status(409).json({ message: "A draft GRN already exists for this PO", existingGrnId: draftGrn.id, existingGrnNumber: draftGrn.grnNumber });
       }
 
-      const year = new Date().getFullYear();
-      const allGrns = await storage.getGRNs();
-      const yearGrns = allGrns.filter((g: any) => g.grnNumber.startsWith(`GRN-${year}`));
-      const maxNum = yearGrns.reduce((max: number, g: any) => {
-        const num = parseInt(g.grnNumber.split("-").pop() || "0", 10);
-        return num > max ? num : max;
-      }, 0);
-      const grnNumber = `GRN-${year}-${String(maxNum + 1).padStart(4, "0")}`;
+      // C-3: Atomic FY-scoped GRN numbering via doc_number_sequences counter table.
+      // Mirrors the challan / SO numbering pattern (nextDocNumberInTx).  The
+      // upsert serialises concurrent writes at Postgres row level — two simultaneous
+      // GRN creations cannot receive the same sequence number.  Format: GRN-YYYY-NNNN
+      // where YYYY is the fiscal-year start (resets Apr 1 each year).
+      const fyGrn   = getFinancialYear(new Date());
+      const fyYear  = fyGrn.split("-")[0]; // "2026-27" → "2026"
+      const grnNumber = await db.transaction(async (tx) => {
+        // On first use, seed the counter from the current max existing GRN number
+        // so we never collide with GRNs created before this counter existed.
+        const res = await tx.execute(sql`
+          INSERT INTO doc_number_sequences (doc_type, fy_str, last_seq)
+          SELECT 'GRN', ${fyGrn},
+                 COALESCE(MAX(CAST(split_part(grn_number, '-', 3) AS INTEGER)), 0) + 1
+          FROM goods_receipt_notes
+          WHERE grn_number LIKE ${'GRN-' + fyYear + '-%'}
+          ON CONFLICT (doc_type, fy_str)
+          DO UPDATE SET last_seq = GREATEST(
+            doc_number_sequences.last_seq + 1,
+            (SELECT COALESCE(MAX(CAST(split_part(grn_number, '-', 3) AS INTEGER)), 0) + 1
+             FROM goods_receipt_notes
+             WHERE grn_number LIKE ${'GRN-' + fyYear + '-%'})
+          )
+          RETURNING last_seq
+        `);
+        const seq = (res.rows[0] as { last_seq: number }).last_seq;
+        return `GRN-${fyYear}-${String(seq).padStart(4, "0")}`;
+      });
 
       const poItems = await storage.getPurchaseOrderItems(poId);
       const productItems = poItems.filter((it: any) => it.productId);
-      const itemTotal = productItems.reduce((sum: number, it: any) => sum + Number(it.totalCost), 0);
 
       const warehouseId = req.body?.warehouseId;
       if (!warehouseId) return res.status(400).json({ message: "warehouseId is required to create a GRN" });
 
       const supplierChallanNumber = req.body?.supplierChallanNumber?.trim() || null;
       if (!supplierChallanNumber) return res.status(400).json({ message: "Supplier challan number is required to create a GRN" });
+
+      // C-2: Accept submitted line items (receivedQuantity + buyingPrice) from the UI.
+      // If the client sends lineItems[], use those values.  Otherwise fall back to PO
+      // defaults so the existing API contract is not broken for callers that omit lineItems.
+      type SubmittedLineItem = {
+        productId: string;
+        orderedQuantity: number;
+        receivedQuantity: number;
+        buyingPrice: number;
+        description?: string;
+      };
+      const submittedLineItems: SubmittedLineItem[] | null =
+        Array.isArray(req.body?.lineItems) && req.body.lineItems.length > 0
+          ? req.body.lineItems
+          : null;
+
+      // Build the authoritative item list that will be persisted as GRN items.
+      // Each entry: { productId, orderedQty, receivedQty, buyingPrice, description }
+      const resolvedItems: Array<{
+        productId: string;
+        description: string | null;
+        orderedQuantity: number;
+        receivedQuantity: number;
+        buyingPrice: string;
+        totalCost: string;
+      }> = productItems.map((it: any) => {
+        if (submittedLineItems) {
+          const match = submittedLineItems.find(li => li.productId === it.productId);
+          if (match) {
+            const rcvQty  = Math.max(0, Number(match.receivedQuantity));
+            const price   = Math.max(0, Number(match.buyingPrice));
+            return {
+              productId: it.productId!,
+              description: it.description || null,
+              orderedQuantity: Number(it.quantity),
+              receivedQuantity: rcvQty,
+              buyingPrice: String(price),
+              totalCost: String((rcvQty * price).toFixed(2)),
+            };
+          }
+        }
+        // Fallback: PO defaults
+        return {
+          productId: it.productId!,
+          description: it.description || null,
+          orderedQuantity: Number(it.quantity),
+          receivedQuantity: Number(it.quantity),
+          buyingPrice: String(it.unitCost),
+          totalCost: String(it.totalCost),
+        };
+      });
+
+      const itemTotal = resolvedItems.reduce((sum, it) => sum + Number(it.totalCost), 0);
 
       const isCreditGrn = grnCreditOverride && gateAmount > 0 && paidAmount < gateAmount;
       const grn = await storage.createGRN({
@@ -5677,15 +6330,15 @@ export async function registerRoutes(
         } : {}),
       } as any);
 
-      if (productItems.length > 0) {
-        for (const it of productItems) {
+      if (resolvedItems.length > 0) {
+        for (const it of resolvedItems) {
           await storage.createGRNItem({
             grnId: grn.id,
-            productId: it.productId!,
-            description: it.description || null,
-            orderedQuantity: it.quantity,
-            receivedQuantity: it.quantity,
-            buyingPrice: it.unitCost,
+            productId: it.productId,
+            description: it.description,
+            orderedQuantity: it.orderedQuantity,
+            receivedQuantity: it.receivedQuantity,
+            buyingPrice: it.buyingPrice,
             totalCost: it.totalCost,
           } as any);
         }
@@ -5854,6 +6507,39 @@ export async function registerRoutes(
         }
       }
 
+      // Phase 4E: Serial tracking gate — block confirm if any serial-tracked item
+      // is missing its required serial numbers. Checked server-side so the API
+      // cannot be bypassed even if the frontend is skipped.
+      {
+        const serialBlockers: string[] = [];
+        for (const item of items) {
+          if (!item.productId) continue;
+          const prod = (await db.execute(sql`
+            SELECT requires_serial_tracking, name FROM products WHERE id = ${item.productId} LIMIT 1
+          `)).rows[0] as { requires_serial_tracking: boolean; name: string } | undefined;
+          if (!prod?.requires_serial_tracking) continue;
+
+          const serialCount = Number(
+            ((await db.execute(sql`
+              SELECT COUNT(*) AS cnt FROM serial_numbers
+              WHERE grn_item_id = ${item.id} AND status = 'in_stock'
+            `)).rows[0] as any)?.cnt ?? 0
+          );
+          if (serialCount < item.receivedQuantity) {
+            serialBlockers.push(
+              `${prod.name}: ${serialCount} of ${item.receivedQuantity} serial number(s) registered`
+            );
+          }
+        }
+        if (serialBlockers.length > 0) {
+          return res.status(400).json({
+            code: "serial_numbers_required",
+            message: "Cannot confirm GRN: serial numbers missing for tracked products.",
+            details: serialBlockers,
+          });
+        }
+      }
+
       const allStock = await storage.getInventoryStock();
 
       const costAggregates: Record<string, { totalQty: number; totalCost: number }> = {};
@@ -5896,6 +6582,29 @@ export async function registerRoutes(
               : avgBuyingPrice;
             await tx.execute(sql`UPDATE products SET cost_price = ${newCost.toFixed(2)} WHERE id = ${productId}`);
           }
+        }
+
+        // ── Option C: auto-create inventory_lots for each GRN item ──────────
+        // Transactional with the GRN confirmation — if lot creation fails,
+        // the entire GRN confirm rolls back. No orphaned confirmed GRNs without lots.
+        const itemCountInGrn = items.length;
+        const deliveryCostPerItem = grn.deliveryCost
+          ? parseFloat(String(grn.deliveryCost)) / Math.max(itemCountInGrn, 1)
+          : 0;
+
+        for (const item of items) {
+          const unitCost = parseFloat(String(item.buyingPrice)) + deliveryCostPerItem;
+          const totalCost = unitCost * item.receivedQuantity;
+          await tx.execute(sql`
+            INSERT INTO inventory_lots
+              (grn_id, grn_item_id, product_id, warehouse_id, grn_number,
+               received_date, received_qty, remaining_qty, unit_cost, total_cost, status)
+            VALUES
+              (${grn.id}, ${item.id}, ${item.productId}, ${grn.warehouseId}, ${grn.grnNumber},
+               ${grn.receivedDate instanceof Date ? grn.receivedDate.toISOString() : String(grn.receivedDate)},
+               ${item.receivedQuantity}, ${item.receivedQuantity},
+               ${unitCost.toFixed(4)}, ${totalCost.toFixed(4)}, 'active')
+          `);
         }
 
         await tx.execute(sql`
@@ -5977,7 +6686,7 @@ export async function registerRoutes(
           }
           const siAutoNumber = `SI-${siYear}-${String(siNextNum).padStart(4, "0")}`;
           if (!grnPo?.supplierId) throw new Error(`F1: GRN ${grn.grnNumber} has no linked supplier — skipping auto-create`);
-          await db.execute(sql`
+          const newInvRes = await db.execute(sql`
             INSERT INTO supplier_invoices
               (id, supplier_id, purchase_order_id, grn_id, invoice_number, invoice_date,
                tax_amount, total_amount, payment_terms,
@@ -5990,7 +6699,40 @@ export async function registerRoutes(
                'pending', 'pending_upload', ${"Auto-created on GRN " + grn.grnNumber + " confirmation"},
                ${req.user.id}, now(),
                ${(grn as any).isCreditOverride ?? false}, ${(grn as any).creditAmount ?? null})
+            RETURNING id
           `);
+          const newInvId = ((newInvRes as any).rows?.[0] as { id: string } | undefined)?.id;
+
+          // B3-fix: Link any existing advance payments for this PO to the new invoice,
+          // so the invoice outstanding correctly reflects money already paid.
+          // Mirrors the customer-side fix (advance → invoice link at dispatch).
+          if (newInvId && grn.purchaseOrderId) {
+            await db.execute(sql`
+              UPDATE supplier_payments
+              SET supplier_invoice_id = ${newInvId},
+                  purchase_order_id   = NULL,
+                  payment_type        = 'regular'
+              WHERE purchase_order_id = ${grn.purchaseOrderId}
+                AND payment_type      = 'advance'
+                AND supplier_invoice_id IS NULL
+            `);
+            // Deduct the linked amount from po.advance_paid so recomputeInvoiceStatus
+            // doesn't double-count (it adds po.advancePaid + direct payments).
+            await db.execute(sql`
+              UPDATE purchase_orders
+              SET advance_paid = GREATEST(0,
+                advance_paid::numeric - COALESCE((
+                  SELECT SUM(sp.amount::numeric)
+                  FROM supplier_payments sp
+                  WHERE sp.supplier_invoice_id = ${newInvId}
+                ), 0)
+              )
+              WHERE id = ${grn.purchaseOrderId}
+            `);
+            // Recompute invoice status (paid / partial_paid / pending)
+            await recomputeInvoiceStatus(newInvId);
+          }
+
           await logAction(req.user.id, "supplier_invoice_auto_created", "supply_chain",
             `Auto-created supplier invoice ${siAutoNumber} (pending upload) for GRN ${grn.grnNumber}`);
           notifyRoles(["admin", "accountant"], "supplier_invoice",
@@ -6005,11 +6747,14 @@ export async function registerRoutes(
 
       // Auto-create daily price sheets for products received in this GRN
       try {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
         const uniqueProductIds = [...new Set(items.filter((i: any) => i.productId).map((i: any) => i.productId as string))];
         for (const pid of uniqueProductIds) {
           const existing = await storage.getDailyPriceSheetByProductDate(pid, today);
-          if (existing) continue;
+
+          // If a non-draft sheet already exists (submitted/confirmed/rejected), leave it alone
+          if (existing && existing.status !== "draft") continue;
+
           const lots = await computeFifoLots(pid);
           if (lots.length === 0) continue;
           const totalRemainingQty = lots.reduce((s, l) => s + l.remainingQty, 0);
@@ -6022,6 +6767,29 @@ export async function registerRoutes(
           const grnProdName: string = (prodMarginRes.rows[0] as any)?.name ?? pid;
           const globalFloorPrice = parseFloat((blendedCost * (1 + minMarginPct / 100)).toFixed(2));
           const strictFloorPrice = lots.reduce((max, l) => Math.max(max, l.floorPrice), 0);
+
+          if (existing && existing.status === "draft") {
+            // Draft already exists — refresh the FIFO lot snapshot + floor prices to include new stock
+            await storage.updateDailyPriceSheet(existing.id, {
+              blendedCost: blendedCost.toFixed(2),
+              globalFloorPrice: globalFloorPrice.toFixed(2),
+              strictFloorPrice: strictFloorPrice.toFixed(2),
+              notes: `${existing.notes ?? ""} | Lots refreshed after GRN ${grn.grnNumber}`.trim().replace(/^\|/, "").trim(),
+            } as any);
+            await storage.upsertDailyPriceSheetLots(existing.id, lots.map(l => ({
+              sheetId: existing.id,
+              grnId: l.grnId,
+              grnNumber: l.grnNumber,
+              lotDate: l.lotDate,
+              remainingQty: l.remainingQty.toFixed(3),
+              landedCost: l.landedCost.toFixed(2),
+              floorPrice: l.floorPrice.toFixed(2),
+              proposedPrice: null,
+            })));
+            console.log(`[PRICING] Refreshed draft price sheet ${existing.id} for product ${pid} after GRN ${grn.grnNumber}`);
+            continue;
+          }
+
           // blendedCost always comes from FIFO lot engine, never from product.costPrice (WAC)
           const sheet = await storage.createDailyPriceSheet({
             productId: pid,
@@ -6190,7 +6958,7 @@ export async function registerRoutes(
   // ── D5: Upload Supplier Tax Invoice ───────────────────────────────────────
   app.post("/api/grns/:id/upload-supplier-invoice", authenticateToken, async (req: any, res) => {
     try {
-      const allowedRoles = ["accountant", "admin"];
+      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
       if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
 
       const grn = await storage.getGRN(req.params.id);
@@ -6200,31 +6968,36 @@ export async function registerRoutes(
       const { fileUrl, supplierInvoiceNumber, supplierInvoiceDate } = req.body;
       if (!fileUrl && !supplierInvoiceNumber) return res.status(400).json({ message: "fileUrl or supplierInvoiceNumber is required" });
 
-      await db.execute(sql`
-        UPDATE goods_receipt_notes
-        SET supplier_invoice_url = COALESCE(${fileUrl ?? null}, supplier_invoice_url),
-            supplier_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}, supplier_invoice_number),
-            supplier_invoice_date = COALESCE(${supplierInvoiceDate ? new Date(supplierInvoiceDate) : null}, supplier_invoice_date),
-            supplier_invoice_uploaded_by = ${req.user.id},
-            supplier_invoice_uploaded_at = now()
-        WHERE id = ${grn.id}
-      `);
+      // Both UPDATEs run in a single transaction so the GRN and its linked
+      // supplier_invoices row are always kept in sync — if either query fails
+      // both roll back and no partial state is left behind.
+      // Explicit ::text / ::date casts prevent Postgres "could not determine
+      // data type of parameter $N" when null is passed for optional columns.
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`
+          UPDATE goods_receipt_notes
+          SET supplier_invoice_url    = COALESCE(${fileUrl ?? null}::text,               supplier_invoice_url),
+              supplier_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}::text,  supplier_invoice_number),
+              supplier_invoice_date   = COALESCE(${supplierInvoiceDate ?? null}::date,    supplier_invoice_date),
+              supplier_invoice_uploaded_by = ${req.user.id},
+              supplier_invoice_uploaded_at = now()
+          WHERE id = ${grn.id}
+        `);
 
-      // ── Bidirectional sync: also update the linked supplier_invoices record ──
-      // When the accountant records invoice details from the GRN tab, propagate
-      // those details to the auto-created supplier_invoices row so the Accounts
-      // tab reflects the same state (uploadStatus → "recorded").
-      await db.execute(sql`
-        UPDATE supplier_invoices
-        SET upload_status = 'recorded',
-            ext_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}, ext_invoice_number),
-            ext_invoice_date   = COALESCE(${supplierInvoiceDate ? new Date(supplierInvoiceDate) : null}, ext_invoice_date),
-            signed_copy_url    = COALESCE(${fileUrl ?? null}, signed_copy_url),
-            signed_copy_uploaded_by  = CASE WHEN ${fileUrl ?? null} IS NOT NULL THEN ${req.user.id} ELSE signed_copy_uploaded_by END,
-            signed_copy_uploaded_at  = CASE WHEN ${fileUrl ?? null} IS NOT NULL THEN now() ELSE signed_copy_uploaded_at END
-        WHERE grn_id = ${grn.id}
-          AND upload_status != 'cancelled'
-      `);
+        // ── Bidirectional sync: also update the linked supplier_invoices row ──
+        // Propagates details so the Accounts tab reflects uploadStatus → "recorded".
+        await tx.execute(sql`
+          UPDATE supplier_invoices
+          SET upload_status      = 'recorded',
+              ext_invoice_number = COALESCE(${supplierInvoiceNumber ?? null}::text, ext_invoice_number),
+              ext_invoice_date   = COALESCE(${supplierInvoiceDate ?? null}::date,   ext_invoice_date),
+              signed_copy_url    = COALESCE(${fileUrl ?? null}::text,               signed_copy_url),
+              signed_copy_uploaded_by = CASE WHEN ${fileUrl ?? null}::text IS NOT NULL THEN ${req.user.id} ELSE signed_copy_uploaded_by END,
+              signed_copy_uploaded_at = CASE WHEN ${fileUrl ?? null}::text IS NOT NULL THEN now()          ELSE signed_copy_uploaded_at END
+          WHERE grn_id = ${grn.id}
+            AND upload_status != 'cancelled'
+        `);
+      });
 
       await logAction(req.user.id, "grn_supplier_invoice_uploaded", "supply_chain",
         `Supplier invoice uploaded for GRN ${grn.grnNumber}. Ref: ${supplierInvoiceNumber ?? "n/a"}`);
@@ -6579,7 +7352,7 @@ export async function registerRoutes(
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const fyPR = getFinancialYear(new Date());
       const po = await db.transaction(async (tx) => {
-          const poNumber = await nextDocNumberInTx(tx, "ITFI-PO", fyPR);
+          const poNumber = await nextDocNumberInTx(tx, "HE-PO", fyPR);
           const [row] = await tx.insert(purchaseOrdersTable).values({
             poNumber,
             supplierId: pr.supplierId,
@@ -6632,7 +7405,7 @@ export async function registerRoutes(
 
   // ======================== KIOSK ATTENDANCE ========================
 
-  app.get("/api/kiosk/employee/:qrCode", async (req, res) => {
+  app.get("/api/kiosk/employee/:qrCode", authenticateToken, requireRole("kiosk"), async (req, res) => {
     try {
       const qrCode = decodeURIComponent(req.params.qrCode).trim();
       const employees = await storage.getEmployees();
@@ -6660,7 +7433,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/kiosk/attendance", async (req, res) => {
+  app.post("/api/kiosk/attendance", authenticateToken, requireRole("kiosk"), async (req, res) => {
     try {
       const { qrCode, selfieUrl, action, location } = req.body;
       if (!qrCode) return res.status(400).json({ message: "QR code required" });
@@ -7304,11 +8077,38 @@ export async function registerRoutes(
         empId = linked.id;
       }
       if (!empId) return res.status(400).json({ message: "employeeId is required" });
+
+      // M-1: Leave entitlement enforcement for paid leave types
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const entitlement = getEntitlement(type);
+      if (isFinite(entitlement)) {
+        const year = start.getFullYear();
+        const yearStart = new Date(year, 0, 1);
+        const yearEnd = new Date(year, 11, 31, 23, 59, 59);
+        const allLeaves = await storage.getLeaveRequestsByEmployee(empId);
+        const usedDays = allLeaves
+          .filter(l =>
+            l.type === type &&
+            (l.status === "approved" || l.status === "pending") &&
+            new Date(l.startDate) >= yearStart &&
+            new Date(l.startDate) <= yearEnd
+          )
+          .reduce((sum, l) => sum + countLeaveDays(new Date(l.startDate), new Date(l.endDate)), 0);
+        const requestedDays = countLeaveDays(start, end);
+        if (usedDays + requestedDays > entitlement) {
+          const remaining = Math.max(0, entitlement - usedDays);
+          return res.status(400).json({
+            message: `Leave entitlement exceeded. You have ${remaining} day(s) of ${type} leave remaining for ${year}. Requested: ${requestedDays} day(s).`,
+          });
+        }
+      }
+
       const lr = await storage.createLeaveRequest({
         employeeId: empId,
         type,
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
+        startDate: start,
+        endDate: end,
         reason: reason || null,
         status: "pending",
         reviewedBy: null,
@@ -7320,12 +8120,40 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/leave-requests/:id/approve", authenticateToken, async (req: any, res) => {
+  app.patch("/api/leave-requests/:id/approve", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
-      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
       const existing = (await storage.getLeaveRequests()).find(r => r.id === req.params.id);
       if (!existing) return res.status(404).json({ message: "Leave request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be approved" });
+
+      // M-1: Re-validate entitlement at approval time (state may have changed since request was created)
+      const entitlement = getEntitlement(existing.type);
+      if (isFinite(entitlement)) {
+        const start = new Date(existing.startDate);
+        const end = new Date(existing.endDate);
+        const year = start.getFullYear();
+        const yearStart = new Date(year, 0, 1);
+        const yearEnd = new Date(year, 11, 31, 23, 59, 59);
+        const allLeaves = await storage.getLeaveRequestsByEmployee(existing.employeeId);
+        // Count approved leaves only (exclude this pending request itself)
+        const usedDays = allLeaves
+          .filter(l =>
+            l.id !== existing.id &&
+            l.type === existing.type &&
+            l.status === "approved" &&
+            new Date(l.startDate) >= yearStart &&
+            new Date(l.startDate) <= yearEnd
+          )
+          .reduce((sum, l) => sum + countLeaveDays(new Date(l.startDate), new Date(l.endDate)), 0);
+        const requestedDays = countLeaveDays(start, end);
+        if (usedDays + requestedDays > entitlement) {
+          const remaining = Math.max(0, entitlement - usedDays);
+          return res.status(400).json({
+            message: `Cannot approve: leave entitlement exceeded. Employee has ${remaining} day(s) of ${existing.type} leave remaining for ${year}. Requested: ${requestedDays} day(s).`,
+          });
+        }
+      }
+
       const lr = await storage.updateLeaveRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
       if (!lr) return res.status(404).json({ message: "Leave request not found" });
       await notifyEmployee(lr.employeeId, "leave_approved", "Leave Approved", `Your ${lr.type} leave from ${new Date(lr.startDate).toLocaleDateString("en-IN")} to ${new Date(lr.endDate).toLocaleDateString("en-IN")} has been approved.`, lr.id);
@@ -7335,9 +8163,8 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/leave-requests/:id/reject", authenticateToken, async (req: any, res) => {
+  app.patch("/api/leave-requests/:id/reject", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
-      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
       const existing = (await storage.getLeaveRequests()).find(r => r.id === req.params.id);
       if (!existing) return res.status(404).json({ message: "Leave request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be rejected" });
@@ -7434,9 +8261,8 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/late-arrival-requests/:id/approve", authenticateToken, async (req: any, res) => {
+  app.patch("/api/late-arrival-requests/:id/approve", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
-      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
       const existing = await storage.getLateArrivalRequest(req.params.id);
       if (!existing) return res.status(404).json({ message: "Request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be approved" });
@@ -7451,9 +8277,8 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/late-arrival-requests/:id/reject", authenticateToken, async (req: any, res) => {
+  app.patch("/api/late-arrival-requests/:id/reject", authenticateToken, requireRole("admin", "hr_manager", "accountant"), async (req: any, res) => {
     try {
-      if (req.user.role !== "admin" && req.user.role !== "hr_manager") return res.status(403).json({ message: "Forbidden" });
       const existing = await storage.getLateArrivalRequest(req.params.id);
       if (!existing) return res.status(404).json({ message: "Request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be rejected" });
@@ -7668,12 +8493,7 @@ export async function registerRoutes(
       if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot upload to a cancelled invoice" });
       let fileUrl: string | null = req.body?.fileUrl ?? null;
       if (req.file) {
-        const os = new ObjectStorageService();
-        const uploadURL = await os.getObjectEntityUploadURL();
-        const objectPath = os.normalizeObjectEntityPath(uploadURL);
-        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
-        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
-        fileUrl = objectPath;
+        fileUrl = saveFile(req.file.buffer, req.file.mimetype);
       }
       if (!fileUrl) return res.status(400).json({ message: "File or fileUrl is required" });
       const prevUrl = (inv as any).signedCopyUrl;
@@ -7702,14 +8522,13 @@ export async function registerRoutes(
       if (!inv) return res.status(404).json({ message: "Supplier invoice not found" });
       if ((inv as any).uploadStatus === "recorded") return res.status(400).json({ message: "Invoice already recorded" });
       if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Cannot record a cancelled invoice" });
-      const { extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount } = req.body;
+      const { extInvoiceNumber, extInvoiceDate, extGstAmount } = req.body;
       if (!extInvoiceNumber?.trim()) return res.status(400).json({ message: "Supplier invoice number is required" });
       if (!extInvoiceDate) return res.status(400).json({ message: "Invoice date is required" });
-      if (!extTotalAmount) return res.status(400).json({ message: "Total amount is required" });
       if (!(inv as any).signedCopyUrl) return res.status(400).json({ message: "Upload signed copy before marking as recorded" });
-      const extTotal = Number(extTotalAmount);
+      // extTotalAmount is auto-populated from the system total — no longer entered manually
       const sysTotal = Number((inv as any).totalAmount ?? 0);
-      const variance = Math.abs(extTotal - sysTotal);
+      const extTotal = req.body.extTotalAmount !== undefined ? Number(req.body.extTotalAmount) : sysTotal;
       await db.execute(sql`
         UPDATE supplier_invoices
         SET upload_status = 'recorded',
@@ -7735,9 +8554,8 @@ export async function registerRoutes(
         `);
       }
 
-      const varianceNote = variance > 0.01 ? ` Variance from system: ₹${variance.toFixed(2)}` : "";
       await logAction(req.user.id, "supplier_invoice_recorded", "accounts",
-        `Supplier invoice ${(inv as any).invoiceNumber} recorded. Ext invoice: ${extInvoiceNumber} dated ${extInvoiceDate} for ₹${extTotal.toFixed(2)}.${varianceNote}`);
+        `Supplier invoice ${(inv as any).invoiceNumber} recorded. Ext invoice: ${extInvoiceNumber} dated ${extInvoiceDate} for ₹${extTotal.toFixed(2)}.`);
       const updated = await storage.getSupplierInvoice(inv.id);
       res.json(updated);
     } catch (err: any) {
@@ -7776,7 +8594,7 @@ export async function registerRoutes(
     } catch { res.status(500).json({ message: "Failed to fetch supplier payment" }); }
   });
 
-  app.patch("/api/supplier-payments/:id", authenticateToken, async (req: any, res) => {
+  app.patch("/api/supplier-payments/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
       const pay = await storage.getSupplierPayment(req.params.id);
       if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
@@ -7842,7 +8660,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/supplier-payments", authenticateToken, async (req: any, res) => {
+  app.post("/api/supplier-payments", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
       const { supplierInvoiceId, purchaseOrderId, supplierId, amount, paymentType, paymentMethod, paymentDate, reference, cashAccountId } = req.body;
 
@@ -7929,7 +8747,7 @@ export async function registerRoutes(
     }
   });
 
-  app.delete("/api/supplier-payments/:id", authenticateToken, async (req, res) => {
+  app.delete("/api/supplier-payments/:id", authenticateToken, requireRole("admin", "accountant"), async (req, res) => {
     try {
       const pay = await storage.getSupplierPayment(req.params.id);
       if (!pay) return res.status(404).json({ message: "Supplier payment not found" });
@@ -8248,7 +9066,7 @@ export async function registerRoutes(
   // ─── Pricing Summary Report ─────────────────────────────────────────────────
   app.get("/api/reports/pricing-summary", authenticateToken, requireRole("admin", "sales_manager", "accountant"), async (req: any, res) => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
       // Fetch all products and current stock
       const allProds = await db.execute(sql`
@@ -8309,7 +9127,7 @@ export async function registerRoutes(
 
         const sheet = sheetMap.get(prod.id);
         const confirmedPrice = sheet ? Number(sheet.proposed_price) : Number(prod.unit_price);
-        const sheetDate = sheet ? (typeof sheet.sheet_date === "string" ? sheet.sheet_date.slice(0, 10) : new Date(sheet.sheet_date).toISOString().slice(0, 10)) : null;
+        const sheetDate = sheet ? (typeof sheet.sheet_date === "string" ? sheet.sheet_date.slice(0, 10) : new Date(sheet.sheet_date).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })) : null;
         const hasConfirmedToday = sheetDate === today;
         const hasConfirmedSheet = sheetDate !== null;
         const hasUnconfirmedSheet = unconfirmedSet.has(prod.id);
@@ -8747,12 +9565,7 @@ export async function registerRoutes(
 
       let fileUrl: string | null = req.body?.fileUrl ?? null;
       if (req.file) {
-        const os = new ObjectStorageService();
-        const uploadURL = await os.getObjectEntityUploadURL();
-        const objectPath = os.normalizeObjectEntityPath(uploadURL);
-        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
-        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
-        fileUrl = objectPath;
+        fileUrl = saveFile(req.file.buffer, req.file.mimetype);
       }
       if (!fileUrl) return res.status(400).json({ message: "File or fileUrl is required" });
 
@@ -8797,12 +9610,7 @@ export async function registerRoutes(
       const ewayBillDate: string | null = req.body?.ewayBillDate ?? null;
 
       if (req.file) {
-        const os = new ObjectStorageService();
-        const uploadURL = await os.getObjectEntityUploadURL();
-        const objectPath = os.normalizeObjectEntityPath(uploadURL);
-        const uploadRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": req.file.mimetype }, body: req.file.buffer });
-        if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
-        fileUrl = objectPath;
+        fileUrl = saveFile(req.file.buffer, req.file.mimetype);
       }
       if (!fileUrl && !ewayBillNumber) return res.status(400).json({ message: "File or ewayBillNumber is required" });
 
@@ -8835,6 +9643,14 @@ export async function registerRoutes(
       const inv = await storage.getSalesInvoice(req.params.id);
       if (!inv) return res.status(404).json({ message: "Sales invoice not found" });
       if ((inv as any).uploadStatus === "cancelled") return res.status(400).json({ message: "Invoice already cancelled" });
+
+      // Fix 2: block cancellation when payments exist
+      const existingPayments = await storage.getCustomerPayments(inv.id);
+      if (existingPayments.length > 0) {
+        return res.status(400).json({
+          message: `Cannot cancel invoice ${inv.invoiceNumber} — ${existingPayments.length} payment(s) are recorded against it.`,
+        });
+      }
 
       const { cancellationReason } = req.body;
       if (!cancellationReason?.trim()) return res.status(400).json({ message: "Cancellation reason is required" });
@@ -8889,6 +9705,16 @@ export async function registerRoutes(
 
       const challanItemsRes = await db.execute(sql`SELECT * FROM delivery_challan_items WHERE challan_id = ${challanId}`);
       const challanItems = challanItemsRes.rows as any[];
+      // Pre-fetch SO line items so we use the GST rate locked at order time, not the product master.
+      // This ensures the invoice reflects what was quoted/agreed with the customer.
+      const resolvedSoId = soId ?? challanRow.order_id ?? null;
+      const soItemGstMap2 = new Map<string, { gstRate: number; hsnCode: string | null }>();
+      if (resolvedSoId) {
+        const soItemsRes2 = await db.execute(sql`SELECT product_id, gst_rate, hsn_code FROM sales_order_items WHERE order_id = ${resolvedSoId}`);
+        for (const row of soItemsRes2.rows as any[]) {
+          soItemGstMap2.set(String((row as any).product_id), { gstRate: Number((row as any).gst_rate ?? 0), hsnCode: (row as any).hsn_code ?? null });
+        }
+      }
       let subtotal = 0, totalCgst = 0, totalSgst = 0, totalIgst = 0, totalTax = 0;
       const lineItems: any[] = [];
       for (const ci of challanItems) {
@@ -8897,7 +9723,8 @@ export async function registerRoutes(
         const prodRes = await db.execute(sql`SELECT * FROM products WHERE id = ${ci.product_id} LIMIT 1`);
         const prod = prodRes.rows[0] as any;
         const unitPrice = Number(ci.unit_price ?? prod?.unit_price ?? 0);
-        const gstRate = Number(prod?.gst_rate ?? 0);
+        const soItem2 = soItemGstMap2.get(String(ci.product_id));
+        const gstRate = soItem2 !== undefined ? soItem2.gstRate : Number(prod?.gst_rate ?? 0);
         const taxableAmt = qty * unitPrice;
         const tax = taxableAmt * gstRate / 100;
         subtotal += taxableAmt;
@@ -8905,7 +9732,8 @@ export async function registerRoutes(
         totalSgst += isInterState ? 0 : tax / 2;
         totalIgst += isInterState ? tax : 0;
         totalTax += tax;
-        lineItems.push({ productId: ci.product_id, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode: prod?.hsn_code ?? null, gstRate, taxableAmount: taxableAmt, cgst: isInterState ? 0 : tax / 2, sgst: isInterState ? 0 : tax / 2, igst: isInterState ? tax : 0, taxAmount: tax, totalAmount: taxableAmt + tax });
+        const hsnCode2 = soItem2?.hsnCode ?? prod?.hsn_code ?? null;
+        lineItems.push({ productId: ci.product_id, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode: hsnCode2, gstRate, taxableAmount: taxableAmt, cgst: isInterState ? 0 : tax / 2, sgst: isInterState ? 0 : tax / 2, igst: isInterState ? tax : 0, taxAmount: tax, totalAmount: taxableAmt + tax });
       }
 
       const invoiceNumber = await storage.generateSalesInvoiceNumber();
@@ -8987,10 +9815,16 @@ export async function registerRoutes(
   // GET payments for an invoice
   app.get("/api/customer-payments", authenticateToken, async (req: any, res) => {
     try {
-      const { invoiceId } = req.query as { invoiceId?: string };
-      const pmts = invoiceId
-        ? await storage.getCustomerPayments(invoiceId)
-        : await storage.getAllCustomerPayments();
+      const { invoiceId, salesOrderId } = req.query as { invoiceId?: string; salesOrderId?: string };
+      let pmts;
+      if (invoiceId) {
+        pmts = await storage.getCustomerPayments(invoiceId);
+      } else if (salesOrderId) {
+        // Fix #7: return only advance (unlinked) payments for this SO
+        pmts = await storage.getSalesOrderAdvancePayments(salesOrderId);
+      } else {
+        pmts = await storage.getAllCustomerPayments();
+      }
       res.json(pmts);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to fetch customer payments" });
@@ -8998,19 +9832,72 @@ export async function registerRoutes(
   });
 
   // POST record a customer payment
-  app.post("/api/customer-payments", authenticateToken, async (req: any, res) => {
+  app.post("/api/customer-payments", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
     try {
-      const { invoiceId, customerId, amount, paymentDate, method, reference, notes, cashAccountId } = req.body;
+      const { invoiceId, customerId, amount, paymentDate, method, reference, notes, cashAccountId, force } = req.body;
       if (!invoiceId || !amount) return res.status(400).json({ message: "invoiceId and amount are required" });
       if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account where this payment was received" });
 
       const inv = await storage.getSalesInvoice(invoiceId);
       if (!inv) return res.status(404).json({ message: "Invoice not found" });
 
+      const paymentAmount = parseFloat(String(amount));
+      if (isNaN(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ message: "Invalid payment amount" });
+
+      // Fix #8 — Overpayment prevention
+      const existingPayments = await storage.getCustomerPayments(invoiceId);
+      const alreadyPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
+      const creditedAmount = Number(inv.creditedAmount ?? 0);
+      const grandTotal = Number(inv.grandTotal);
+      const balanceDue = Math.max(0, grandTotal - alreadyPaid - creditedAmount);
+      if (paymentAmount > balanceDue + 0.005) {
+        return res.status(400).json({
+          message: `Payment ₹${paymentAmount.toFixed(2)} exceeds the outstanding balance of ₹${balanceDue.toFixed(2)} on invoice ${inv.invoiceNumber}.`,
+          balanceDue: balanceDue.toFixed(2),
+        });
+      }
+
+      // Fix #9 — Duplicate payment prevention (bypass with force=true)
+      if (!force) {
+        // Check: same reference on same invoice
+        if (reference) {
+          const dupRefRes = await db.execute(sql`
+            SELECT id FROM customer_payments
+            WHERE invoice_id = ${invoiceId} AND reference = ${reference}
+            LIMIT 1
+          `);
+          if ((dupRefRes.rows as any[]).length > 0) {
+            return res.status(409).json({
+              message: `A payment with reference "${reference}" is already recorded for invoice ${inv.invoiceNumber}.`,
+              isDuplicate: true,
+            });
+          }
+        }
+
+        // Check: same amount on same invoice on same calendar day
+        const pmtDateStr = paymentDate
+          ? new Date(paymentDate).toISOString().split("T")[0]
+          : new Date().toISOString().split("T")[0];
+        const dupAmtRes = await db.execute(sql`
+          SELECT id FROM customer_payments
+          WHERE invoice_id = ${invoiceId}
+            AND amount::numeric = ${paymentAmount}::numeric
+            AND payment_date::date = ${pmtDateStr}::date
+          LIMIT 1
+        `);
+        if ((dupAmtRes.rows as any[]).length > 0) {
+          return res.status(409).json({
+            message: `A payment of ₹${paymentAmount.toFixed(2)} was already recorded today for invoice ${inv.invoiceNumber}. Submit again to confirm if this is intentional.`,
+            isDuplicate: true,
+          });
+        }
+      }
+
       const pmt = await storage.createCustomerPayment({
         invoiceId,
+        salesOrderId: null,
         customerId: customerId ?? inv.customerId,
-        amount: String(amount),
+        amount: paymentAmount.toFixed(2),
         paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
         method: method ?? "bank_transfer",
         reference: reference ?? null,
@@ -9022,7 +9909,7 @@ export async function registerRoutes(
       // Recompute invoice status accounting for both payments and credit notes
       await storage.recomputeInvoiceCreditedAmount(invoiceId);
 
-      await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${amount} for invoice ${inv.invoiceNumber}`);
+      await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${paymentAmount.toFixed(2)} for invoice ${inv.invoiceNumber}`);
       res.status(201).json(pmt);
     } catch (err: any) {
       res.status(500).json({ message: err.message || "Failed to record payment" });
@@ -9120,16 +10007,8 @@ export async function registerRoutes(
       const existing = await storage.getAttachmentByHash(entityType, entityId, fileHash);
       if (existing) return res.status(409).json({ message: "This file has already been uploaded for this record" });
 
-      // Get signed upload URL and upload server-side
-      const uploadURL = await objectStorage.getObjectEntityUploadURL();
-      const objectPath = objectStorage.normalizeObjectEntityPath(uploadURL);
-
-      const uploadRes = await fetch(uploadURL, {
-        method: "PUT",
-        headers: { "Content-Type": file.mimetype },
-        body: file.buffer,
-      });
-      if (!uploadRes.ok) throw new Error("Failed to upload file to object storage");
+      // Save file to local disk (local dev) — objectPath is /uploads/<uuid>.<ext>
+      const objectPath = saveFile(file.buffer, file.mimetype);
 
       // Persist DB record
       const attachment = await storage.createAttachment({
@@ -9264,6 +10143,14 @@ export async function registerRoutes(
         const check = await checkExpenseAttachmentAccess(req, found.entityId, "view");
         if (!check.ok) return res.status(check.status).json({ message: check.message });
       }
+      // Local disk file (local dev)
+      const localPath = getLocalFilePath(found.fileUrl);
+      if (localPath) {
+        res.setHeader("Content-Type", found.fileType);
+        res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(found.fileName)}"`);
+        return res.sendFile(localPath);
+      }
+      // Fallback: Replit object storage (production)
       const objectStorage = new ObjectStorageService();
       const objectFile = await objectStorage.getObjectEntityFile(found.fileUrl);
       res.setHeader("Content-Type", found.fileType);
@@ -9547,6 +10434,30 @@ export async function registerRoutes(
       // Generate credit note number before transaction (serial read, safe)
       const creditNoteNumber = await storage.generateCreditNoteNumber();
 
+      // ── Fix 4: Validate returned serial IDs (pre-transaction) ────────────
+      const returnedSerialIds: string[] = Array.isArray(req.body?.returnedSerialIds) ? req.body.returnedSerialIds : [];
+      if (returnedSerialIds.length > 0) {
+        // Resolve the challan that was used for the original dispatch
+        const challanId = (invoice as any).challanId ?? (invoice as any).challan_id ?? null;
+        for (const serialId of returnedSerialIds) {
+          const sRes = await db.execute(sql`
+            SELECT id, serial_number, status, customer_id, challan_id, product_id
+            FROM serial_numbers WHERE id = ${serialId} LIMIT 1
+          `);
+          const sRow = (sRes.rows[0] as any);
+          if (!sRow) return res.status(400).json({ message: `Serial ID ${serialId} not found` });
+          if (sRow.status !== "dispatched" && sRow.status !== "delivered") {
+            return res.status(400).json({ message: `Serial "${sRow.serial_number}" is not in dispatched or delivered status (current: ${sRow.status})` });
+          }
+          if (challanId && sRow.challan_id !== challanId) {
+            return res.status(400).json({ message: `Serial "${sRow.serial_number}" was not dispatched on challan for this invoice` });
+          }
+          if (sRow.customer_id && sr.customerId && sRow.customer_id !== sr.customerId) {
+            return res.status(400).json({ message: `Serial "${sRow.serial_number}" is not associated with this customer` });
+          }
+        }
+      }
+
       // ── Atomic DB transaction ─────────────────────────────────────────────
       let creditNote: any;
       await db.transaction(async (tx) => {
@@ -9574,6 +10485,31 @@ export async function registerRoutes(
             VALUES (gen_random_uuid(), ${ci.item.productId}, ${sr.warehouseId ?? null}, ${"RETURN_IN"}, ${qty},
                     ${"SALES_RETURN"}, ${sr.id}, ${`Sales return ${sr.returnNumber} from invoice ${invoice.invoiceNumber}`}, ${req.user.id}, now())
           `);
+        }
+
+        // Step 2b: Fix 4 — restore serial lifecycle state for returned units
+        if (returnedSerialIds.length > 0) {
+          for (const serialId of returnedSerialIds) {
+            await tx.execute(sql`
+              UPDATE serial_numbers
+              SET status         = 'returned',
+                  warehouse_id   = ${sr.warehouseId ?? null},
+                  customer_id    = NULL,
+                  dispatched_at  = NULL,
+                  returned_at    = now(),
+                  updated_at     = now()
+              WHERE id = ${serialId}
+            `);
+            await tx.execute(sql`
+              INSERT INTO serial_number_events (id, serial_id, from_status, to_status, actor_id, notes, reference_type, reference_id, created_at)
+              VALUES (
+                gen_random_uuid(), ${serialId}, 'dispatched', 'returned',
+                ${req.user.id},
+                ${'Returned via sales return ' + sr.returnNumber + ' (invoice ' + invoice.invoiceNumber + ')'},
+                'sales_return', ${sr.id}, now()
+              )
+            `);
+          }
         }
 
         // Step 3: Create Credit Note (raw SQL to avoid decimal type coercion issues)
@@ -9670,7 +10606,7 @@ export async function registerRoutes(
   // Includes ALL products (even those with no confirmed sheet) so the UI can show warnings for every product
   app.get("/api/daily-price-sheets/effective-prices-today", authenticateToken, async (req: any, res) => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
       // Fetch all products of type 'product'
       const allProducts = await db.execute(sql`
         SELECT id, unit_price FROM products WHERE type = 'product'
@@ -9718,7 +10654,7 @@ export async function registerRoutes(
       for (const row of result.rows as any[]) {
         const sheetDateStr = typeof row.sheet_date === "string"
           ? row.sheet_date.slice(0, 10)
-          : new Date(row.sheet_date).toISOString().slice(0, 10);
+          : new Date(row.sheet_date).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
         const isToday = sheetDateStr === today;
         priceMap[row.product_id] = {
           effectivePrice: row.proposed_price,
@@ -9742,7 +10678,7 @@ export async function registerRoutes(
     try {
       const { productId, date } = req.query as { productId?: string; date?: string };
       if (!productId) return res.status(400).json({ message: "productId is required" });
-      const d = date || new Date().toISOString().slice(0, 10);
+      const d = date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
       const result = await storage.getEffectivePriceForProduct(productId, d);
       if (!result) return res.status(404).json({ message: "Product not found" });
       res.json(result);
@@ -9825,7 +10761,7 @@ export async function registerRoutes(
       if (parent.type !== "bundle") {
         return res.status(400).json({ message: "Product is not a bundle" });
       }
-      const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+      const date = (req.query.date as string) || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
       const result = await storage.computeBundleAutoPrice(bundleId, date);
       res.json(result);
     } catch (err) {
@@ -9842,9 +10778,36 @@ export async function registerRoutes(
       const sheets = await storage.getDailyPriceSheets({ productId, sheetDate: dateFilter, status });
       const allProducts = await storage.getProducts();
       const prodMap = new Map(allProducts.map(p => [p.id, p]));
-      // Include lot lines in each list item
+      // Include lot lines — draft sheets get live FIFO lots so new GRNs are reflected immediately
       const result = await Promise.all(sheets.map(async s => {
-        const lots = await storage.getDailyPriceSheetLots(s.id);
+        let lots: any[];
+        if (s.status === "draft") {
+          // Live computation so the breakdown stays current as GRNs arrive
+          const liveLots = await computeFifoLots(s.productId);
+          lots = liveLots.map(l => ({
+            sheetId:      s.id,
+            grnId:        l.grnId,
+            grnNumber:    l.grnNumber,
+            lotDate:      toISTDateStr(l.lotDate),
+            remainingQty: l.remainingQty,
+            landedCost:   l.landedCost,
+            floorPrice:   l.floorPrice,
+          }));
+          // Also refresh stored floors so the saved sheet stays consistent
+          if (lots.length > 0) {
+            const totalRQ = liveLots.reduce((acc, l) => acc + l.remainingQty, 0);
+            const blended = totalRQ > 0 ? liveLots.reduce((acc, l) => acc + l.landedCost * l.remainingQty, 0) / totalRQ : 0;
+            const prod = prodMap.get(s.productId);
+            const minM = Number((prod as any)?.minMarginPct ?? 5);
+            const gFloor = parseFloat((blended * (1 + minM / 100)).toFixed(2));
+            const sFloor = Math.max(...liveLots.map(l => l.floorPrice));
+            storage.updateDailyPriceSheet(s.id, { blendedCost: blended.toFixed(2), globalFloorPrice: gFloor.toFixed(2), strictFloorPrice: sFloor.toFixed(2) } as any).catch(() => {});
+            storage.upsertDailyPriceSheetLots(s.id, lots.map(l => ({ ...l, remainingQty: String(l.remainingQty), landedCost: String(l.landedCost), floorPrice: String(l.floorPrice), proposedPrice: null }))).catch(() => {});
+          }
+        } else {
+          // Submitted / confirmed / rejected — use the stored audit snapshot
+          lots = await storage.getDailyPriceSheetLots(s.id);
+        }
         return {
           ...s,
           lots,
@@ -9935,9 +10898,23 @@ export async function registerRoutes(
     try {
       const sheet = await storage.getDailyPriceSheet(req.params.id);
       if (!sheet) return res.status(404).json({ message: "Price sheet not found" });
-      const lots = await storage.getDailyPriceSheetLots(sheet.id);
-      const prodR = await db.execute(sql`SELECT name, sku, needs_pricing_review FROM products WHERE id = ${sheet.productId} LIMIT 1`);
+      const prodR = await db.execute(sql`SELECT name, sku, needs_pricing_review, min_margin_pct FROM products WHERE id = ${sheet.productId} LIMIT 1`);
       const prodRow = prodR.rows[0] as any;
+      let lots: any[];
+      if (sheet.status === "draft") {
+        const liveLots = await computeFifoLots(sheet.productId);
+        lots = liveLots.map(l => ({
+          sheetId:      sheet.id,
+          grnId:        l.grnId,
+          grnNumber:    l.grnNumber,
+          lotDate:      toISTDateStr(l.lotDate),
+          remainingQty: l.remainingQty,
+          landedCost:   l.landedCost,
+          floorPrice:   l.floorPrice,
+        }));
+      } else {
+        lots = await storage.getDailyPriceSheetLots(sheet.id);
+      }
       res.json({ ...sheet, lots, productName: prodRow?.name ?? null, productSku: prodRow?.sku ?? null });
     } catch (err) {
       res.status(500).json({ message: "Failed to fetch price sheet" });
@@ -11545,6 +12522,91 @@ export async function registerRoutes(
     }
   });
 
+  // R2b: Supplier Aging — per-supplier invoice breakdown (lazy-loaded on expand)
+  app.get("/api/reports/supplier-aging/:supplierId/invoices", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { supplierId } = req.params;
+      const asOf = (req.query.asOf as string) || new Date().toISOString().slice(0, 10);
+      const asOfNorm = asOf.trim() || new Date().toISOString().slice(0, 10);
+
+      const result = await db.execute(sql`
+        SELECT
+          si.id,
+          si.invoice_number,
+          si.purchase_order_id,
+          po.po_number,
+          si.grn_id,
+          grn.grn_number,
+          si.invoice_date,
+          si.due_date,
+          si.total_amount,
+          si.status,
+          si.upload_status
+        FROM supplier_invoices si
+        LEFT JOIN purchase_orders po ON po.id = si.purchase_order_id
+        LEFT JOIN goods_receipt_notes grn ON grn.id = si.grn_id
+        WHERE si.supplier_id = ${supplierId}
+          AND si.status NOT IN ('paid', 'cancelled')
+          AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+        ORDER BY si.due_date ASC NULLS LAST
+      `);
+
+      const { storage } = await import("./storage");
+      const rawRows = await Promise.all(
+        (result.rows as any[]).map(async (row) => {
+          const outstanding = await storage.computeSupplierInvoiceOutstanding(row.id);
+
+          // If outstanding is now ≤ 0 but status wasn't updated yet (B3 backfill
+          // not yet run), proactively sync the status so DB catches up.
+          if (outstanding < 0.005 && row.status !== "paid") {
+            storage.updateSupplierInvoice(row.id, { status: "paid" }).catch(() => {});
+          }
+
+          const paid = Math.max(0, Number(row.total_amount ?? 0) - outstanding);
+
+          // compute aging bucket
+          const dueDate = row.due_date ? new Date(String(row.due_date) + "T00:00:00") : null;
+          let bucket: string = "current";
+          if (dueDate) {
+            const asOfMs = new Date(asOfNorm + "T23:59:59").getTime();
+            const diffDays = Math.floor((asOfMs - dueDate.getTime()) / 86400000);
+            if (diffDays > 0) {
+              if (diffDays <= 30) bucket = "1-30";
+              else if (diffDays <= 60) bucket = "31-60";
+              else if (diffDays <= 90) bucket = "61-90";
+              else bucket = "90+";
+            }
+          }
+
+          return {
+            id: row.id,
+            invoiceNumber: row.invoice_number ?? null,
+            purchaseOrderId: row.purchase_order_id ?? null,
+            poNumber: row.po_number ?? null,
+            grnId: row.grn_id ?? null,
+            grnNumber: row.grn_number ?? null,
+            invoiceDate: row.invoice_date ? String(row.invoice_date).slice(0, 10) : null,
+            dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null,
+            totalAmount: Number(row.total_amount ?? 0),
+            paid,
+            outstanding,
+            bucket,
+            status: row.status,
+          };
+        })
+      );
+
+      // Only return invoices that actually have an outstanding balance.
+      // Invoices may appear in the DB with status='pending' when advance_paid
+      // covers the full amount but recomputeInvoiceStatus hasn't run yet.
+      const rows = rawRows.filter(r => r.outstanding >= 0.005);
+
+      res.json({ supplierId, asOf: asOfNorm, rows });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to load supplier invoice details" });
+    }
+  });
+
   // R2: Supplier Aging (Excel)
   app.get("/api/reports/supplier-aging/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
     try {
@@ -12210,6 +13272,867 @@ export async function registerRoutes(
       sendExcel(res, buf, `Product-Profit-${data.period.from ?? "all"}-${data.period.to ?? "all"}.xlsx`);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to export product profit Excel" });
+    }
+  });
+
+  // ── Phase 4D-B: Balance Sheet ─────────────────────────────────────────────────
+
+  // ── Accounting invariant check: Inventory + COGS ≈ Procurement Cost ────────
+  // Verifies weighted-average perpetual inventory accounting engine.
+  // Per product and overall: procurement_cost = cogs + inventory_value (gap ≈ 0).
+  app.get("/api/reports/diag/invariant-check", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const result = await db.execute(sql`
+        WITH
+        -- Weighted-average unit cost + procurement cost per product (all confirmed GRNs)
+        grn_costs AS (
+          SELECT
+            gi.product_id,
+            p.name AS product_name,
+            SUM(gi.received_quantity::numeric) AS total_received_qty,
+            SUM(gi.buying_price::numeric * gi.received_quantity::numeric)
+              + SUM(
+                  COALESCE(grn.delivery_cost::numeric, 0)
+                  / GREATEST(
+                      (SELECT COUNT(*) FROM goods_receipt_note_items i2 WHERE i2.grn_id = gi.grn_id), 1
+                    )
+                  * gi.received_quantity::numeric
+                ) AS procurement_cost,
+            (
+              SUM(gi.buying_price::numeric * gi.received_quantity::numeric)
+              + SUM(
+                  COALESCE(grn.delivery_cost::numeric, 0)
+                  / GREATEST(
+                      (SELECT COUNT(*) FROM goods_receipt_note_items i2 WHERE i2.grn_id = gi.grn_id), 1
+                    )
+                  * gi.received_quantity::numeric
+                )
+            ) / NULLIF(SUM(gi.received_quantity::numeric), 0) AS unit_cost
+          FROM goods_receipt_note_items gi
+          JOIN goods_receipt_notes grn ON grn.id = gi.grn_id
+          LEFT JOIN products p ON p.id = gi.product_id
+          WHERE grn.status = 'confirmed'
+          GROUP BY gi.product_id, p.name
+        ),
+
+        -- Total dispatched qty per product (finalized challans)
+        dispatched AS (
+          SELECT
+            dci.product_id,
+            SUM(dci.quantity::numeric) AS dispatched_qty
+          FROM delivery_challan_items dci
+          JOIN delivery_challans dc ON dc.id = dci.challan_id
+          WHERE dc.status IN ('dispatched', 'delivered', 'completed')
+          GROUP BY dci.product_id
+        ),
+
+        -- Inventory remaining value — Option C inventory_lots table (accounting ledger)
+        inventory_lots_summary AS (
+          SELECT
+            product_id,
+            SUM(remaining_qty::numeric * unit_cost::numeric) AS inventory_value,
+            SUM(remaining_qty::numeric)                      AS remaining_qty
+          FROM inventory_lots
+          WHERE remaining_qty > 0 AND status = 'active'
+          GROUP BY product_id
+        )
+
+        SELECT
+          g.product_id,
+          g.product_name,
+          ROUND(g.procurement_cost, 2)                                        AS procurement_cost,
+          ROUND(COALESCE(d.dispatched_qty, 0) * g.unit_cost, 2)              AS cogs,
+          ROUND(COALESCE(ils.inventory_value, 0), 2)                          AS inventory_value,
+          ROUND(COALESCE(d.dispatched_qty, 0) * g.unit_cost
+                + COALESCE(ils.inventory_value, 0), 2)                        AS cogs_plus_inventory,
+          ROUND(g.procurement_cost
+                - COALESCE(d.dispatched_qty, 0) * g.unit_cost
+                - COALESCE(ils.inventory_value, 0), 2)                        AS gap,
+          ROUND(g.unit_cost, 2)                                               AS avg_unit_cost,
+          ROUND(g.total_received_qty, 2)                                      AS received_qty,
+          ROUND(COALESCE(d.dispatched_qty, 0), 2)                            AS dispatched_qty,
+          ROUND(COALESCE(ils.remaining_qty, 0), 2)                           AS remaining_qty_in_lots
+        FROM grn_costs g
+        LEFT JOIN dispatched d ON d.product_id = g.product_id
+        LEFT JOIN inventory_lots_summary ils ON ils.product_id = g.product_id
+        ORDER BY ABS(
+          g.procurement_cost
+          - COALESCE(d.dispatched_qty, 0) * g.unit_cost
+          - COALESCE(ils.inventory_value, 0)
+        ) DESC
+      `);
+
+      const rows = result.rows as any[];
+
+      // Overall rollup
+      const overall = rows.reduce(
+        (acc: any, r: any) => {
+          acc.procurement_cost     += Number(r.procurement_cost);
+          acc.cogs                 += Number(r.cogs);
+          acc.inventory_value      += Number(r.inventory_value);
+          acc.cogs_plus_inventory  += Number(r.cogs_plus_inventory);
+          acc.gap                  += Number(r.gap);
+          return acc;
+        },
+        { procurement_cost: 0, cogs: 0, inventory_value: 0, cogs_plus_inventory: 0, gap: 0 },
+      );
+      overall.procurement_cost    = Math.round(overall.procurement_cost    * 100) / 100;
+      overall.cogs                = Math.round(overall.cogs                * 100) / 100;
+      overall.inventory_value     = Math.round(overall.inventory_value     * 100) / 100;
+      overall.cogs_plus_inventory = Math.round(overall.cogs_plus_inventory * 100) / 100;
+      overall.gap                 = Math.round(overall.gap                 * 100) / 100;
+      overall.invariant_holds     = Math.abs(overall.gap) < 1; // within ₹1 rounding tolerance
+
+      res.json({
+        note: "Invariant: procurement_cost = cogs + inventory_value. Gap ≈ 0 means accounting engine is balanced.",
+        overall,
+        per_product: rows,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Invariant check failed" });
+    }
+  });
+
+  app.get("/api/reports/balance-sheet", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { computeBalanceSheet } = await import("./lib/financial-aggregations");
+      const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
+      const data = await computeBalanceSheet(asOf);
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to compute balance sheet" });
+    }
+  });
+
+  app.get("/api/reports/balance-sheet/excel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { computeBalanceSheet } = await import("./lib/financial-aggregations");
+      const { buildExcelBuffer, sendExcel } = await import("./lib/excel-export");
+      const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
+      const data = await computeBalanceSheet(asOf);
+
+      const rows: any[] = [];
+      // Assets
+      rows.push({ section: "ASSETS", label: "", amount: "" });
+      rows.push({ section: "Non-Current Assets", label: "", amount: "" });
+      data.assets.nonCurrent.forEach(s => {
+        rows.push({ section: "", label: s.label, amount: s.amount });
+        s.children.forEach(c => rows.push({ section: "", label: `  ${c.label}`, amount: c.amount }));
+      });
+      rows.push({ section: "Total Non-Current Assets", label: "", amount: data.assets.totalNonCurrentAssets });
+      rows.push({ section: "Current Assets", label: "", amount: "" });
+      data.assets.current.forEach(s => {
+        rows.push({ section: "", label: s.label, amount: s.amount });
+        s.children.forEach(c => rows.push({ section: "", label: `  ${c.label}`, amount: c.amount }));
+      });
+      rows.push({ section: "Total Current Assets", label: "", amount: data.assets.totalCurrentAssets });
+      rows.push({ section: "TOTAL ASSETS", label: "", amount: data.assets.totalAssets });
+      rows.push({ section: "", label: "", amount: "" });
+      // Liabilities
+      rows.push({ section: "LIABILITIES", label: "", amount: "" });
+      rows.push({ section: "Current Liabilities", label: "", amount: "" });
+      data.liabilities.current.forEach(s => {
+        rows.push({ section: "", label: s.label, amount: s.amount });
+        s.children.forEach(c => rows.push({ section: "", label: `  ${c.label}`, amount: c.amount }));
+      });
+      rows.push({ section: "Total Current Liabilities", label: "", amount: data.liabilities.totalCurrentLiabilities });
+      rows.push({ section: "Non-Current Liabilities", label: "", amount: "" });
+      data.liabilities.nonCurrent.forEach(s => {
+        rows.push({ section: "", label: s.label, amount: s.amount });
+        s.children.forEach(c => rows.push({ section: "", label: `  ${c.label}`, amount: c.amount }));
+      });
+      rows.push({ section: "Total Non-Current Liabilities", label: "", amount: data.liabilities.totalNonCurrentLiabilities });
+      rows.push({ section: "TOTAL LIABILITIES", label: "", amount: data.liabilities.totalLiabilities });
+      rows.push({ section: "", label: "", amount: "" });
+      // Equity
+      rows.push({ section: "EQUITY", label: "", amount: "" });
+      data.equity.lines.forEach(l => rows.push({ section: "", label: l.label, amount: l.amount, note: l.note ?? "" }));
+      rows.push({ section: "TOTAL EQUITY", label: "", amount: data.equity.totalEquity });
+      rows.push({ section: "", label: "", amount: "" });
+      rows.push({ section: "TOTAL LIABILITIES + EQUITY", label: "", amount: data.totalLiabilitiesAndEquity });
+
+      const buf = await buildExcelBuffer({
+        sheets: [{
+          name: "Balance Sheet",
+          title: `Balance Sheet — As of ${data.asOf}`,
+          subtitle: `${data.balanced ? "Balanced" : "Not balanced — verify equity and opening balance entries"}`,
+          columns: [
+            { header: "Section",    key: "section", width: 36 },
+            { header: "Item",       key: "label",   width: 36 },
+            { header: "Amount (₹)", key: "amount",  width: 22, type: "currency" },
+            { header: "Note",       key: "note",    width: 40 },
+          ],
+          rows,
+        }],
+      });
+      sendExcel(res, buf, `Balance-Sheet-${data.asOf}.xlsx`);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export balance sheet Excel" });
+    }
+  });
+
+  app.get("/api/reports/balance-sheet/pdf", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { computeBalanceSheet } = await import("./lib/financial-aggregations");
+      const { generateBalanceSheetPdf } = await import("./lib/balance-sheet-pdf");
+      const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
+      const data = await computeBalanceSheet(asOf);
+      const buf  = await generateBalanceSheetPdf(data);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="Balance-Sheet-${data.asOf}.pdf"`);
+      res.send(Buffer.from(buf));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export balance sheet PDF" });
+    }
+  });
+
+  // ── Phase 4D-C: Financial Ratios ─────────────────────────────────────────────
+
+  app.get("/api/reports/financial-ratios", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { computeBalanceSheet } = await import("./lib/financial-aggregations");
+      const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
+      const bs   = await computeBalanceSheet(asOf);
+
+      const ca  = bs.assets.totalCurrentAssets;
+      const cl  = bs.liabilities.totalCurrentLiabilities;
+      const tl  = bs.liabilities.totalLiabilities;
+      const eq  = bs.equity.totalEquity;
+
+      const currentRatio     = cl > 0   ? Math.round((ca / cl) * 100) / 100 : null;
+      const debtEquityRatio  = eq > 0   ? Math.round((tl / eq) * 100) / 100 : null;
+
+      const crInterp = currentRatio === null ? "no_liabilities"
+                     : currentRatio >= 1.5   ? "healthy"
+                     : currentRatio >= 1.0   ? "warning"
+                     :                         "critical";
+
+      const derInterp = debtEquityRatio === null ? "no_equity"
+                      : debtEquityRatio <= 1.0   ? "healthy"
+                      : debtEquityRatio <= 2.0   ? "warning"
+                      :                            "high";
+
+      res.json({
+        asOf:              bs.asOf,
+        generatedAt:       new Date().toISOString(),
+        currentRatio,
+        debtEquityRatio,
+        inputs: {
+          currentAssets:       ca,
+          currentLiabilities:  cl,
+          totalLiabilities:    tl,
+          totalEquity:         eq,
+        },
+        interpretation: {
+          currentRatio:    crInterp,
+          debtEquityRatio: derInterp,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to compute financial ratios" });
+    }
+  });
+
+  app.get("/api/reports/financial-ratios/pdf", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { computeBalanceSheet } = await import("./lib/financial-aggregations");
+      const { generateFinancialRatiosPdf } = await import("./lib/financial-ratios-pdf");
+      const asOf = typeof req.query.asOf === "string" ? req.query.asOf : undefined;
+      const bs   = await computeBalanceSheet(asOf);
+
+      const ca  = bs.assets.totalCurrentAssets;
+      const cl  = bs.liabilities.totalCurrentLiabilities;
+      const tl  = bs.liabilities.totalLiabilities;
+      const eq  = bs.equity.totalEquity;
+
+      const currentRatio    = cl > 0 ? Math.round((ca / cl) * 100) / 100 : null;
+      const debtEquityRatio = eq > 0 ? Math.round((tl / eq) * 100) / 100 : null;
+
+      const buf = await generateFinancialRatiosPdf({
+        asOf:             bs.asOf,
+        generatedAt:      new Date().toISOString(),
+        currentRatio,
+        debtEquityRatio,
+        inputs: { currentAssets: ca, currentLiabilities: cl, totalLiabilities: tl, totalEquity: eq },
+      });
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="Financial-Ratios-${bs.asOf}.pdf"`);
+      res.send(Buffer.from(buf));
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to export financial ratios PDF" });
+    }
+  });
+
+  // ── Phase 4E: Serial Number Tracking ─────────────────────────────────────────
+
+  // Valid lifecycle transitions (server-enforced)
+  const SERIAL_TRANSITIONS: Record<string, string[]> = {
+    in_stock:   ["dispatched", "scrapped"],
+    dispatched: ["returned"],
+    returned:   ["in_stock", "scrapped"],
+    scrapped:   [],
+  };
+
+  // Normalize serial: trim whitespace + uppercase
+  function normalizeSerial(s: unknown): string {
+    return (s == null ? "" : String(s)).trim().toUpperCase();
+  }
+
+  // GET /api/serial-numbers — list with optional filters
+  app.get("/api/serial-numbers", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const { productId, status, customerId, warehouseId, search } = req.query;
+      const conds: any[] = [];
+      if (productId)   conds.push(eq(serialNumbers.productId, productId));
+      if (status)      conds.push(eq(serialNumbers.status, status));
+      if (customerId)  conds.push(eq(serialNumbers.customerId, customerId));
+      if (warehouseId) conds.push(eq(serialNumbers.warehouseId, warehouseId));
+      if (search)      conds.push(sql`(${serialNumbers.serialNumber} ILIKE ${"%" + search + "%"} OR ${serialNumbers.barcodeValue} ILIKE ${"%" + search + "%"})`);
+      const rows = await db.select().from(serialNumbers)
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(serialNumbers.createdAt));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch serial numbers" });
+    }
+  });
+
+  // GET /api/serial-numbers/available — in_stock serials for a product + warehouse (dispatch use)
+  app.get("/api/serial-numbers/available", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const { productId, warehouseId } = req.query;
+      if (!productId) return res.status(400).json({ message: "productId is required" });
+      const conds: any[] = [
+        eq(serialNumbers.productId, productId as string),
+        eq(serialNumbers.status, "in_stock"),
+      ];
+      if (warehouseId) conds.push(eq(serialNumbers.warehouseId, warehouseId as string));
+      const rows = await db.select().from(serialNumbers).where(and(...conds)).orderBy(serialNumbers.serialNumber);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch available serials" });
+    }
+  });
+
+  // GET /api/serial-numbers/by-grn/:grnId
+  app.get("/api/serial-numbers/by-grn/:grnId", authenticateToken, requireRole("admin", "accountant", "warehouse_manager"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(serialNumbers)
+        .where(eq(serialNumbers.grnId, req.params.grnId))
+        .orderBy(serialNumbers.serialNumber);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch GRN serials" });
+    }
+  });
+
+  // GET /api/serial-numbers/by-challan/:challanId — dispatched serials for a challan (used in return dialog)
+  app.get("/api/serial-numbers/by-challan/:challanId", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const rows = await db.execute(sql`
+        SELECT sn.id, sn.serial_number, sn.product_id, sn.status, sn.customer_id,
+               sn.challan_id, sn.dispatched_at, sn.warranty_expires_at,
+               p.name AS product_name, p.sku
+        FROM serial_numbers sn
+        LEFT JOIN products p ON p.id = sn.product_id
+        WHERE sn.challan_id = ${req.params.challanId}
+          AND sn.status IN ('dispatched', 'delivered')
+        ORDER BY p.name, sn.serial_number
+      `);
+      res.json(rows.rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch challan serials" });
+    }
+  });
+
+  // GET /api/serial-numbers/by-customer/:customerId
+  app.get("/api/serial-numbers/by-customer/:customerId", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(serialNumbers)
+        .where(eq(serialNumbers.customerId, req.params.customerId))
+        .orderBy(desc(serialNumbers.dispatchedAt));
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch customer serials" });
+    }
+  });
+
+  // GET /api/serial-numbers/:id — single serial with events
+  app.get("/api/serial-numbers/:id", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const [serial] = await db.select().from(serialNumbers).where(eq(serialNumbers.id, req.params.id));
+      if (!serial) return res.status(404).json({ message: "Serial number not found" });
+      const events = await db.select().from(serialNumberEvents)
+        .where(eq(serialNumberEvents.serialId, req.params.id))
+        .orderBy(serialNumberEvents.createdAt);
+      res.json({ ...serial, events });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch serial number" });
+    }
+  });
+
+  // POST /api/serial-numbers/bulk — create serials from GRN confirmation
+  app.post("/api/serial-numbers/bulk", authenticateToken, requireRole("admin", "accountant", "warehouse_manager"), async (req: any, res) => {
+    try {
+      const { productId, grnId, grnItemId, warehouseId, serials } = req.body;
+      if (!productId || !grnId || !grnItemId || !warehouseId || !Array.isArray(serials) || serials.length === 0)
+        return res.status(400).json({ message: "productId, grnId, grnItemId, warehouseId and serials[] are required" });
+
+      // H-4: Verify grnItemId belongs to the specified grnId.
+      // Prevents serial numbers from being registered against the wrong GRN item,
+      // which would corrupt serial traceability.
+      const itemOwnership = await db.execute(sql`
+        SELECT id FROM goods_receipt_note_items
+        WHERE id = ${grnItemId} AND grn_id = ${grnId}
+        LIMIT 1
+      `);
+      if (!(itemOwnership as any).rows?.length) {
+        return res.status(400).json({ message: "grnItemId does not belong to the specified grnId" });
+      }
+
+      // Accept either string[] (legacy) or { serialNumber, barcodeValue? }[]
+      type SerialEntry = { serialNumber: string; barcodeValue?: string };
+      const entries: SerialEntry[] = serials.map((s: any) =>
+        typeof s === "string"
+          ? { serialNumber: String(s) }
+          : { serialNumber: String(s?.serialNumber ?? ""), barcodeValue: s?.barcodeValue ? String(s.barcodeValue) : undefined }
+      );
+
+      // Normalize serial numbers — normalizeSerial accepts unknown, safe for any input
+      const normalized = entries.map(e => ({ ...e, serialNumber: normalizeSerial(e.serialNumber) }));
+
+      // Check for blanks
+      if (normalized.some(e => !e.serialNumber))
+        return res.status(400).json({ message: "Serial number cannot be empty. All fields must be filled." });
+
+      // Check duplicates within batch
+      const batchSet = new Set<string>();
+      for (const e of normalized) {
+        if (batchSet.has(e.serialNumber))
+          return res.status(409).json({ message: `Serial number '${e.serialNumber}' has been entered twice in this batch. Each unit must have a unique serial number.` });
+        batchSet.add(e.serialNumber);
+      }
+
+      // Check against existing DB records for this product
+      const existing = await db.select({ sn: serialNumbers.serialNumber })
+        .from(serialNumbers)
+        .where(and(eq(serialNumbers.productId, productId), inArray(serialNumbers.serialNumber, normalized.map(e => e.serialNumber))));
+      if (existing.length > 0)
+        return res.status(409).json({ message: `Serial number '${existing[0].sn}' is already registered for this product. Check the number and try again.` });
+
+      const actorId = req.user.id;
+      const now = new Date();
+
+      // Insert all serials + events in a transaction
+      const inserted = await db.transaction(async (tx) => {
+        const rows = await tx.insert(serialNumbers).values(
+          normalized.map(e => ({
+            productId,
+            serialNumber: e.serialNumber,
+            barcodeValue: e.barcodeValue ?? null,
+            status: "in_stock",
+            warehouseId,
+            grnId,
+            grnItemId,
+            createdBy: actorId,
+          }))
+        ).returning();
+
+        // Log creation event for each
+        await tx.insert(serialNumberEvents).values(
+          rows.map(r => ({
+            serialId: r.id,
+            fromStatus: null,
+            toStatus: "in_stock",
+            actorId,
+            notes: `Received via GRN`,
+            referenceType: "grn",
+            referenceId: grnId,
+          }))
+        );
+        return rows;
+      });
+
+      res.status(201).json({ inserted: inserted.length, serials: inserted });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create serial numbers" });
+    }
+  });
+
+  // POST /api/serial-numbers/dispatch — mark serials dispatched via challan
+  // M-7: sales_manager added — they can dispatch challans and must be able to
+  // complete the serial assignment step in the same flow.
+  app.post("/api/serial-numbers/dispatch", authenticateToken, requireRole("admin", "accountant", "warehouse_manager", "sales_manager"), async (req: any, res) => {
+    try {
+      const { serialIds, challanId, salesOrderId, customerId, warehouseId, warrantyMonths, productId } = req.body;
+      if (!Array.isArray(serialIds) || serialIds.length === 0 || !challanId || !customerId)
+        return res.status(400).json({ message: "serialIds[], challanId, and customerId are required" });
+
+      // ── 1. All requested IDs must exist in the DB ─────────────────────────
+      const rows = await db.select().from(serialNumbers).where(inArray(serialNumbers.id, serialIds));
+      if (rows.length !== serialIds.length) {
+        const foundIds = new Set(rows.map(r => r.id));
+        const missing = (serialIds as string[]).filter(id => !foundIds.has(id));
+        return res.status(404).json({ message: `Serial ID(s) not found in database: ${missing.join(", ")}` });
+      }
+
+      // ── 2. Per-serial status + warehouse checks ───────────────────────────
+      for (const r of rows) {
+        if (r.status === "dispatched")
+          return res.status(409).json({ message: `Serial '${r.serialNumber}' is already dispatched.` });
+        if (r.status !== "in_stock")
+          return res.status(409).json({ message: `Serial '${r.serialNumber}' is '${r.status}' — only in_stock serials can be dispatched.` });
+        if (warehouseId && r.warehouseId !== warehouseId)
+          return res.status(409).json({ message: `Serial '${r.serialNumber}' belongs to a different warehouse. Dispatch must use the challan's source warehouse only.` });
+      }
+
+      // ── 3. Quantity integrity — validate against challan line item ────────
+      if (productId) {
+        const lineResult = await db.execute(
+          sql`SELECT quantity, qty_to_dispatch FROM delivery_challan_items
+              WHERE challan_id = ${challanId} AND product_id = ${productId}
+              LIMIT 1`
+        );
+        const line = (lineResult as any).rows?.[0] ?? (lineResult as any)[0];
+        if (line) {
+          const requiredQty = Number(line.qty_to_dispatch ?? line.quantity);
+          if (serialIds.length !== requiredQty) {
+            return res.status(400).json({
+              message: `Quantity mismatch: challan line requires ${requiredQty} unit(s) but ${serialIds.length} serial(s) submitted.`,
+            });
+          }
+        }
+      }
+
+      const actorId = req.user.id;
+      const now = new Date();
+      const warrantyExpiry = warrantyMonths
+        ? new Date(now.getFullYear(), now.getMonth() + Number(warrantyMonths), now.getDate()).toISOString().slice(0, 10)
+        : null;
+
+      await db.transaction(async (tx) => {
+        for (const r of rows) {
+          await tx.update(serialNumbers)
+            .set({
+              status: "dispatched",
+              challanId,
+              salesOrderId: salesOrderId ?? null,
+              customerId,
+              dispatchedAt: now,
+              warrantyMonths: warrantyMonths ? Number(warrantyMonths) : null,
+              warrantyExpiresAt: warrantyExpiry,
+              warehouseId: null,  // no longer in any warehouse
+              updatedAt: now,
+            })
+            .where(eq(serialNumbers.id, r.id));
+
+          await tx.insert(serialNumberEvents).values({
+            serialId: r.id,
+            fromStatus: "in_stock",
+            toStatus: "dispatched",
+            actorId,
+            notes: `Dispatched via challan`,
+            referenceType: "challan",
+            referenceId: challanId,
+          });
+        }
+      });
+
+      res.json({ dispatched: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to dispatch serial numbers" });
+    }
+  });
+
+  // PATCH /api/serial-numbers/:id — manual status update (admin only, transition-guarded)
+  app.patch("/api/serial-numbers/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const { status, notes } = req.body;
+      const [serial] = await db.select().from(serialNumbers).where(eq(serialNumbers.id, req.params.id));
+      if (!serial) return res.status(404).json({ message: "Serial number not found" });
+
+      const allowed = SERIAL_TRANSITIONS[serial.status] ?? [];
+      if (!allowed.includes(status))
+        return res.status(409).json({
+          message: `Invalid transition: ${serial.status} → ${status}. Allowed from '${serial.status}': ${allowed.length ? allowed.join(", ") : "none (terminal state)"}.`,
+        });
+
+      const now = new Date();
+      const updateData: any = { status, updatedAt: now, notes: notes ?? serial.notes };
+
+      // Set returnedAt when transitioning to returned
+      if (status === "returned") {
+        updateData.returnedAt = now;
+        updateData.returnReason = notes ?? null;
+        // Preserve challanId/customerId/dispatchedAt for audit — do NOT wipe
+      }
+      // Move back to in_stock after return — restore warehouse is handled manually via notes
+      if (status === "in_stock" && serial.status === "returned") {
+        updateData.challanId = serial.challanId;       // keep for audit
+        updateData.customerId = serial.customerId;     // keep for audit
+      }
+
+      await db.transaction(async (tx) => {
+        await tx.update(serialNumbers).set(updateData).where(eq(serialNumbers.id, serial.id));
+        await tx.insert(serialNumberEvents).values({
+          serialId: serial.id,
+          fromStatus: serial.status,
+          toStatus: status,
+          actorId: req.user.id,
+          notes: notes ?? "Manual status override by admin",
+          referenceType: "manual",
+          referenceId: null,
+        });
+      });
+
+      const [updated] = await db.select().from(serialNumbers).where(eq(serialNumbers.id, serial.id));
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update serial number" });
+    }
+  });
+
+  // ── Phase 4D-A: Fixed Assets ──────────────────────────────────────────────────
+
+  app.get("/api/fixed-assets", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(fixedAssets).orderBy(fixedAssets.createdAt);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch fixed assets" });
+    }
+  });
+
+  app.post("/api/fixed-assets", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const parsed = insertFixedAssetSchema.safeParse({ ...req.body, createdBy: req.user.id });
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.issues[0]?.message || "Invalid data" });
+      const [row] = await db.insert(fixedAssets).values(parsed.data).returning();
+      res.status(201).json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create fixed asset" });
+    }
+  });
+
+  app.patch("/api/fixed-assets/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body, updatedBy: req.user.id, updatedAt: new Date() };
+      const [row] = await db.update(fixedAssets).set(updates).where(eq(fixedAssets.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Fixed asset not found" });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update fixed asset" });
+    }
+  });
+
+  app.delete("/api/fixed-assets/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [row] = await db.update(fixedAssets).set({ isActive: false, updatedBy: req.user.id, updatedAt: new Date() }).where(eq(fixedAssets.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Fixed asset not found" });
+      res.json({ message: "Asset deactivated", id });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to deactivate fixed asset" });
+    }
+  });
+
+  // ── Phase 4D-A: Loans ─────────────────────────────────────────────────────────
+
+  app.get("/api/loans", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(loans).orderBy(loans.createdAt);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch loans" });
+    }
+  });
+
+  app.post("/api/loans", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const parsed = insertLoanSchema.safeParse({ ...req.body, createdBy: req.user.id });
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.issues[0]?.message || "Invalid data" });
+      const [row] = await db.insert(loans).values(parsed.data).returning();
+      res.status(201).json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create loan" });
+    }
+  });
+
+  app.patch("/api/loans/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body, updatedBy: req.user.id, updatedAt: new Date() };
+      const [row] = await db.update(loans).set(updates).where(eq(loans.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Loan not found" });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update loan" });
+    }
+  });
+
+  app.delete("/api/loans/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [row] = await db.update(loans).set({ status: "closed", updatedBy: req.user.id, updatedAt: new Date() }).where(eq(loans.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Loan not found" });
+      res.json({ message: "Loan closed", id });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to close loan" });
+    }
+  });
+
+  // ── Phase 4D-A: Equity Accounts ───────────────────────────────────────────────
+
+  app.get("/api/equity-accounts", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(equityAccounts).orderBy(equityAccounts.createdAt);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch equity accounts" });
+    }
+  });
+
+  app.post("/api/equity-accounts", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const parsed = insertEquityAccountSchema.safeParse({ ...req.body, createdBy: req.user.id });
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.issues[0]?.message || "Invalid data" });
+      const [row] = await db.insert(equityAccounts).values(parsed.data).returning();
+      res.status(201).json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to create equity account" });
+    }
+  });
+
+  app.patch("/api/equity-accounts/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body, updatedBy: req.user.id, updatedAt: new Date() };
+      const [row] = await db.update(equityAccounts).set(updates).where(eq(equityAccounts.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Equity account not found" });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to update equity account" });
+    }
+  });
+
+  app.delete("/api/equity-accounts/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [row] = await db.update(equityAccounts).set({ isActive: false, updatedBy: req.user.id, updatedAt: new Date() }).where(eq(equityAccounts.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Equity account not found" });
+      res.json({ message: "Equity account deactivated", id });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to deactivate equity account" });
+    }
+  });
+
+  // ── Phase 4D-A: Opening Balances ──────────────────────────────────────────────
+
+  app.get("/api/opening-balances", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const rows = await db.select().from(openingBalances).orderBy(openingBalances.createdAt);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to fetch opening balances" });
+    }
+  });
+
+  app.post("/api/opening-balances", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const parsed = insertOpeningBalanceSchema.safeParse({ ...req.body, createdBy: req.user.id });
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.issues[0]?.message || "Invalid data" });
+      const [row] = await db.insert(openingBalances).values(parsed.data).returning();
+      res.status(201).json(row);
+    } catch (err: any) {
+      if ((err as any)?.code === "23505") return res.status(409).json({ message: "An opening balance with this type and label already exists." });
+      res.status(500).json({ message: err?.message || "Failed to create opening balance" });
+    }
+  });
+
+  app.patch("/api/opening-balances/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body, updatedAt: new Date() };
+      const [row] = await db.update(openingBalances).set(updates).where(eq(openingBalances.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Opening balance not found" });
+      res.json(row);
+    } catch (err: any) {
+      if ((err as any)?.code === "23505") return res.status(409).json({ message: "An opening balance with this type and label already exists." });
+      res.status(500).json({ message: err?.message || "Failed to update opening balance" });
+    }
+  });
+
+  app.delete("/api/opening-balances/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [row] = await db.delete(openingBalances).where(eq(openingBalances.id, id)).returning();
+      if (!row) return res.status(404).json({ message: "Opening balance not found" });
+      res.json({ message: "Opening balance deleted", id });
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to delete opening balance" });
+    }
+  });
+
+  // ─── Monthly Targets — Countdown Display ─────────────────────────────────
+  // Public endpoint — no auth required. Returns current month's targets and
+  // achieved values. Designed for the /countdown TV display page.
+  app.get("/api/public/countdown", async (_req, res) => {
+    try {
+      const month = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).slice(0, 7); // YYYY-MM
+      let target = await storage.getMonthlyTarget(month);
+      // Auto-create row with defaults if this month has no entry yet
+      if (!target) {
+        target = await storage.upsertMonthlyTarget(month, {});
+      }
+      // Month boundary info (IST)
+      const nowIST = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+      const year  = nowIST.getFullYear();
+      const mon   = nowIST.getMonth(); // 0-indexed
+      const monthEndIST = new Date(year, mon + 1, 1, 0, 0, 0, 0); // 1st of next month midnight IST
+      const monthEndUTC = new Date(monthEndIST.getTime() - (5.5 * 60 * 60 * 1000));
+      res.json({
+        month,
+        monthName: nowIST.toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "Asia/Kolkata" }),
+        monthEndISO: monthEndUTC.toISOString(),
+        serverTimeISO: new Date().toISOString(),
+        salesTarget:            target.salesTarget,
+        salesAchieved:          target.salesAchieved,
+        solarCustomersTarget:   target.solarCustomersTarget,
+        solarCustomersAchieved: target.solarCustomersAchieved,
+        updatedAt:              target.updatedAt,
+      });
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to load countdown data" });
+    }
+  });
+
+  // Admin-only: create or update this month's targets / achieved values
+  app.patch("/api/monthly-targets/current", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
+    try {
+      const month = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).slice(0, 7);
+      const { salesTarget, salesAchieved, solarCustomersTarget, solarCustomersAchieved } = req.body;
+      const row = await storage.upsertMonthlyTarget(month, {
+        salesTarget:            salesTarget            !== undefined ? String(salesTarget)            : undefined,
+        salesAchieved:          salesAchieved          !== undefined ? String(salesAchieved)          : undefined,
+        solarCustomersTarget:   solarCustomersTarget   !== undefined ? Number(solarCustomersTarget)   : undefined,
+        solarCustomersAchieved: solarCustomersAchieved !== undefined ? Number(solarCustomersAchieved) : undefined,
+      });
+      res.json(row);
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to update monthly targets" });
+    }
+  });
+
+  // GET current targets for the ERP settings form
+  app.get("/api/monthly-targets/current", authenticateToken, async (_req, res) => {
+    try {
+      const month = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }).slice(0, 7);
+      let target = await storage.getMonthlyTarget(month);
+      if (!target) target = await storage.upsertMonthlyTarget(month, {});
+      res.json(target);
+    } catch (err: any) {
+      res.status(500).json({ message: "Failed to load monthly targets" });
     }
   });
 

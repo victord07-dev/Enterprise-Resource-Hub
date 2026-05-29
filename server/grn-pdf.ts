@@ -226,7 +226,7 @@ export function generateGrnPdf(data: GrnPdfData): Buffer {
   doc.setTextColor(...COLORS.textSecondary);
   doc.text("Authorized Signatory", ML, y + 5);
   doc.setFont("helvetica", "italic");
-  doc.text("For IT Futuristic Industries Pvt. Ltd.", ML, y + 10);
+  doc.text("For M/s Hussain Enterprise", ML, y + 10);
 
   // ── Watermark ──────────────────────────────────────────────────────────────
   if (data.status === "draft") {

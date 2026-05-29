@@ -56,18 +56,18 @@ export async function downloadPayslipPDF(data: PayslipData) {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(255, 255, 255);
-  doc.text(data.company || "ITFI Group", margin + 10, 11);
+  doc.text(data.company || "Hussain Enterprise", margin + 10, 11);
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6);
   doc.setTextColor(148, 163, 184);
-  doc.text("A subsidiary of ITFI Group", margin + 10, 15);
+  doc.text("Hussain Enterprise", margin + 10, 15);
 
   // Contact info right
   doc.setFontSize(6);
   doc.setTextColor(148, 163, 184);
-  doc.text("admin@itfi.co.in", W - margin, 11, { align: "right" });
-  doc.text("www.itfi.co.in", W - margin, 15, { align: "right" });
+  doc.text("info@hussainenterprise.cloud", W - margin, 11, { align: "right" });
+  doc.text("erp.hussainenterprise.cloud", W - margin, 15, { align: "right" });
 
   // Divider
   doc.setDrawColor(71, 85, 105);

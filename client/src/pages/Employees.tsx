@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,10 @@ export default function Employees() {
 
   const { data: payrollStatusData, isLoading: psLoading } = useQuery<PayrollStatus | null>({
     queryKey: ["/api/payroll-status", payrollMonth, payrollYear],
+  });
+
+  const { data: allPayrollStatuses = [] } = useQuery<PayrollStatus[]>({
+    queryKey: ["/api/payroll-status"],
   });
 
   const { data: advances = [] } = useQuery<EmployeeAdvance[]>({
@@ -325,7 +329,7 @@ export default function Employees() {
   const generateQr = async (empId: string) => {
     setQrLoading(true);
     try {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const res = await fetch(`/api/employees/${empId}/generate-qr`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -356,7 +360,7 @@ export default function Employees() {
 
   const generateAllQr = async () => {
     try {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const res = await fetch("/api/employees/generate-all-qr", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -404,6 +408,29 @@ export default function Employees() {
     return workingDays;
   };
 
+  const PAID_LEAVE_TYPES_SET = new Set(["annual", "sick", "casual"]);
+
+  // H-1: Count approved paid leave days overlapping a given month
+  const getPaidLeaveDaysInMonth = (empId: string, month: number, year: number): number => {
+    const monthStart = new Date(year, month, 1);
+    const monthEnd = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    return allLeaveRequests
+      .filter(lr =>
+        lr.employeeId === empId &&
+        lr.status === "approved" &&
+        PAID_LEAVE_TYPES_SET.has(lr.type)
+      )
+      .reduce((sum, lr) => {
+        const leaveStart = new Date(lr.startDate);
+        const leaveEnd = new Date(lr.endDate);
+        const overlapStart = leaveStart < monthStart ? monthStart : leaveStart;
+        const overlapEnd = leaveEnd > monthEnd ? monthEnd : leaveEnd;
+        if (overlapEnd < overlapStart) return sum;
+        const days = Math.round((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        return sum + days;
+      }, 0);
+  };
+
   const getPayrollData = (emp: Employee) => {
     const monthlySalary = emp.salary ? Number(emp.salary) : 0;
     const dailyRate = Math.round(monthlySalary / 26);
@@ -413,9 +440,12 @@ export default function Employees() {
     }) || [];
     const fullDays = empAttendance.filter(a => a.status === "present").length;
     const halfDays = empAttendance.filter(a => a.status === "half_day").length;
+    // H-1: Add approved paid leave days (annual/sick/casual) as paid present days
+    const paidLeaveDays = getPaidLeaveDaysInMonth(emp.id, payrollMonth, payrollYear);
+    const effectiveFullDays = fullDays + paidLeaveDays;
     const workingDays = getWorkingDaysInMonth(payrollMonth, payrollYear);
-    const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
-    const earnedSalary = (fullDays * dailyRate) + (halfDays * Math.round(dailyRate / 2));
+    const daysAbsent = Math.max(0, workingDays - effectiveFullDays - halfDays);
+    const earnedSalary = (effectiveFullDays * dailyRate) + (halfDays * Math.round(dailyRate / 2));
     const deductions = monthlySalary - earnedSalary;
 
     // Incentive: sum of all unapplied incentives for this employee (event-based, not static)
@@ -432,7 +462,7 @@ export default function Employees() {
     const advanceDates = empPendingAdvances.map(a => new Date(a.dateGiven).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
 
     const netPay = Math.max(0, grossBeforeAdv - advanceDeduct);
-    return { monthlySalary, dailyRate, fullDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, incentiveAmt, incentiveDates, advanceDeduct, unrecoveredAdvance, advanceDates, netPay };
+    return { monthlySalary, dailyRate, fullDays: effectiveFullDays, rawPresentDays: fullDays, paidLeaveDays, halfDays, daysAbsent, workingDays, earnedSalary, deductions, incentiveAmt, incentiveDates, advanceDeduct, unrecoveredAdvance, advanceDates, netPay };
   };
 
   const prevMonth = () => {
@@ -464,23 +494,30 @@ export default function Employees() {
         }) || [];
         const fullDays = empAtt.filter(a => a.status === "present").length;
         const halfDays = empAtt.filter(a => a.status === "half_day").length;
+        // H-1: Add approved paid leave days as paid present days in CSV export
+        const paidLeaveDaysCSV = getPaidLeaveDaysInMonth(emp.id, m, y);
+        const effectiveFullDays = fullDays + paidLeaveDaysCSV;
         const workingDays = getWorkingDaysInMonth(m, y);
-        const daysAbsent = Math.max(0, workingDays - fullDays - halfDays);
-        const earnedSalary = fullDays * dailyRate + halfDays * Math.round(dailyRate / 2);
+        const daysAbsent = Math.max(0, workingDays - effectiveFullDays - halfDays);
+        const earnedSalary = effectiveFullDays * dailyRate + halfDays * Math.round(dailyRate / 2);
         const attDeduction = monthlySalary - earnedSalary;
-        const empIncentivesThisMonth = incentives.filter(i => {
-          const d = new Date(i.dateGiven);
-          return i.employeeId === emp.id && d.getMonth() === m && d.getFullYear() === y;
-        });
+        // H-3: Use historical payroll snapshot — find the payroll status record for this month
+        const monthPayrollStatus = allPayrollStatuses.find(ps => ps.month === m && ps.year === y);
+        // Incentives applied in this month's payroll run
+        const empIncentivesThisMonth = monthPayrollStatus
+          ? incentives.filter(i => i.employeeId === emp.id && i.isApplied && i.appliedInPayrollId === monthPayrollStatus.id)
+          : [];
         const incentiveAmt = empIncentivesThisMonth.reduce((s, i) => s + Number(i.amount), 0);
-        const empPending = advances.filter(a => a.employeeId === emp.id && !a.isDeducted);
-        const totalAdv = empPending.reduce((s, a) => s + Number(a.amount), 0);
-        const advDeduct = Math.min(totalAdv, earnedSalary + incentiveAmt);
+        // Advances deducted in this month's payroll run
+        const empAdvancesThisMonth = monthPayrollStatus
+          ? advances.filter(a => a.employeeId === emp.id && a.isDeducted && a.deductedInPayrollId === monthPayrollStatus.id)
+          : [];
+        const advDeduct = empAdvancesThisMonth.reduce((s, a) => s + Number(a.amount), 0);
         const netPay = Math.max(0, earnedSalary + incentiveAmt - advDeduct);
         rows.push([
           emp.name, emp.department, emp.company || "", monthNames[m], String(y),
           String(monthlySalary), String(dailyRate),
-          String(fullDays), String(halfDays), String(daysAbsent),
+          String(effectiveFullDays), String(halfDays), String(daysAbsent),
           String(earnedSalary),
           String(incentiveAmt),
           String(advDeduct),
@@ -1630,7 +1667,7 @@ export default function Employees() {
                   <SelectValue placeholder="Select company" />
                 </SelectTrigger>
                 <SelectContent>
-                  {["IT Futuristic Industries PVT LTD", "Hussain Enterprise", "IT Traders", "IT Construction", "IT Saif Pharma"].map((c) => (
+                  {["Hussain Enterprise", "IT Futuristic Industries PVT LTD", "IT Traders", "IT Construction", "IT Saif Pharma"].map((c) => (
                     <SelectItem key={c} value={c}>{c}</SelectItem>
                   ))}
                 </SelectContent>
@@ -1906,21 +1943,21 @@ export default function Employees() {
           </DialogHeader>
           {payslipEmployee && (() => {
             const p = getPayrollData(payslipEmployee);
-            const companyName = payslipEmployee.company || "ITFI Group";
+            const companyName = payslipEmployee.company || "Hussain Enterprise";
             return (
               <div data-testid="payslip-content" className="flex flex-col overflow-hidden">
                 <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white px-6 py-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-center gap-3">
-                      <img src="/favicon.png" alt="ITFI Group" className="w-10 h-10 rounded-md object-contain bg-white/10 p-0.5" />
+                      <img src="/favicon.png" alt="Hussain Enterprise" className="w-10 h-10 rounded-md object-contain bg-white/10 p-0.5" />
                       <div>
                         <h2 className="text-lg font-bold tracking-wide">{companyName}</h2>
-                        <p className="text-slate-300 text-xs mt-0.5">A subsidiary of ITFI Group</p>
+                        <p className="text-slate-300 text-xs mt-0.5">Hussain Enterprise</p>
                       </div>
                     </div>
                     <div className="text-right text-xs text-slate-300 space-y-0.5">
-                      <div className="flex items-center justify-end gap-1.5"><Mail className="w-3 h-3" /> admin@itfi.co.in</div>
-                      <div className="flex items-center justify-end gap-1.5"><Globe className="w-3 h-3" /> www.itfi.co.in</div>
+                      <div className="flex items-center justify-end gap-1.5"><Mail className="w-3 h-3" /> info@hussainenterprise.cloud</div>
+                      <div className="flex items-center justify-end gap-1.5"><Globe className="w-3 h-3" /> erp.hussainenterprise.cloud</div>
                     </div>
                   </div>
                   <div className="mt-4 pt-3 border-t border-slate-600 text-center">

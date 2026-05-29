@@ -10,11 +10,11 @@ export interface AuthUser {
 }
 
 export function getToken(): string | null {
-  return localStorage.getItem("token");
+  return sessionStorage.getItem("token");
 }
 
 export function getUser(): Omit<AuthUser, "employeeId"> | null {
-  const raw = localStorage.getItem("user");
+  const raw = sessionStorage.getItem("user");
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -28,8 +28,8 @@ export function isAuthenticated(): boolean {
 }
 
 export function logout() {
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
+  sessionStorage.removeItem("token");
+  sessionStorage.removeItem("user");
   window.location.href = "/login";
 }
 

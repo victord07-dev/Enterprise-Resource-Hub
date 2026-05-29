@@ -9,18 +9,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, AlertTriangle, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal, Info as InfoIcon } from "lucide-react";
+import { Plus, FileText, CreditCard, IndianRupee, TrendingUp, Trash2, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, RotateCcw, Upload, Landmark, Building2, Banknote, Pencil, Power, ArrowLeftRight, SlidersHorizontal, Info as InfoIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount, Product } from "@shared/schema";
+import type { SalesInvoice, CustomerPayment, Customer, Supplier, PurchaseOrder, GoodsReceiptNote, SupplierInvoice, SupplierPayment, CashAccount, Product, SalesOrder } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { useLocation } from "wouter";
 import ExpensesTab from "@/components/ExpensesTab";
 import { getUser } from "@/lib/auth";
 
 async function uploadSupplierInvoiceSignedCopy(file: File, invoiceId: string): Promise<string> {
-  const token = localStorage.getItem("token");
+  const token = sessionStorage.getItem("token"); // fix: token is in sessionStorage
   const formData = new FormData();
   formData.append("file", file);
   const res = await fetch(`/api/supplier-invoices/${invoiceId}/upload-signed-copy`, {
@@ -62,6 +62,14 @@ export default function Accounts() {
   const role = getUser()?.role || "admin";
   const expensesOnly = role !== "admin" && role !== "accountant";
 
+  const [expandedAdvanceSOs, setExpandedAdvanceSOs] = useState<Set<string>>(new Set());
+  const toggleAdvanceSO = (key: string) =>
+    setExpandedAdvanceSOs(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
   const [activeAccountsTab, setActiveAccountsTab] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
     const initial = params.get("tab") || (expensesOnly ? "expenses" : "invoices");
@@ -76,11 +84,33 @@ export default function Accounts() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Deep-link: ?highlight=INV_ID — highlight a supplier invoice row (from Supplier Aging expand)
+  const [highlightedInvId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("highlight") || null;
+  });
+  useEffect(() => {
+    if (!highlightedInvId) return;
+    const timer = setTimeout(() => {
+      const el = document.querySelector(`[data-si-id="${highlightedInvId}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [highlightedInvId]);
+
   // ── AR Queries ────────────────────────────────────────────────────────────
   const { data: salesInvoices, isLoading: invoicesLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customerPayments, isLoading: paymentsLoading } = useQuery<CustomerPayment[]>({ queryKey: ["/api/customer-payments"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  const { data: salesOrders = [] } = useQuery<SalesOrder[]>({ queryKey: ["/api/sales-orders"] });
   const { data: creditNotes = [] } = useQuery<any[]>({ queryKey: ["/api/credit-notes"] });
+
+  // ── Phase 4D-A Queries ────────────────────────────────────────────────────
+  const isFinanceRole = role === "admin" || role === "accountant";
+  const { data: fixedAssetsData = [], isLoading: faLoading } = useQuery<any[]>({ queryKey: ["/api/fixed-assets"], enabled: isFinanceRole });
+  const { data: loansData = [], isLoading: loansLoading } = useQuery<any[]>({ queryKey: ["/api/loans"], enabled: isFinanceRole });
+  const { data: equityData = [], isLoading: eqLoading } = useQuery<any[]>({ queryKey: ["/api/equity-accounts"], enabled: isFinanceRole });
+  const { data: openingBalancesData = [], isLoading: obLoading } = useQuery<any[]>({ queryKey: ["/api/opening-balances"], enabled: isFinanceRole });
 
   // ── AP Queries ────────────────────────────────────────────────────────────
   const { data: supplierInvoices, isLoading: siLoading } = useQuery<SupplierInvoice[]>({ queryKey: ["/api/supplier-invoices"] });
@@ -95,14 +125,57 @@ export default function Accounts() {
 
   // ── AR Summary (from sales_invoices + customer_payments) ─────────────────
   const customerMap = useMemo(() => new Map((customers ?? []).map(c => [c.id, c])), [customers]);
+  const soOrderMap = useMemo(() => new Map(salesOrders.map(o => [o.id, o])), [salesOrders]);
 
   const paidPerSalesInvoice = useMemo(() => {
     const map: Record<string, number> = {};
     (customerPayments ?? []).forEach(p => {
-      map[p.invoiceId] = (map[p.invoiceId] || 0) + Number(p.amount);
+      if (p.invoiceId) map[p.invoiceId] = (map[p.invoiceId] || 0) + Number(p.amount);
     });
     return map;
   }, [customerPayments]);
+
+  // Advance payments — linked to an SO but not yet to any invoice (unearned revenue / liability)
+  const soAdvancePayments = useMemo(() =>
+    (customerPayments ?? []).filter(p => !p.invoiceId),
+  [customerPayments]);
+
+  const totalAdvances = useMemo(() =>
+    soAdvancePayments.reduce((s, p) => s + Number(p.amount), 0),
+  [soAdvancePayments]);
+
+  // Group advances by Sales Order for the accordion UI
+  type AdvanceGroup = {
+    soId: string | null;
+    soNumber: string;
+    customerId: string;
+    payments: typeof soAdvancePayments;
+    total: number;
+    latestDate: Date;
+  };
+  const advanceGroups = useMemo<AdvanceGroup[]>(() => {
+    const map = new Map<string, AdvanceGroup>();
+    soAdvancePayments.forEach(p => {
+      const key = p.salesOrderId ?? "__no_so__";
+      const so = p.salesOrderId ? soOrderMap.get(p.salesOrderId) : undefined;
+      if (!map.has(key)) {
+        map.set(key, {
+          soId: p.salesOrderId ?? null,
+          soNumber: so?.orderNumber ?? p.salesOrderId ?? "Unknown SO",
+          customerId: p.customerId,
+          payments: [],
+          total: 0,
+          latestDate: new Date(p.paymentDate),
+        });
+      }
+      const g = map.get(key)!;
+      g.payments.push(p);
+      g.total += Number(p.amount);
+      const d = new Date(p.paymentDate);
+      if (d > g.latestDate) g.latestDate = d;
+    });
+    return Array.from(map.values()).sort((a, b) => b.latestDate.getTime() - a.latestDate.getTime());
+  }, [soAdvancePayments, soOrderMap]);
 
   const arSummary = useMemo(() => {
     let totalReceivable = 0, totalCollected = 0, totalOutstanding = 0, totalCredited = 0;
@@ -149,6 +222,119 @@ export default function Accounts() {
     return { totalPayable, totalPaid, totalOverdue };
   }, [supplierInvoices, supplierPayments, paidPerInvoice, poMap]);
 
+  // SP tab: group payments by invoice (or PO for unlinked advances)
+  const invoicePaymentGroups = useMemo(() => {
+    type SpGroup = {
+      type: "invoice" | "po_advance";
+      key: string;
+      label: string;
+      supplierId: string;
+      supplierName: string;
+      invoiceDate?: string;
+      dueDate?: string | null;
+      total: number;
+      paid: number;
+      outstanding: number;
+      status?: string;
+      invoice?: SupplierInvoice;
+      payments: SupplierPayment[];
+      hasPreInvoicePayment: boolean;
+    };
+
+    const groups: SpGroup[] = [];
+    const assignedPaymentIds = new Set<string>();
+
+    // Group 1: all supplier invoices (with or without payments)
+    (supplierInvoices ?? []).forEach(inv => {
+      const invPayments = (supplierPayments ?? []).filter(p => p.supplierInvoiceId === inv.id);
+      // Also pick up any advance payments still on the PO (B3 not yet run)
+      const poAdvances = inv.purchaseOrderId
+        ? (supplierPayments ?? []).filter(p => p.purchaseOrderId === inv.purchaseOrderId && !p.supplierInvoiceId)
+        : [];
+      const all = [...invPayments, ...poAdvances];
+      all.forEach(p => assignedPaymentIds.add(p.id));
+
+      const paid = all.reduce((s, p) => s + Number(p.amount), 0);
+      const total = Number(inv.totalAmount ?? 0);
+      const outstanding = Math.max(0, total - paid);
+
+      // Detect advance: payment predates the invoice creation date
+      const invCreatedAt = (inv as any).createdAt ? new Date((inv as any).createdAt) : null;
+      const hasPreInvoicePayment = all.some(p => {
+        if (p.paymentType === "advance") return true;
+        if (invCreatedAt && new Date(p.paymentDate) < invCreatedAt) return true;
+        return false;
+      });
+
+      groups.push({
+        type: "invoice",
+        key: inv.id,
+        label: inv.invoiceNumber ?? `SI (PO: ${poMap.get(inv.purchaseOrderId ?? "")?.poNumber ?? "—"})`,
+        supplierId: inv.supplierId,
+        supplierName: supplierMap.get(inv.supplierId)?.name ?? "—",
+        invoiceDate: inv.invoiceDate ? String(inv.invoiceDate) : undefined,
+        dueDate: inv.dueDate ? String(inv.dueDate) : null,
+        total,
+        paid,
+        outstanding,
+        status: inv.status,
+        invoice: inv,
+        payments: [...all].sort((a, b) => new Date(a.paymentDate).getTime() - new Date(b.paymentDate).getTime()),
+        hasPreInvoicePayment,
+      });
+    });
+
+    // Group 2: advance payments not yet linked to any invoice, grouped by PO
+    const unassigned = (supplierPayments ?? []).filter(p => !assignedPaymentIds.has(p.id));
+    const byPo = new Map<string, SupplierPayment[]>();
+    const noPo: SupplierPayment[] = [];
+    unassigned.forEach(p => {
+      if (p.purchaseOrderId) {
+        if (!byPo.has(p.purchaseOrderId)) byPo.set(p.purchaseOrderId, []);
+        byPo.get(p.purchaseOrderId)!.push(p);
+      } else {
+        noPo.push(p);
+      }
+    });
+    byPo.forEach((pays, poId) => {
+      const po = poMap.get(poId);
+      const paid = pays.reduce((s, p) => s + Number(p.amount), 0);
+      groups.push({
+        type: "po_advance",
+        key: `po:${poId}`,
+        label: po?.poNumber ?? `PO #${poId.slice(0, 8)}`,
+        supplierId: pays[0].supplierId,
+        supplierName: supplierMap.get(pays[0].supplierId)?.name ?? "—",
+        total: 0, paid, outstanding: 0,
+        payments: [...pays].sort((a, b) => new Date(a.paymentDate).getTime() - new Date(b.paymentDate).getTime()),
+        hasPreInvoicePayment: true,
+      });
+    });
+    if (noPo.length > 0) {
+      groups.push({
+        type: "po_advance",
+        key: "misc",
+        label: "Unlinked Payments",
+        supplierId: noPo[0].supplierId,
+        supplierName: "—",
+        total: 0,
+        paid: noPo.reduce((s, p) => s + Number(p.amount), 0),
+        outstanding: 0,
+        payments: noPo,
+        hasPreInvoicePayment: false,
+      });
+    }
+
+    // Sort by invoice date descending (most recent first)
+    groups.sort((a, b) => {
+      const aD = a.invoiceDate ?? a.payments[0]?.paymentDate ?? "";
+      const bD = b.invoiceDate ?? b.payments[0]?.paymentDate ?? "";
+      return new Date(bD).getTime() - new Date(aD).getTime();
+    });
+
+    return groups;
+  }, [supplierInvoices, supplierPayments, supplierMap, poMap]);
+
   // ── AR State ──────────────────────────────────────────────────────────────
   const [arPayDialogOpen, setArPayDialogOpen] = useState(false);
   const [arPayForm, setArPayForm] = useState({ invoiceId: "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0], cashAccountId: "" });
@@ -164,7 +350,7 @@ export default function Accounts() {
       const grnId = (inv as any)?.grnId || grns?.find(g => g.purchaseOrderId === inv?.purchaseOrderId)?.id;
       if (grnId && !grnItemsMap[grnId]) {
         try {
-          const res = await fetch(`/api/grns/${grnId}/items`, { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+          const res = await fetch(`/api/grns/${grnId}/items`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
           const items = await res.json();
           setGrnItemsMap(prev => ({ ...prev, [grnId]: Array.isArray(items) ? items : [] }));
         } catch {
@@ -185,12 +371,9 @@ export default function Accounts() {
   const [siRecordedDialog, setSiRecordedDialog] = useState<{ id: string; systemTotal: number } | null>(null);
   const [siRecordedNumber, setSiRecordedNumber] = useState("");
   const [siRecordedDate, setSiRecordedDate] = useState(new Date().toISOString().split("T")[0]);
-  const [siRecordedTotal, setSiRecordedTotal] = useState("");
-  const [siRecordedGst, setSiRecordedGst] = useState("");
   const [siRecordedFile, setSiRecordedFile] = useState<File | null>(null);
   const [siRecordedFileUrl, setSiRecordedFileUrl] = useState<string | null>(null);
   const [siRecordedUploading, setSiRecordedUploading] = useState(false);
-  const [siVarianceModal, setSiVarianceModal] = useState<{ extTotal: number; sysTotal: number; diff: number; invoiceId: string; invoiceNumber: string; extInvoiceNumber: string; extInvoiceDate: string; extGst: string } | null>(null);
   // F4: Cancel dialog
   const [siCancelId, setSiCancelId] = useState<string | null>(null);
 
@@ -200,6 +383,10 @@ export default function Accounts() {
     purchaseOrderId: "", amount: "", paymentMethod: "bank_transfer",
     paymentDate: new Date().toISOString().split("T")[0], reference: "", cashAccountId: "",
   });
+  // SP tab redesign state
+  const [expandedSpGroups, setExpandedSpGroups] = useState<Set<string>>(new Set());
+  const [spSupplierFilter, setSpSupplierFilter] = useState<string>("all");
+  const [spStatusFilter, setSpStatusFilter] = useState<string>("all");
 
   // ── Cash Accounts CRUD state (Phase 4B) ─────────────────────────────────
   const [caDialogOpen, setCaDialogOpen] = useState(false);
@@ -344,52 +531,33 @@ export default function Accounts() {
 
   // F3: Mark as Recorded
   const siMarkRecordedMutation = useMutation({
-    mutationFn: async ({ id, extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount }: {
-      id: string; extInvoiceNumber: string; extInvoiceDate: string; extTotalAmount: string; extGstAmount?: string;
+    mutationFn: async ({ id, extInvoiceNumber, extInvoiceDate }: {
+      id: string; extInvoiceNumber: string; extInvoiceDate: string;
     }) => {
       const res = await apiRequest("POST", `/api/supplier-invoices/${id}/mark-recorded`, {
-        extInvoiceNumber, extInvoiceDate, extTotalAmount, extGstAmount: extGstAmount || undefined,
+        extInvoiceNumber, extInvoiceDate,
       });
       if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to mark as recorded"); }
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] });
-      toast({ title: "Supplier invoice recorded", description: "Ext. invoice details saved." });
+      toast({ title: "Supplier invoice recorded" });
       setSiRecordedDialog(null);
-      setSiVarianceModal(null);
       setSiRecordedNumber("");
       setSiRecordedDate(new Date().toISOString().split("T")[0]);
-      setSiRecordedTotal("");
-      setSiRecordedGst("");
       setSiRecordedFile(null);
       setSiRecordedFileUrl(null);
     },
     onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
 
-  function handleMarkRecordedSubmit(forceSubmit = false) {
+  function handleMarkRecordedSubmit() {
     if (!siRecordedDialog) return;
-    const extTotal = parseFloat(siRecordedTotal);
-    const sysTotal = siRecordedDialog.systemTotal;
-    const diff = Math.abs(extTotal - sysTotal);
-    if (!forceSubmit && diff > 5) {
-      setSiVarianceModal({
-        extTotal, sysTotal, diff,
-        invoiceId: siRecordedDialog.id,
-        invoiceNumber: "",
-        extInvoiceNumber: siRecordedNumber,
-        extInvoiceDate: siRecordedDate,
-        extGst: siRecordedGst,
-      });
-      return;
-    }
     siMarkRecordedMutation.mutate({
       id: siRecordedDialog.id,
       extInvoiceNumber: siRecordedNumber,
       extInvoiceDate: siRecordedDate,
-      extTotalAmount: siRecordedTotal,
-      extGstAmount: siRecordedGst || undefined,
     });
   }
 
@@ -480,6 +648,185 @@ export default function Accounts() {
     onError: (err: Error) => { toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
 
+  // ── Phase 4D-A: Fixed Assets state + mutations ────────────────────────────
+  const faBlank = { name: "", category: "equipment", purchaseDate: new Date().toISOString().split("T")[0], purchaseValue: "", salvageValue: "0", usefulLifeYears: "5", depreciationMethod: "slm", notes: "" };
+  const [faDialogOpen, setFaDialogOpen] = useState(false);
+  const [faEditing, setFaEditing] = useState<any | null>(null);
+  const [faForm, setFaForm] = useState<any>(faBlank);
+  const [faDeactivateId, setFaDeactivateId] = useState<string | null>(null);
+
+  const faMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (faEditing) {
+        const res = await apiRequest("PATCH", `/api/fixed-assets/${faEditing.id}`, data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to update"); }
+        return res.json();
+      }
+      const res = await apiRequest("POST", "/api/fixed-assets", data);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to create"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/fixed-assets"] });
+      toast({ title: faEditing ? "Asset updated" : "Asset added" });
+      setFaDialogOpen(false); setFaEditing(null); setFaForm(faBlank);
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const faDeactivateMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/fixed-assets/${id}`, {});
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/fixed-assets"] }); toast({ title: "Asset deactivated" }); setFaDeactivateId(null); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Phase 4D-A: Loans state + mutations ──────────────────────────────────
+  const loanBlank = { lenderName: "", sanctionedAmount: "", outstandingAmount: "", interestRatePct: "", disbursementDate: new Date().toISOString().split("T")[0], maturityDate: "", repaymentScheduleNotes: "", status: "active", notes: "" };
+  const [loanDialogOpen, setLoanDialogOpen] = useState(false);
+  const [loanEditing, setLoanEditing] = useState<any | null>(null);
+  const [loanForm, setLoanForm] = useState<any>(loanBlank);
+  const [loanCloseId, setLoanCloseId] = useState<string | null>(null);
+
+  const loanMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (loanEditing) {
+        const res = await apiRequest("PATCH", `/api/loans/${loanEditing.id}`, data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to update"); }
+        return res.json();
+      }
+      const res = await apiRequest("POST", "/api/loans", data);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to create"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/loans"] });
+      toast({ title: loanEditing ? "Loan updated" : "Loan added" });
+      setLoanDialogOpen(false); setLoanEditing(null); setLoanForm(loanBlank);
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const loanCloseMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/loans/${id}`, {});
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/loans"] }); toast({ title: "Loan closed" }); setLoanCloseId(null); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Phase 4D-A: Equity Accounts state + mutations ─────────────────────────
+  const eqBlank = { name: "", accountType: "share_capital", openingBalance: "0", openingBalanceDate: new Date().toISOString().split("T")[0], notes: "" };
+  const [eqDialogOpen, setEqDialogOpen] = useState(false);
+  const [eqEditing, setEqEditing] = useState<any | null>(null);
+  const [eqForm, setEqForm] = useState<any>(eqBlank);
+  const [eqDeactivateId, setEqDeactivateId] = useState<string | null>(null);
+
+  const eqMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (eqEditing) {
+        const res = await apiRequest("PATCH", `/api/equity-accounts/${eqEditing.id}`, data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to update"); }
+        return res.json();
+      }
+      const res = await apiRequest("POST", "/api/equity-accounts", data);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to create"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/equity-accounts"] });
+      toast({ title: eqEditing ? "Equity account updated" : "Equity account added" });
+      setEqDialogOpen(false); setEqEditing(null); setEqForm(eqBlank);
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const eqDeactivateMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/equity-accounts/${id}`, {});
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/equity-accounts"] }); toast({ title: "Equity account deactivated" }); setEqDeactivateId(null); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Phase 4D-A: Opening Balances state + mutations ────────────────────────
+  const obBlank = { accountType: "accounts_receivable", label: "", amount: "", asOfDate: new Date().toISOString().split("T")[0], notes: "" };
+  const [obDialogOpen, setObDialogOpen] = useState(false);
+  const [obEditing, setObEditing] = useState<any | null>(null);
+  const [obForm, setObForm] = useState<any>(obBlank);
+  const [obDeleteId, setObDeleteId] = useState<string | null>(null);
+
+  const obMutation = useMutation({
+    mutationFn: async (data: any) => {
+      if (obEditing) {
+        const res = await apiRequest("PATCH", `/api/opening-balances/${obEditing.id}`, data);
+        if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to update"); }
+        return res.json();
+      }
+      const res = await apiRequest("POST", "/api/opening-balances", data);
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed to create"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/opening-balances"] });
+      toast({ title: obEditing ? "Opening balance updated" : "Opening balance added" });
+      setObDialogOpen(false); setObEditing(null); setObForm(obBlank);
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const obDeleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("DELETE", `/api/opening-balances/${id}`, {});
+      if (!res.ok) { const b = await res.json(); throw new Error(b.message || "Failed"); }
+      return res.json();
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/opening-balances"] }); toast({ title: "Opening balance deleted" }); setObDeleteId(null); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // ── Phase 4D-A: SLM depreciation helper ──────────────────────────────────
+  function computeNetBookValue(asset: any): { accumulated: number; netBook: number; isOverride: boolean } {
+    const pv = Number(asset.purchaseValue);
+    const sv = Number(asset.salvageValue ?? 0);
+    const life = Number(asset.usefulLifeYears);
+    if (!pv || !life) return { accumulated: 0, netBook: pv, isOverride: false };
+    const annualDep = (pv - sv) / life;
+    const purchaseDate = new Date(asset.purchaseDate);
+    const now = new Date();
+    const monthsElapsed = (now.getFullYear() - purchaseDate.getFullYear()) * 12 + (now.getMonth() - purchaseDate.getMonth());
+    const yearsElapsed = Math.min(monthsElapsed / 12, life);
+    const calcAccumulated = Math.min(annualDep * yearsElapsed, pv - sv);
+    if (asset.accumulatedDepOverride != null) {
+      const override = Number(asset.accumulatedDepOverride);
+      return { accumulated: override, netBook: pv - override, isOverride: true };
+    }
+    return { accumulated: calcAccumulated, netBook: pv - calcAccumulated, isOverride: false };
+  }
+
+  function classifyLoanType(maturityDate: string | null): string {
+    if (!maturityDate) return "Short-term";
+    const months = (new Date(maturityDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24 * 30.44);
+    return months <= 12 ? "Short-term" : "Long-term";
+  }
+
+  const OB_TYPE_LABELS: Record<string, string> = {
+    accounts_receivable: "Accounts Receivable",
+    advance_to_suppliers: "Advance to Suppliers",
+    prepaid_expenses: "Prepaid Expenses",
+    other_current_asset: "Other Current Asset",
+    accounts_payable: "Accounts Payable",
+    advance_from_customers: "Advance from Customers",
+    other_current_liability: "Other Current Liability",
+  };
+
   // ── AR helpers ────────────────────────────────────────────────────────────
   const openArPayDialog = (invoiceId?: string) => {
     setArPayForm({ invoiceId: invoiceId ?? "", amount: "", method: "bank_transfer", reference: "", paymentDate: new Date().toISOString().split("T")[0], cashAccountId: "" });
@@ -562,12 +909,26 @@ export default function Accounts() {
         <TabsList>
           {!expensesOnly && <TabsTrigger value="invoices" data-testid="tab-invoices">Invoices</TabsTrigger>}
           {!expensesOnly && <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>}
-          {!expensesOnly && <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>}
+          {!expensesOnly && (
+            <TabsTrigger value="so-advances" data-testid="tab-so-advances" className="relative">
+              SO Advances
+              {soAdvancePayments.length > 0 && (
+                <span className="ml-1.5 inline-flex items-center justify-center rounded-full bg-amber-500 text-white text-[10px] font-bold h-4 w-4">
+                  {soAdvancePayments.length}
+                </span>
+              )}
+            </TabsTrigger>
+          )}
+          {/* Credit Notes tab hidden — not in use: {!expensesOnly && <TabsTrigger value="credit-notes" data-testid="tab-credit-notes">Credit Notes</TabsTrigger>} */}
           {!expensesOnly && <TabsTrigger value="supplier-invoices" data-testid="tab-supplier-invoices">Supplier Invoices</TabsTrigger>}
           {!expensesOnly && <TabsTrigger value="supplier-payments" data-testid="tab-supplier-payments">Supplier Payments</TabsTrigger>}
           <TabsTrigger value="expenses" data-testid="tab-expenses">Expenses</TabsTrigger>
-          {role === "admin" && <TabsTrigger value="cash-position" data-testid="tab-cash-position">Cash Position</TabsTrigger>}
-          {role === "admin" && <TabsTrigger value="cash-accounts" data-testid="tab-cash-accounts">Cash Accounts</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="cash-position" data-testid="tab-cash-position">Cash Position</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="cash-accounts" data-testid="tab-cash-accounts">Cash Accounts</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="fixed-assets" data-testid="tab-fixed-assets">Fixed Assets</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="loans" data-testid="tab-loans">Loans</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="equity" data-testid="tab-equity">Equity</TabsTrigger>}
+          {isFinanceRole && <TabsTrigger value="opening-balances" data-testid="tab-opening-balances">Opening Balances</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="expenses" className="space-y-4">
@@ -716,6 +1077,125 @@ export default function Accounts() {
                       </tr>
                     )}
                   </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── SO Advances (Unearned Revenue / Liability) ─────────────────── */}
+        <TabsContent value="so-advances" className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-muted-foreground">
+                {advanceGroups.length} sales order{advanceGroups.length !== 1 ? "s" : ""} with pending advances
+                {soAdvancePayments.length !== advanceGroups.length && (
+                  <span className="text-muted-foreground/60"> · {soAdvancePayments.length} payment{soAdvancePayments.length !== 1 ? "s" : ""} total</span>
+                )}
+              </p>
+              <p className="text-xs text-amber-600 mt-0.5">
+                These are advance receipts not yet linked to a tax invoice — they represent a liability (unearned revenue) until the challan is dispatched.
+              </p>
+            </div>
+            {totalAdvances > 0 && (
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Held</p>
+                <p className="text-lg font-bold text-amber-600">₹{totalAdvances.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              </div>
+            )}
+          </div>
+          <Card>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="w-8 p-3" />
+                      <th className="text-left p-3 font-medium text-muted-foreground">Sales Order</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Customer</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Payments</th>
+                      <th className="text-left p-3 font-medium text-muted-foreground">Latest Date</th>
+                      <th className="text-right p-3 font-medium text-muted-foreground">Total Advance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paymentsLoading ? (
+                      <tr><td colSpan={6} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                    ) : advanceGroups.length > 0 ? (
+                      advanceGroups.map((group) => {
+                        const customer = customerMap.get(group.customerId);
+                        const key = group.soId ?? "__no_so__";
+                        const isExpanded = expandedAdvanceSOs.has(key);
+                        const methods = [...new Set(group.payments.map(p => p.method.replace(/_/g, " ")))].join(", ");
+                        return (
+                          <Fragment key={key}>
+                            {/* ── Group summary row (clickable) ── */}
+                            <tr
+                              className="border-b hover:bg-amber-50/40 dark:hover:bg-amber-950/10 cursor-pointer transition-colors"
+                              onClick={() => toggleAdvanceSO(key)}
+                              data-testid={`row-advance-group-${key}`}
+                            >
+                              <td className="p-3 text-center">
+                                <ChevronRight className={`w-4 h-4 text-muted-foreground transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`} />
+                              </td>
+                              <td className="p-3 font-mono text-xs font-semibold">{group.soNumber}</td>
+                              <td className="p-3 font-medium">{customer?.name ?? "—"}</td>
+                              <td className="p-3 text-muted-foreground">
+                                <span className="inline-flex items-center gap-1.5">
+                                  <span className="inline-flex items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 text-[10px] font-bold h-5 px-1.5">
+                                    {group.payments.length}
+                                  </span>
+                                  <span className="capitalize text-xs">{methods}</span>
+                                </span>
+                              </td>
+                              <td className="p-3 text-muted-foreground text-xs">
+                                {group.latestDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                              </td>
+                              <td className="p-3 text-right font-bold text-amber-600">
+                                ₹{group.total.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+
+                            {/* ── Expanded individual payment rows ── */}
+                            {isExpanded && group.payments.map((pay, pi) => (
+                              <tr
+                                key={pay.id}
+                                className={`border-b bg-muted/20 dark:bg-muted/10 ${pi === group.payments.length - 1 ? "border-b-2 border-amber-200 dark:border-amber-800" : ""}`}
+                                data-testid={`row-advance-${pay.id}`}
+                              >
+                                <td className="p-2 pl-6 text-center text-muted-foreground/40 text-xs">└</td>
+                                <td className="p-2 font-mono text-[11px] text-muted-foreground">
+                                  {new Date(pay.paymentDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                                </td>
+                                <td className="p-2 text-muted-foreground text-xs">—</td>
+                                <td className="p-2 capitalize text-xs text-muted-foreground">{pay.method.replace(/_/g, " ")}</td>
+                                <td className="p-2 text-xs text-muted-foreground truncate max-w-[200px]">{pay.reference || "—"}</td>
+                                <td className="p-2 text-right font-medium text-amber-600 text-xs">
+                                  ₹{Number(pay.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                              </tr>
+                            ))}
+                          </Fragment>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                          No pending advances — all advance receipts have been linked to invoices.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {advanceGroups.length > 0 && (
+                    <tfoot>
+                      <tr className="border-t bg-amber-50/60 dark:bg-amber-950/20">
+                        <td colSpan={5} className="p-3 font-semibold text-amber-700 dark:text-amber-400 text-sm">Total Unearned Revenue (Liability)</td>
+                        <td className="p-3 text-right font-bold text-amber-700 dark:text-amber-400">
+                          ₹{totalAdvances.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </CardContent>
@@ -912,7 +1392,11 @@ export default function Accounts() {
                         };
                         return (
                           <Fragment key={inv.id}>
-                            <tr className={`border-b last:border-0 ${uploadStatus === "cancelled" ? "opacity-50" : ""}`} data-testid={`row-supplier-invoice-${inv.id}`}>
+                            <tr
+                              className={`border-b last:border-0 ${uploadStatus === "cancelled" ? "opacity-50" : ""} ${highlightedInvId === inv.id ? "ring-2 ring-inset ring-blue-400 bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
+                              data-testid={`row-supplier-invoice-${inv.id}`}
+                              data-si-id={inv.id}
+                            >
                               <td className="p-3">
                                 <button onClick={() => toggleSiExpanded(inv.id)} className="text-muted-foreground" data-testid={`button-expand-si-${inv.id}`}>
                                   {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -944,12 +1428,16 @@ export default function Accounts() {
                                         setSiRecordedDialog({ id: inv.id, systemTotal: Number(inv.totalAmount ?? 0) });
                                         setSiRecordedNumber("");
                                         setSiRecordedDate(new Date().toISOString().split("T")[0]);
-                                        setSiRecordedTotal("");
-                                        setSiRecordedGst("");
                                         setSiRecordedFile(null);
                                         setSiRecordedFileUrl((inv as any).signedCopyUrl ?? null);
                                       }}>
                                       <CheckCircle2 className="w-3 h-3 mr-1" /> Record
+                                    </Button>
+                                  )}
+                                  {uploadStatus === "recorded" && (inv as any).signedCopyUrl && (
+                                    <Button size="sm" variant="outline" className="h-7 text-xs" data-testid={`button-si-view-${inv.id}`}
+                                      onClick={() => window.open((inv as any).signedCopyUrl, "_blank")}>
+                                      <FileText className="w-3 h-3 mr-1" /> View
                                     </Button>
                                   )}
                                   {uploadStatus !== "cancelled" && uploadStatus !== "recorded" && (
@@ -1009,6 +1497,36 @@ export default function Accounts() {
                                         </div>
                                       </div>
                                     )}
+
+                                    {/* ── Invoice amount breakdown (Subtotal / GST / Grand Total) ── */}
+                                    {(() => {
+                                      const grandTotal  = Number(inv.totalAmount ?? 0);
+                                      const taxAmt      = Number((inv as any).taxAmount ?? 0);
+                                      const subtotalAmt = (inv as any).subtotal != null
+                                        ? Number((inv as any).subtotal)
+                                        : grandTotal - taxAmt;
+                                      const fmt = (v: number) =>
+                                        "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                      return (
+                                        <div className="flex justify-end">
+                                          <div className="w-72 text-xs space-y-1.5 bg-background border rounded-md px-4 py-3">
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-muted-foreground">Subtotal (excl. GST)</span>
+                                              <span className="font-mono">{fmt(subtotalAmt)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-muted-foreground">+ Total GST</span>
+                                              <span className="font-mono text-amber-600 dark:text-amber-400">+ {fmt(taxAmt)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center border-t pt-1.5 font-semibold text-sm">
+                                              <span>Grand Total</span>
+                                              <span className="font-mono">{fmt(grandTotal)}</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+
                                     <AttachmentsPanel entityType="supplier_invoice" entityId={inv.id} module="accounts" />
                                   </div>
                                 </td>
@@ -1028,70 +1546,254 @@ export default function Accounts() {
 
         {/* ── AP: Supplier Payments ──────────────────────────────────────── */}
         <TabsContent value="supplier-payments" className="space-y-4">
+          {/* Header */}
           <div className="flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">{supplierPayments?.length ?? 0} payment(s)</p>
+            <p className="text-sm text-muted-foreground">
+              {supplierPayments?.length ?? 0} payment(s) across {invoicePaymentGroups.filter(g => g.payments.length > 0).length} invoice(s)
+            </p>
             <Button data-testid="button-record-supplier-payment" onClick={() => setSpDialogOpen(true)}>
               <CreditCard className="w-4 h-4 mr-2" />
               Record Payment
             </Button>
           </div>
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Type</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Method</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Linked To</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Reference</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
-                      <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {spLoading ? (
-                      <tr><td colSpan={8} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
-                    ) : supplierPayments && supplierPayments.length > 0 ? (
-                      supplierPayments.map((pay) => {
-                        const linkedSI = pay.supplierInvoiceId ? supplierInvoices?.find(si => si.id === pay.supplierInvoiceId) : null;
-                        const linkedPO = pay.purchaseOrderId ? poMap.get(pay.purchaseOrderId) : null;
-                        return (
-                          <tr key={pay.id} className="border-b last:border-0" data-testid={`row-supplier-payment-${pay.id}`}>
-                            <td className="p-3 text-muted-foreground">{new Date(pay.paymentDate).toLocaleDateString()}</td>
-                            <td className="p-3">
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${pay.paymentType === "advance" ? "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400" : "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300"}`}>
-                                {pay.paymentType === "advance" ? "Advance" : "Regular"}
-                              </span>
-                            </td>
-                            <td className="p-3 capitalize">{pay.paymentMethod.replace(/_/g, " ")}</td>
-                            <td className="p-3 font-medium">{supplierMap.get(pay.supplierId)?.name ?? "—"}</td>
-                            <td className="p-3 text-muted-foreground">
-                              {linkedSI ? linkedSI.invoiceNumber : linkedPO ? linkedPO.poNumber : "—"}
-                            </td>
-                            <td className="p-3 text-muted-foreground">{pay.reference || "—"}</td>
-                            <td className="p-3 text-right font-medium">₹{Number(pay.amount).toLocaleString()}</td>
-                            <td className="p-3 text-right">
-                              <Button size="icon" variant="ghost" data-testid={`button-delete-supplier-payment-${pay.id}`}
-                                onClick={() => { if (confirm("Delete this payment?")) deleteSpMutation.mutate(pay.id); }}>
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
+
+          {/* Summary cards */}
+          {(() => {
+            const allPays = supplierPayments ?? [];
+            const totalPaid = allPays.reduce((s, p) => s + Number(p.amount), 0);
+            const advancePays = allPays.filter(p => p.paymentType === "advance");
+            const advancePaid = advancePays.reduce((s, p) => s + Number(p.amount), 0);
+            const regularPaid = totalPaid - advancePaid;
+            const fmt = (v: number) => "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground mb-1">Total Payments</p>
+                    <p className="text-xl font-bold">{fmt(totalPaid)}</p>
+                    <p className="text-xs text-muted-foreground">{allPays.length} transaction(s)</p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground mb-1">Regular Payments</p>
+                    <p className="text-xl font-bold">{fmt(regularPaid)}</p>
+                    <p className="text-xs text-muted-foreground">{allPays.filter(p => p.paymentType !== "advance").length} transaction(s)</p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <p className="text-xs text-muted-foreground mb-1">Advance Payments</p>
+                    <p className="text-xl font-bold text-amber-600 dark:text-amber-400">{fmt(advancePaid)}</p>
+                    <p className="text-xs text-muted-foreground">{advancePays.length} transaction(s)</p>
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })()}
+
+          {/* Filters */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <Select value={spSupplierFilter} onValueChange={setSpSupplierFilter}>
+              <SelectTrigger className="w-52">
+                <SelectValue placeholder="All Suppliers" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Suppliers</SelectItem>
+                {(suppliers ?? []).map(s => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={spStatusFilter} onValueChange={setSpStatusFilter}>
+              <SelectTrigger className="w-44">
+                <SelectValue placeholder="All Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="paid">Fully Paid</SelectItem>
+                <SelectItem value="partial">Partially Paid</SelectItem>
+                <SelectItem value="unpaid">Unpaid / Pending</SelectItem>
+                <SelectItem value="advance">Has Advance</SelectItem>
+              </SelectContent>
+            </Select>
+            {(spSupplierFilter !== "all" || spStatusFilter !== "all") && (
+              <Button variant="ghost" size="sm" onClick={() => { setSpSupplierFilter("all"); setSpStatusFilter("all"); }}>
+                Clear filters
+              </Button>
+            )}
+          </div>
+
+          {/* Invoice-grouped rows */}
+          {(() => {
+            const fmt = (v: number) => "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const filteredGroups = invoicePaymentGroups.filter(g => {
+              if (spSupplierFilter !== "all" && g.supplierId !== spSupplierFilter) return false;
+              if (spStatusFilter === "paid") return g.status === "paid";
+              if (spStatusFilter === "partial") return g.status === "partial" || g.status === "partial_paid";
+              if (spStatusFilter === "unpaid") return g.status === "unpaid" || g.status === "pending" || g.status === "overdue" || g.type === "po_advance";
+              if (spStatusFilter === "advance") return g.hasPreInvoicePayment;
+              return true;
+            });
+
+            return (
+              <Card>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-muted/30">
+                          <th className="w-8 p-3"></th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Invoice / Linked To</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Supplier</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Date</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Due Date</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Invoice Total</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Total Paid</th>
+                          <th className="text-right p-3 font-medium text-muted-foreground">Outstanding</th>
+                          <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {spLoading ? (
+                          <tr><td colSpan={9} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                        ) : filteredGroups.length > 0 ? (
+                          filteredGroups.map(group => (
+                            <Fragment key={group.key}>
+                              {/* Group header row */}
+                              <tr
+                                className={`border-b transition-colors ${group.payments.length > 0 ? "hover:bg-muted/30 cursor-pointer" : "opacity-60"}`}
+                                onClick={() => {
+                                  if (group.payments.length === 0) return;
+                                  setExpandedSpGroups(prev => {
+                                    const n = new Set(prev);
+                                    n.has(group.key) ? n.delete(group.key) : n.add(group.key);
+                                    return n;
+                                  });
+                                }}
+                              >
+                                <td className="p-3 text-muted-foreground">
+                                  {group.payments.length > 0
+                                    ? expandedSpGroups.has(group.key)
+                                      ? <ChevronDown className="w-4 h-4" />
+                                      : <ChevronRight className="w-4 h-4" />
+                                    : null}
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-medium">{group.label}</span>
+                                    {group.hasPreInvoicePayment && (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
+                                        Advance Applied
+                                      </span>
+                                    )}
+                                    {group.payments.length > 0 && (
+                                      <span className="text-xs text-muted-foreground">
+                                        {group.payments.length} payment{group.payments.length > 1 ? "s" : ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-3 font-medium">{group.supplierName}</td>
+                                <td className="p-3 text-muted-foreground">
+                                  {group.invoiceDate ? new Date(group.invoiceDate).toLocaleDateString() : "—"}
+                                </td>
+                                <td className="p-3 text-muted-foreground">
+                                  {group.dueDate ? new Date(group.dueDate).toLocaleDateString() : "—"}
+                                </td>
+                                <td className="p-3 text-right font-medium">
+                                  {group.total > 0 ? fmt(group.total) : "—"}
+                                </td>
+                                <td className="p-3 text-right font-medium text-green-700 dark:text-green-400">
+                                  {group.paid > 0 ? fmt(group.paid) : "—"}
+                                </td>
+                                <td className="p-3 text-right font-medium">
+                                  {group.outstanding > 0
+                                    ? <span className="text-red-600 dark:text-red-400">{fmt(group.outstanding)}</span>
+                                    : group.total > 0
+                                      ? <span className="text-green-600 dark:text-green-400">₹0.00</span>
+                                      : "—"}
+                                </td>
+                                <td className="p-3">
+                                  {group.type === "po_advance"
+                                    ? <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400">Advance</span>
+                                    : group.status ? <StatusBadge status={group.status} /> : null}
+                                </td>
+                              </tr>
+
+                              {/* Expanded payments sub-table */}
+                              {expandedSpGroups.has(group.key) && group.payments.length > 0 && (
+                                <tr className="border-b bg-muted/5">
+                                  <td colSpan={9} className="p-0">
+                                    <div className="mx-4 my-3 border rounded-md overflow-hidden">
+                                      {group.hasPreInvoicePayment && (
+                                        <div className="flex items-start gap-2 px-3 py-2 bg-amber-50 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300 text-xs border-b">
+                                          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                                          <span>
+                                            An advance payment was made against the purchase order before this invoice was generated — it has been automatically applied toward the invoice balance.
+                                          </span>
+                                        </div>
+                                      )}
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="border-b bg-muted/20">
+                                            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
+                                            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Type</th>
+                                            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Method</th>
+                                            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Reference</th>
+                                            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Amount</th>
+                                            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Actions</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {group.payments.map(pay => {
+                                            const invCreated = group.invoice ? new Date((group.invoice as any).createdAt ?? (group.invoice as any).invoiceDate) : null;
+                                            const isAdvance = pay.paymentType === "advance" || (invCreated !== null && new Date(pay.paymentDate) < invCreated);
+                                            return (
+                                              <tr key={pay.id} className="border-b last:border-0" data-testid={`row-supplier-payment-${pay.id}`}>
+                                                <td className="px-3 py-2 text-muted-foreground">{new Date(pay.paymentDate).toLocaleDateString()}</td>
+                                                <td className="px-3 py-2">
+                                                  <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${isAdvance ? "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400" : "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300"}`}>
+                                                    {isAdvance ? "Advance" : "Regular"}
+                                                  </span>
+                                                </td>
+                                                <td className="px-3 py-2 capitalize">{pay.paymentMethod.replace(/_/g, " ")}</td>
+                                                <td className="px-3 py-2 text-muted-foreground">{pay.reference || "—"}</td>
+                                                <td className="px-3 py-2 text-right font-medium">{fmt(Number(pay.amount))}</td>
+                                                <td className="px-3 py-2 text-right">
+                                                  <Button size="icon" variant="ghost" className="h-6 w-6"
+                                                    data-testid={`button-delete-supplier-payment-${pay.id}`}
+                                                    onClick={e => { e.stopPropagation(); if (confirm("Delete this payment?")) deleteSpMutation.mutate(pay.id); }}>
+                                                    <Trash2 className="w-3 h-3" />
+                                                  </Button>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={9} className="p-8 text-center text-muted-foreground">
+                              {supplierPayments && supplierPayments.length > 0
+                                ? "No results match the current filters."
+                                : "No supplier payments recorded."}
                             </td>
                           </tr>
-                        );
-                      })
-                    ) : (
-                      <tr>
-                        <td colSpan={8} className="p-8 text-center text-muted-foreground">No supplier payments recorded.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })()}
         </TabsContent>
 
         {/* ── Cash Position Tab ─────────────────────────────────────────── */}
@@ -1245,6 +1947,260 @@ export default function Accounts() {
                     )}
                   </tbody>
                 </table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Fixed Assets Tab ────────────────────────────────────────────── */}
+        {isFinanceRole && (
+          <TabsContent value="fixed-assets" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">{fixedAssetsData.filter((a: any) => a.isActive).length} active asset(s)</p>
+              <Button size="sm" onClick={() => { setFaEditing(null); setFaForm(faBlank); setFaDialogOpen(true); }} data-testid="button-add-asset">
+                <Plus className="w-4 h-4 mr-2" />Add Asset
+              </Button>
+            </div>
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left p-3 font-medium">Name</th>
+                        <th className="text-left p-3 font-medium">Category</th>
+                        <th className="text-left p-3 font-medium">Purchase Date</th>
+                        <th className="text-right p-3 font-medium">Purchase Value</th>
+                        <th className="text-left p-3 font-medium">Useful Life</th>
+                        <th className="text-right p-3 font-medium">Net Book Value</th>
+                        <th className="text-left p-3 font-medium">Status</th>
+                        <th className="text-right p-3 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {faLoading ? (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <tr key={i} className="border-b">
+                            {Array.from({ length: 8 }).map((__, j) => <td key={j} className="p-3"><Skeleton className="h-4 w-full" /></td>)}
+                          </tr>
+                        ))
+                      ) : fixedAssetsData.length === 0 ? (
+                        <tr><td colSpan={8} className="text-center p-8 text-muted-foreground">No fixed assets yet. Add one to get started.</td></tr>
+                      ) : fixedAssetsData.map((asset: any) => {
+                        const { netBook, isOverride } = computeNetBookValue(asset);
+                        return (
+                          <tr key={asset.id} className="border-b hover:bg-muted/20">
+                            <td className="p-3 font-medium">
+                              {asset.name}
+                              {isOverride && <Badge className="ml-2 text-xs bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400">Auditor Override</Badge>}
+                            </td>
+                            <td className="p-3 capitalize">{asset.category}</td>
+                            <td className="p-3">{asset.purchaseDate}</td>
+                            <td className="p-3 text-right">₹{Number(asset.purchaseValue).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className="p-3">{asset.usefulLifeYears} yr</td>
+                            <td className="p-3 text-right font-medium">₹{netBook.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className="p-3">
+                              <Badge className={asset.isActive ? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400" : "bg-gray-100 text-gray-500"}>
+                                {asset.isActive ? "Active" : "Inactive"}
+                              </Badge>
+                            </td>
+                            <td className="p-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <Button variant="ghost" size="sm" data-testid={`button-edit-asset-${asset.id}`} onClick={() => { setFaEditing(asset); setFaForm({ name: asset.name, category: asset.category, purchaseDate: asset.purchaseDate, purchaseValue: String(asset.purchaseValue), salvageValue: String(asset.salvageValue ?? 0), usefulLifeYears: String(asset.usefulLifeYears), depreciationMethod: asset.depreciationMethod, notes: asset.notes ?? "" }); setFaDialogOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                                {asset.isActive && <Button variant="ghost" size="sm" data-testid={`button-deactivate-asset-${asset.id}`} onClick={() => setFaDeactivateId(asset.id)}><Power className="w-4 h-4 text-red-500" /></Button>}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Loans Tab ───────────────────────────────────────────────────── */}
+        {isFinanceRole && (
+          <TabsContent value="loans" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">{loansData.filter((l: any) => l.status === "active").length} active loan(s)</p>
+              <Button size="sm" onClick={() => { setLoanEditing(null); setLoanForm(loanBlank); setLoanDialogOpen(true); }} data-testid="button-add-loan">
+                <Plus className="w-4 h-4 mr-2" />Add Loan
+              </Button>
+            </div>
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left p-3 font-medium">Lender</th>
+                        <th className="text-left p-3 font-medium">Type</th>
+                        <th className="text-right p-3 font-medium">Sanctioned</th>
+                        <th className="text-right p-3 font-medium">Outstanding</th>
+                        <th className="text-right p-3 font-medium">Rate %</th>
+                        <th className="text-left p-3 font-medium">Disbursement</th>
+                        <th className="text-left p-3 font-medium">Maturity</th>
+                        <th className="text-left p-3 font-medium">Status</th>
+                        <th className="text-right p-3 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loansLoading ? (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <tr key={i} className="border-b">
+                            {Array.from({ length: 9 }).map((__, j) => <td key={j} className="p-3"><Skeleton className="h-4 w-full" /></td>)}
+                          </tr>
+                        ))
+                      ) : loansData.length === 0 ? (
+                        <tr><td colSpan={9} className="text-center p-8 text-muted-foreground">No loans recorded yet.</td></tr>
+                      ) : loansData.map((loan: any) => (
+                        <tr key={loan.id} className="border-b hover:bg-muted/20">
+                          <td className="p-3 font-medium">{loan.lenderName}</td>
+                          <td className="p-3">
+                            <Badge className={classifyLoanType(loan.maturityDate) === "Short-term" ? "bg-orange-100 text-orange-800 dark:bg-orange-950/40 dark:text-orange-400" : "bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400"}>
+                              {classifyLoanType(loan.maturityDate)}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-right">₹{Number(loan.sanctionedAmount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-right font-medium">₹{Number(loan.outstandingAmount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="p-3 text-right">{Number(loan.interestRatePct).toFixed(2)}%</td>
+                          <td className="p-3">{loan.disbursementDate}</td>
+                          <td className="p-3">{loan.maturityDate || "—"}</td>
+                          <td className="p-3">
+                            <Badge className={loan.status === "active" ? "bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-400" : loan.status === "closed" ? "bg-gray-100 text-gray-500" : "bg-red-100 text-red-800"}>
+                              {loan.status.charAt(0).toUpperCase() + loan.status.slice(1).replace("_", " ")}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button variant="ghost" size="sm" data-testid={`button-edit-loan-${loan.id}`} onClick={() => { setLoanEditing(loan); setLoanForm({ lenderName: loan.lenderName, sanctionedAmount: String(loan.sanctionedAmount), outstandingAmount: String(loan.outstandingAmount), interestRatePct: String(loan.interestRatePct), disbursementDate: loan.disbursementDate, maturityDate: loan.maturityDate ?? "", repaymentScheduleNotes: loan.repaymentScheduleNotes ?? "", status: loan.status, notes: loan.notes ?? "" }); setLoanDialogOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                              {loan.status === "active" && <Button variant="ghost" size="sm" data-testid={`button-close-loan-${loan.id}`} onClick={() => setLoanCloseId(loan.id)}><Power className="w-4 h-4 text-red-500" /></Button>}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Equity Tab ──────────────────────────────────────────────────── */}
+        {isFinanceRole && (
+          <TabsContent value="equity" className="space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">{equityData.filter((e: any) => e.isActive).length} active equity account(s)</p>
+              <Button size="sm" onClick={() => { setEqEditing(null); setEqForm(eqBlank); setEqDialogOpen(true); }} data-testid="button-add-equity">
+                <Plus className="w-4 h-4 mr-2" />Add Equity Account
+              </Button>
+            </div>
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left p-3 font-medium">Name</th>
+                        <th className="text-left p-3 font-medium">Type</th>
+                        <th className="text-right p-3 font-medium">Opening Balance</th>
+                        <th className="text-left p-3 font-medium">As Of</th>
+                        <th className="text-left p-3 font-medium">Notes</th>
+                        <th className="text-right p-3 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {eqLoading ? (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <tr key={i} className="border-b">
+                            {Array.from({ length: 6 }).map((__, j) => <td key={j} className="p-3"><Skeleton className="h-4 w-full" /></td>)}
+                          </tr>
+                        ))
+                      ) : equityData.filter((e: any) => e.isActive).length === 0 ? (
+                        <tr><td colSpan={6} className="text-center p-8 text-muted-foreground">No equity accounts yet.</td></tr>
+                      ) : equityData.filter((e: any) => e.isActive).map((eq: any) => (
+                        <tr key={eq.id} className="border-b hover:bg-muted/20">
+                          <td className="p-3 font-medium">{eq.name}</td>
+                          <td className="p-3 capitalize">{eq.accountType.replace(/_/g, " ")}</td>
+                          <td className="p-3 text-right">₹{Number(eq.openingBalance).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="p-3">{eq.openingBalanceDate}</td>
+                          <td className="p-3 text-muted-foreground text-xs max-w-[200px] truncate">
+                            {eq.accountType === "retained_earnings" ? <span className="italic text-blue-600 dark:text-blue-400">ERP P&amp;L added automatically on Balance Sheet</span> : eq.notes ?? "—"}
+                          </td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button variant="ghost" size="sm" data-testid={`button-edit-equity-${eq.id}`} onClick={() => { setEqEditing(eq); setEqForm({ name: eq.name, accountType: eq.accountType, openingBalance: String(eq.openingBalance), openingBalanceDate: eq.openingBalanceDate, notes: eq.notes ?? "" }); setEqDialogOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                              <Button variant="ghost" size="sm" data-testid={`button-deactivate-equity-${eq.id}`} onClick={() => setEqDeactivateId(eq.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
+        {/* ── Opening Balances Tab ─────────────────────────────────────────── */}
+        {isFinanceRole && (
+          <TabsContent value="opening-balances" className="space-y-4">
+            <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-800 p-3 flex items-start gap-2">
+              <InfoIcon className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
+              <p className="text-sm text-blue-700 dark:text-blue-300">Enter balances as at your ERP go-live date. These supplement live ERP data on the Balance Sheet.</p>
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">{openingBalancesData.length} opening balance entry(s)</p>
+              <Button size="sm" onClick={() => { setObEditing(null); setObForm(obBlank); setObDialogOpen(true); }} data-testid="button-add-opening-balance">
+                <Plus className="w-4 h-4 mr-2" />Add Opening Balance
+              </Button>
+            </div>
+            <Card>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="text-left p-3 font-medium">Label</th>
+                        <th className="text-left p-3 font-medium">Account Type</th>
+                        <th className="text-right p-3 font-medium">Amount</th>
+                        <th className="text-left p-3 font-medium">As Of Date</th>
+                        <th className="text-left p-3 font-medium">Notes</th>
+                        <th className="text-right p-3 font-medium">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {obLoading ? (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <tr key={i} className="border-b">
+                            {Array.from({ length: 6 }).map((__, j) => <td key={j} className="p-3"><Skeleton className="h-4 w-full" /></td>)}
+                          </tr>
+                        ))
+                      ) : openingBalancesData.length === 0 ? (
+                        <tr><td colSpan={6} className="text-center p-8 text-muted-foreground">No opening balances yet.</td></tr>
+                      ) : openingBalancesData.map((ob: any) => (
+                        <tr key={ob.id} className="border-b hover:bg-muted/20">
+                          <td className="p-3 font-medium">{ob.label}</td>
+                          <td className="p-3">{OB_TYPE_LABELS[ob.accountType] ?? ob.accountType}</td>
+                          <td className="p-3 text-right">₹{Number(ob.amount).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="p-3">{ob.asOfDate}</td>
+                          <td className="p-3 text-muted-foreground text-xs max-w-[200px] truncate">{ob.notes ?? "—"}</td>
+                          <td className="p-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button variant="ghost" size="sm" data-testid={`button-edit-ob-${ob.id}`} onClick={() => { setObEditing(ob); setObForm({ accountType: ob.accountType, label: ob.label, amount: String(ob.amount), asOfDate: ob.asOfDate, notes: ob.notes ?? "" }); setObDialogOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                              <Button variant="ghost" size="sm" data-testid={`button-delete-ob-${ob.id}`} onClick={() => setObDeleteId(ob.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -1500,32 +2456,6 @@ export default function Accounts() {
             </div>
 
             <div className="space-y-2">
-              <Label>Ext. Total Amount (₹) <span className="text-red-500">*</span></Label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                data-testid="input-si-recorded-total"
-                value={siRecordedTotal}
-                onChange={e => setSiRecordedTotal(e.target.value)}
-                placeholder="0.00"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Ext. GST Amount (₹) <span className="text-xs text-muted-foreground ml-1">optional</span></Label>
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                data-testid="input-si-recorded-gst"
-                value={siRecordedGst}
-                onChange={e => setSiRecordedGst(e.target.value)}
-                placeholder="0.00"
-              />
-            </div>
-
-            <div className="space-y-2">
               <Label>Signed Copy <span className="text-red-500">*</span></Label>
               {siRecordedFileUrl ? (
                 <div className="flex items-center gap-2 p-2 bg-green-50 dark:bg-green-950/20 rounded border border-green-200 dark:border-green-800">
@@ -1583,54 +2513,12 @@ export default function Accounts() {
               disabled={
                 !siRecordedNumber.trim() ||
                 !siRecordedDate ||
-                !siRecordedTotal || parseFloat(siRecordedTotal) <= 0 ||
                 !siRecordedFileUrl ||
                 siMarkRecordedMutation.isPending
               }
-              onClick={() => handleMarkRecordedSubmit(false)}
+              onClick={() => handleMarkRecordedSubmit()}
             >
               {siMarkRecordedMutation.isPending ? "Saving…" : "Mark as Recorded"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* F3: Variance confirmation modal */}
-      <Dialog open={!!siVarianceModal} onOpenChange={(o) => { if (!o) setSiVarianceModal(null); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-amber-500" />
-              Amount Variance Detected
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 py-1">
-            <p className="text-sm text-muted-foreground">The entered amount differs from the system total by more than ₹5. Please confirm you want to proceed.</p>
-            <div className="rounded-lg border bg-muted/40 p-3 space-y-1.5 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Ext. invoice total</span>
-                <span className="font-semibold">₹{siVarianceModal ? Number(siVarianceModal.extTotal).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">System total (GRN)</span>
-                <span className="font-semibold">₹{siVarianceModal ? Number(siVarianceModal.sysTotal).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
-              </div>
-              <div className="border-t pt-1.5 flex justify-between font-semibold text-amber-700 dark:text-amber-400">
-                <span>Difference</span>
-                <span>₹{siVarianceModal ? Number(siVarianceModal.diff).toLocaleString("en-IN", { minimumFractionDigits: 2 }) : "—"}</span>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">Clicking Continue will record this invoice with the entered amounts. The variance will be noted in the audit log.</p>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" data-testid="button-variance-cancel" onClick={() => setSiVarianceModal(null)}>Cancel</Button>
-            <Button
-              data-testid="button-variance-continue"
-              className="bg-amber-600 hover:bg-amber-700 text-white"
-              disabled={siMarkRecordedMutation.isPending}
-              onClick={() => handleMarkRecordedSubmit(true)}
-            >
-              {siMarkRecordedMutation.isPending ? "Saving…" : "Continue"}
             </Button>
           </div>
         </DialogContent>
@@ -1890,6 +2778,200 @@ export default function Accounts() {
         onConfirm={() => caDeactivateId && caDeactivateMutation.mutate({ id: caDeactivateId, activate: false })}
         isPending={caDeactivateMutation.isPending}
       />
+
+      {/* ── Fixed Asset Add/Edit Dialog ──────────────────────────────────── */}
+      <Dialog open={faDialogOpen} onOpenChange={setFaDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{faEditing ? "Edit Asset" : "Add Fixed Asset"}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1"><Label>Name *</Label><Input data-testid="input-fa-name" value={faForm.name} onChange={e => setFaForm({ ...faForm, name: e.target.value })} placeholder="e.g. Office Generator" /></div>
+            <div className="space-y-1"><Label>Category *</Label>
+              <Select value={faForm.category} onValueChange={v => setFaForm({ ...faForm, category: v })}>
+                <SelectTrigger data-testid="select-fa-category"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["machinery","vehicle","equipment","furniture","other"].map(c => <SelectItem key={c} value={c} className="capitalize">{c.charAt(0).toUpperCase()+c.slice(1)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Purchase Date *</Label><Input type="date" data-testid="input-fa-purchase-date" value={faForm.purchaseDate} onChange={e => setFaForm({ ...faForm, purchaseDate: e.target.value })} /></div>
+              <div className="space-y-1"><Label>Useful Life (years) *</Label><Input type="number" data-testid="input-fa-useful-life" value={faForm.usefulLifeYears} onChange={e => setFaForm({ ...faForm, usefulLifeYears: e.target.value })} min="1" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Purchase Value (₹) *</Label><Input type="number" data-testid="input-fa-purchase-value" value={faForm.purchaseValue} onChange={e => setFaForm({ ...faForm, purchaseValue: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-1"><Label>Salvage Value (₹)</Label><Input type="number" data-testid="input-fa-salvage-value" value={faForm.salvageValue} onChange={e => setFaForm({ ...faForm, salvageValue: e.target.value })} placeholder="0" /></div>
+            </div>
+            <div className="space-y-1"><Label>Notes</Label><Textarea data-testid="input-fa-notes" value={faForm.notes} onChange={e => setFaForm({ ...faForm, notes: e.target.value })} rows={2} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFaDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-save-asset" disabled={faMutation.isPending} onClick={() => faMutation.mutate({ ...faForm, purchaseValue: faForm.purchaseValue, salvageValue: faForm.salvageValue || "0", usefulLifeYears: Number(faForm.usefulLifeYears) })}>
+              {faMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Fixed Asset Deactivate Confirm */}
+      <Dialog open={!!faDeactivateId} onOpenChange={o => { if (!o) setFaDeactivateId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Deactivate Asset?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This asset will be marked inactive and hidden from active lists. No data will be deleted.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFaDeactivateId(null)}>Cancel</Button>
+            <Button variant="destructive" data-testid="button-confirm-deactivate-asset" disabled={faDeactivateMutation.isPending} onClick={() => faDeactivateId && faDeactivateMutation.mutate(faDeactivateId)}>
+              {faDeactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Loan Add/Edit Dialog ─────────────────────────────────────────── */}
+      <Dialog open={loanDialogOpen} onOpenChange={setLoanDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{loanEditing ? "Edit Loan" : "Add Loan"}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1"><Label>Lender Name *</Label><Input data-testid="input-loan-lender" value={loanForm.lenderName} onChange={e => setLoanForm({ ...loanForm, lenderName: e.target.value })} placeholder="e.g. HDFC Bank" /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Sanctioned Amount (₹) *</Label><Input type="number" data-testid="input-loan-sanctioned" value={loanForm.sanctionedAmount} onChange={e => setLoanForm({ ...loanForm, sanctionedAmount: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-1"><Label>Outstanding Amount (₹) *</Label><Input type="number" data-testid="input-loan-outstanding" value={loanForm.outstandingAmount} onChange={e => setLoanForm({ ...loanForm, outstandingAmount: e.target.value })} placeholder="0" /></div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Interest Rate (%) *</Label><Input type="number" data-testid="input-loan-rate" value={loanForm.interestRatePct} onChange={e => setLoanForm({ ...loanForm, interestRatePct: e.target.value })} placeholder="0.000" step="0.001" /></div>
+              <div className="space-y-1"><Label>Status</Label>
+                <Select value={loanForm.status} onValueChange={v => setLoanForm({ ...loanForm, status: v })}>
+                  <SelectTrigger data-testid="select-loan-status"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="closed">Closed</SelectItem>
+                    <SelectItem value="written_off">Written Off</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Disbursement Date *</Label><Input type="date" data-testid="input-loan-disbursement" value={loanForm.disbursementDate} onChange={e => setLoanForm({ ...loanForm, disbursementDate: e.target.value })} /></div>
+              <div className="space-y-1"><Label>Maturity Date</Label><Input type="date" data-testid="input-loan-maturity" value={loanForm.maturityDate} onChange={e => setLoanForm({ ...loanForm, maturityDate: e.target.value })} /></div>
+            </div>
+            <div className="space-y-1"><Label>Repayment Schedule Notes</Label><Textarea data-testid="input-loan-schedule-notes" value={loanForm.repaymentScheduleNotes} onChange={e => setLoanForm({ ...loanForm, repaymentScheduleNotes: e.target.value })} rows={2} placeholder="e.g. EMI ₹25,000/month" /></div>
+            <div className="space-y-1"><Label>Notes</Label><Textarea data-testid="input-loan-notes" value={loanForm.notes} onChange={e => setLoanForm({ ...loanForm, notes: e.target.value })} rows={2} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLoanDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-save-loan" disabled={loanMutation.isPending} onClick={() => loanMutation.mutate(loanForm)}>
+              {loanMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Loan Close Confirm */}
+      <Dialog open={!!loanCloseId} onOpenChange={o => { if (!o) setLoanCloseId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Close Loan?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This will mark the loan as closed. History is preserved.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLoanCloseId(null)}>Cancel</Button>
+            <Button variant="destructive" data-testid="button-confirm-close-loan" disabled={loanCloseMutation.isPending} onClick={() => loanCloseId && loanCloseMutation.mutate(loanCloseId)}>
+              {loanCloseMutation.isPending ? "Closing..." : "Close Loan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Equity Account Add/Edit Dialog ───────────────────────────────── */}
+      <Dialog open={eqDialogOpen} onOpenChange={setEqDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{eqEditing ? "Edit Equity Account" : "Add Equity Account"}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1"><Label>Name *</Label><Input data-testid="input-eq-name" value={eqForm.name} onChange={e => setEqForm({ ...eqForm, name: e.target.value })} placeholder="e.g. Paid-up Share Capital" /></div>
+            <div className="space-y-1"><Label>Account Type *</Label>
+              <Select value={eqForm.accountType} onValueChange={v => setEqForm({ ...eqForm, accountType: v })}>
+                <SelectTrigger data-testid="select-eq-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="share_capital">Share Capital</SelectItem>
+                  <SelectItem value="retained_earnings">Retained Earnings</SelectItem>
+                  <SelectItem value="owners_capital">Owner's Capital</SelectItem>
+                  <SelectItem value="other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Opening Balance (₹) *</Label><Input type="number" data-testid="input-eq-opening-balance" value={eqForm.openingBalance} onChange={e => setEqForm({ ...eqForm, openingBalance: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-1"><Label>Opening Balance Date *</Label><Input type="date" data-testid="input-eq-opening-date" value={eqForm.openingBalanceDate} onChange={e => setEqForm({ ...eqForm, openingBalanceDate: e.target.value })} /></div>
+            </div>
+            {eqForm.accountType === "retained_earnings" && (
+              <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-2 text-xs text-blue-700 dark:text-blue-300">
+                ERP P&amp;L will be added automatically on the Balance Sheet.
+              </div>
+            )}
+            <div className="space-y-1"><Label>Notes</Label><Textarea data-testid="input-eq-notes" value={eqForm.notes} onChange={e => setEqForm({ ...eqForm, notes: e.target.value })} rows={2} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEqDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-save-equity" disabled={eqMutation.isPending} onClick={() => eqMutation.mutate(eqForm)}>
+              {eqMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Equity Deactivate Confirm */}
+      <Dialog open={!!eqDeactivateId} onOpenChange={o => { if (!o) setEqDeactivateId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Deactivate Equity Account?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This account will be hidden from active lists. No data will be deleted.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEqDeactivateId(null)}>Cancel</Button>
+            <Button variant="destructive" data-testid="button-confirm-deactivate-equity" disabled={eqDeactivateMutation.isPending} onClick={() => eqDeactivateId && eqDeactivateMutation.mutate(eqDeactivateId)}>
+              {eqDeactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Opening Balance Add/Edit Dialog ──────────────────────────────── */}
+      <Dialog open={obDialogOpen} onOpenChange={setObDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>{obEditing ? "Edit Opening Balance" : "Add Opening Balance"}</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1"><Label>Label *</Label><Input data-testid="input-ob-label" value={obForm.label} onChange={e => setObForm({ ...obForm, label: e.target.value })} placeholder="e.g. Pre-ERP Trade Receivables" /></div>
+            <div className="space-y-1"><Label>Account Type *</Label>
+              <Select value={obForm.accountType} onValueChange={v => setObForm({ ...obForm, accountType: v })}>
+                <SelectTrigger data-testid="select-ob-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(OB_TYPE_LABELS).map(([val, label]) => <SelectItem key={val} value={val}>{label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1"><Label>Amount (₹) *</Label><Input type="number" data-testid="input-ob-amount" value={obForm.amount} onChange={e => setObForm({ ...obForm, amount: e.target.value })} placeholder="0" /></div>
+              <div className="space-y-1"><Label>As Of Date *</Label><Input type="date" data-testid="input-ob-date" value={obForm.asOfDate} onChange={e => setObForm({ ...obForm, asOfDate: e.target.value })} /></div>
+            </div>
+            <div className="space-y-1"><Label>Notes</Label><Textarea data-testid="input-ob-notes" value={obForm.notes} onChange={e => setObForm({ ...obForm, notes: e.target.value })} rows={2} /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setObDialogOpen(false)}>Cancel</Button>
+            <Button data-testid="button-save-ob" disabled={obMutation.isPending} onClick={() => obMutation.mutate(obForm)}>
+              {obMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Opening Balance Delete Confirm */}
+      <Dialog open={!!obDeleteId} onOpenChange={o => { if (!o) setObDeleteId(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Delete Opening Balance?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">This will permanently delete this opening balance entry. This action cannot be undone.</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setObDeleteId(null)}>Cancel</Button>
+            <Button variant="destructive" data-testid="button-confirm-delete-ob" disabled={obDeleteMutation.isPending} onClick={() => obDeleteId && obDeleteMutation.mutate(obDeleteId)}>
+              {obDeleteMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1903,7 +2985,7 @@ function DeactivateAccountDialog({ accountId, onCancel, onConfirm, isPending }: 
   const { data: txCountData, isLoading } = useQuery<{ count: number }>({
     queryKey: ["/api/cash-accounts", accountId, "tx-count"],
     queryFn: () => fetch(`/api/cash-accounts/${accountId}/tx-count`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("auth_token") || ""}` },
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("token") || ""}` },
     }).then(r => r.json()),
     enabled: !!accountId,
     staleTime: 0,

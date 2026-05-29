@@ -1,0 +1,22 @@
+[1G[0K⠙[1G[0K⠹[1G[0K
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K⠹[1G[0K[WA] webhook URL: WHATSAPP_WEBHOOK_BASE_URL not set (set WHATSAPP_WEBHOOK_BASE_URL to enable)
+[WA] webhook signing secret OK
+[WA WORKER] Started — poll=1500ms stuck-threshold=300000ms maxAttempts=5
+7:03:30 AM [express] serving on port 5000
+7:05:11 AM [slow] GET /api/notifications 200 in 406ms (role=admin user=d23921b0-7ecf-4cf9-8c90-13f46e927d22)
+7:05:11 AM [express] GET /api/notifications 200 in 408ms
+7:05:14 AM [express] GET /api/followups/summary 304 in 16ms
+7:05:14 AM [express] GET /api/followups/today 304 in 25ms
+7:05:14 AM [express] GET /api/payroll-status/3/2026 304 in 20ms
+7:05:14 AM [express] GET /api/dashboard/snapshot 304 in 98ms
+7:05:15 AM [express] GET /api/dashboard/stats 304 in 32ms
+7:09:49 AM [express] GET /api/notifications 304 in 5ms
+7:09:51 AM [express] GET /api/followups/summary 304 in 7ms
+7:09:51 AM [express] GET /api/payroll-status/3/2026 304 in 17ms
+7:09:51 AM [express] GET /api/followups/today 304 in 17ms
+7:09:52 AM [express] GET /api/dashboard/stats 304 in 45ms
+7:09:52 AM [express] GET /api/dashboard/snapshot 304 in 57ms
+[WA SILENCE] Alert dispatched to 1 admin(s) — last webhook 715.7h ago

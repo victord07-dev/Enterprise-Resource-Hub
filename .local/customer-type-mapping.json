@@ -1,0 +1,136 @@
+{
+  "generatedAt": "2026-04-20T06:06:51.735Z",
+  "model": "2-type (end_user | business) — GSTIN-based",
+  "totalCustomers": 16,
+  "instructions": "Review each row's `suggested` value. To override, edit the `suggested` field to one of: end_user, business. Optionally add an `operatorNote`. Then run `tsx scripts/migrate-customer-types.ts --commit`.",
+  "rows": [
+    {
+      "customerId": "0be6f833-e6d4-4710-b568-7cd36b70c57d",
+      "name": "AV Trading",
+      "gstNumber": "12EPILY1203K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "9f3a77eb-e58e-4672-8793-2508cf00c2cf",
+      "name": "Bharat Electronics Hub",
+      "gstNumber": "27AABCB3456G1ZS",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "2e6b2987-6b0c-4223-964d-96077255fc3e",
+      "name": "Chilli Trading",
+      "gstNumber": "12ZWILY0003K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "1e5dd2bb-ae72-4d29-a9eb-570c64fb7e4d",
+      "name": "GreenTech Power Solutions",
+      "gstNumber": "06AABCG5678E1ZQ",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "a735ea8e-c212-46fd-bb47-e4dd21a48563",
+      "name": "Kola Trading",
+      "gstNumber": "12EPILY6503K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "a10280a0-6b53-404a-83cd-8e809a6fb13c",
+      "name": "Laiphang",
+      "gstNumber": "12EPILY0003K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "f28eee8e-9558-4189-b7b7-fc2b1bd6f1f8",
+      "name": "Quantum",
+      "gstNumber": "12EPILY0070K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "0da6ba96-c303-462d-a0c6-07e63391de90",
+      "name": "Rajesh Solar Industries",
+      "gstNumber": "27AABCS1234D1ZP",
+      "current": "dealer",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "508cbbd7-860e-439b-86b9-c6c9d83a1efd",
+      "name": "Solar Corp Test",
+      "gstNumber": null,
+      "current": "end_user",
+      "suggested": "end_user",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "d0cabcdf-9ff8-448f-b7b4-271457e66510",
+      "name": "SunPeak Energy Pvt Ltd",
+      "gstNumber": "33AABCS9012F1ZR",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "3caf4fd4-e26e-493e-a66a-ba14d2e0d6da",
+      "name": "Test Corp Ltd",
+      "gstNumber": null,
+      "current": "end_user",
+      "suggested": "end_user",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "b520ced9-4ac1-48be-9cbb-fbd42934bc88",
+      "name": "Test Customer ABC",
+      "gstNumber": null,
+      "current": "end_user",
+      "suggested": "end_user",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "580fcba2-7ce5-4fd0-bbb7-badede5a8e96",
+      "name": "Victor D ",
+      "gstNumber": null,
+      "current": "end_user",
+      "suggested": "end_user",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "a69f9eb3-9161-4f40-8097-0e7f4781d4a8",
+      "name": "Vince Trading",
+      "gstNumber": "12EPILY0343K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "1d82a0c9-052d-411f-827f-e52f64416fc8",
+      "name": "Vishwa Commodities Trading",
+      "gstNumber": "24AABCV7890H1ZT",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    },
+    {
+      "customerId": "db7596dc-8fb1-4c7b-a1ea-07a21983a9ac",
+      "name": "Zeno Trading",
+      "gstNumber": "12EUPLY0003K",
+      "current": "end_user",
+      "suggested": "business",
+      "outstandingReceivable": 0
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, Fragment } from "react";
+﻿import { useState, useCallback, useEffect, Fragment } from "react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useLocation } from "wouter";
@@ -17,7 +17,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, XCircle, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload, Info as InfoIcon } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
-import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
+import logoPath from "@assets/HE-LOGO.jpeg";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -634,6 +634,7 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             if (!prod || (prod as any).category !== SOLAR_PANEL_CATEGORY) return null;
             const almmOk = !!(prod as any).almm;
             const dcrOk = !!(prod as any).dcrCompliant;
+            const nonDcrOk = !!(prod as any).nonDcrCompliant;
             return (
               <div className="flex items-center gap-2 flex-wrap" data-testid={`chips-almm-dcr-${i}`}>
                 <Badge
@@ -644,14 +645,34 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                   <Sun className="w-3 h-3" />
                   ALMM {almmOk ? "✓" : "✗"}
                 </Badge>
-                <Badge
-                  variant="outline"
-                  className={`text-xs px-2 py-0.5 inline-flex items-center gap-1 ${dcrOk ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}
-                  data-testid={`badge-dcr-line-${i}`}
-                >
-                  <ShieldCheck className="w-3 h-3" />
-                  DCR {dcrOk ? "✓" : "✗"}
-                </Badge>
+                {dcrOk ? (
+                  <Badge
+                    variant="outline"
+                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-emerald-500 text-emerald-700 dark:text-emerald-400"
+                    data-testid={`badge-dcr-line-${i}`}
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    DCR ✓
+                  </Badge>
+                ) : nonDcrOk ? (
+                  <Badge
+                    variant="outline"
+                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-orange-500 text-orange-700 dark:text-orange-400"
+                    data-testid={`badge-dcr-line-${i}`}
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    Non-DCR
+                  </Badge>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-amber-500 text-amber-700 dark:text-amber-400"
+                    data-testid={`badge-dcr-line-${i}`}
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    DCR ✗
+                  </Badge>
+                )}
               </div>
             );
           })()}
@@ -1169,7 +1190,7 @@ function CustomerOutstandingInline({ customerId }: { customerId: string }) {
   const { data, isLoading } = useQuery<{ outstanding: number; total: number; collected: number }>({
     queryKey: ["/api/customers", customerId, "outstanding"],
     queryFn: () => {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       return fetch(`/api/customers/${customerId}/outstanding`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
     },
     enabled: !!customerId,
@@ -1225,7 +1246,7 @@ export default function Sales() {
     if (bundleComponentsMap[bundleId]) return bundleComponentsMap[bundleId];
     try {
       const res = await fetch(`/api/products/${bundleId}/bundle-items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       if (!res.ok) return [];
       const items = await res.json();
@@ -1243,7 +1264,7 @@ export default function Sales() {
   const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
-      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
       if (!res.ok) return {};
       return res.json();
     },
@@ -1291,7 +1312,7 @@ export default function Sales() {
   }>({
     queryKey: ["/api/customers", orderForm.customerId, "outstanding"],
     queryFn: () => fetch(`/api/customers/${orderForm.customerId}/outstanding`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: orderDialogOpen && !!orderForm.customerId && !editingOrder,
   });
@@ -1305,7 +1326,7 @@ export default function Sales() {
   }>({
     queryKey: ["/api/customers", quoteForm.customerId, "outstanding"],
     queryFn: () => fetch(`/api/customers/${quoteForm.customerId}/outstanding`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: quoteDialogOpen && !!quoteForm.customerId,
   });
@@ -1337,6 +1358,7 @@ export default function Sales() {
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
+  const [paymentDialogBalance, setPaymentDialogBalance] = useState<number>(0);
   type PaymentRow = { method: string; amount: string; cashAccountId: string; reference: string };
   const [paymentRows, setPaymentRows] = useState<PaymentRow[]>([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
@@ -1367,7 +1389,7 @@ export default function Sales() {
       return;
     }
     try {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const order = orders?.find(o => o.id === orderId);
       const isDispatchEligible = order && ["confirmed", "procurement", "ready_to_ship", "partial", "dispatched", "delivered", "installed", "completed"].includes(order.status);
       const fetches: Promise<any>[] = [
@@ -1403,7 +1425,7 @@ export default function Sales() {
       return;
     }
     try {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const [itemsRes, activitiesRes, followupsRes] = await Promise.all([
         fetch(`/api/quotations/${quoteId}/items`, { headers }),
         fetch(`/api/quotations/${quoteId}/activities`, { headers }),
@@ -1750,7 +1772,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/activities`, { headers });
       const data = await res.json();
       setExpandedQuoteActivities(data);
@@ -1772,7 +1794,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
       const data = await res.json();
       setExpandedQuoteFollowups(data);
@@ -1792,7 +1814,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
       const data = await res.json();
       setExpandedQuoteFollowups(data);
@@ -1854,7 +1876,7 @@ export default function Sales() {
 
   const fetchAllQuoteFollowups = useCallback(async () => {
     if (!quotations || quotations.length === 0) return;
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
     const map: Record<string, QuotationFollowup[]> = {};
     await Promise.all(
       quotations.map(async (q) => {
@@ -1905,7 +1927,7 @@ export default function Sales() {
     });
     try {
       const res = await fetch(`/api/sales-orders/${order.id}/items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -1958,7 +1980,7 @@ export default function Sales() {
     setQuoteTouchedLines(new Set()); // Phase 5: editing existing quote — pre-existing lines are untouched
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -2016,7 +2038,10 @@ export default function Sales() {
   };
 
   const openRecordPayment = (orderId: string) => {
+    const order = (orders ?? []).find(o => o.id === orderId);
+    const balance = order ? Math.max(0, Number(order.totalAmount) - Number(order.paidAmount || 0)) : 0;
     setPaymentOrderId(orderId);
+    setPaymentDialogBalance(balance);
     setPaymentRows([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
     setPaymentDate(new Date().toISOString().slice(0, 10));
     setCollapsedPaymentRows([]);
@@ -2045,7 +2070,7 @@ export default function Sales() {
     setDispatchDialogOpen(true);
     setDispatchSummaryLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       const res = await fetch(`/api/sales-orders/${orderId}/dispatch-summary`, { headers });
       const data = await res.json();
       setDispatchSummary(Array.isArray(data.items) ? data.items : []);
@@ -2058,7 +2083,7 @@ export default function Sales() {
 
   const createFromSOMutation = useMutation({
     mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
-      const token = localStorage.getItem("token");
+      const token = sessionStorage.getItem("token");
       const res = await fetch(`/api/delivery-challans/create-from-so/${orderId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -2085,7 +2110,7 @@ export default function Sales() {
       }
       setDispatchDialogOpen(false);
       if (expandedOrderId) {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
         fetch(`/api/delivery-challans/by-order/${expandedOrderId}`, { headers })
           .then(r => r.json())
           .then(d => setOrderChallansMap(prev => ({ ...prev, [expandedOrderId]: Array.isArray(d) ? d : [] })));
@@ -2099,7 +2124,7 @@ export default function Sales() {
   const downloadQuotePDF = async (q: Quotation) => {
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
       });
       if (!res.ok) throw new Error("Failed to fetch items");
       const qItems: QuotationItem[] = await res.json();
@@ -2194,7 +2219,7 @@ export default function Sales() {
     setWaDialogOpen(true);
     if (customer?.phone) {
       try {
-        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
         if (convs.ok) {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
@@ -2233,7 +2258,7 @@ export default function Sales() {
     // Check if there's an existing open conversation/window for this phone
     if (customer?.phone) {
       try {
-        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
         if (convs.ok) {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
@@ -2608,7 +2633,7 @@ export default function Sales() {
                                           <Truck className="w-3 h-3 mr-1" /> Create Dispatch Challan
                                         </Button>
                                       )}
-                                      {!isReadOnly && (
+                                      {!isReadOnly && (Number(order.totalAmount) - Number(order.paidAmount || 0)) > 0 && (
                                         <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
                                           <CreditCard className="w-3 h-3 mr-1" /> Record Payment
                                         </Button>
@@ -2717,7 +2742,7 @@ export default function Sales() {
                                                   onClick={async (e) => {
                                                     e.stopPropagation();
                                                     if (!confirm(`Issue Delivery Order for Challan #${challan.challanNumber}?`)) return;
-                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/issue-delivery-order`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" } });
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/issue-delivery-order`, { method: "POST", headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}`, "Content-Type": "application/json" } });
                                                     if (res.ok) {
                                                       const updated = await res.json();
                                                       setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
@@ -2735,7 +2760,7 @@ export default function Sales() {
                                                     e.stopPropagation();
                                                     const reason = window.prompt(`Cancel Challan #${challan.challanNumber}?\nEnter reason:`);
                                                     if (!reason?.trim()) return;
-                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" }, body: JSON.stringify({ cancellationReason: reason }) });
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}`, "Content-Type": "application/json" }, body: JSON.stringify({ cancellationReason: reason }) });
                                                     if (res.ok) {
                                                       const updated = await res.json();
                                                       setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
@@ -2854,7 +2879,7 @@ export default function Sales() {
                                       setConvertingQuoteId(q.id);
                                       try {
                                         const result = await fetch(`/api/customers/${q.customerId}/outstanding`, {
-                                          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                                          headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
                                         }).then((r) => r.json());
                                         if (result.outstanding > 0) {
                                           if (isAdmin) {
@@ -3799,13 +3824,26 @@ export default function Sales() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Record Payment</DialogTitle>
-            <DialogDescription>Add one or more payment lines for this order</DialogDescription>
+            <DialogDescription>
+              Add one or more payment lines for this order.{" "}
+              <span className="font-medium text-foreground">Outstanding balance: ₹{paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+            </DialogDescription>
           </DialogHeader>
+          {(() => {
+            const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+            const exceedsBalance = totalEntered > paymentDialogBalance && totalEntered > 0;
+            return (
           <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+            {exceedsBalance && (
+              <div className="rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                Total entered (₹{totalEntered.toLocaleString("en-IN", { minimumFractionDigits: 2 })}) exceeds the outstanding balance of ₹{paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}. Reduce the amount.
+              </div>
+            )}
             {paymentRows.map((row, idx) => {
               const isCollapsed = collapsedPaymentRows.includes(idx);
               const accounts = getPaymentAccounts(row.method);
               const accountName = accounts.find(a => a.id === row.cashAccountId)?.name;
+              const rowExceeds = exceedsBalance;
               const updateRow = (patch: Partial<PaymentRow>) =>
                 setPaymentRows(rows => rows.map((r, i) => i === idx ? { ...r, ...patch } : r));
               return (
@@ -3860,8 +3898,8 @@ export default function Sales() {
                           <Label className="text-xs">Amount (₹)</Label>
                           <Input
                             data-testid={`input-payment-amount-${idx}`}
-                            type="number" min="0" step="0.01"
-                            className="h-8 text-sm"
+                            type="number" min="0" step="0.01" max={paymentDialogBalance}
+                            className={`h-8 text-sm${rowExceeds ? " border-red-400 focus-visible:ring-red-400" : ""}`}
                             value={row.amount}
                             onChange={(e) => updateRow({ amount: e.target.value })}
                           />
@@ -3926,14 +3964,25 @@ export default function Sales() {
               />
             </div>
           </div>
+            );
+          })()}
           <DialogFooter>
             <Button
               data-testid="button-submit-payment"
-              disabled={recordPaymentMutation.isPending || paymentRows.some(r => !r.amount || !r.cashAccountId)}
+              disabled={
+                recordPaymentMutation.isPending ||
+                paymentRows.some(r => !r.amount || !r.cashAccountId) ||
+                paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0) > paymentDialogBalance
+              }
               onClick={async () => {
                 const invalid = paymentRows.find(r => !r.cashAccountId);
                 if (invalid) {
                   toast({ title: "Account required", description: "Select an account for every payment line.", variant: "destructive" });
+                  return;
+                }
+                const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+                if (totalEntered > paymentDialogBalance) {
+                  toast({ title: "Amount exceeds balance", description: `Maximum payable is ₹${paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}.`, variant: "destructive" });
                   return;
                 }
                 if (!paymentOrderId) return;

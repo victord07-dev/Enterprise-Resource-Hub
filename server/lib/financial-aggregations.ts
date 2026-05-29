@@ -23,6 +23,8 @@ import {
   customerPayments, supplierPayments, expenses,
   salesInvoices, supplierInvoices, customers, suppliers,
   goodsReceiptNotes, quotations, expenseCategories,
+  fixedAssets, loans, equityAccounts, openingBalances,
+  dailyPriceSheetLots, dailyPriceSheets,
 } from "@shared/schema";
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
@@ -461,10 +463,11 @@ export interface PLStatement {
     creditNoteCount: number;
   };
   cogs: {
-    purchases: number;           // supplier_invoices ex-GST proxy
-    label: string;               // "Purchases (proxy for COGS)"
-    caveat: string;              // operator-mandated note
-    supplierInvoiceCount: number;
+    amount: number;              // actual COGS: dispatched qty × weighted-avg GRN cost
+    label: string;               // "Cost of Goods Sold"
+    caveat: string;              // explanatory note
+    challanCount: number;        // finalized delivery challans contributing to COGS
+    productCount: number;        // distinct products dispatched in period
   };
   grossProfit: number;
   operatingExpenses: {
@@ -479,7 +482,7 @@ export interface PLStatement {
    * per Q3 lock. Always exactly 12 entries, zero-filled where no data.
    *   revenue   = sales_invoices.subtotal (ex-GST), excludes cancelled
    *   expense   = expenses.amount in month
-   *   netProfit = revenue − sales_returns − purchases − expense
+   *   netProfit = revenue − sales_returns − cogs − expense
    */
   trend: PLTrendPoint[];
   trendWindow: { from: string; to: string };  // ISO yyyy-mm-dd, info for chart annotation
@@ -493,12 +496,13 @@ export interface PLTrendPoint {
   netProfit: number;
 }
 
-const COGS_LABEL = "Purchases (proxy for COGS)";
+const COGS_LABEL = "Cost of Goods Sold";
 const COGS_CAVEAT =
-  "Purchases shown as proxy for Cost of Goods Sold. True FIFO COGS based on " +
-  "stock dispatch tracing requires further cost accounting work. Use this " +
-  "figure for trend analysis; verify against year-end stock counts for " +
-  "accurate gross margin.";
+  "COGS read from the immutable cogs_entries journal — unit cost and amount are frozen at dispatch time " +
+  "(buying price + pro-rata GRN delivery charge, FIFO per inventory lot). " +
+  "Historical P&L is not affected by future GRN cost revisions. " +
+  "Products dispatched without a confirmed GRN contribute ₹0 — ensure all GRNs are entered " +
+  "before relying on this figure for margin analysis.";
 
 export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
   const from = dayStart(p.from);
@@ -541,24 +545,37 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
   `);
   const cnRow = cnResult.rows[0] as any;
 
-  // ─── Purchases (proxy for COGS): supplier_invoices ex-GST ────────────────
-  // COALESCE(subtotal, total_amount - tax_amount) — D1 caveat in output.
-  const [purchRow] = await db
-    .select({
-      total: sql<string>`COALESCE(SUM(
-        COALESCE(
-          ${supplierInvoices.subtotal}::numeric,
-          (${supplierInvoices.totalAmount}::numeric - COALESCE(${supplierInvoices.taxAmount}::numeric, 0))
-        )
-      ), 0)`,
-      cnt: sql<number>`COUNT(*)::int`,
-    })
-    .from(supplierInvoices)
-    .where(and(
-      buildRange(supplierInvoices.invoiceDate),
-      ne(supplierInvoices.status, "cancelled"),
-      ne(supplierInvoices.uploadStatus, "cancelled"),
-    ));
+  // ─── COGS: finalized challan dispatches × weighted-avg GRN cost ─────────
+  //
+  // Method: Weighted Average Cost (AVCO) per product across all confirmed GRNs.
+  //   unit_cost = (SUM(buying_price × received_qty) + SUM(delivery_apportionment × received_qty))
+  //               / SUM(received_qty)
+  // This is consistent with the inventory valuation primary path (computeInventoryValuation).
+  //
+  // Dispatch date: COALESCE(dispatch_date, created_at) handles challans where
+  //   dispatch_date was not explicitly set.
+  //
+  // Products with no confirmed GRN contribute ₹0 to COGS (LEFT JOIN → NULL → 0).
+  // This is correct: if no GRN exists, the purchase cost is unknown and cannot be
+  // expensed. Ensure GRNs are entered for all received goods.
+  //
+  // Only finalized challans count: dispatched | delivered | completed.
+  // Draft / pending / cancelled challans are excluded.
+  const cogsDateFrom = from ? from.toISOString().slice(0, 10) : null;
+  const cogsDateTo   = to   ? to.toISOString().slice(0, 10)   : null;
+
+  // ── Phase 2: read COGS from the immutable cogs_entries journal ──────────────
+  // unit_cost and cogs_amount are frozen at dispatch time — no retroactive drift.
+  const cogsResult = await db.execute(sql`
+    SELECT
+      COALESCE(SUM(ce.cogs_amount::numeric), 0) AS total_cogs,
+      COUNT(DISTINCT ce.challan_id)             AS challan_count,
+      COUNT(DISTINCT ce.product_id)             AS product_count
+    FROM cogs_entries ce
+    WHERE 1=1
+      ${cogsDateFrom ? sql`AND ce.dispatched_at::date >= ${cogsDateFrom}::date` : sql``}
+      ${cogsDateTo   ? sql`AND ce.dispatched_at::date <= ${cogsDateTo}::date`   : sql``}
+  `);
 
   // ─── Operating Expenses by category ──────────────────────────────────────
   const opexRows = await db
@@ -578,11 +595,12 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
     .from(expenses)
     .where(buildRange(expenses.expenseDate));
 
+  const cogsRow = cogsResult.rows[0] as any;
   const salesRevenue = Number(salesRow?.total ?? 0);
   const salesReturns = Number(cnRow?.total ?? 0);
   const netRevenue = salesRevenue - salesReturns;
-  const purchases = Number(purchRow?.total ?? 0);
-  const grossProfit = netRevenue - purchases;
+  const cogs = Number(cogsRow?.total_cogs ?? 0);
+  const grossProfit = netRevenue - cogs;
   const opexByCategory: PLOpexCategoryLine[] = opexRows.map((r) => ({
     categoryId: r.categoryId ?? null,
     categoryName: r.categoryName ?? "Uncategorised",
@@ -592,7 +610,8 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
   const netProfitBeforeTax = grossProfit - opexTotal;
 
   const notes: string[] = [
-    "P&L is net-of-GST. Revenue = sales invoice subtotal (ex-GST). Purchases = supplier invoice subtotal (ex-GST proxy).",
+    "P&L is net-of-GST. Revenue = sales invoice subtotal (ex-GST).",
+    "COGS = immutable dispatch-time journal (cogs_entries). Unit cost frozen at dispatch per FIFO lot (ex-GST).",
     "Net Profit shown is Before Income Tax. GST and income tax not modelled.",
   ];
   if (Number(cnRow?.cnt ?? 0) === 0) {
@@ -609,10 +628,11 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
       creditNoteCount: Number(cnRow?.cnt ?? 0),
     },
     cogs: {
-      purchases,
+      amount: cogs,
       label: COGS_LABEL,
       caveat: COGS_CAVEAT,
-      supplierInvoiceCount: purchRow?.cnt ?? 0,
+      challanCount: Number(cogsRow?.challan_count ?? 0),
+      productCount: Number(cogsRow?.product_count ?? 0),
     },
     grossProfit,
     operatingExpenses: {
@@ -655,7 +675,7 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
     .toISOString().slice(0, 10);
 
   // Run 4 month-bucketed queries in parallel
-  const [revRes, retRes, purchRes, expRes] = await Promise.all([
+  const [revRes, retRes, cogsRes, expRes] = await Promise.all([
     db.execute(sql`
       SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
              COALESCE(SUM(subtotal::numeric), 0) AS total
@@ -672,12 +692,15 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
         AND created_at::date >= ${earliestStr}::date AND created_at::date <= ${latestStr}::date
       GROUP BY 1
     `),
+    // Monthly COGS: read from immutable cogs_entries journal — consistent with
+    // getPLStatement. dispatched_at is frozen at dispatch time, so trend is stable.
     db.execute(sql`
-      SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
-             COALESCE(SUM(COALESCE(subtotal::numeric, total_amount::numeric - COALESCE(tax_amount::numeric, 0))), 0) AS total
-      FROM supplier_invoices
-      WHERE status <> 'cancelled' AND upload_status <> 'cancelled'
-        AND invoice_date >= ${earliestStr}::date AND invoice_date <= ${latestStr}::date
+      SELECT
+        to_char(date_trunc('month', ce.dispatched_at::date), 'YYYY-MM') AS m,
+        COALESCE(SUM(ce.cogs_amount::numeric), 0)                       AS total
+      FROM cogs_entries ce
+      WHERE ce.dispatched_at::date >= ${earliestStr}::date
+        AND ce.dispatched_at::date <= ${latestStr}::date
       GROUP BY 1
     `),
     db.execute(sql`
@@ -694,21 +717,21 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
     for (const row of r.rows as any[]) m.set(row.m, Number(row.total));
     return m;
   };
-  const revMap = toMap(revRes);
-  const retMap = toMap(retRes);
-  const purchMap = toMap(purchRes);
-  const expMap = toMap(expRes);
+  const revMap  = toMap(revRes);
+  const retMap  = toMap(retRes);
+  const cogsMap = toMap(cogsRes);
+  const expMap  = toMap(expRes);
 
   const trend: PLTrendPoint[] = months.map(({ key }) => {
     const revenue = revMap.get(key) ?? 0;
     const returns = retMap.get(key) ?? 0;
-    const purchases = purchMap.get(key) ?? 0;
+    const cogs    = cogsMap.get(key) ?? 0;
     const expense = expMap.get(key) ?? 0;
     return {
       month: key,
       revenue,
       expense,
-      netProfit: revenue - returns - purchases - expense,
+      netProfit: revenue - returns - cogs - expense,
     };
   });
 
@@ -1531,7 +1554,7 @@ export interface CashPositionResult {
 export async function getCashPositionReport(asOf?: string): Promise<CashPositionResult> {
   const asOfNorm = normIso(asOf) ?? new Date().toISOString().slice(0, 10);
   const accountsResult = await db.execute(sql`
-    SELECT id, name, account_type FROM cash_accounts ORDER BY account_type, name
+    SELECT id, name, type FROM cash_accounts ORDER BY type, name
   `);
   const accounts: CashPositionAccount[] = [];
   let totalBalance = 0, totalBank = 0, totalCash = 0;
@@ -1540,7 +1563,7 @@ export async function getCashPositionReport(asOf?: string): Promise<CashPosition
     const a: CashPositionAccount = {
       accountId: String(acct.id),
       accountName: String(acct.name),
-      accountType: String(acct.account_type),
+      accountType: String(acct.type),
       balance,
     };
     accounts.push(a);
@@ -1577,16 +1600,15 @@ async function fetchLedgerLines(accountId: string | null, fromNorm: string, toNo
     SELECT
       cp.payment_date::text AS txn_date,
       'Receipt' AS type,
-      COALESCE(cp.payment_method, 'Receipt') AS description,
+      COALESCE(cp.method, 'Receipt') AS description,
       COALESCE(c.name, '') AS party,
-      COALESCE(cp.reference_number, '') AS reference,
+      COALESCE(cp.reference, '') AS reference,
       0::numeric AS debit,
       cp.amount::numeric AS credit,
       cp.cash_account_id AS account_id,
       COALESCE(ca1.name, '') AS account_name
     FROM customer_payments cp
-    LEFT JOIN sales_invoices si ON si.id = cp.invoice_id
-    LEFT JOIN customers c ON c.id = si.customer_id
+    LEFT JOIN customers c ON c.id = cp.customer_id
     LEFT JOIN cash_accounts ca1 ON ca1.id = cp.cash_account_id
     WHERE cp.payment_date BETWEEN ${fromNorm} AND ${toNorm}
       ${acctFilter}
@@ -1598,14 +1620,13 @@ async function fetchLedgerLines(accountId: string | null, fromNorm: string, toNo
       'Payment' AS type,
       COALESCE(sp.payment_method, 'Supplier Payment') AS description,
       COALESCE(s.name, '') AS party,
-      COALESCE(sp.reference_number, '') AS reference,
+      COALESCE(sp.reference, '') AS reference,
       sp.amount::numeric AS debit,
       0::numeric AS credit,
       sp.cash_account_id AS account_id,
       COALESCE(ca2.name, '') AS account_name
     FROM supplier_payments sp
-    LEFT JOIN supplier_invoices siv ON siv.id = sp.supplier_invoice_id
-    LEFT JOIN suppliers s ON s.id = siv.supplier_id
+    LEFT JOIN suppliers s ON s.id = sp.supplier_id
     LEFT JOIN cash_accounts ca2 ON ca2.id = sp.cash_account_id
     WHERE sp.payment_date BETWEEN ${fromNorm} AND ${toNorm}
       ${acctFilterSP}
@@ -2174,5 +2195,399 @@ export async function getProductWiseProfit(
   return {
     rows: rows.sort((a, b) => b.gross_profit - a.gross_profit),
     period: { from: fromNorm, to: toNorm },
+  };
+}
+
+// ── Phase 4D-B: Balance Sheet ─────────────────────────────────────────────────
+
+/**
+ * Compute inventory valuation using FIFO lot costs from daily_price_sheet_lots.
+ * Primary: SUM(remaining_qty × landed_cost) per active lot (remaining_qty > 0).
+ * Fallback: GRN-walk blended cost for products with no price-sheet lots.
+ * Respects asOfDate — only lots whose sheet was created on or before asOfDate.
+ */
+export async function computeInventoryValuation(asOfDate?: string): Promise<number> {
+  // Option C: single-source inventory valuation from inventory_lots.
+  //
+  // inventory_lots is the accounting-layer perpetual cost ledger, created
+  // automatically at GRN confirmation and depleted FIFO at dispatch.
+  // unit_cost is frozen at receipt time — pricing changes never affect it.
+  //
+  // asOf filter: include only lots created on or before the as-of date
+  // (i.e. GRNs confirmed ≤ asOf). remaining_qty reflects all dispatches
+  // that have already happened via FIFO depletion.
+  //
+  // This replaces both the old primary path (daily_price_sheet_lots × GRN cost)
+  // and the old fallback path (GRN received − dispatched), which were
+  // structurally coupled to the pricing workflow.
+  const asOf = normIso(asOfDate) ?? new Date().toISOString().slice(0, 10);
+
+  const result = await db.execute(sql`
+    SELECT COALESCE(SUM(remaining_qty::numeric * unit_cost::numeric), 0) AS total_value
+    FROM inventory_lots
+    WHERE remaining_qty > 0
+      AND status = 'active'
+      AND received_date::date <= ${asOf}::date
+  `);
+
+  return Number((result.rows[0] as any)?.total_value ?? 0);
+}
+
+/**
+ * Compute SLM net book value for a single fixed asset as of asOfDate.
+ * Pro-rata from month of purchase. Capped at (purchase_value - salvage_value).
+ */
+function computeAssetNBV(asset: any, asOf: Date): number {
+  const pv   = Number(asset.purchaseValue);
+  const sv   = Number(asset.salvageValue ?? 0);
+  const life = Number(asset.usefulLifeYears);
+  if (!pv || !life) return pv;
+
+  if (asset.accumulatedDepOverride != null) {
+    return pv - Number(asset.accumulatedDepOverride);
+  }
+
+  const purchaseDate  = new Date(asset.purchaseDate);
+  const monthsElapsed = (asOf.getFullYear() - purchaseDate.getFullYear()) * 12
+                      + (asOf.getMonth() - purchaseDate.getMonth());
+  const yearsElapsed  = Math.min(Math.max(monthsElapsed / 12, 0), life);
+  const annualDep     = (pv - sv) / life;
+  const accumulated   = Math.min(annualDep * yearsElapsed, pv - sv);
+  return pv - accumulated;
+}
+
+export interface BalanceSheetSection {
+  label:    string;
+  amount:   number;
+  children: { label: string; amount: number; note?: string }[];
+}
+
+export interface BalanceSheetResult {
+  asOf:         string;
+  assets: {
+    nonCurrent:   BalanceSheetSection[];
+    current:      BalanceSheetSection[];
+    totalNonCurrentAssets: number;
+    totalCurrentAssets:    number;
+    totalAssets:           number;
+  };
+  liabilities: {
+    current:      BalanceSheetSection[];
+    nonCurrent:   BalanceSheetSection[];
+    totalCurrentLiabilities:    number;
+    totalNonCurrentLiabilities: number;
+    totalLiabilities:           number;
+  };
+  equity: {
+    lines:        { label: string; amount: number; note?: string }[];
+    totalEquity:  number;
+  };
+  totalLiabilitiesAndEquity: number;
+  balanced: boolean;
+}
+
+export async function computeBalanceSheet(asOfDate?: string): Promise<BalanceSheetResult> {
+  const asOf     = normIso(asOfDate) ?? new Date().toISOString().slice(0, 10);
+  const asOfDate_ = new Date(asOf + "T23:59:59.999");
+
+  // ── ASSETS ──────────────────────────────────────────────────────────────────
+
+  // 1. Fixed Assets — active only, NBV computed
+  const faRows = await db.select().from(fixedAssets).where(eq(fixedAssets.isActive, true));
+  const totalFixedAssets = faRows.reduce((sum, a) => sum + computeAssetNBV(a, asOfDate_), 0);
+
+  // 2. Cash & Bank — computed balances per account
+  const cashAcctRows = await db.select().from(cashAccounts);
+  const cashBalances = await Promise.all(
+    cashAcctRows.map(async (a) => ({
+      label:  a.name,
+      amount: await storage.computeAccountBalance(a.id, asOf),
+    }))
+  );
+  const totalCash = cashBalances.reduce((s, r) => s + r.amount, 0);
+
+  // 3. Accounts Receivable — outstanding sales invoices as of asOf
+  //
+  // R4 fix: upload_status <> 'cancelled' excludes NULL rows in SQL (NULL <> x = NULL, not TRUE).
+  //         Changed to IS NULL OR <> 'cancelled' to match the defensive AP pattern.
+  //
+  // R1 fix: GREATEST(..., 0) per invoice prevents overpaid invoices from contributing
+  //         negative values to the AR total (mirrors existing AP-side protection).
+  const arResult = await db.execute(sql`
+    SELECT COALESCE(SUM(
+      GREATEST(
+        si.grand_total::numeric
+        - COALESCE((SELECT SUM(cp.amount::numeric) FROM customer_payments cp WHERE cp.invoice_id = si.id), 0)
+        - COALESCE(si.credited_amount::numeric, 0),
+        0
+      )
+    ), 0) AS outstanding
+    FROM sales_invoices si
+    WHERE si.status <> 'cancelled'
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      AND si.invoice_date::date <= ${asOf}::date
+  `);
+  const totalAR = Math.max(0, Number((arResult.rows[0] as any)?.outstanding ?? 0));
+
+  // 4. Inventory valuation (FIFO lots + GRN fallback)
+  const totalInventory = await computeInventoryValuation(asOf);
+
+  // 5. Advance to Suppliers — historical payment-based query
+  //
+  // WHY: B3 (GRN-confirm lifecycle) zeroes po.advance_paid when it links the
+  // advance to a supplier invoice.  Reading today's po.advance_paid for past-date
+  // balance sheets therefore shows ₹0 even if the advance existed on asOf.
+  //
+  // FIX: Query supplier_payments directly.  A payment counts as "advance to
+  // suppliers" at asOf if:
+  //   (a) still unlinked today  — payment_type='advance', supplier_invoice_id IS NULL,
+  //       paid on or before asOf, OR
+  //   (b) B3 has since linked it — supplier_invoice_id is set, but the linked
+  //       invoice was created AFTER asOf (meaning at asOf the advance had been
+  //       paid but no invoice existed yet).
+  const poAdvanceResult = await db.execute(sql`
+    SELECT COALESCE(SUM(sp.amount::numeric), 0) AS total
+    FROM supplier_payments sp
+    LEFT JOIN supplier_invoices si ON si.id = sp.supplier_invoice_id
+    WHERE sp.payment_date::date <= ${asOf}::date
+      AND (
+        (sp.payment_type = 'advance' AND sp.supplier_invoice_id IS NULL)
+        OR (sp.supplier_invoice_id IS NOT NULL
+            AND sp.payment_date::date < si.created_at::date
+            AND si.created_at::date > ${asOf}::date)
+      )
+  `);
+  const liveAdvanceToSuppliers = Number((poAdvanceResult.rows[0] as any)?.total ?? 0);
+  const obAdvanceToSuppliers   = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'advance_to_suppliers' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalAdvanceToSuppliers = liveAdvanceToSuppliers + Number((obAdvanceToSuppliers.rows[0] as any)?.total ?? 0);
+
+  // 6. Prepaid Expenses (pre-ERP only for now)
+  const obPrepaid = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'prepaid_expenses' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalPrepaid = Number((obPrepaid.rows[0] as any)?.total ?? 0);
+
+  // 7. Other Current Assets (pre-ERP)
+  const obOtherCA = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'other_current_asset' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalOtherCA = Number((obOtherCA.rows[0] as any)?.total ?? 0);
+
+  // ── LIABILITIES ──────────────────────────────────────────────────────────────
+
+  // 8. Accounts Payable — outstanding supplier invoices
+  //
+  // Three fixes vs the old query to make this agree with the Supplier Aging report
+  // (the AP subsidiary ledger):
+  //
+  //   a) GREATEST(…, 0) per-invoice inside the SUM — prevents an overpaid invoice
+  //      from subtracting from other invoices' balances (the old query used a raw
+  //      SUM which allowed negative contributions, understating AP).
+  //
+  //   b) Removed `AND payment_type = 'regular'` from the payments subquery — B3
+  //      already changes advance payments to 'regular' when it links them to an
+  //      invoice, but using no filter is more defensive and matches
+  //      computeSupplierInvoiceOutstanding exactly.
+  //
+  //   c) Added upload_status filter to exclude soft-deleted (cancelled upload) rows,
+  //      consistent with the aging report and all other outstanding queries.
+  //
+  //   d) Removed po.advance_paid deduction (Balance Sheet fix, 2026-05).
+  //      Pre-fix verification query (diag/ap-advance-check) confirmed 0 active
+  //      invoices had both po.advance_paid > 0 AND linked supplier_payments — zero
+  //      regression risk.  Rationale for removal:
+  //        • After B3 runs, the advance payment row gets supplier_invoice_id set, so
+  //          it is already captured in SUM(sp.amount WHERE supplier_invoice_id = si.id).
+  //          Subtracting po.advance_paid again double-counts the deduction.
+  //        • Before B3 runs (advance not yet linked), po.advance_paid would be the
+  //          only deduction — but the advance itself is shown as "Advance to Suppliers"
+  //          on the asset side, so AP should show the FULL invoice amount outstanding
+  //          until the invoice is actually paid.
+  //        • Unlinked advances are correctly represented in the Advance to Suppliers
+  //          asset query (see section 5 above).  No AP deduction needed.
+  const apResult = await db.execute(sql`
+    SELECT COALESCE(SUM(
+      GREATEST(
+        si.total_amount::numeric
+        - COALESCE((SELECT SUM(sp.amount::numeric) FROM supplier_payments sp
+                    WHERE sp.supplier_invoice_id = si.id), 0),
+        0
+      )
+    ), 0) AS outstanding
+    FROM supplier_invoices si
+    WHERE si.status NOT IN ('cancelled', 'paid')
+      AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
+      AND si.invoice_date::date <= ${asOf}::date
+  `);
+  const totalAP = Number((apResult.rows[0] as any)?.outstanding ?? 0);
+
+  // 9. Loans — classified by remaining maturity vs asOf
+  const loanRows = await db.select().from(loans).where(eq(loans.status, "active"));
+  const shortTermLoans: { label: string; amount: number }[] = [];
+  const longTermLoans:  { label: string; amount: number }[] = [];
+  for (const loan of loanRows) {
+    const outstanding = Number(loan.outstandingAmount);
+    if (!loan.maturityDate) {
+      shortTermLoans.push({ label: loan.lenderName, amount: outstanding });
+    } else {
+      const daysLeft = (new Date(loan.maturityDate).getTime() - asOfDate_.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysLeft <= 365) {
+        shortTermLoans.push({ label: loan.lenderName, amount: outstanding });
+      } else {
+        longTermLoans.push({ label: loan.lenderName, amount: outstanding });
+      }
+    }
+  }
+  const totalShortTermLoans = shortTermLoans.reduce((s, l) => s + l.amount, 0);
+  const totalLongTermLoans  = longTermLoans.reduce((s, l) => s + l.amount, 0);
+
+  // 10. Advance from Customers = actual cash received on SOs not yet linked to any invoice
+  //     as of asOf.
+  //
+  // R2 fix: Fix #7 (partial-dispatch advance allocation) sets invoice_id on advance records
+  //         at dispatch time.  A naive WHERE invoice_id IS NULL therefore understates
+  //         historical advances for any asOf date before the dispatch.
+  //
+  //         A payment counts as "advance from customers" at asOf if:
+  //           (a) still unlinked today — invoice_id IS NULL, paid on or before asOf, OR
+  //           (b) Fix #7 has since linked it — invoice_id is set, but the linked invoice
+  //               was created AFTER asOf (meaning at asOf the advance existed but no
+  //               invoice had been raised yet).
+  //
+  //         For split advances (Record A linked + Record B unlinked):
+  //           Record A is captured by branch (b) — invoice_date > asOf
+  //           Record B is captured by branch (a) — invoice_id IS NULL
+  //           Together they reconstruct the original advance amount correctly.
+  const soAdvanceResult = await db.execute(sql`
+    SELECT COALESCE(SUM(cp.amount::numeric), 0) AS total
+    FROM customer_payments cp
+    WHERE cp.payment_date::date <= ${asOf}::date
+      AND (
+        cp.invoice_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM sales_invoices si
+          WHERE si.id = cp.invoice_id
+            AND si.invoice_date::date <= ${asOf}::date
+        )
+      )
+  `);
+  const liveAdvanceFromCustomers = Number((soAdvanceResult.rows[0] as any)?.total ?? 0);
+  const obAdvanceFromCustomers   = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'advance_from_customers' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalAdvanceFromCustomers = liveAdvanceFromCustomers + Number((obAdvanceFromCustomers.rows[0] as any)?.total ?? 0);
+
+  // 11. Other Current Liabilities (pre-ERP)
+  const obOtherCL = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'other_current_liability' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalOtherCL = Number((obOtherCL.rows[0] as any)?.total ?? 0);
+
+  // 12. Accounts Payable from opening balances
+  const obAP = await db.execute(sql`
+    SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM opening_balances
+    WHERE account_type = 'accounts_payable' AND as_of_date::date <= ${asOf}::date
+  `);
+  const totalObAP = Number((obAP.rows[0] as any)?.total ?? 0);
+
+  // ── EQUITY ───────────────────────────────────────────────────────────────────
+
+  // 13. Equity accounts (active only)
+  const eqRows = await db.select().from(equityAccounts).where(eq(equityAccounts.isActive, true));
+
+  // 14. Net profit from P&L (all time up to asOf for retained earnings auto-add)
+  const plResult = await getPLStatement({ from: undefined, to: asOf });
+  const erpNetProfit = plResult.netProfitBeforeTax;
+
+  const equityLines: { label: string; amount: number; note?: string }[] = [];
+  for (const eq_ of eqRows) {
+    const base = Number(eq_.openingBalance);
+    if (eq_.accountType === "retained_earnings") {
+      equityLines.push({
+        label:  eq_.name,
+        amount: base + erpNetProfit,
+        note:   `Opening ₹${base.toLocaleString("en-IN", { maximumFractionDigits: 0 })} + ERP P&L ₹${erpNetProfit.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`,
+      });
+    } else {
+      equityLines.push({ label: eq_.name, amount: base });
+    }
+  }
+  // If no retained earnings row exists, still surface ERP net profit
+  const hasRetained = eqRows.some(e => e.accountType === "retained_earnings");
+  if (!hasRetained && erpNetProfit !== 0) {
+    equityLines.push({
+      label:  "Current Year Profit (ERP)",
+      amount: erpNetProfit,
+      note:   "Auto from P&L — add a Retained Earnings equity account to combine with prior years",
+    });
+  }
+  const totalEquity = equityLines.reduce((s, l) => s + l.amount, 0);
+
+  // ── TOTALS ───────────────────────────────────────────────────────────────────
+
+  const totalNonCurrentAssets = totalFixedAssets;
+  const totalCurrentAssets    = totalCash + totalAR + totalInventory
+                               + totalAdvanceToSuppliers + totalPrepaid + totalOtherCA;
+  const totalAssets            = totalNonCurrentAssets + totalCurrentAssets;
+
+  const totalCurrentLiabilities    = totalAP + totalObAP + totalShortTermLoans
+                                    + totalAdvanceFromCustomers + totalOtherCL;
+  const totalNonCurrentLiabilities = totalLongTermLoans;
+  const totalLiabilities           = totalCurrentLiabilities + totalNonCurrentLiabilities;
+
+  const totalLiabilitiesAndEquity = totalLiabilities + totalEquity;
+  const balanced = Math.abs(totalAssets - totalLiabilitiesAndEquity) < 0.01;
+
+  return {
+    asOf,
+    assets: {
+      nonCurrent: [{
+        label: "Fixed Assets",
+        amount: totalFixedAssets,
+        children: faRows.map(a => ({
+          label:  a.name,
+          amount: computeAssetNBV(a, asOfDate_),
+          note:   a.category,
+        })),
+      }],
+      current: [
+        { label: "Cash & Bank",            amount: totalCash,               children: cashBalances },
+        { label: "Accounts Receivable",    amount: totalAR,                 children: [] },
+        { label: "Inventory",              amount: totalInventory,           children: [] },
+        { label: "Advance to Suppliers",   amount: totalAdvanceToSuppliers,  children: [] },
+        { label: "Prepaid Expenses",       amount: totalPrepaid,             children: [] },
+        { label: "Other Current Assets",   amount: totalOtherCA,             children: [] },
+      ].filter(s => s.amount !== 0),
+      totalNonCurrentAssets,
+      totalCurrentAssets,
+      totalAssets,
+    },
+    liabilities: {
+      current: [
+        { label: "Accounts Payable",         amount: totalAP + totalObAP,           children: [] },
+        { label: "Short-term Loans",         amount: totalShortTermLoans,           children: shortTermLoans },
+        { label: "Advance from Customers",   amount: totalAdvanceFromCustomers,     children: [] },
+        { label: "Other Current Liabilities",amount: totalOtherCL,                 children: [] },
+      ].filter(s => s.amount !== 0),
+      nonCurrent: [
+        { label: "Long-term Loans", amount: totalLongTermLoans, children: longTermLoans },
+      ].filter(s => s.amount !== 0),
+      totalCurrentLiabilities,
+      totalNonCurrentLiabilities,
+      totalLiabilities,
+    },
+    equity: {
+      lines:       equityLines,
+      totalEquity,
+    },
+    totalLiabilitiesAndEquity,
+    balanced,
   };
 }

@@ -1,0 +1,38 @@
+
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+[1G[0K[WA] webhook URL: WHATSAPP_WEBHOOK_BASE_URL not set (set WHATSAPP_WEBHOOK_BASE_URL to enable)
+[WA] webhook signing secret OK
+[WA WORKER] Started — poll=1500ms stuck-threshold=300000ms maxAttempts=5
+6:41:15 AM [express] serving on port 5000
+6:41:20 AM [express] GET /api/notifications 304 in 20ms
+6:41:22 AM [express] GET /api/payroll-status/3/2026 304 in 20ms
+6:41:22 AM [express] GET /api/followups/today 304 in 33ms
+6:41:22 AM [express] GET /api/followups/summary 304 in 34ms
+6:41:22 AM [express] GET /api/dashboard/stats 200 in 44ms
+6:41:22 AM [express] GET /api/dashboard/snapshot 200 in 67ms
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1;1H[0J[2m6:42:01 AM[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [32mhmr update [39m[2m/src/index.css[22m

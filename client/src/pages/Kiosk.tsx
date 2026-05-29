@@ -288,7 +288,7 @@ export default function Kiosk() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex flex-col items-center justify-center p-4">
       <div className="text-center mb-6">
-        <h1 className="text-3xl font-bold text-white tracking-tight" data-testid="text-kiosk-title">ITFI Group Attendance Kiosk</h1>
+        <h1 className="text-3xl font-bold text-white tracking-tight" data-testid="text-kiosk-title">Hussain Enterprise Attendance Kiosk</h1>
         <p className="text-blue-200/70 text-lg mt-1" data-testid="text-kiosk-time">
           {currentTime.toLocaleDateString("en-IN", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
           {" \u00B7 "}
@@ -644,7 +644,7 @@ export default function Kiosk() {
         </Card>
       )}
 
-      <p className="text-blue-200/40 text-xs mt-8">ITFI Group Kiosk System v1.0</p>
+      <p className="text-blue-200/40 text-xs mt-8">Hussain Enterprise Kiosk System v1.0</p>
     </div>
   );
 }

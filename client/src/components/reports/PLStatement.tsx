@@ -38,10 +38,11 @@ interface PLStatementData {
     creditNoteCount: number;
   };
   cogs: {
-    purchases: number;
+    amount: number;
     label: string;
     caveat: string;
-    supplierInvoiceCount: number;
+    challanCount: number;
+    productCount: number;
   };
   grossProfit: number;
   operatingExpenses: {
@@ -263,9 +264,9 @@ export default function PLStatement() {
             <SubTotal label="Net Revenue" amount={data.revenue.netRevenue} testId="line-pl-net-revenue" />
           </Section>
 
-          {/* PURCHASES (COGS proxy) */}
+          {/* COGS — finalized dispatch-based actual cost */}
           <Section title={data.cogs.label.toUpperCase()}>
-            <Line label="Purchases" amount={-data.cogs.purchases} count={`${data.cogs.supplierInvoiceCount} supplier invoices`} testId="line-pl-purchases" />
+            <Line label="Cost of Goods Sold" amount={-data.cogs.amount} count={`${data.cogs.challanCount} challans · ${data.cogs.productCount} products`} testId="line-pl-cogs" />
           </Section>
 
           {/* GROSS PROFIT */}

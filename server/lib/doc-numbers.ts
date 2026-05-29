@@ -73,6 +73,141 @@ export async function initDocNumberTable(): Promise<void> {
 }
 
 /**
+ * Applies schema migrations for customer_payments that are additive / backward-compatible.
+ * Safe to call on every startup — each statement is idempotent.
+ *
+ * Changes applied:
+ *   1. invoice_id  — make nullable (supports SO-level advance payments before invoice exists)
+ *   2. sales_order_id — new nullable column; set when payment is an advance with no invoice yet
+ */
+export async function migrateCustomerPaymentsSchema(): Promise<void> {
+  // 1. Drop NOT NULL on invoice_id (idempotent — no-op if already nullable)
+  await db.execute(sql`
+    ALTER TABLE customer_payments ALTER COLUMN invoice_id DROP NOT NULL
+  `);
+
+  // 2. Add sales_order_id column if it doesn't exist yet
+  await db.execute(sql`
+    ALTER TABLE customer_payments
+      ADD COLUMN IF NOT EXISTS sales_order_id VARCHAR
+  `);
+
+  // 3. Backfill: set serial status → 'delivered' for any serials still stuck at
+  //    'dispatched' whose delivery challan has already been marked delivered.
+  await db.execute(sql`
+    UPDATE serial_numbers sn
+    SET status = 'delivered', updated_at = now()
+    FROM delivery_challans dc
+    WHERE sn.challan_id = dc.id
+      AND dc.status = 'delivered'
+      AND sn.status = 'dispatched'
+  `);
+
+  // 4. Remove duplicate backfill rows: if a customer_payments row with invoice_id IS NULL
+  //    exists for an SO that already has an invoice-linked payment of the same amount+day,
+  //    the NULL row is a spurious duplicate — delete it.
+  await db.execute(sql`
+    DELETE FROM customer_payments cp_adv
+    WHERE cp_adv.invoice_id IS NULL
+      AND cp_adv.sales_order_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM customer_payments cp_inv
+        JOIN sales_invoices si ON si.id = cp_inv.invoice_id
+        WHERE si.so_id = cp_adv.sales_order_id
+          AND cp_inv.amount::numeric = cp_adv.amount::numeric
+          AND cp_inv.payment_date::date = cp_adv.payment_date::date
+      )
+  `);
+
+  // 5c. Backfill: link any dangling advance supplier_payments to their auto-created invoices.
+  //     For POs where the GRN was confirmed (supplier invoice auto-created) but the
+  //     advance payment still has purchase_order_id set and no supplier_invoice_id,
+  //     link it to the invoice and deduct from po.advance_paid (B3 fix for existing data).
+  //     Idempotent — only updates payments where supplier_invoice_id IS NULL.
+  await db.execute(sql`
+    UPDATE supplier_payments sp
+    SET supplier_invoice_id = si.id,
+        purchase_order_id   = NULL,
+        payment_type        = 'regular'
+    FROM supplier_invoices si
+    WHERE si.purchase_order_id = sp.purchase_order_id
+      AND sp.payment_type = 'advance'
+      AND sp.supplier_invoice_id IS NULL
+      AND si.upload_status != 'cancelled'
+      AND si.status != 'cancelled'
+  `);
+
+  // 5d. Rebalance po.advance_paid: for each PO, set advance_paid = SUM of remaining
+  //     advance payments (those still with purchase_order_id set, after 5c moved the
+  //     invoice-linked ones out).
+  await db.execute(sql`
+    UPDATE purchase_orders po
+    SET advance_paid = COALESCE((
+      SELECT SUM(sp.amount::numeric)
+      FROM supplier_payments sp
+      WHERE sp.purchase_order_id = po.id
+        AND sp.payment_type = 'advance'
+    ), 0)
+  `);
+
+  // 5b. Backfill: set grand_total for purchase_orders rows created before Phase 4A
+  //     (grand_total was added later; old rows have NULL).
+  //     grand_total = subtotal + COALESCE(total_tax, 0) + COALESCE(delivery_cost, 0)
+  //     Idempotent — only updates rows where grand_total IS NULL but subtotal IS NOT NULL.
+  await db.execute(sql`
+    UPDATE purchase_orders
+    SET grand_total = COALESCE(subtotal::numeric, 0)
+                   + COALESCE(total_tax::numeric, 0)
+                   + COALESCE(delivery_cost::numeric, 0)
+    WHERE grand_total IS NULL
+      AND subtotal IS NOT NULL
+  `);
+
+  // 5. Backfill: copy SO advance payments from the old `payments` table into
+  //    `customer_payments` for any rows that were recorded before Fix #7 was
+  //    deployed (i.e. before customer_payments got sales_order_id support).
+  //    Only for SOs that do NOT yet have any sales invoice (genuine advances).
+  //
+  //    Dedup guard: skip if ANY customer_payments row already covers this SO +
+  //    amount + day (whether invoice-linked or not), preventing double-insertion
+  //    on repeated startups.
+  await db.execute(sql`
+    INSERT INTO customer_payments
+      (id, invoice_id, sales_order_id, customer_id, amount,
+       payment_date, method, reference, notes, created_by, cash_account_id, created_at)
+    SELECT
+      gen_random_uuid(),
+      NULL,
+      so.id,
+      so.customer_id,
+      p.amount,
+      p.payment_date,
+      p.method,
+      p.reference,
+      NULL,
+      NULL,
+      p.cash_account_id,
+      COALESCE(p.payment_date, NOW())
+    FROM payments p
+    JOIN sales_orders so
+      ON p.reference ILIKE '%' || so.order_number || '%'
+    WHERE p.invoice_id IS NULL
+      AND p.cash_account_id IS NOT NULL
+      -- Only for SOs that have NO invoice yet (genuine pre-invoice advances)
+      AND NOT EXISTS (
+        SELECT 1 FROM sales_invoices si WHERE si.so_id = so.id
+      )
+      -- Dedup: skip if any customer_payments row already covers this SO + amount + day
+      AND NOT EXISTS (
+        SELECT 1 FROM customer_payments cp
+        WHERE cp.sales_order_id = so.id
+          AND cp.amount::numeric = p.amount::numeric
+          AND cp.payment_date::date = p.payment_date::date
+      )
+  `);
+}
+
+/**
  * Atomically increments the counter for (prefix, fyStr) within the provided
  * Drizzle transaction `tx`, and returns the formatted document number.
  *

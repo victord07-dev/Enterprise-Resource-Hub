@@ -1,0 +1,59 @@
+# Lot Engine: Schema & FIFO API
+
+## What & Why
+Solar panels, electronics, and commodity products arrive in discrete purchase batches (lots) with different landed costs. The current system uses a single weighted-average cost (WAC) on the product record, which is fine for financial/accounting reporting but too coarse for daily pricing decisions. This task adds the schema and a FIFO-based lot engine API that computes per-lot remaining quantity, landed cost, and floor prices — the foundation every other feature in this feature set depends on.
+
+**Cost Strategy (explicit rule — executor must follow):**
+- **WAC on `product.costPrice`** — remains unchanged. Continues to be updated on each GRN confirmation and used for accounting, AP, and financial reports.
+- **FIFO via lot engine** — used exclusively for pricing decisions and margin calculation. The two systems run in parallel and serve different purposes. Never replace WAC with FIFO in accounting flows.
+
+## Done looks like
+- `GET /api/inventory/stock-lot-summary?productId=&warehouseId=` returns a correct lot breakdown: each GRN lot shows its remaining quantity, landed cost (buying price + allocated delivery cost), and lot floor price (landed cost × (1 + product.minMarginPct / 100)).
+- The response also includes `blendedCost` (weighted average of remaining lots), `globalFloor` (blended cost × margin), and `strictFloor` (highest lot floor among all remaining lots).
+- Products admin page shows an editable `minMarginPct` field and a read-only `needsPricingReview` badge.
+- Delivery challan dispatch creates **one `stock_movements` row per GRN lot consumed** (not one aggregate row), each row carrying that lot's `grnId` and the quantity consumed from it. FIFO determines the allocation order.
+- `RETURN_IN` movements from sales returns carry `grnId` traced from the original dispatch movement (`challan_item → dispatch movement with grnId`), not a "best-effort" guess.
+
+## Out of scope
+- The pricing engine UI, daily price sheet creation, and approval workflow (Task #23).
+- Purchase Return lot reversal — stub with a code comment: `// PURCHASE_RETURN: will reduce from original lot — reserved for future module`.
+- Caching or snapshotting lot state for performance (add a code comment: `// TODO: cache lot snapshots at scale — currently replays all movements per request`).
+- Changing `movementType` string values for existing historical records.
+
+## Architectural decisions (executor must follow)
+
+**Dispatch movement splitting:**
+When a delivery challan is dispatched, instead of writing one `stock_movements` row for the full quantity, the dispatch handler must:
+1. Call the lot engine to determine FIFO allocation (which GRN lots to consume and how much from each).
+2. Create one `stock_movements` row per lot consumed, each with `grnId` set and `quantity` = qty consumed from that lot.
+3. The sum of all these rows equals the total dispatched quantity.
+This changes the existing dispatch flow in `routes.ts` and must be handled carefully to not break inventory_stock balance calculations.
+
+**grnId fallback for old movements:**
+Movements created before this task (no `grnId`) are handled by the lot engine as follows:
+- `referenceType = 'grn'` with no `grnId`: treat as a GRN lot using the `referenceId` as the grnId (they are the same for GRN movements).
+- `referenceType = 'challan'` (old dispatch, no `grnId`): consume FIFO without lot attribution — the lot engine deducts quantity starting from the oldest lot, treating the movement as an unattributed dispatch.
+- `movementType = 'RETURN_IN'` with no `grnId`: add quantity back to the oldest currently-depleted lot (best-effort only for historical data).
+
+**Sales return grnId mapping:**
+For new returns (post-this-task), the `RETURN_IN` movement's `grnId` must be resolved by looking up the dispatch movement(s) for the same challan/invoice item and taking their `grnId`. If multiple lots were consumed for that item, use the most recently consumed lot's `grnId`. This logic lives in the sales return processing route.
+
+## Tasks
+1. **Schema additions** — Add `minMarginPct` (decimal 5,2 default 5.00) and `needsPricingReview` (boolean default false) to `products`. Add `isPrimary` (boolean default false) to `supplier_products`. Add nullable `grnId` (varchar) to `stock_movements`. Create `daily_price_sheets` and `daily_price_sheet_lots` tables. Push schema with `npm run db:push`.
+
+2. **GRN confirmation: populate grnId** — When a GRN is confirmed and its `stock_movements` entry is written, set `grnId = grn.id` on that row. Apply the same to existing `referenceType = 'grn'` movements by using `referenceId` as the grnId in the lot engine fallback (no data migration required).
+
+3. **Dispatch: per-lot movement splitting** — Refactor the delivery challan dispatch handler. Before writing stock movement rows, compute FIFO lot allocation using the lot engine. Write one `stock_movements` row per lot consumed (with `grnId`). Ensure the `inventory_stock` balance update still uses the total dispatched quantity (not per-lot rows). Existing single-row dispatch movements for historical data are handled by the fallback rule above.
+
+4. **Sales return: grnId from dispatch trail** — In the sales return process endpoint, resolve `grnId` for each `RETURN_IN` movement by querying the dispatch movements for the originating challan item. Update the sales return processing logic accordingly.
+
+5. **FIFO lot engine API** — Build `GET /api/inventory/stock-lot-summary`. Replay movements chronologically: GRN rows create lots (fallback: use `referenceId` if `grnId` null), out/DISPATCH rows consume FIFO, `RETURN_IN` rows restore to their lot (or oldest depleted if `grnId` null), `ADJUSTMENT_IN` creates synthetic lot at `product.costPrice`, `ADJUSTMENT_OUT` consumes FIFO. Stub `PURCHASE_RETURN`. Return per-lot detail plus `blendedCost`, `globalFloor`, `strictFloor`. Add performance TODO comment.
+
+6. **minMarginPct field in Products UI** — Expose `minMarginPct` as an editable field and `needsPricingReview` as a read-only badge in the Products admin screen.
+
+## Relevant files
+- `shared/schema.ts`
+- `server/storage.ts`
+- `server/routes.ts:3130-3220`
+- `client/src/pages/Inventory.tsx`
+- `client/src/pages/Products.tsx`

@@ -1,0 +1,21 @@
+Fix delivery challan PDF: logo image, items loading, driver highlight
+
+Three improvements to client/src/lib/challan-pdf.ts and Inventory.tsx:
+
+1. ITFI logo in PDF header
+   - Import ITFI-LOGO-FIN_1778914024535.png as a Vite asset in challan-pdf.ts
+   - Added loadLogoDataUrl() helper that fetches and converts to data URL
+   - generateChallanPDF now auto-loads the logo if caller doesn't supply one
+   - Replaces the plain company name wordmark with the full branded logo
+
+2. Order items not showing in PDF (Inventory.tsx)
+   - challanItemsMap is lazily populated only when a row is expanded
+   - Clicking Download PDF without expanding produced an empty items array
+   - PDF button click handler now fetches /api/delivery-challans/:id/items
+     on-demand when the map entry is missing, before invoking the generator
+
+3. Driver name & phone highlighted (challan-pdf.ts)
+   - Replaced the small, secondary-color driver text inside the address box
+   - New full-width amber strip (DRIVER / TRANSPORT) below address boxes
+   - Driver name and phone rendered in large bold amber-900 text, with a
+     solid amber left accent bar for instant visual identification on print

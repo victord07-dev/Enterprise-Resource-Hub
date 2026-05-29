@@ -1,11 +1,15 @@
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { getUser, getToken } from "@/lib/auth";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   IndianRupee, ShoppingCart, FolderKanban, Users, RefreshCw, AlertTriangle,
-  ArrowRight, CalendarClock, CheckCircle2,
+  ArrowRight, CalendarClock, CheckCircle2, ExternalLink, Tv2,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useLocation } from "wouter";
@@ -115,6 +119,71 @@ export default function Dashboard() {
   }>({
     queryKey: ["/api/dashboard/stats"],
   });
+
+  // ── Countdown Display Settings ──────────────────────────────────────────
+  interface MonthlyTargetData {
+    month: string;
+    salesTarget: string;
+    salesAchieved: string;
+    solarCustomersTarget: number;
+    solarCustomersAchieved: number;
+    updatedAt: string;
+  }
+
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const isCountdownManager = !!user && (user.role === "admin" || user.role === "sales_manager");
+
+  const { data: ctdData } = useQuery<MonthlyTargetData>({
+    queryKey: ["/api/monthly-targets/current"],
+    enabled: isCountdownManager,
+  });
+
+  const [ctdForm, setCtdForm] = useState({
+    salesTarget: "50000000",
+    salesAchieved: "0",
+    solarTarget: "35",
+    solarAchieved: "0",
+  });
+
+  useEffect(() => {
+    if (ctdData) {
+      setCtdForm({
+        salesTarget: ctdData.salesTarget,
+        salesAchieved: ctdData.salesAchieved,
+        solarTarget: String(ctdData.solarCustomersTarget),
+        solarAchieved: String(ctdData.solarCustomersAchieved),
+      });
+    }
+  }, [ctdData]);
+
+  const ctdMutation = useMutation({
+    mutationFn: async (payload: { salesTarget?: string; salesAchieved?: string; solarCustomersTarget?: number; solarCustomersAchieved?: number }) => {
+      const token = getToken();
+      const res = await fetch("/api/monthly-targets/current", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/monthly-targets/current"] });
+      toast({ title: "Countdown updated", description: "Display will refresh within 5 minutes." });
+    },
+    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+  });
+
+  const handleCtdSave = () => {
+    ctdMutation.mutate({
+      salesTarget: ctdForm.salesTarget,
+      salesAchieved: ctdForm.salesAchieved,
+      solarCustomersTarget: Number(ctdForm.solarTarget),
+      solarCustomersAchieved: Number(ctdForm.solarAchieved),
+    });
+  };
+  // ────────────────────────────────────────────────────────────────────────
 
   const metricCards = [
     {
@@ -380,6 +449,119 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Countdown Display Settings (admin / sales_manager only) ── */}
+      {isCountdownManager && (
+        <Card data-testid="card-countdown-settings">
+          <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+            <div className="flex items-center gap-2">
+              <Tv2 className="w-4 h-4 text-orange-500" />
+              <CardTitle className="text-base font-semibold">Countdown Display Settings</CardTitle>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs gap-1"
+              onClick={() => window.open("/countdown", "_blank")}
+            >
+              <ExternalLink className="w-3 h-3" />
+              Open Display
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground -mt-1">
+              Update the figures shown on the fullscreen TV countdown page (<code className="bg-muted px-1 rounded">/countdown</code>).
+              {ctdData?.updatedAt && (
+                <span className="ml-2 text-muted-foreground/70">
+                  Last saved: {new Date(ctdData.updatedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="ctd-sales-target" className="text-xs">Sales Target (₹)</Label>
+                <Input
+                  id="ctd-sales-target"
+                  type="number"
+                  min={0}
+                  value={ctdForm.salesTarget}
+                  onChange={e => setCtdForm(f => ({ ...f, salesTarget: e.target.value }))}
+                  className="h-8 text-sm"
+                  placeholder="50000000"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  {Number(ctdForm.salesTarget) >= 1_00_00_000
+                    ? `₹${(Number(ctdForm.salesTarget) / 1_00_00_000).toFixed(2)} Cr`
+                    : Number(ctdForm.salesTarget) >= 1_00_000
+                    ? `₹${(Number(ctdForm.salesTarget) / 1_00_000).toFixed(2)} L`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ctd-sales-achieved" className="text-xs">Sales Achieved (₹)</Label>
+                <Input
+                  id="ctd-sales-achieved"
+                  type="number"
+                  min={0}
+                  value={ctdForm.salesAchieved}
+                  onChange={e => setCtdForm(f => ({ ...f, salesAchieved: e.target.value }))}
+                  className="h-8 text-sm"
+                  placeholder="0"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  {Number(ctdForm.salesTarget) > 0
+                    ? `${Math.min(100, (Number(ctdForm.salesAchieved) / Number(ctdForm.salesTarget)) * 100).toFixed(1)}% of target`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ctd-solar-target" className="text-xs">Solar Customers Target</Label>
+                <Input
+                  id="ctd-solar-target"
+                  type="number"
+                  min={1}
+                  value={ctdForm.solarTarget}
+                  onChange={e => setCtdForm(f => ({ ...f, solarTarget: e.target.value }))}
+                  className="h-8 text-sm"
+                  placeholder="35"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="ctd-solar-achieved" className="text-xs">Solar Customers Achieved</Label>
+                <Input
+                  id="ctd-solar-achieved"
+                  type="number"
+                  min={0}
+                  value={ctdForm.solarAchieved}
+                  onChange={e => setCtdForm(f => ({ ...f, solarAchieved: e.target.value }))}
+                  className="h-8 text-sm"
+                  placeholder="0"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  {Number(ctdForm.solarTarget) > 0
+                    ? `${Number(ctdForm.solarAchieved)} / ${ctdForm.solarTarget} customers`
+                    : ""}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                onClick={handleCtdSave}
+                disabled={ctdMutation.isPending}
+                className="h-8 text-sm px-4"
+              >
+                {ctdMutation.isPending ? "Saving…" : "Save & Publish"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

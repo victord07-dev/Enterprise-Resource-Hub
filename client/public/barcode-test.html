@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Barcode Scanner Test</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 600px; }
+    #result { margin-top: 16px; padding: 12px; border-radius: 6px; font-size: 18px; font-weight: bold; }
+    .ok  { background: #d1fae5; color: #065f46; }
+    .err { background: #fee2e2; color: #991b1b; }
+    #reader { width: 100%; margin-top: 16px; }
+    button { padding: 8px 16px; margin: 4px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; }
+    button.primary { background: #2563eb; color: white; border: none; }
+  </style>
+</head>
+<body>
+  <h2>Barcode Scanner Test (Code 128)</h2>
+
+  <h3>Test 1 — Scan from image file</h3>
+  <p>Upload your barcode image to test if ZXing can decode it at all:</p>
+  <input type="file" id="fileInput" accept="image/*" />
+  <div id="fileResult"></div>
+
+  <hr style="margin:24px 0">
+
+  <h3>Test 2 — Live camera scan</h3>
+  <button class="primary" onclick="startCamera()">Start Camera</button>
+  <button onclick="stopCamera()">Stop Camera</button>
+  <div id="reader"></div>
+  <div id="cameraResult"></div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    let scanner = null;
+
+    // Test 1: file scan
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const el = document.getElementById('fileResult');
+      el.innerHTML = 'Scanning…';
+      try {
+        const formats = [
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.EAN_13,
+        ];
+        const s = new Html5Qrcode('__file_scanner', { formatsToSupport: formats, useBarCodeDetectorIfSupported: false, verbose: true });
+        const result = await s.scanFile(file, false);
+        el.innerHTML = `<div class="result ok">✅ DECODED: ${result}</div>`;
+      } catch(err) {
+        el.innerHTML = `<div class="result err">❌ Could not decode: ${err}</div>`;
+        console.error(err);
+      }
+    });
+
+    // Test 2: camera
+    async function startCamera() {
+      const formats = [
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.EAN_13,
+      ];
+      scanner = new Html5Qrcode('reader', { formatsToSupport: formats, useBarCodeDetectorIfSupported: false, verbose: true });
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 25 },
+          (text) => {
+            document.getElementById('cameraResult').innerHTML = `<div class="result ok">✅ SCANNED: ${text}</div>`;
+          },
+          () => {}
+        );
+      } catch(e) {
+        document.getElementById('cameraResult').innerHTML = `<div class="result err">Camera error: ${e}</div>`;
+      }
+    }
+
+    async function stopCamera() {
+      if (scanner) { try { await scanner.stop(); } catch {} scanner = null; }
+    }
+  </script>
+  <!-- hidden div for file scanner -->
+  <div id="__file_scanner" style="display:none"></div>
+</body>
+</html>

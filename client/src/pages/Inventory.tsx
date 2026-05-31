@@ -15,7 +15,7 @@ import { getUser } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt, ScanLine, History } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt, ScanLine, History, Layers } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem, Customer } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
@@ -304,6 +304,17 @@ export default function Inventory() {
   const [grnChallanFile, setGrnChallanFile] = useState<File | null>(null);
   const [grnChallanFileUrl, setGrnChallanFileUrl] = useState<string>("");
 
+  // ── Combo Serial Capture state (Phase 3) ─────────────────────────────────────
+  const [comboSerialGrnId, setComboSerialGrnId]         = useState<string | null>(null);
+  // Loaded from /api/grns/:id/combo-serial-info
+  const [comboSerialItems, setComboSerialItems]         = useState<Array<{
+    grnItemId: string; productId: string; productName: string; receivedQty: number;
+    manifest: Array<{ id: string; componentName: string; linkedProductId: string | null; quantity: string; requiresSerialTracking: boolean; sortOrder: number }>;
+  }>>([]);
+  // Map of "grnItemId-unitIndex-componentName" → serial value
+  const [comboSerialValues, setComboSerialValues]       = useState<Record<string, string>>({});
+  const [comboSerialSaving, setComboSerialSaving]       = useState(false);
+
   // ── Phase 4E: Serial Number state ────────────────────────────────────────────
   const [serialEntryGrnId, setSerialEntryGrnId]         = useState<string | null>(null);
   const [serialEntryItem, setSerialEntryItem]           = useState<SerialEntryItem | null>(null);
@@ -318,6 +329,37 @@ export default function Inventory() {
   // (dialog open-state is derived from serialDispatchSpecs.length > 0)
   const [serialSearch, setSerialSearch]                 = useState("");
   const [serialStatusFilter, setSerialStatusFilter]     = useState("all");
+  // Phase 5 — Combo Serial Lookup
+  const [comboLookupQuery, setComboLookupQuery]         = useState("");
+  const [comboLookupResult, setComboLookupResult]       = useState<any>(null); // null=no search, false=not found, object=found
+  const [comboLookupLoading, setComboLookupLoading]     = useState(false);
+
+  // Combo dispatch: interactive serial selection per unit/component
+  type ComboSerialSlot = {
+    componentName: string;
+    selectedId: string;       // record ID of selected combo_serial_record
+    serialNumber: string;     // display value (scanned/typed or from selection)
+    valid: boolean;
+    availableRecords: Array<{ id: string; serialNumber: string }>;
+  };
+  type ComboDispatchUnit = { productName: string; productId: string; unitIndex: number; slots: ComboSerialSlot[] };
+  type ComboDispatchPreview = { challanId: string; units: ComboDispatchUnit[] };
+  const [comboDispatchPreview, setComboDispatchPreview] = useState<ComboDispatchPreview | null>(null);
+  const updateComboSlot = (unitIdx: number, slotIdx: number, scanned: string) => {
+    setComboDispatchPreview(prev => {
+      if (!prev) return prev;
+      const units = prev.units.map((u, ui) => {
+        if (ui !== unitIdx) return u;
+        const slots = u.slots.map((s, si) => {
+          if (si !== slotIdx) return s;
+          const match = s.availableRecords.find(r => r.serialNumber.toLowerCase() === scanned.trim().toLowerCase());
+          return { ...s, serialNumber: scanned, selectedId: match?.id ?? "", valid: !!match };
+        });
+        return { ...u, slots };
+      });
+      return { ...prev, units };
+    });
+  };
 
   const { data: allSerials = [], isLoading: serialsLoading } = useQuery<any[]>({
     queryKey: ["/api/serial-numbers", serialSearch, serialStatusFilter],
@@ -327,6 +369,11 @@ export default function Inventory() {
       if (serialStatusFilter !== "all")           params.set("status", serialStatusFilter);
       return apiRequest("GET", `/api/serial-numbers?${params}`).then(r => r.json());
     },
+  });
+
+  const { data: allComboSerials = [], isLoading: comboSerialsLoading } = useQuery<any[]>({
+    queryKey: ["/api/combo-serials"],
+    queryFn: () => apiRequest("GET", "/api/combo-serials").then(r => r.json()),
   });
 
   // After all serials for a GRN are entered, proceed to confirm
@@ -492,11 +539,12 @@ export default function Inventory() {
   });
 
   const dispatchChallanMutation = useMutation({
-    mutationFn: async (payload: string | { id: string; assignments?: ConfirmedAssignment[]; warrantyMonths?: number }) => {
+    mutationFn: async (payload: string | { id: string; assignments?: ConfirmedAssignment[]; warrantyMonths?: number; comboSerialIds?: string[] }) => {
       const id   = typeof payload === "string" ? payload : payload.id;
       const body = typeof payload === "string" ? {} : {
         assignments:    payload.assignments,
         warrantyMonths: payload.warrantyMonths,
+        comboSerialIds: payload.comboSerialIds,
       };
       const res = await apiRequest("POST", `/api/delivery-challans/${id}/dispatch`, body);
       if (!res.ok) {
@@ -633,6 +681,7 @@ export default function Inventory() {
 
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns, isLoading: grnsLoading } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
+  const { data: supplierInvoices } = useQuery<any[]>({ queryKey: ["/api/supplier-invoices"] });
 
   const [grnDialogOpen, setGrnDialogOpen] = useState(false);
   const [grnForm, setGrnForm] = useState({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "", supplierChallanNumber: "", supplierChallanDate: "" });
@@ -804,7 +853,7 @@ export default function Inventory() {
       const res = await apiRequest("POST", `/api/grns/${grnId}/confirm`);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: async (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
@@ -812,12 +861,80 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
+      // Phase 3: If combo serials are pending, open the capture modal automatically
+      if (data?.comboSerialsPending && data?.pendingComboItems?.length > 0 && data?.id) {
+        toast({ title: "GRN confirmed", description: "Goods received. Please capture serial numbers for combo components." });
+        openComboSerialModal(data.id);
+      } else {
+        toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  // Open the combo serial capture modal for a GRN (called after confirm or from pending badge)
+  const openComboSerialModal = async (grnId: string) => {
+    try {
+      const res = await apiRequest("GET", `/api/grns/${grnId}/combo-serial-info`);
+      const data = await res.json();
+      if (!data?.items?.length) {
+        toast({ title: "No combo items", description: "No manifest-defined combo items found in this GRN.", variant: "destructive" });
+        return;
+      }
+      // Pre-fill existing serials
+      const prefill: Record<string, string> = {};
+      for (const sr of (data.existingSerials ?? [])) {
+        const key = `${sr.grnItemId}-${sr.comboUnitIndex}-${sr.componentName}`;
+        prefill[key] = sr.serialNumber;
+      }
+      setComboSerialItems(data.items);
+      setComboSerialValues(prefill);
+      setComboSerialGrnId(grnId);
+    } catch {
+      toast({ title: "Error", description: "Could not load combo serial info.", variant: "destructive" });
+    }
+  };
+
+  const saveComboSerials = async () => {
+    if (!comboSerialGrnId) return;
+    setComboSerialSaving(true);
+    try {
+      const records: any[] = [];
+      for (const item of comboSerialItems) {
+        for (let unitIdx = 1; unitIdx <= item.receivedQty; unitIdx++) {
+          for (const comp of item.manifest.filter(c => c.requiresSerialTracking)) {
+            const key = `${item.grnItemId}-${unitIdx}-${comp.componentName}`;
+            const serial = comboSerialValues[key]?.trim() ?? "";
+            records.push({
+              grnItemId: item.grnItemId,
+              comboProductId: item.productId,
+              comboUnitIndex: unitIdx,
+              componentName: comp.componentName,
+              linkedProductId: comp.linkedProductId ?? null,
+              serialNumber: serial,
+            });
+          }
+        }
+      }
+      const res = await apiRequest("POST", `/api/grns/${comboSerialGrnId}/combo-serials`, { records });
+      const result = await res.json();
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      if (result.comboSerialsPending) {
+        toast({ title: `Serials saved (${result.saved})`, description: `${result.skipped} blank entries skipped. GRN still has pending serials.` });
+      } else {
+        toast({ title: "All serials captured", description: `${result.saved} serial records saved. GRN fully captured.` });
+        setComboSerialGrnId(null);
+        setComboSerialItems([]);
+        setComboSerialValues({});
+      }
+    } catch (err: any) {
+      toast({ title: "Error saving serials", description: err.message, variant: "destructive" });
+    } finally {
+      setComboSerialSaving(false);
+    }
+  };
 
   const deleteGrnMutation = useMutation({
     mutationFn: async (grnId: string) => {
@@ -1751,7 +1868,14 @@ export default function Inventory() {
                                         }
                                       }
 
-                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap, undefined, soItemGstMap);
+                                      // Fetch combo serials allocated to this challan (non-fatal)
+                                      let comboSerialsMap: Record<string, Array<{ comboUnitIndex: number; componentName: string; serialNumber: string }>> | undefined;
+                                      try {
+                                        const csRes = await fetch(`/api/delivery-challans/${challan.id}/combo-serials`, { headers });
+                                        if (csRes.ok) comboSerialsMap = await csRes.json();
+                                      } catch { /* non-fatal */ }
+
+                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap, undefined, soItemGstMap, comboSerialsMap);
                                     }}
                                   >
                                     <Download className="w-3 h-3" />
@@ -1916,11 +2040,70 @@ export default function Inventory() {
                                             }
                                           }
 
+                                          // Combo type — check available serial records and show preview
+                                          const comboUnits: ComboDispatchPreview["units"] = [];
+                                          for (const item of challanItems) {
+                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                            if (!prod || (prod as any).type !== "combo") continue;
+                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+                                            let manifest: any[] = [];
+                                            try {
+                                              const r = await fetch(`/api/products/${item.productId}/combo-components`, { headers });
+                                              manifest = await r.json();
+                                            } catch { manifest = []; }
+                                            const serialComponents = manifest.filter((c: any) => c.requiresSerialTracking);
+                                            if (serialComponents.length === 0) continue;
+                                            const needed = dispatchQty * serialComponents.length;
+                                            const available = (allComboSerials as any[])
+                                              .filter((r: any) => r.comboProductId === item.productId && !r.allocatedChallanId && !r.deallocatedAt)
+                                              .sort((a: any, b: any) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+                                            if (available.length < needed) {
+                                              toast({
+                                                title: "Serial numbers not captured",
+                                                description: `"${(prod as any).name}": need ${needed} serial record(s) for ${dispatchQty} unit(s) × ${serialComponents.length} tracked component(s), but only ${available.length} captured at GRN. Go to GRN and capture serial numbers first.`,
+                                                variant: "destructive",
+                                              });
+                                              return;
+                                            }
+                                            // Build interactive slots: one per (unit × serial-tracked component)
+                                            // availableRecords per component = all unallocated records for that componentName
+                                            const availByComp: Record<string, Array<{ id: string; serialNumber: string }>> = {};
+                                            for (const comp of serialComponents) {
+                                              availByComp[comp.componentName] = available
+                                                .filter((r: any) => r.componentName === comp.componentName)
+                                                .map((r: any) => ({ id: r.id, serialNumber: r.serialNumber }));
+                                            }
+                                            // Track used IDs so each unit gets a distinct record
+                                            const usedIds = new Set<string>();
+                                            for (let u = 0; u < dispatchQty; u++) {
+                                              const slots: ComboSerialSlot[] = serialComponents.map((comp: any) => {
+                                                const records = availByComp[comp.componentName] ?? [];
+                                                const fifo = records.find(r => !usedIds.has(r.id));
+                                                if (fifo) usedIds.add(fifo.id);
+                                                return {
+                                                  componentName: comp.componentName,
+                                                  selectedId: fifo?.id ?? "",
+                                                  serialNumber: fifo?.serialNumber ?? "",
+                                                  valid: !!fifo,
+                                                  availableRecords: records,
+                                                };
+                                              });
+                                              comboUnits.push({
+                                                productName: (prod as any).name,
+                                                productId: item.productId,
+                                                unitIndex: u + 1,
+                                                slots,
+                                              });
+                                            }
+                                          }
+
                                           if (specs.length > 0 && challan.customerId) {
                                             setSerialDispatchChallanId(challan.id);
                                             setSerialDispatchSoId(challan.orderId ?? null);
                                             setSerialDispatchCustomerId(challan.customerId);
                                             setSerialDispatchSpecs(specs);
+                                          } else if (comboUnits.length > 0) {
+                                            setComboDispatchPreview({ challanId: challan.id, units: comboUnits });
                                           } else {
                                             dispatchChallanMutation.mutate(challan.id);
                                           }
@@ -2201,7 +2384,14 @@ export default function Inventory() {
                                   <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Draft</Badge>
                                 )}
                                 {grn.status === "confirmed" && (
-                                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
+                                  <div className="flex flex-col gap-1">
+                                    <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
+                                    {(grn as any).comboSerialsPending && (
+                                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700 text-[10px]">
+                                        <Layers className="w-2.5 h-2.5 mr-1" />Serials Pending
+                                      </Badge>
+                                    )}
+                                  </div>
                                 )}
                                 {grn.status === "cancelled" && (
                                   <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800">Cancelled</Badge>
@@ -2291,19 +2481,46 @@ export default function Inventory() {
                                       )}
                                     </>
                                   )}
+                                  {/* Confirmed + combo serials pending: show Capture Serials button */}
+                                  {grn.status === "confirmed" && (grn as any).comboSerialsPending && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-amber-700 border-amber-400 hover:bg-amber-50 dark:text-amber-400 dark:border-amber-700"
+                                      data-testid={`button-capture-combo-serials-${grn.id}`}
+                                      onClick={() => openComboSerialModal(grn.id)}
+                                    >
+                                      <Layers className="w-3 h-3 mr-1" />
+                                      Capture Serials
+                                    </Button>
+                                  )}
                                   {/* Confirmed: view or upload supplier invoice */}
-                                  {grn.status === "confirmed" && (
-                                    (grn as any).supplierInvoiceUrl ? (
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        data-testid={`button-view-supp-inv-grn-${grn.id}`}
-                                        onClick={() => window.open((grn as any).supplierInvoiceUrl, "_blank")}
-                                      >
-                                        <FileText className="w-3 h-3 mr-1" />
-                                        View Supplier Invoice
-                                      </Button>
-                                    ) : (
+                                  {grn.status === "confirmed" && (() => {
+                                    const linkedInv = (supplierInvoices ?? []).find((si: any) => si.grnId === grn.id);
+                                    const hasRecorded = !!(grn as any).supplierInvoiceNumber || !!linkedInv;
+                                    const fileUrl = (grn as any).supplierInvoiceUrl || linkedInv?.fileUrl || null;
+                                    if (hasRecorded) {
+                                      return (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="border-green-400 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/20"
+                                          data-testid={`button-view-supp-inv-grn-${grn.id}`}
+                                          onClick={() => {
+                                            if (fileUrl) {
+                                              window.open(fileUrl, "_blank");
+                                            } else {
+                                              const invId = linkedInv?.id ?? "";
+                                              navigate(`/accounts?tab=supplier-invoices${invId ? `&highlight=${invId}` : ""}`);
+                                            }
+                                          }}
+                                        >
+                                          <FileText className="w-3 h-3 mr-1" />
+                                          View Invoice
+                                        </Button>
+                                      );
+                                    }
+                                    return (
                                       <Button
                                         size="sm"
                                         variant="outline"
@@ -2311,10 +2528,10 @@ export default function Inventory() {
                                         onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
                                       >
                                         <Receipt className="w-3 h-3 mr-1" />
-                                        {(grn as any).supplierInvoiceNumber ? "Update Invoice" : "Supplier Invoice"}
+                                        Supplier Invoice
                                       </Button>
-                                    )
-                                  )}
+                                    );
+                                  })()}
                                 </div>
                               </td>
                             </tr>
@@ -2477,9 +2694,9 @@ export default function Inventory() {
                 </div>
               </div>
 
-              {serialsLoading ? (
+              {(serialsLoading || comboSerialsLoading) ? (
                 <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
-              ) : allSerials.length === 0 ? (
+              ) : allSerials.length === 0 && allComboSerials.length === 0 ? (
                 <div className="text-center py-8 text-muted-foreground text-sm">
                   <ScanLine className="w-8 h-8 mx-auto mb-2 opacity-30" />
                   No serial numbers found. Enable serial tracking on a product and confirm a GRN to register units.
@@ -2490,20 +2707,23 @@ export default function Inventory() {
                     <thead>
                       <tr className="border-b bg-muted/30">
                         <th className="text-left p-2 font-medium text-muted-foreground">Serial Number</th>
-                        <th className="text-left p-2 font-medium text-muted-foreground">Barcode Value</th>
-                        <th className="text-left p-2 font-medium text-muted-foreground">Product</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Product / Component</th>
                         <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
-                        <th className="text-left p-2 font-medium text-muted-foreground">Warehouse</th>
-                        <th className="text-left p-2 font-medium text-muted-foreground">Sales Order</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">GRN / Challan</th>
                         <th className="text-left p-2 font-medium text-muted-foreground">Customer</th>
-                        <th className="text-left p-2 font-medium text-muted-foreground">Warranty Expires</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Captured</th>
                         <th className="text-left p-2 font-medium text-muted-foreground">Dispatched</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {allSerials.map((s: any, i: number) => {
+                      {allSerials
+                        .filter((s: any) => {
+                          if (serialSearch && !s.serialNumber?.toLowerCase().includes(serialSearch.toLowerCase())) return false;
+                          if (serialStatusFilter !== "all" && s.status !== serialStatusFilter) return false;
+                          return true;
+                        })
+                        .map((s: any, i: number) => {
                         const prod = (products ?? []).find((p: any) => p.id === s.productId);
-                        const wh   = (warehouses ?? []).find((w: any) => w.id === s.warehouseId);
                         const cust = (customers ?? []).find((c: any) => c.id === s.customerId);
                         const so = s.salesOrderId ? (salesOrders ?? []).find((o: any) => o.id === s.salesOrderId) : null;
                         const statusColors: Record<string, string> = {
@@ -2516,37 +2736,274 @@ export default function Inventory() {
                         return (
                           <tr key={s.id} className={`border-b ${i % 2 === 0 ? "bg-muted/10" : ""}`}>
                             <td className="p-2 font-mono font-medium">{s.serialNumber}</td>
-                            <td className="p-2 font-mono text-muted-foreground">{s.barcodeValue ?? "—"}</td>
                             <td className="p-2">{prod?.name ?? s.productId}</td>
                             <td className="p-2">
                               <Badge variant="outline" className={`text-xs ${statusColors[s.status] ?? ""}`}>
                                 {s.status.replace("_", " ")}
                               </Badge>
                             </td>
-                            <td className="p-2 text-muted-foreground">{wh?.name ?? (s.warehouseId ? "—" : (s.status === "delivered" ? "Delivered" : "Dispatched"))}</td>
-                            <td className="p-2 font-mono text-xs">{so?.orderNumber ?? (s.salesOrderId ? "—" : "—")}</td>
+                            <td className="p-2 font-mono text-xs text-muted-foreground">{so?.orderNumber ?? "—"}</td>
                             <td className="p-2">{cust?.name ?? (s.customerId ? s.customerId.slice(0, 8) + "…" : "—")}</td>
-                            <td className="p-2 text-muted-foreground">
-                              {s.warrantyExpiresAt
-                                ? new Date(s.warrantyExpiresAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
-                                : "—"}
+                            <td className="p-2 text-muted-foreground text-xs">
+                              {s.createdAt ? new Date(s.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                             </td>
-                            <td className="p-2 text-muted-foreground">
-                              {s.dispatchedAt
-                                ? new Date(s.dispatchedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
-                                : "—"}
+                            <td className="p-2 text-muted-foreground text-xs">
+                              {s.dispatchedAt ? new Date(s.dispatchedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                             </td>
                           </tr>
                         );
                       })}
+                      {/* Combo component serial rows */}
+                      {allComboSerials
+                        .filter((s: any) => {
+                          if (serialSearch && !s.serialNumber?.toLowerCase().includes(serialSearch.toLowerCase()) &&
+                              !s.comboProductName?.toLowerCase().includes(serialSearch.toLowerCase()) &&
+                              !s.componentName?.toLowerCase().includes(serialSearch.toLowerCase())) return false;
+                          if (serialStatusFilter !== "all") {
+                            const status = s.deallocatedAt ? "returned" : s.allocatedChallanId ? "dispatched" : "in_stock";
+                            if (status !== serialStatusFilter) return false;
+                          }
+                          return true;
+                        })
+                        .map((s: any, i: number) => {
+                          const status = s.deallocatedAt ? "returned" : s.allocatedChallanId ? "dispatched" : "in_stock";
+                          const statusColors: Record<string, string> = {
+                            in_stock:  "bg-green-100 text-green-700 border-green-200",
+                            dispatched:"bg-blue-100 text-blue-700 border-blue-200",
+                            returned:  "bg-amber-100 text-amber-700 border-amber-200",
+                          };
+                          return (
+                            <tr key={s.id} className={`border-b border-teal-100 dark:border-teal-900 ${i % 2 === 0 ? "bg-teal-50/40 dark:bg-teal-950/10" : "bg-teal-50/20 dark:bg-teal-950/5"}`}>
+                              <td className="p-2 font-mono font-medium text-teal-800 dark:text-teal-300">{s.serialNumber}</td>
+                              <td className="p-2">
+                                <div className="text-xs font-medium">{s.comboProductName}</div>
+                                <div className="text-xs text-teal-700 dark:text-teal-400 flex items-center gap-1">
+                                  <Layers className="w-3 h-3" /> {s.componentName} · Unit {s.comboUnitIndex}
+                                </div>
+                              </td>
+                              <td className="p-2">
+                                <Badge variant="outline" className={`text-xs ${statusColors[status] ?? ""}`}>
+                                  {status.replace("_", " ")}
+                                </Badge>
+                              </td>
+                              <td className="p-2 font-mono text-xs text-muted-foreground">
+                                <div>{s.grnNumber}</div>
+                                {s.challanNumber && <div className="text-blue-600">{s.challanNumber}</div>}
+                              </td>
+                              <td className="p-2">{s.customerName ?? "—"}</td>
+                              <td className="p-2 text-muted-foreground text-xs">
+                                {s.capturedAt ? new Date(s.capturedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                              </td>
+                              <td className="p-2 text-muted-foreground text-xs">
+                                {s.allocatedAt ? new Date(s.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
                     </tbody>
                   </table>
                 </div>
               )}
             </CardContent>
           </Card>
+
+          {/* ── Phase 5: Combo Serial Quick-Lookup (kept for direct serial search) ── */}
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-teal-600" />
+                <h3 className="font-semibold text-sm">Combo Component Serial Lookup</h3>
+                <span className="text-xs text-muted-foreground">— search by any component serial number inside a manufacturer combo</span>
+              </div>
+
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Enter serial number (e.g. ELB-2026-001)…"
+                  value={comboLookupQuery}
+                  onChange={e => setComboLookupQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && comboLookupQuery.trim().length >= 2) {
+                      (async () => {
+                        setComboLookupLoading(true);
+                        setComboLookupResult(null);
+                        try {
+                          const res = await apiRequest("GET", `/api/combo-serials/search?q=${encodeURIComponent(comboLookupQuery.trim())}`);
+                          const data = await res.json();
+                          setComboLookupResult(data ?? false);
+                        } catch { setComboLookupResult(false); }
+                        finally { setComboLookupLoading(false); }
+                      })();
+                    }
+                  }}
+                  className="flex-1 h-9"
+                  data-testid="input-combo-serial-lookup"
+                />
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    if (comboLookupQuery.trim().length < 2) return;
+                    setComboLookupLoading(true);
+                    setComboLookupResult(null);
+                    try {
+                      const res = await apiRequest("GET", `/api/combo-serials/search?q=${encodeURIComponent(comboLookupQuery.trim())}`);
+                      const data = await res.json();
+                      setComboLookupResult(data ?? false);
+                    } catch { setComboLookupResult(false); }
+                    finally { setComboLookupLoading(false); }
+                  }}
+                  disabled={comboLookupLoading || comboLookupQuery.trim().length < 2}
+                  data-testid="button-combo-serial-lookup"
+                  className="bg-teal-600 hover:bg-teal-700 text-white"
+                >
+                  {comboLookupLoading ? "Searching…" : "Search"}
+                </Button>
+              </div>
+
+              {/* Result */}
+              {comboLookupResult === false && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  No combo serial record found for <strong>"{comboLookupQuery}"</strong>.
+                </div>
+              )}
+
+              {comboLookupResult && typeof comboLookupResult === "object" && (
+                <div className="rounded-md border border-teal-200 dark:border-teal-800 bg-teal-50/40 dark:bg-teal-950/10 p-4 space-y-3" data-testid="combo-serial-lookup-result">
+                  {/* Header */}
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-teal-800 dark:text-teal-300 flex items-center gap-2">
+                      <Layers className="w-4 h-4" />
+                      {comboLookupResult.serialNumber}
+                    </div>
+                    <Badge className={
+                      comboLookupResult.allocationStatus === "allocated"
+                        ? "bg-blue-100 text-blue-700 border-blue-300"
+                        : comboLookupResult.allocationStatus === "released"
+                        ? "bg-amber-100 text-amber-700 border-amber-300"
+                        : "bg-green-100 text-green-700 border-green-300"
+                    }>
+                      {comboLookupResult.allocationStatus === "allocated" ? "Dispatched"
+                        : comboLookupResult.allocationStatus === "released" ? "Returned / Released"
+                        : "In Stock"}
+                    </Badge>
+                  </div>
+
+                  {/* Details grid */}
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground text-xs">Component</span>
+                      <div className="font-medium">{comboLookupResult.componentName}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Combo Unit</span>
+                      <div className="font-medium">Unit {comboLookupResult.comboUnitIndex}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Combo Product</span>
+                      <div className="font-medium">{comboLookupResult.comboProduct?.name ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">GRN Received</span>
+                      <div className="font-medium font-mono text-xs">{comboLookupResult.grn?.grnNumber ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Challan</span>
+                      <div className="font-medium font-mono text-xs">{comboLookupResult.challan?.challanNumber ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Customer</span>
+                      <div className="font-medium">{comboLookupResult.customer?.name ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Captured At GRN</span>
+                      <div className="font-medium">
+                        {comboLookupResult.capturedAt
+                          ? new Date(comboLookupResult.capturedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Dispatch Date</span>
+                      <div className="font-medium">
+                        {comboLookupResult.allocatedAt
+                          ? new Date(comboLookupResult.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "—"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Phase 3: Combo Serial Capture Modal */}
+      <Dialog open={!!comboSerialGrnId} onOpenChange={(open) => { if (!open) { setComboSerialGrnId(null); setComboSerialItems([]); setComboSerialValues({}); } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-teal-600" />
+              Capture Combo Serial Numbers
+            </DialogTitle>
+            <DialogDescription>
+              Enter serial numbers for components inside each combo unit received. Leave blank to skip — the GRN will remain marked as Serials Pending.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-2">
+            {comboSerialItems.map((item) => (
+              <div key={item.grnItemId} className="space-y-3">
+                <div className="font-semibold text-sm text-foreground border-b pb-1.5 flex items-center gap-2">
+                  <Package className="w-3.5 h-3.5 text-teal-600" />
+                  {item.productName}
+                  <span className="text-xs text-muted-foreground font-normal">({item.receivedQty} unit{item.receivedQty !== 1 ? "s" : ""} received)</span>
+                </div>
+
+                {Array.from({ length: item.receivedQty }, (_, i) => i + 1).map(unitIdx => (
+                  <div key={unitIdx} className="rounded-md border border-teal-200 dark:border-teal-800 bg-teal-50/30 dark:bg-teal-950/10 p-3 space-y-2">
+                    <div className="text-xs font-semibold text-teal-700 dark:text-teal-400">
+                      Unit {unitIdx} of {item.receivedQty}
+                    </div>
+                    {item.manifest.map(comp => {
+                      const key = `${item.grnItemId}-${unitIdx}-${comp.componentName}`;
+                      return comp.requiresSerialTracking ? (
+                        <div key={comp.componentName} className="grid grid-cols-2 gap-3 items-center">
+                          <Label className="text-xs font-medium">
+                            {comp.componentName}
+                            <span className="ml-1 text-[10px] text-teal-600 font-normal">(serial required)</span>
+                          </Label>
+                          <Input
+                            placeholder="Scan or type serial number…"
+                            value={comboSerialValues[key] ?? ""}
+                            onChange={e => setComboSerialValues(prev => ({ ...prev, [key]: e.target.value }))}
+                            className="h-8 text-sm font-mono"
+                            data-testid={`input-combo-serial-${item.grnItemId}-${unitIdx}-${comp.componentName.replace(/\s+/g, "-")}`}
+                          />
+                        </div>
+                      ) : (
+                        <div key={comp.componentName} className="text-xs text-muted-foreground flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-muted-foreground/40 inline-block" />
+                          {comp.componentName} — no serial needed
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <Button variant="outline" onClick={() => { setComboSerialGrnId(null); setComboSerialItems([]); setComboSerialValues({}); }}>
+              Save Later
+            </Button>
+            <Button onClick={saveComboSerials} disabled={comboSerialSaving} className="bg-teal-600 hover:bg-teal-700 text-white">
+              {comboSerialSaving ? "Saving…" : "Save Serials"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Phase 4E: Serial Entry Dialog (GRN confirmation) */}
       <SerialEntryDialog
@@ -2570,6 +3027,83 @@ export default function Inventory() {
         }}
         onConfirm={handleSerialDispatchConfirm}
       />
+
+      {/* Combo Dispatch — scan / select serial numbers per unit × component */}
+      <Dialog open={!!comboDispatchPreview} onOpenChange={open => { if (!open) setComboDispatchPreview(null); }}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Dispatch — Scan Combo Serial Numbers</DialogTitle>
+            <DialogDescription>
+              Scan or select the serial number for each component. Pre-filled from GRN (FIFO) — change if the physical unit differs.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {(comboDispatchPreview?.units ?? []).map((unit, ui) => (
+              <div key={ui} className="border rounded-md overflow-hidden">
+                <div className="bg-muted/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {unit.productName} — Unit {unit.unitIndex}
+                </div>
+                <div className="divide-y">
+                  {unit.slots.map((slot, si) => (
+                    <div key={si} className="px-3 py-2 space-y-1">
+                      <p className="text-xs text-muted-foreground">{slot.componentName}</p>
+                      <div className="flex gap-2 items-center">
+                        <Input
+                          className={`font-mono text-sm h-8 ${!slot.valid && slot.serialNumber ? "border-red-400 focus-visible:ring-red-400" : slot.valid ? "border-green-400" : ""}`}
+                          placeholder="Scan or type serial number…"
+                          value={slot.serialNumber}
+                          onChange={e => updateComboSlot(ui, si, e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); updateComboSlot(ui, si, (e.target as HTMLInputElement).value); } }}
+                          autoFocus={ui === 0 && si === 0}
+                        />
+                        {slot.valid && <span className="text-green-600 text-xs shrink-0">✓</span>}
+                        {!slot.valid && slot.serialNumber && <span className="text-red-500 text-xs shrink-0">Not found</span>}
+                      </div>
+                      {slot.availableRecords.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {slot.availableRecords.map(r => (
+                            <button
+                              key={r.id}
+                              type="button"
+                              onClick={() => updateComboSlot(ui, si, r.serialNumber)}
+                              className={`text-xs px-2 py-0.5 rounded border font-mono transition-colors ${slot.selectedId === r.id ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted border-border"}`}
+                            >
+                              {r.serialNumber}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {(comboDispatchPreview?.units ?? []).some(u => u.slots.some(s => !s.valid)) && (
+              <p className="text-xs text-red-600 dark:text-red-400">
+                All serial numbers must match captured GRN records before dispatching.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setComboDispatchPreview(null)}>Cancel</Button>
+            <Button
+              disabled={
+                dispatchChallanMutation.isPending ||
+                (comboDispatchPreview?.units ?? []).some(u => u.slots.some(s => !s.valid))
+              }
+              onClick={() => {
+                const preview = comboDispatchPreview;
+                if (!preview) return;
+                setComboDispatchPreview(null);
+                const comboSerialIds = preview.units.flatMap(u => u.slots.map(s => s.selectedId)).filter(Boolean);
+                dispatchChallanMutation.mutate({ id: preview.challanId, comboSerialIds } as any);
+              }}
+            >
+              {dispatchChallanMutation.isPending ? "Dispatching…" : "Confirm & Dispatch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={grnDialogOpen} onOpenChange={setGrnDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">

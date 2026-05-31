@@ -106,39 +106,41 @@ function SupplierDropdown({ poLineItems, allSupplierProducts, suppliers, value, 
   onChange: (v: string) => void;
 }) {
   const selectedProductIds = useMemo(() => poLineItems.filter(it => it.productId).map(it => it.productId), [poLineItems]);
-  const { toast } = useToast();
 
-  const filteredSuppliers = useMemo(() => {
-    if (selectedProductIds.length === 0 || !allSupplierProducts.length) return suppliers;
-    return suppliers.filter(s => {
-      const supplierProductIds = new Set(allSupplierProducts.filter(sp => sp.supplierId === s.id).map(sp => sp.productId));
-      return selectedProductIds.every(pid => supplierProductIds.has(pid));
-    });
-  }, [selectedProductIds, allSupplierProducts, suppliers]);
+  // Show all suppliers — do not filter or auto-clear based on product selection.
+  // If the selected supplier doesn't carry a product, show a warning below but
+  // keep the supplier selected so the user can decide what to do.
+  const selectedSupplierProductIds = useMemo(() => {
+    if (!value || !allSupplierProducts.length) return new Set<string>();
+    return new Set(allSupplierProducts.filter(sp => sp.supplierId === value).map(sp => sp.productId));
+  }, [value, allSupplierProducts]);
 
-  useEffect(() => {
-    if (value && filteredSuppliers.length > 0 && !filteredSuppliers.find(s => s.id === value)) {
-      onChange("");
-      toast({ title: "Supplier cleared", description: "The selected supplier does not carry all chosen products." });
-    }
-  }, [filteredSuppliers, value]);
+  const missingProducts = useMemo(() => {
+    if (!value) return [];
+    return selectedProductIds.filter(pid => !selectedSupplierProductIds.has(pid));
+  }, [selectedProductIds, selectedSupplierProductIds, value]);
 
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger data-testid="select-po-supplier">
-        <SelectValue placeholder="Select supplier" />
-      </SelectTrigger>
-      <SelectContent>
-        {filteredSuppliers.length > 0 ? filteredSuppliers.map((s) => (
-          <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-        )) : (
-          <div className="px-2 py-3 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5" />
-            No supplier carries all selected products
-          </div>
-        )}
-      </SelectContent>
-    </Select>
+    <div className="space-y-1.5">
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger data-testid="select-po-supplier">
+          <SelectValue placeholder="Select supplier" />
+        </SelectTrigger>
+        <SelectContent>
+          {suppliers.map((s) => (
+            <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {missingProducts.length > 0 && (
+        <div className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+          {missingProducts.length === selectedProductIds.length
+            ? "Selected supplier does not carry any of the chosen products"
+            : `Selected supplier does not carry ${missingProducts.length} of the chosen product(s)`}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -361,7 +363,7 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
               <div className="flex-1">
                 <HierarchicalProductPicker
                   lineIndex={index}
-                  products={products}
+                  products={supplierSelected && supplierCatalogProducts.length > 0 ? supplierCatalogProducts : products}
                   hidePrice={true}
                   currentProductId={item.productId}
                   onProductSelect={(pid) => handlePickerSelect(index, pid)}
@@ -795,6 +797,10 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
     queryKey: ["/api/grns/by-po", poId],
     queryFn: () => apiRequest("GET", `/api/grns/by-po/${poId}`).then(r => r.json()),
   });
+  const { data: poPayments } = useQuery<any[]>({
+    queryKey: ["/api/supplier-payments/by-po", poId],
+    queryFn: () => apiRequest("GET", `/api/supplier-payments/by-po/${poId}`).then(r => r.json()),
+  });
 
   const productMap = new Map<string, Product>();
   allProducts?.forEach(p => productMap.set(p.id, p));
@@ -996,6 +1002,24 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
                 Balance: ₹{balance.toLocaleString()}
               </span>
             </div>
+
+            {/* Payment history — compact list of recorded payments for this PO */}
+            {poPayments && poPayments.length > 0 && (
+              <div className="w-full mt-2 border rounded-md overflow-hidden text-xs">
+                <div className="bg-muted/40 px-3 py-1.5 font-medium text-muted-foreground">Payment History</div>
+                {poPayments.map((p: any) => (
+                  <div key={p.id} className="flex items-center gap-3 px-3 py-1.5 border-t">
+                    <span className="text-muted-foreground">{p.paymentDate ? new Date(p.paymentDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</span>
+                    <span className="font-medium">₹{Number(p.amount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                    <span className="text-muted-foreground capitalize">{(p.paymentMethod ?? "").replace(/_/g, " ")}</span>
+                    {p.reference && <span className="text-muted-foreground">Ref: {p.reference}</span>}
+                    <span className="ml-auto inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-400">
+                      {p.paymentType === "advance" ? "Advance" : "Invoice Payment"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Right: action buttons — all independent, mirror SO pattern */}
             <div className="flex items-center gap-2 ml-auto flex-wrap" onClick={(e) => e.stopPropagation()}>
@@ -1303,6 +1327,7 @@ export default function SupplyChain() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/supplier-payments/by-po"] });
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });   // re-computes supplierPaidAmount
       queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });     // cash position
       queryClient.invalidateQueries({ queryKey: ["/api/supplier-invoices"] }); // invoice status/balance

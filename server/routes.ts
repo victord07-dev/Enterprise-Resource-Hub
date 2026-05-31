@@ -472,6 +472,30 @@ interface FifoLot {
  * If the server process TZ is wrong, the Date object's getTime() will be off — but
  * toLocaleDateString with an explicit timeZone bypasses that by formatting in Intl.
  */
+// Returns true if any combo item in the GRN still has required component serials missing.
+async function checkComboSerialsPending(grnId: string): Promise<boolean> {
+  const grn = await storage.getGRN(grnId);
+  if (!grn) return false;
+  const items = await storage.getGRNItems(grnId);
+  for (const item of items) {
+    if (!item.productId) continue;
+    const prodRow = (await db.execute(sql`SELECT type FROM products WHERE id = ${item.productId} LIMIT 1`)).rows[0] as { type: string } | undefined;
+    if (prodRow?.type !== "combo") continue;
+    const manifest = await storage.getComboComponents(item.productId);
+    const serialComponents = manifest.filter(c => c.requiresSerialTracking);
+    if (serialComponents.length === 0) continue;
+    // Check how many serial records exist for this GRN item
+    const capturedCount = Number(((await db.execute(sql`
+      SELECT COUNT(*) AS cnt FROM combo_serial_records
+      WHERE grn_item_id = ${item.id}
+        AND serial_number != ''
+    `)).rows[0] as any)?.cnt ?? 0);
+    const expectedCount = item.receivedQuantity * serialComponents.length;
+    if (capturedCount < expectedCount) return true;
+  }
+  return false;
+}
+
 function toISTDateStr(d: Date | null | undefined): string | null {
   if (!d) return null;
   // en-CA locale produces YYYY-MM-DD which is the ISO date format
@@ -1040,6 +1064,236 @@ export async function registerRoutes(
       res.json(data);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch supplier" });
+    }
+  });
+
+  // GET /api/suppliers/:id/statement?from=YYYY-MM-DD&to=YYYY-MM-DD&aggregate=true|false
+  // Downloads a Supplier Statement CSV with Purchase Summary + Account Statement + Summary block.
+  app.get("/api/suppliers/:id/statement", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const supplierId = req.params.id;
+      const fromDate  = (req.query.from as string) || "";
+      const toDate    = (req.query.to   as string) || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      const aggregate = req.query.aggregate === "true";
+
+      if (!fromDate) return res.status(400).json({ message: "from date is required" });
+
+      const supplier = await storage.getSupplier(supplierId);
+      if (!supplier) return res.status(404).json({ message: "Supplier not found" });
+
+      const escCsv = (v: string | number | null | undefined) =>
+        `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+      // ── 1. Purchase Summary — confirmed GRNs within date range ─────────────
+      const grnRows = await db.execute(sql`
+        SELECT
+          g.grn_number,
+          g.received_date::date::text AS grn_date,
+          po.po_number,
+          p.name        AS product_name,
+          p.hsn_code,
+          p.gst_rate,
+          gi.ordered_quantity,
+          gi.received_quantity,
+          gi.buying_price,
+          gi.total_cost
+        FROM goods_receipt_notes g
+        JOIN purchase_orders po      ON po.id = g.purchase_order_id
+        JOIN goods_receipt_note_items gi ON gi.grn_id = g.id
+        JOIN products p              ON p.id = gi.product_id
+        WHERE po.supplier_id = ${supplierId}
+          AND g.status = 'confirmed'
+          AND g.received_date::date >= ${fromDate}::date
+          AND g.received_date::date <= ${toDate}::date
+        ORDER BY g.received_date, g.grn_number, p.name
+      `);
+
+      let totalReceivedQty   = 0;
+      let totalPurchaseExGst = 0;
+      let totalGstValue      = 0;
+
+      let purchaseLines: string[][];
+
+      if (!aggregate) {
+        // Detailed: one row per GRN item
+        purchaseLines = (grnRows.rows as any[]).map(r => {
+          const gstPct   = Number(r.gst_rate ?? 0);
+          const cost     = Number(r.total_cost ?? 0);
+          const gstAmt   = cost * (gstPct / 100);
+          const totalInc = cost + gstAmt;
+          totalReceivedQty   += Number(r.received_quantity ?? 0);
+          totalPurchaseExGst += cost;
+          totalGstValue      += gstAmt;
+          return [
+            r.grn_number, r.grn_date, r.po_number ?? "",
+            r.product_name, r.hsn_code ?? "",
+            String(r.ordered_quantity), String(r.received_quantity),
+            Number(r.buying_price).toFixed(2),
+            cost.toFixed(2),
+            gstPct.toFixed(2),
+            gstAmt.toFixed(2),
+            totalInc.toFixed(2),
+          ];
+        });
+      } else {
+        // Aggregate: group by product
+        const agg: Record<string, any> = {};
+        for (const r of grnRows.rows as any[]) {
+          const pid = r.product_name as string;
+          if (!agg[pid]) {
+            agg[pid] = {
+              product_name: r.product_name,
+              hsn_code: r.hsn_code ?? "",
+              gst_rate: Number(r.gst_rate ?? 0),
+              grn_count: 0,
+              received_quantity: 0,
+              total_cost: 0,
+            };
+          }
+          agg[pid].grn_count        += 1;
+          agg[pid].received_quantity += Number(r.received_quantity ?? 0);
+          agg[pid].total_cost        += Number(r.total_cost ?? 0);
+        }
+        purchaseLines = Object.values(agg).map((r: any) => {
+          const gstAmt   = r.total_cost * (r.gst_rate / 100);
+          const totalInc = r.total_cost + gstAmt;
+          totalReceivedQty   += r.received_quantity;
+          totalPurchaseExGst += r.total_cost;
+          totalGstValue      += gstAmt;
+          return [
+            `${r.grn_count} GRN(s)`, "", "",
+            r.product_name, r.hsn_code,
+            "", String(r.received_quantity),
+            "", r.total_cost.toFixed(2),
+            r.gst_rate.toFixed(2),
+            gstAmt.toFixed(2),
+            totalInc.toFixed(2),
+          ];
+        });
+      }
+
+      const totalPurchaseIncGst = totalPurchaseExGst + totalGstValue;
+
+      const purchaseHeaders = aggregate
+        ? ["GRN Count", "GRN Date", "PO No", "Product", "HSN", "Ordered Qty", "Received Qty", "Buying Price", "Total Cost", "GST %", "GST Amount", "Total With GST"]
+        : ["GRN No", "GRN Date", "PO No", "Product", "HSN", "Ordered Qty", "Received Qty", "Buying Price", "Total Cost", "GST %", "GST Amount", "Total With GST"];
+
+      const purchaseTotalRow = [
+        "TOTAL", "", "", "", "",
+        "", String(totalReceivedQty),
+        "", totalPurchaseExGst.toFixed(2),
+        "", totalGstValue.toFixed(2),
+        totalPurchaseIncGst.toFixed(2),
+      ];
+
+      // ── 2. Account Statement — invoices + aggregated payments ──────────────
+      const invoiceRows = await db.execute(sql`
+        SELECT
+          si.id            AS invoice_id,
+          COALESCE(si.ext_invoice_number, si.invoice_number, 'N/A') AS invoice_no,
+          si.invoice_date::date::text  AS invoice_date,
+          COALESCE(si.ext_total_amount, si.total_amount, 0)::numeric AS invoice_amount,
+          COALESCE(si.ext_gst_amount,   si.tax_amount,   0)::numeric AS gst_amount,
+          si.status
+        FROM supplier_invoices si
+        WHERE si.supplier_id = ${supplierId}
+          AND si.invoice_date::date >= ${fromDate}::date
+          AND si.invoice_date::date <= ${toDate}::date
+          AND si.cancelled_at IS NULL
+        ORDER BY si.invoice_date
+      `);
+
+      let totalInvoiced = 0;
+      let totalPaid     = 0;
+
+      const accountLines: string[][] = [];
+      for (const inv of invoiceRows.rows as any[]) {
+        const invAmt = Number(inv.invoice_amount ?? 0);
+        const gstAmt = Number(inv.gst_amount ?? 0);
+
+        // Aggregate payments for this invoice
+        const pymtRows = await db.execute(sql`
+          SELECT amount, payment_date, payment_method
+          FROM supplier_payments
+          WHERE supplier_invoice_id = ${inv.invoice_id}
+          ORDER BY payment_date DESC
+        `);
+        const payments     = pymtRows.rows as any[];
+        const amtPaid      = payments.reduce((s, p) => s + Number(p.amount ?? 0), 0);
+        const outstanding  = invAmt - amtPaid;
+        const latestDate   = payments[0]?.payment_date
+          ? new Date(payments[0].payment_date).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+          : "";
+        const latestMethod = payments[0]?.payment_method ?? "";
+
+        totalInvoiced += invAmt;
+        totalPaid     += amtPaid;
+
+        accountLines.push([
+          inv.invoice_no,
+          inv.invoice_date,
+          invAmt.toFixed(2),
+          gstAmt.toFixed(2),
+          amtPaid.toFixed(2),
+          outstanding.toFixed(2),
+          inv.status,
+          latestDate,
+          latestMethod,
+        ]);
+      }
+
+      const totalOutstanding = totalInvoiced - totalPaid;
+
+      const accountHeaders = [
+        "Invoice No", "Invoice Date", "Invoice Amount", "GST Amount",
+        "Amount Paid", "Outstanding", "Status", "Payment Date", "Payment Method",
+      ];
+
+      const accountTotalRow = [
+        "TOTAL", "",
+        totalInvoiced.toFixed(2), "",
+        totalPaid.toFixed(2),
+        totalOutstanding.toFixed(2),
+        "", "", "",
+      ];
+
+      // ── 3. Summary block ────────────────────────────────────────────────────
+      const summaryRows = [
+        ["Supplier Name",                supplier.name ?? ""],
+        ["GSTIN",                         supplier.gstNumber ?? ""],
+        ["Period",                        `${fromDate} to ${toDate}`],
+        ["Total Quantity Purchased",      String(totalReceivedQty)],
+        ["Total Purchase Value (Ex GST)", totalPurchaseExGst.toFixed(2)],
+        ["Total GST",                     totalGstValue.toFixed(2)],
+        ["Total Purchase Value (Inc GST)",totalPurchaseIncGst.toFixed(2)],
+        ["Total Paid",                    totalPaid.toFixed(2)],
+        ["Total Outstanding",             totalOutstanding.toFixed(2)],
+      ];
+
+      // ── Assemble CSV ────────────────────────────────────────────────────────
+      const blank = [""];
+      const lines: string[] = [
+        escCsv("=== PURCHASE SUMMARY ==="),
+        purchaseHeaders.map(escCsv).join(","),
+        ...purchaseLines.map(r => r.map(escCsv).join(",")),
+        purchaseTotalRow.map(escCsv).join(","),
+        blank.join(","),
+        escCsv("=== ACCOUNT STATEMENT ==="),
+        accountHeaders.map(escCsv).join(","),
+        ...accountLines.map(r => r.map(escCsv).join(",")),
+        accountTotalRow.map(escCsv).join(","),
+        blank.join(","),
+        escCsv("=== SUMMARY ==="),
+        ...summaryRows.map(r => r.map(escCsv).join(",")),
+      ];
+
+      const safeName = supplier.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}_statement_${fromDate}_${toDate}.csv"`);
+      res.send("﻿" + lines.join("\r\n"));
+    } catch (err: any) {
+      console.error("[SUPPLIER STATEMENT] failed:", err);
+      res.status(500).json({ message: err?.message || "Failed to generate supplier statement" });
     }
   });
 
@@ -3415,7 +3669,7 @@ export async function registerRoutes(
     const ids = productIds.filter(Boolean);
     if (ids.length === 0) return [];
     const rows = (await db.execute(sql`
-      SELECT id, name, sku, unit_price, distributor_price
+      SELECT id, name, sku, type, unit_price, distributor_price
       FROM products
       WHERE id IN (${sql.join(ids.map(i => sql`${i}`), sql`, `)})
     `)).rows as any[];
@@ -4890,15 +5144,24 @@ export async function registerRoutes(
       const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC1));
 
       let challanDeliveryAddress = challanData.deliveryAddress || null;
-      if (!challanDeliveryAddress && challanData.orderId) {
+      let challanCustomerId = challanData.customerId || null;
+      if (challanData.orderId) {
         const linkedOrder = await storage.getSalesOrder(challanData.orderId);
-        if (linkedOrder && (linkedOrder as any).deliveryAddress) {
-          challanDeliveryAddress = (linkedOrder as any).deliveryAddress;
+        if (linkedOrder) {
+          if (!challanDeliveryAddress && (linkedOrder as any).deliveryAddress) {
+            challanDeliveryAddress = (linkedOrder as any).deliveryAddress;
+          }
+          // Always derive customerId from the linked sales order — fixes serial number
+          // customer_id being null on challans created from the Inventory module.
+          if (!challanCustomerId && linkedOrder.customerId) {
+            challanCustomerId = linkedOrder.customerId;
+          }
         }
       }
 
       const parsed = insertDeliveryChallanSchema.safeParse({
         ...challanData,
+        customerId: challanCustomerId,
         challanNumber,
         status: "draft",
         createdBy: req.user.id,
@@ -5030,7 +5293,7 @@ export async function registerRoutes(
       }
 
       const orderItems = await storage.getSalesOrderItems(soId);
-      const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle") && it.productId);
+      const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle" || it.itemType === "combo") && it.productId);
       if (productItems.length === 0) {
         return res.status(400).json({ message: "Order has no dispatchable line items" });
       }
@@ -5167,7 +5430,7 @@ export async function registerRoutes(
       if (!order) return res.status(404).json({ message: "Sales order not found" });
 
       const orderItems = await storage.getSalesOrderItems(req.params.id);
-      const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+      const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle" || it.itemType === "combo") && it.productId);
 
       const allChallans = await storage.getDeliveryChallans();
       const soChallans = allChallans.filter((c: any) => c.orderId === req.params.id && c.status !== "cancelled");
@@ -5377,6 +5640,11 @@ export async function registerRoutes(
       await logAction(req.user.id, "challan_cancelled", "sales",
         `Challan ${challan.challanNumber} cancelled. Reason: ${cancellationReason}`);
 
+      // Release any combo serial allocations for this challan
+      try { await storage.deallocateComboSerials(challan.id); } catch (e) {
+        console.error("[COMBO SERIAL DEALLOC] cancel:", e);
+      }
+
       const updated = await storage.getDeliveryChallan(challan.id);
       res.json(updated);
     } catch (err: any) {
@@ -5399,6 +5667,8 @@ export async function registerRoutes(
       type SerialAssignment = { challanItemId: string; componentProductId: string; serialIds: string[] };
       const assignments: SerialAssignment[] = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
       const warrantyMonths: number          = Number(req.body?.warrantyMonths ?? 0);
+      // Specific combo serial record IDs selected by the operator in the dispatch dialog
+      const comboSerialIds: string[]        = Array.isArray(req.body?.comboSerialIds) ? req.body.comboSerialIds : [];
 
       const items = await storage.getDeliveryChallanItems(challan.id);
       if (items.length === 0) return res.status(400).json({ message: "Challan has no items" });
@@ -5485,6 +5755,35 @@ export async function registerRoutes(
             console.error(`[FIFO][DISPATCH] computeFifoLots failed for productId=${pid} warehouseId=${challan.sourceId} challan=${challan.challanNumber}:`, (e as Error).message);
             fifoLotsPerProduct[pid] = [];
           }
+        }
+      }
+
+      // ── Combo serial gate: block dispatch if combo serial records not captured ──
+      // Combos use combo_serial_records captured at GRN. If none are available
+      // for a serial-tracked component, the dispatch is rejected.
+      {
+        const comboShortfalls: string[] = [];
+        for (const item of items) {
+          const prod = await getCachedProduct(item.productId);
+          if (prod?.type !== "combo") continue;
+          const manifest = await storage.getComboComponents(item.productId);
+          const serialComponents = manifest.filter(c => c.requiresSerialTracking);
+          if (serialComponents.length === 0) continue;
+          const qty = dispatchQtys[item.id];
+          const needed = qty * serialComponents.length;
+          const available = await storage.getComboSerialRecords({ comboProductId: item.productId, available: true });
+          if (available.length < needed) {
+            comboShortfalls.push(
+              `"${prod.name}": need ${needed} serial record(s) for ${serialComponents.length} tracked component(s) × ${qty} unit(s), only ${available.length} available. Capture serial numbers at GRN first.`
+            );
+          }
+        }
+        if (comboShortfalls.length > 0) {
+          return res.status(400).json({
+            code: "combo_serials_missing",
+            message: "Dispatch blocked: combo component serial numbers not captured.",
+            details: comboShortfalls,
+          });
         }
       }
 
@@ -6094,6 +6393,36 @@ export async function registerRoutes(
         }
       }
 
+      // ── Phase 4 Combo Serial Allocation ──────────────────────────────────────
+      // Use operator-selected IDs from the dispatch dialog when provided; fall back to FIFO.
+      try {
+        const resolvedCustomerId = (updated as any)?.customerId ?? null;
+        let toAllocate: string[] = [];
+
+        if (comboSerialIds.length > 0) {
+          // Operator explicitly selected which records to allocate
+          toAllocate = comboSerialIds;
+        } else {
+          // FIFO fallback (no selection provided)
+          for (const item of items) {
+            const prod = await getCachedProduct(item.productId);
+            if (prod?.type !== "combo") continue;
+            const manifest = await storage.getComboComponents(item.productId);
+            if (!manifest.some(c => c.requiresSerialTracking)) continue;
+            const qty = dispatchQtys[item.id];
+            const available = await storage.getComboSerialRecords({ comboProductId: item.productId, available: true });
+            const needed = qty * manifest.filter(c => c.requiresSerialTracking).length;
+            toAllocate.push(...available.slice(0, needed).map(r => r.id));
+          }
+        }
+
+        if (toAllocate.length > 0 && resolvedCustomerId) {
+          await storage.allocateComboSerials(toAllocate, challan.id, resolvedCustomerId, req.user.id);
+        }
+      } catch (allocErr) {
+        console.error("[COMBO SERIAL ALLOC] non-fatal error during dispatch:", allocErr);
+      }
+
       // Notify roles
       notifyRoles(["accountant", "admin"], "challan", `Challan ${challan.challanNumber} Dispatched`, `Challan #${challan.challanNumber} dispatched. Sales Invoice pending upload — record invoice details from Tally.`, challan.id).catch(() => {});
       notifyRoles(["sales_manager"], "challan", `Challan ${challan.challanNumber} Dispatched`, `Challan #${challan.challanNumber} has been dispatched.`, challan.id).catch(() => {});
@@ -6146,6 +6475,35 @@ export async function registerRoutes(
       res.json(items);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch challan items" });
+    }
+  });
+
+  // GET /api/delivery-challans/:id/combo-serials
+  // Returns combo serial records allocated to this challan, grouped by productId.
+  // Used when generating the challan PDF to print serial numbers.
+  app.get("/api/delivery-challans/:id/combo-serials", authenticateToken, async (req: any, res) => {
+    try {
+      const records = await storage.getComboSerialRecords({ allocatedChallanId: req.params.id });
+      // Group by productId for easy PDF rendering
+      const byProduct: Record<string, Array<{
+        comboUnitIndex: number; componentName: string; serialNumber: string;
+      }>> = {};
+      for (const r of records) {
+        if (!byProduct[r.comboProductId]) byProduct[r.comboProductId] = [];
+        byProduct[r.comboProductId].push({
+          comboUnitIndex: r.comboUnitIndex,
+          componentName: r.componentName,
+          serialNumber: r.serialNumber,
+        });
+      }
+      // Sort within each product: by unit index then component name
+      for (const pid of Object.keys(byProduct)) {
+        byProduct[pid].sort((a, b) => a.comboUnitIndex - b.comboUnitIndex || a.componentName.localeCompare(b.componentName));
+      }
+      res.json(byProduct);
+    } catch (err) {
+      console.error("[CHALLAN COMBO SERIALS]", err);
+      res.status(500).json({ message: "Failed to fetch combo serials for challan" });
     }
   });
 
@@ -6656,6 +7014,28 @@ export async function registerRoutes(
         }
       }
 
+      // ── Phase 3 Combo Serial Pending check ───────────────────────────────────
+      // After confirmation, detect combo items that have manifests with serial-required
+      // components. If any exist, stamp combo_serials_pending = true and return the
+      // flag in the response so the client can immediately open the capture modal.
+      let comboSerialsPending = false;
+      const pendingComboItems: Array<{
+        grnItemId: string; productId: string; productName: string; receivedQty: number;
+      }> = [];
+      for (const item of items) {
+        if (!item.productId) continue;
+        const prodRow = (await db.execute(sql`SELECT type, name FROM products WHERE id = ${item.productId} LIMIT 1`)).rows[0] as { type: string; name: string } | undefined;
+        if (prodRow?.type !== "combo") continue;
+        const manifest = await storage.getComboComponents(item.productId);
+        const needsSerial = manifest.some(c => c.requiresSerialTracking);
+        if (!needsSerial) continue;
+        comboSerialsPending = true;
+        pendingComboItems.push({ grnItemId: item.id, productId: item.productId, productName: prodRow.name, receivedQty: item.receivedQuantity });
+      }
+      if (comboSerialsPending) {
+        await db.execute(sql`UPDATE goods_receipt_notes SET combo_serials_pending = true WHERE id = ${grn.id}`);
+      }
+
       await logAction(req.user.id, "grn_confirmed", "supply_chain", `GRN ${grn.grnNumber} confirmed. Stock updated.`);
       notifyRoles(["admin", "accountant"], "grn", `GRN ${grn.grnNumber} Confirmed`, `GRN #${grn.grnNumber} confirmed. Stock updated.`, grn.id).catch(() => {});
 
@@ -6828,10 +7208,134 @@ export async function registerRoutes(
       }
 
       const updated = await storage.getGRN(grn.id);
-      res.json(updated);
+      res.json({ ...updated, comboSerialsPending, pendingComboItems });
     } catch (error) {
       console.error("Confirm GRN error:", error);
       res.status(500).json({ message: "Failed to confirm GRN" });
+    }
+  });
+
+  // ── Combo Serial Capture Routes ───────────────────────────────────────────────
+  // GET /api/grns/:id/combo-serial-info
+  // Returns combo items in this GRN with their manifests — used to build the capture form.
+  app.get("/api/grns/:id/combo-serial-info", authenticateToken, async (req: any, res) => {
+    try {
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+
+      const items = await storage.getGRNItems(grn.id);
+      const result: Array<{
+        grnItemId: string; productId: string; productName: string; receivedQty: number;
+        manifest: Array<{ id: string; componentName: string; linkedProductId: string | null; quantity: string; requiresSerialTracking: boolean; sortOrder: number }>;
+      }> = [];
+
+      for (const item of items) {
+        if (!item.productId) continue;
+        const prod = (await db.execute(sql`SELECT type, name FROM products WHERE id = ${item.productId} LIMIT 1`)).rows[0] as { type: string; name: string } | undefined;
+        if (prod?.type !== "combo") continue;
+        const manifest = await storage.getComboComponents(item.productId);
+        if (manifest.length === 0) continue;
+        result.push({
+          grnItemId: item.id,
+          productId: item.productId,
+          productName: prod.name,
+          receivedQty: item.receivedQuantity,
+          manifest: manifest.map(c => ({
+            id: c.id,
+            componentName: c.componentName,
+            linkedProductId: c.linkedProductId,
+            quantity: c.quantity,
+            requiresSerialTracking: c.requiresSerialTracking,
+            sortOrder: c.sortOrder,
+          })),
+        });
+      }
+
+      // Also return existing captured serials so the form can pre-fill already-saved ones
+      const existingSerials = await storage.getComboSerialRecords({ grnId: grn.id });
+      res.json({ items: result, existingSerials });
+    } catch (err) {
+      console.error("[COMBO SERIAL INFO] failed:", err);
+      res.status(500).json({ message: "Failed to load combo serial info" });
+    }
+  });
+
+  // POST /api/grns/:id/combo-serials
+  // Bulk-save serial numbers captured for combo items in this GRN.
+  // Body: { records: Array<{ grnItemId, comboProductId, comboUnitIndex, componentName, linkedProductId?, serialNumber, notes? }> }
+  // Skips blanks, upserts by unique key (grn_item_id, combo_unit_index, component_name).
+  app.post("/api/grns/:id/combo-serials", authenticateToken, async (req: any, res) => {
+    try {
+      const allowedRoles = ["accountant", "admin", "warehouse_manager"];
+      if (!allowedRoles.includes(req.user.role)) return res.status(403).json({ message: "Not authorized" });
+
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "confirmed") return res.status(400).json({ message: "GRN must be confirmed before capturing serials" });
+
+      const { records } = req.body;
+      if (!Array.isArray(records)) return res.status(400).json({ message: "records[] array required" });
+
+      const saved: any[] = [];
+      const skipped: string[] = [];
+
+      for (const r of records) {
+        const serial = String(r.serialNumber ?? "").trim();
+        if (!serial) { skipped.push(`${r.componentName} unit ${r.comboUnitIndex}`); continue; }
+        if (!r.grnItemId || !r.comboProductId || !r.componentName || r.comboUnitIndex == null) {
+          skipped.push(`invalid record: ${JSON.stringify(r)}`); continue;
+        }
+
+        // Check uniqueness constraint — if record already exists, update serial instead of insert
+        const existing = (await db.execute(sql`
+          SELECT id FROM combo_serial_records
+          WHERE grn_item_id = ${r.grnItemId}
+            AND combo_unit_index = ${Number(r.comboUnitIndex)}
+            AND component_name   = ${String(r.componentName)}
+          LIMIT 1
+        `)).rows[0] as { id: string } | undefined;
+
+        if (existing) {
+          await db.execute(sql`
+            UPDATE combo_serial_records
+            SET serial_number = ${serial}, notes = ${r.notes ?? null}, updated_at = now()
+            WHERE id = ${existing.id}
+          `);
+          saved.push({ id: existing.id, updated: true });
+        } else {
+          const record = await storage.createComboSerialRecord({
+            comboProductId: r.comboProductId,
+            grnId: grn.id,
+            grnItemId: r.grnItemId,
+            comboUnitIndex: Number(r.comboUnitIndex),
+            componentName: String(r.componentName),
+            linkedProductId: r.linkedProductId ?? null,
+            serialNumber: serial,
+            notes: r.notes ?? null,
+            capturedByUserId: req.user.id,
+            allocatedChallanId: null,
+            allocatedCustomerId: null,
+            allocatedAt: null,
+            allocatedByUserId: null,
+            deallocatedAt: null,
+          });
+          saved.push({ id: record.id, updated: false });
+        }
+      }
+
+      // Recheck if all required serials are now captured — if yes, clear the pending flag
+      const stillPending = await checkComboSerialsPending(grn.id);
+      await db.execute(sql`
+        UPDATE goods_receipt_notes SET combo_serials_pending = ${stillPending} WHERE id = ${grn.id}
+      `);
+
+      await logAction(req.user.id, "combo_serials_captured", "supply_chain",
+        JSON.stringify({ grnId: grn.id, grnNumber: grn.grnNumber, saved: saved.length, skipped: skipped.length }));
+
+      res.json({ saved: saved.length, skipped: skipped.length, comboSerialsPending: stillPending });
+    } catch (err) {
+      console.error("[COMBO SERIAL CAPTURE] failed:", err);
+      res.status(500).json({ message: (err as any)?.message || "Failed to save combo serials" });
     }
   });
 
@@ -8154,12 +8658,13 @@ export async function registerRoutes(
         }
       }
 
-      const lr = await storage.updateLeaveRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
+      const lr = await storage.updateLeaveRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body?.reviewNote || null });
       if (!lr) return res.status(404).json({ message: "Leave request not found" });
       await notifyEmployee(lr.employeeId, "leave_approved", "Leave Approved", `Your ${lr.type} leave from ${new Date(lr.startDate).toLocaleDateString("en-IN")} to ${new Date(lr.endDate).toLocaleDateString("en-IN")} has been approved.`, lr.id);
       res.json(lr);
     } catch (error) {
-      res.status(500).json({ message: "Failed to approve leave request" });
+      console.error("[LEAVE APPROVE] error:", error);
+      res.status(500).json({ message: "Failed to approve leave request", detail: String(error) });
     }
   });
 
@@ -8266,14 +8771,15 @@ export async function registerRoutes(
       const existing = await storage.getLateArrivalRequest(req.params.id);
       if (!existing) return res.status(404).json({ message: "Request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be approved" });
-      const lar = await storage.updateLateArrivalRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body.reviewNote || null });
+      const lar = await storage.updateLateArrivalRequest(req.params.id, { status: "approved", reviewedBy: req.user.id, reviewNote: req.body?.reviewNote || null });
       if (!lar) return res.status(404).json({ message: "Request not found" });
       await notifyEmployee(lar.employeeId, "late_arrival_approved", "Late Arrival Approved",
         `Your late arrival request for ${lar.date} (expected ${lar.expectedArrivalTime}) has been approved. Your check-in will be marked as Present.`, lar.id);
       await logAction(req.user.id, "approve", "late_arrival_requests", JSON.stringify({ id: lar.id, date: lar.date, employeeId: lar.employeeId }));
       res.json(lar);
     } catch (error) {
-      res.status(500).json({ message: "Failed to approve request" });
+      console.error("[LATE ARRIVAL APPROVE] error:", error);
+      res.status(500).json({ message: "Failed to approve request", detail: String(error) });
     }
   });
 
@@ -8282,7 +8788,7 @@ export async function registerRoutes(
       const existing = await storage.getLateArrivalRequest(req.params.id);
       if (!existing) return res.status(404).json({ message: "Request not found" });
       if (existing.status !== "pending") return res.status(400).json({ message: "Only pending requests can be rejected" });
-      const { reviewNote } = req.body;
+      const { reviewNote } = req.body ?? {};
       if (!reviewNote?.trim()) return res.status(400).json({ message: "reviewNote (rejection reason) is required" });
       const lar = await storage.updateLateArrivalRequest(req.params.id, { status: "rejected", reviewedBy: req.user.id, reviewNote: reviewNote.trim() });
       if (!lar) return res.status(404).json({ message: "Request not found" });
@@ -8291,7 +8797,8 @@ export async function registerRoutes(
       await logAction(req.user.id, "reject", "late_arrival_requests", JSON.stringify({ id: lar.id, date: lar.date, employeeId: lar.employeeId, reviewNote }));
       res.json(lar);
     } catch (error) {
-      res.status(500).json({ message: "Failed to reject request" });
+      console.error("[LATE ARRIVAL REJECT] error:", error);
+      res.status(500).json({ message: "Failed to reject request", detail: String(error) });
     }
   });
 
@@ -8775,6 +9282,534 @@ export async function registerRoutes(
 
       res.json({ success: true });
     } catch { res.status(500).json({ message: "Failed to delete supplier payment" }); }
+  });
+
+  // ── Customer Statement Report ─────────────────────────────────────────────
+  // GET /api/customers/:id/statement?from=YYYY-MM-DD&to=YYYY-MM-DD
+  app.get("/api/customers/:id/statement", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const customerId = req.params.id;
+      const fromDate   = (req.query.from as string) || "";
+      const toDate     = (req.query.to   as string) || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      if (!fromDate) return res.status(400).json({ message: "from date is required" });
+
+      const customer = await storage.getCustomer(customerId);
+      if (!customer) return res.status(404).json({ message: "Customer not found" });
+
+      const escCsv = (v: string | number | null | undefined) =>
+        `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const blank12 = Array(12).fill("").map(escCsv).join(",");
+
+      // ── GRN cost map (same as product report) ─────────────────────────────
+      const grnCostRows = await db.execute(sql`
+        SELECT DISTINCT ON (gi.product_id)
+          gi.product_id, gi.buying_price::numeric AS buying_price
+        FROM goods_receipt_note_items gi
+        JOIN goods_receipt_notes g ON g.id = gi.grn_id
+        WHERE g.status = 'confirmed'
+        ORDER BY gi.product_id, g.received_date DESC
+      `);
+      const grnCostMap = new Map<string, number>();
+      for (const r of grnCostRows.rows as any[]) grnCostMap.set(r.product_id, Number(r.buying_price));
+
+      // Bundle component map
+      const bundleCompRows = await db.execute(sql`
+        SELECT bundle_product_id, component_product_id, quantity::numeric AS qty_per_bundle
+        FROM product_bundle_items
+      `);
+      const bundleCompMap = new Map<string, Array<{ componentId: string; qtyPerBundle: number }>>();
+      for (const r of bundleCompRows.rows as any[]) {
+        if (!bundleCompMap.has(r.bundle_product_id)) bundleCompMap.set(r.bundle_product_id, []);
+        bundleCompMap.get(r.bundle_product_id)!.push({ componentId: r.component_product_id, qtyPerBundle: Number(r.qty_per_bundle) });
+      }
+
+      const getCostInfo = (productId: string, productType: string): { cost: number; status: string } => {
+        if (productType === "bundle") {
+          const comps = bundleCompMap.get(productId) ?? [];
+          if (comps.length === 0) return { cost: 0, status: "MISSING_COST_DATA" };
+          let total = 0, hasAll = true, hasAny = false;
+          for (const c of comps) {
+            const cc = grnCostMap.get(c.componentId);
+            if (cc !== undefined && cc > 0) { total += cc * c.qtyPerBundle; hasAny = true; }
+            else hasAll = false;
+          }
+          const status = !hasAny ? "MISSING_COST_DATA" : !hasAll ? "PARTIAL_COST_DATA" : "OK";
+          return { cost: total, status };
+        }
+        const cc = grnCostMap.get(productId);
+        return cc ? { cost: cc, status: "OK" } : { cost: 0, status: "MISSING_COST_DATA" };
+      };
+
+      // ── Customer Since: first invoice ever ────────────────────────────────
+      const firstInvRow = await db.execute(sql`
+        SELECT MIN(invoice_date)::date::text AS first_date
+        FROM sales_invoices
+        WHERE customer_id = ${customerId} AND cancelled_at IS NULL
+      `);
+      const customerSince = (firstInvRow.rows[0] as any)?.first_date ?? "N/A";
+
+      // ── Purchase Detail: invoice line items in period ─────────────────────
+      const purchaseRows = await db.execute(sql`
+        SELECT
+          si.invoice_number,
+          si.invoice_date::date::text AS invoice_date,
+          sii.product_id,
+          p.name        AS product_name,
+          p.type        AS product_type,
+          sii.qty::numeric,
+          sii.unit_price::numeric,
+          sii.gst_rate::numeric,
+          sii.taxable_amount::numeric,
+          sii.tax_amount::numeric,
+          sii.total_amount::numeric
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        LEFT JOIN products p   ON p.id  = sii.product_id
+        WHERE si.customer_id  = ${customerId}
+          AND si.cancelled_at IS NULL
+          AND si.invoice_date::date >= ${fromDate}::date
+          AND si.invoice_date::date <= ${toDate}::date
+        ORDER BY si.invoice_date, si.invoice_number, p.name
+      `);
+
+      const purchaseLines: string[][] = [];
+      let totalRevExGst = 0, totalTaxCollected = 0, totalRevIncGst = 0;
+
+      for (const r of purchaseRows.rows as any[]) {
+        const qty         = Number(r.qty ?? 0);
+        const unitPrice   = Number(r.unit_price ?? 0);
+        const gstRate     = Number(r.gst_rate ?? 0);
+        const unitIncGst  = unitPrice * (1 + gstRate / 100);
+        const taxableAmt  = Number(r.taxable_amount ?? 0);
+        const taxAmt      = Number(r.tax_amount ?? 0);
+        const totalAmt    = Number(r.total_amount ?? 0);
+
+        totalRevExGst     += taxableAmt;
+        totalTaxCollected += taxAmt;
+        totalRevIncGst    += totalAmt;
+
+        let marginPct = "", costStatus = "MISSING_COST_DATA";
+        if (r.product_id) {
+          const { cost, status } = getCostInfo(r.product_id, r.product_type ?? "product");
+          costStatus = status;
+          if (cost > 0 && unitPrice > 0) {
+            marginPct = (((unitPrice - cost) / cost) * 100).toFixed(2) + "%";
+          }
+        }
+
+        purchaseLines.push([
+          r.invoice_number, r.invoice_date,
+          r.product_name ?? "", String(qty),
+          unitPrice.toFixed(2), marginPct,
+          gstRate.toFixed(2), unitIncGst.toFixed(2),
+          taxableAmt.toFixed(2), taxAmt.toFixed(2), totalAmt.toFixed(2),
+          costStatus,
+        ]);
+      }
+
+      // ── Account Statement: invoices + aggregated payments ─────────────────
+      const invoiceRows = await db.execute(sql`
+        SELECT
+          si.id, si.invoice_number,
+          si.invoice_date::date::text AS invoice_date,
+          si.grand_total::numeric     AS invoice_amount,
+          si.status
+        FROM sales_invoices si
+        WHERE si.customer_id  = ${customerId}
+          AND si.cancelled_at IS NULL
+          AND si.invoice_date::date >= ${fromDate}::date
+          AND si.invoice_date::date <= ${toDate}::date
+        ORDER BY si.invoice_date
+      `);
+
+      let totalInvoiced = 0, totalPaid = 0;
+      const accountLines: string[][] = [];
+      let totalInvoicesRaised = 0;
+
+      for (const inv of invoiceRows.rows as any[]) {
+        const invAmt = Number(inv.invoice_amount ?? 0);
+        const pymtRows = await db.execute(sql`
+          SELECT amount::numeric AS amount, payment_date, method
+          FROM customer_payments
+          WHERE invoice_id = ${inv.id}
+          ORDER BY payment_date DESC
+        `);
+        const payments    = pymtRows.rows as any[];
+        const amtPaid     = payments.reduce((s, p) => s + Number(p.amount ?? 0), 0);
+        const outstanding = invAmt - amtPaid;
+        const latestDate  = payments[0]?.payment_date
+          ? new Date(payments[0].payment_date).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+          : "";
+        const latestMethod = payments[0]?.method ?? "";
+        totalInvoiced += invAmt;
+        totalPaid     += amtPaid;
+        totalInvoicesRaised++;
+        accountLines.push([
+          inv.invoice_number, inv.invoice_date,
+          invAmt.toFixed(2), amtPaid.toFixed(2),
+          outstanding.toFixed(2), inv.status,
+          latestDate, latestMethod,
+        ]);
+      }
+      const totalOutstanding  = totalInvoiced - totalPaid;
+      const avgInvoiceValue   = totalInvoicesRaised > 0 ? totalInvoiced / totalInvoicesRaised : 0;
+
+      // ── Returns & Credits (only if exists in period) ──────────────────────
+      const returnsRows = await db.execute(sql`
+        SELECT
+          sr.return_number, sr.return_date::date::text AS return_date,
+          p.name AS product_name,
+          sri.qty_returned::numeric,
+          sri.unit_price::numeric,
+          sri.total_amount::numeric,
+          cn.credit_note_number, cn.grand_total::numeric AS credit_amount
+        FROM sales_returns sr
+        JOIN sales_return_items sri ON sri.return_id = sr.id
+        LEFT JOIN products p        ON p.id = sri.product_id
+        LEFT JOIN credit_notes cn   ON cn.sales_return_id = sr.id
+        WHERE sr.customer_id  = ${customerId}
+          AND sr.return_date::date >= ${fromDate}::date
+          AND sr.return_date::date <= ${toDate}::date
+          AND sr.status != 'cancelled'
+        ORDER BY sr.return_date
+      `);
+
+      let totalReturns = 0;
+      const returnLines: string[][] = [];
+      for (const r of returnsRows.rows as any[]) {
+        const retAmt = Number(r.total_amount ?? 0);
+        totalReturns += retAmt;
+        returnLines.push([
+          r.return_number, r.return_date,
+          r.product_name ?? "", Number(r.qty_returned).toFixed(2),
+          Number(r.unit_price).toFixed(2), retAmt.toFixed(2),
+          r.credit_note_number ?? "", r.credit_amount != null ? Number(r.credit_amount).toFixed(2) : "",
+        ]);
+      }
+
+      const netRevenueAfterReturns = totalRevIncGst - totalReturns;
+
+      // ── Assemble CSV ───────────────────────────────────────────────────────
+      const lines: string[] = [];
+
+      // Header
+      lines.push(escCsv(`=== CUSTOMER STATEMENT ===`));
+      lines.push(["Customer", escCsv(customer.name), "", "Type", escCsv(customer.customerType), "", "GSTIN", escCsv(customer.gstNumber ?? "N/A")].join(","));
+      lines.push(["Phone", escCsv(customer.phone ?? ""), "", "Email", escCsv(customer.email ?? ""), "", "Customer Since", escCsv(customerSince)].join(","));
+      lines.push(["Address", escCsv(customer.address ?? ""), "", "", "", "", "", ""].join(","));
+      lines.push(blank12);
+
+      // Purchase Detail
+      lines.push(escCsv("=== PURCHASE DETAIL ==="));
+      lines.push([
+        "Invoice No", "Invoice Date", "Product", "Qty",
+        "Sale Price (Ex GST)", "Margin %", "GST %", "Sale Price (Inc GST)",
+        "Taxable Amount", "GST Amount", "Line Total (Inc GST)", "Cost Data Status",
+      ].map(escCsv).join(","));
+      for (const r of purchaseLines) lines.push(r.map(escCsv).join(","));
+      lines.push([
+        "TOTAL", "", "", "",
+        "", "", "", "",
+        totalRevExGst.toFixed(2), totalTaxCollected.toFixed(2), totalRevIncGst.toFixed(2), "",
+      ].map(escCsv).join(","));
+      lines.push(blank12);
+
+      // Account Statement
+      lines.push(escCsv("=== ACCOUNT STATEMENT ==="));
+      lines.push(["Invoice No", "Invoice Date", "Invoice Amount", "Amount Paid", "Outstanding", "Status", "Last Payment Date", "Payment Method"].map(escCsv).join(","));
+      for (const r of accountLines) lines.push(r.map(escCsv).join(","));
+      lines.push(["TOTAL", "", totalInvoiced.toFixed(2), totalPaid.toFixed(2), totalOutstanding.toFixed(2), "", "", ""].map(escCsv).join(","));
+      lines.push(blank12);
+
+      // Returns & Credits (conditional)
+      if (returnLines.length > 0) {
+        lines.push(escCsv("=== RETURNS & CREDITS ==="));
+        lines.push(["Return No", "Return Date", "Product", "Qty Returned", "Unit Price", "Return Value", "Credit Note No", "Credit Amount"].map(escCsv).join(","));
+        for (const r of returnLines) lines.push(r.map(escCsv).join(","));
+        lines.push(["TOTAL", "", "", "", "", totalReturns.toFixed(2), "", ""].map(escCsv).join(","));
+        lines.push(blank12);
+      }
+
+      // Summary
+      lines.push(escCsv("=== SUMMARY ==="));
+      const summaryData = [
+        ["Period",                    `${fromDate} to ${toDate}`],
+        ["Customer Since",            customerSince],
+        ["Total Invoices Raised",     String(totalInvoicesRaised)],
+        ["Average Invoice Value",     avgInvoiceValue.toFixed(2)],
+        ["Total Revenue (Ex GST)",    totalRevExGst.toFixed(2)],
+        ["Total GST Collected",       totalTaxCollected.toFixed(2)],
+        ["Total Revenue (Inc GST)",   totalRevIncGst.toFixed(2)],
+        ["Total Returns",             totalReturns.toFixed(2)],
+        ["Net Revenue After Returns", netRevenueAfterReturns.toFixed(2)],
+        ["Total Paid",                totalPaid.toFixed(2)],
+        ["Total Outstanding",         totalOutstanding.toFixed(2)],
+      ];
+      for (const [k, v] of summaryData) lines.push([escCsv(k), escCsv(v)].join(","));
+
+      const safeName = customer.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}_statement_${fromDate}_${toDate}.csv"`);
+      res.send("﻿" + lines.join("\r\n"));
+    } catch (err: any) {
+      console.error("[CUSTOMER STATEMENT] failed:", err);
+      res.status(500).json({ message: err?.message || "Failed to generate customer statement" });
+    }
+  });
+
+  // ── Product Performance Report ───────────────────────────────────────────
+  // GET /api/reports/product-performance?from=YYYY-MM-DD&to=YYYY-MM-DD
+  // CSV: one row per sold product (bundle or single). Cancelled invoices excluded.
+  // Bundle components are NOT listed separately — they roll up into their parent bundle.
+  app.get("/api/reports/product-performance", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const fromDate = (req.query.from as string) || "";
+      const toDate   = (req.query.to   as string) || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      if (!fromDate) return res.status(400).json({ message: "from date is required" });
+
+      const todayIST = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+      // ── 1. All sales in period (non-cancelled invoices) ────────────────────
+      const salesRows = await db.execute(sql`
+        SELECT
+          sii.product_id,
+          SUM(sii.qty::numeric)              AS qty_sold,
+          AVG(sii.unit_price::numeric)       AS avg_unit_price,
+          SUM(sii.taxable_amount::numeric)   AS total_rev_ex_gst,
+          SUM(sii.tax_amount::numeric)       AS total_gst,
+          SUM(sii.total_amount::numeric)     AS total_rev_inc_gst,
+          AVG(sii.gst_rate::numeric)         AS gst_rate,
+          MAX(si.invoice_date)               AS last_sale_date
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        WHERE si.cancelled_at IS NULL
+          AND si.invoice_date::date >= ${fromDate}::date
+          AND si.invoice_date::date <= ${toDate}::date
+          AND sii.product_id IS NOT NULL
+        GROUP BY sii.product_id
+      `);
+
+      if ((salesRows.rows as any[]).length === 0) {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename="product_performance_${fromDate}_${toDate}.csv"`);
+        return res.send("﻿No sales found in the selected period.");
+      }
+
+      // ── 2. Last sale date ever per product (for FSN — not period-limited) ──
+      const lastSaleRows = await db.execute(sql`
+        SELECT sii.product_id, MAX(si.invoice_date) AS last_sale_ever
+        FROM sales_invoice_items sii
+        JOIN sales_invoices si ON si.id = sii.invoice_id
+        WHERE si.cancelled_at IS NULL AND sii.product_id IS NOT NULL
+        GROUP BY sii.product_id
+      `);
+      const lastSaleMap = new Map<string, Date>();
+      for (const r of lastSaleRows.rows as any[]) {
+        lastSaleMap.set(r.product_id, new Date(r.last_sale_ever));
+      }
+
+      // ── 3. Current stock per product ───────────────────────────────────────
+      const stockRows = await db.execute(sql`
+        SELECT product_id, SUM(quantity::numeric) AS total_qty
+        FROM inventory_stock
+        GROUP BY product_id
+      `);
+      const stockMap = new Map<string, number>();
+      for (const r of stockRows.rows as any[]) {
+        stockMap.set(r.product_id, Number(r.total_qty));
+      }
+
+      // ── 4. Most recent confirmed GRN cost per single product ───────────────
+      const grnCostRows = await db.execute(sql`
+        SELECT DISTINCT ON (gi.product_id)
+          gi.product_id,
+          gi.buying_price::numeric AS buying_price
+        FROM goods_receipt_note_items gi
+        JOIN goods_receipt_notes g ON g.id = gi.grn_id
+        WHERE g.status = 'confirmed'
+        ORDER BY gi.product_id, g.received_date DESC
+      `);
+      const grnCostMap = new Map<string, number>();
+      for (const r of grnCostRows.rows as any[]) {
+        grnCostMap.set(r.product_id, Number(r.buying_price));
+      }
+
+      // ── 5. Bundle component data ────────────────────────────────────────────
+      const bundleComponentRows = await db.execute(sql`
+        SELECT pbi.bundle_product_id, pbi.component_product_id,
+               pbi.quantity::numeric AS qty_per_bundle
+        FROM product_bundle_items pbi
+      `);
+      const bundleComponentsMap = new Map<string, Array<{ componentId: string; qtyPerBundle: number }>>();
+      for (const r of bundleComponentRows.rows as any[]) {
+        if (!bundleComponentsMap.has(r.bundle_product_id)) bundleComponentsMap.set(r.bundle_product_id, []);
+        bundleComponentsMap.get(r.bundle_product_id)!.push({ componentId: r.component_product_id, qtyPerBundle: Number(r.qty_per_bundle) });
+      }
+
+      // ── 6. Brand names ─────────────────────────────────────────────────────
+      const brandRows = await db.execute(sql`SELECT id, name FROM brands`);
+      const brandMap = new Map<string, string>();
+      for (const r of brandRows.rows as any[]) brandMap.set(r.id, r.name);
+
+      const escCsv = (v: string | number | null | undefined) =>
+        `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+      const dataRows: string[][] = [];
+      let summaryTotalRevExGst  = 0;
+      let summaryTotalRevIncGst = 0;
+      let summaryTotalCostExGst = 0;
+      let summaryTotalProfit    = 0;
+      let countF = 0, countS = 0, countN = 0;
+      let totalProductsSold = 0;
+
+      for (const row of salesRows.rows as any[]) {
+        const productId = row.product_id as string;
+
+        // Fetch product details
+        const [prod] = await db.select().from(productsTable).where(eq(productsTable.id, productId));
+        if (!prod) continue;
+
+        const qtySold       = Number(row.qty_sold ?? 0);
+        const avgSaleExGst  = Number(row.avg_unit_price ?? 0);
+        const gstRate       = Number(row.gst_rate ?? prod.gstRate ?? 0);
+        const avgSaleIncGst = avgSaleExGst * (1 + gstRate / 100);
+        const totalRevExGst = Number(row.total_rev_ex_gst ?? 0);
+        const totalRevIncGst= Number(row.total_rev_inc_gst ?? 0);
+        const currentStock  = stockMap.get(productId) ?? 0;
+        const brandName     = prod.brandId ? (brandMap.get(prod.brandId) ?? "") : "";
+
+        // FSN — based on last sale ever
+        const lastSaleDate  = lastSaleMap.get(productId);
+        const lastSaleDateStr = lastSaleDate
+          ? lastSaleDate.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+          : "";
+        let daysSinceLastSale = "";
+        let fsn = "N";
+        if (lastSaleDate) {
+          const today = new Date(todayIST);
+          const days  = Math.floor((today.getTime() - lastSaleDate.getTime()) / 86400000);
+          daysSinceLastSale = String(days);
+          fsn = days <= 30 ? "F" : days <= 90 ? "S" : "N";
+        }
+        if (fsn === "F") countF++; else if (fsn === "S") countS++; else countN++;
+
+        // Purchase cost
+        let totalCostExGst    = 0;
+        let avgPurchaseExGst  = 0;
+        let avgPurchaseIncGst = 0;
+        let costDataStatus    = "OK";
+
+        if (prod.type === "bundle") {
+          const components = bundleComponentsMap.get(productId) ?? [];
+          let allHaveCost = true, anyHaveCost = false;
+          let bundleCostPerUnit = 0;
+          for (const comp of components) {
+            const compCost = grnCostMap.get(comp.componentId);
+            if (compCost !== undefined && compCost > 0) {
+              bundleCostPerUnit += compCost * comp.qtyPerBundle;
+              anyHaveCost = true;
+            } else {
+              allHaveCost = false;
+            }
+          }
+          if (components.length === 0 || (!anyHaveCost)) {
+            costDataStatus = "MISSING_COST_DATA";
+          } else if (!allHaveCost) {
+            costDataStatus = "PARTIAL_COST_DATA";
+          }
+          avgPurchaseExGst  = bundleCostPerUnit;
+          avgPurchaseIncGst = bundleCostPerUnit * (1 + gstRate / 100);
+          totalCostExGst    = bundleCostPerUnit * qtySold;
+        } else {
+          const compCost = grnCostMap.get(productId);
+          if (compCost === undefined || compCost === 0) {
+            costDataStatus = "MISSING_COST_DATA";
+          }
+          avgPurchaseExGst  = compCost ?? 0;
+          avgPurchaseIncGst = (compCost ?? 0) * (1 + gstRate / 100);
+          totalCostExGst    = (compCost ?? 0) * qtySold;
+        }
+
+        const totalCostIncGst = totalCostExGst * (1 + gstRate / 100);
+        const grossProfit     = totalRevExGst - totalCostExGst;
+        const profitMarginPct = totalRevExGst > 0 ? (grossProfit / totalRevExGst) * 100 : 0;
+
+        summaryTotalRevExGst  += totalRevExGst;
+        summaryTotalRevIncGst += totalRevIncGst;
+        summaryTotalCostExGst += totalCostExGst;
+        summaryTotalProfit    += grossProfit;
+        totalProductsSold++;
+
+        dataRows.push([
+          prod.name,
+          prod.sku ?? "",
+          prod.type === "bundle" ? "Set" : "Single",
+          prod.category ?? "",
+          brandName,
+          prod.hsnCode ?? "",
+          gstRate.toFixed(2),
+          qtySold.toFixed(2),
+          avgSaleExGst.toFixed(2),
+          avgSaleIncGst.toFixed(2),
+          totalRevExGst.toFixed(2),
+          totalRevIncGst.toFixed(2),
+          avgPurchaseExGst > 0 ? avgPurchaseExGst.toFixed(2) : "",
+          avgPurchaseIncGst > 0 ? avgPurchaseIncGst.toFixed(2) : "",
+          totalCostExGst > 0 ? totalCostExGst.toFixed(2) : "",
+          totalCostIncGst > 0 ? totalCostIncGst.toFixed(2) : "",
+          costDataStatus !== "MISSING_COST_DATA" ? grossProfit.toFixed(2) : "",
+          costDataStatus !== "MISSING_COST_DATA" ? profitMarginPct.toFixed(2) + "%" : "",
+          String(currentStock),
+          lastSaleDateStr,
+          daysSinceLastSale,
+          fsn,
+          costDataStatus,
+        ]);
+      }
+
+      const overallMargin = summaryTotalRevExGst > 0
+        ? ((summaryTotalProfit / summaryTotalRevExGst) * 100).toFixed(2) + "%"
+        : "";
+
+      const headers = [
+        "Product", "SKU", "Type", "Category", "Brand", "HSN", "GST %",
+        "Qty Sold", "Avg Sale Price (Ex GST)", "Avg Sale Price (Inc GST)",
+        "Total Revenue (Ex GST)", "Total Revenue (Inc GST)",
+        "Avg Purchase Price (Ex GST)", "Avg Purchase Price (Inc GST)",
+        "Total Purchase Cost (Ex GST)", "Total Purchase Cost (Inc GST)",
+        "Gross Profit", "Profit Margin %",
+        "Current Stock", "Last Sale Date", "Days Since Last Sale", "FSN", "Cost Data Status",
+      ];
+
+      const summaryRows = [
+        ["", ""],
+        ["=== SUMMARY ===", ""],
+        ["Period", `${fromDate} to ${toDate}`],
+        ["Total Products Sold", String(totalProductsSold)],
+        ["Total Revenue (Ex GST)", summaryTotalRevExGst.toFixed(2)],
+        ["Total Revenue (Inc GST)", summaryTotalRevIncGst.toFixed(2)],
+        ["Total Purchase Cost (Ex GST)", summaryTotalCostExGst.toFixed(2)],
+        ["Total Gross Profit", summaryTotalProfit.toFixed(2)],
+        ["Overall Profit Margin %", overallMargin],
+        ["Fast Moving Products (F)", String(countF)],
+        ["Slow Moving Products (S)", String(countS)],
+        ["Non-Moving Products (N)", String(countN)],
+      ];
+
+      const lines = [
+        escCsv(`=== PRODUCT PERFORMANCE REPORT — ${fromDate} to ${toDate} ===`),
+        headers.map(escCsv).join(","),
+        ...dataRows.map(r => r.map(escCsv).join(",")),
+        ...summaryRows.map(r => r.map(escCsv).join(",")),
+      ];
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="product_performance_${fromDate}_${toDate}.csv"`);
+      res.send("﻿" + lines.join("\r\n"));
+    } catch (err: any) {
+      console.error("[PRODUCT REPORT] failed:", err);
+      res.status(500).json({ message: err?.message || "Failed to generate product performance report" });
+    }
   });
 
   // AP Aging Report
@@ -10566,6 +11601,14 @@ export async function registerRoutes(
       });
 
       await logAction(req.user.id, "UPDATE", "SalesReturn", `Processed sales return ${sr.returnNumber} — credit note ${creditNoteNumber} issued`);
+
+      // Release combo serial allocations for the original challan (if any)
+      if (sr.challanId) {
+        try { await storage.deallocateComboSerials(sr.challanId); } catch (e) {
+          console.error("[COMBO SERIAL DEALLOC] sales return:", e);
+        }
+      }
+
       res.json({ status: "processed", creditNote });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to process sales return";
@@ -10597,6 +11640,150 @@ export async function registerRoutes(
       res.json(cn);
     } catch (err: unknown) {
       res.status(500).json({ message: "Failed to fetch credit note" });
+    }
+  });
+
+  // ─── Bundle Pricing Engine ────────────────────────────────────────────────
+  // GET /api/products/bundle-pricing
+  // Batch endpoint: returns component-aggregated pricing for ALL bundle products.
+  // Supplier Price = Σ(component primary supplier price × qty)
+  // Blended Cost   = Σ(component latest blended cost from price sheet × qty)
+  // Effective Price = Σ(component confirmed effective price × qty) with 7-day fallback
+  // Data Status    = Complete / Partial / Missing
+  // Source Status  = Confirmed / Partial / Fallback
+  app.get("/api/products/bundle-pricing", authenticateToken, async (_req, res) => {
+    try {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+      // One query: all bundle components with supplier price, blended cost, effective price
+      const rows = await db.execute(sql`
+        SELECT
+          pbi.bundle_product_id,
+          pbi.component_product_id,
+          pbi.quantity::numeric                             AS qty,
+          bp.gst_rate::numeric                             AS bundle_gst_rate,
+          -- Primary supplier price
+          sp.supplier_price::numeric                       AS supplier_price,
+          -- Latest blended cost from any price sheet
+          dps_any.blended_cost::numeric                    AS blended_cost,
+          -- Latest confirmed effective price (7-day window)
+          dps_conf.proposed_price::numeric                 AS confirmed_price,
+          -- Component unit_price as last-resort fallback
+          cp.unit_price::numeric                           AS unit_price,
+          -- Source flags
+          (dps_conf.proposed_price IS NOT NULL)            AS has_confirmed,
+          (dps_conf.sheet_date = ${today})                 AS is_today
+        FROM product_bundle_items pbi
+        JOIN products bp  ON bp.id = pbi.bundle_product_id
+        JOIN products cp  ON cp.id = pbi.component_product_id
+        LEFT JOIN LATERAL (
+          SELECT supplier_price
+          FROM supplier_products
+          WHERE product_id = pbi.component_product_id AND is_primary = true
+          LIMIT 1
+        ) sp ON true
+        LEFT JOIN LATERAL (
+          SELECT blended_cost, sheet_date
+          FROM daily_price_sheets
+          WHERE product_id = pbi.component_product_id
+          ORDER BY sheet_date DESC
+          LIMIT 1
+        ) dps_any ON true
+        LEFT JOIN LATERAL (
+          SELECT proposed_price, sheet_date
+          FROM daily_price_sheets
+          WHERE product_id = pbi.component_product_id
+            AND status = 'confirmed'
+            AND proposed_price IS NOT NULL
+            AND sheet_date::date >= (${today}::date - INTERVAL '6 days')
+            AND sheet_date::date <= ${today}::date
+          ORDER BY sheet_date DESC
+          LIMIT 1
+        ) dps_conf ON true
+      `);
+
+      // Aggregate by bundle
+      const bundleMap: Record<string, {
+        supplierPrice: number;
+        blendedCost: number;
+        effectivePrice: number;
+        gstRate: number;
+        dataStatus: "Complete" | "Partial" | "Missing";
+        sourceStatus: "Confirmed" | "Partial" | "Fallback";
+        hasSupplierAll: boolean;
+        hasBlendedAll: boolean;
+      }> = {};
+
+      for (const r of rows.rows as any[]) {
+        const bid      = r.bundle_product_id as string;
+        const qty      = Number(r.qty ?? 1);
+        const sp       = r.supplier_price != null ? Number(r.supplier_price) : null;
+        const bc       = r.blended_cost    != null ? Number(r.blended_cost)  : null;
+        const ep       = r.confirmed_price != null ? Number(r.confirmed_price) : Number(r.unit_price ?? 0);
+        const isConf   = r.has_confirmed === true || r.has_confirmed === "true" || r.has_confirmed === "t";
+
+        if (!bundleMap[bid]) {
+          bundleMap[bid] = {
+            supplierPrice: 0,
+            blendedCost: 0,
+            effectivePrice: 0,
+            gstRate: Number(r.bundle_gst_rate ?? 0),
+            dataStatus: "Complete",
+            sourceStatus: "Confirmed",
+            hasSupplierAll: true,
+            hasBlendedAll: true,
+          };
+        }
+        const b = bundleMap[bid];
+        b.supplierPrice   += (sp ?? 0) * qty;
+        b.blendedCost     += (bc ?? 0) * qty;
+        b.effectivePrice  += ep * qty;
+        if (sp == null)   b.hasSupplierAll = false;
+        if (bc == null)   b.hasBlendedAll  = false;
+        if (!isConf)      b.sourceStatus   = b.sourceStatus === "Confirmed" ? "Partial" : "Fallback";
+      }
+
+      // Determine data status per bundle
+      for (const b of Object.values(bundleMap)) {
+        const allConf = b.sourceStatus === "Confirmed";
+        if (b.hasSupplierAll && b.hasBlendedAll && allConf) b.dataStatus = "Complete";
+        else if (!b.hasSupplierAll && !b.hasBlendedAll && b.sourceStatus === "Fallback") b.dataStatus = "Missing";
+        else b.dataStatus = "Partial";
+      }
+
+      // Build final response map
+      const result: Record<string, {
+        supplierPrice: string | null;
+        blendedCost: string | null;
+        effectivePrice: string;
+        effectivePriceIncGst: string;
+        gstRate: string;
+        marginPct: string | null;
+        dataStatus: string;
+        sourceStatus: string;
+      }> = {};
+
+      for (const [bid, b] of Object.entries(bundleMap)) {
+        const effIncGst    = b.effectivePrice * (1 + b.gstRate / 100);
+        const marginPct    = b.blendedCost > 0
+          ? ((b.effectivePrice - b.blendedCost) / b.blendedCost * 100)
+          : null;
+        result[bid] = {
+          supplierPrice:       b.hasSupplierAll ? b.supplierPrice.toFixed(2) : null,
+          blendedCost:         b.hasBlendedAll  ? b.blendedCost.toFixed(2)  : null,
+          effectivePrice:      b.effectivePrice.toFixed(2),
+          effectivePriceIncGst: effIncGst.toFixed(2),
+          gstRate:             b.gstRate.toFixed(2),
+          marginPct:           marginPct !== null ? marginPct.toFixed(1) : null,
+          dataStatus:          b.dataStatus,
+          sourceStatus:        b.sourceStatus,
+        };
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("[BUNDLE PRICING]", err);
+      res.status(500).json({ message: "Failed to compute bundle pricing" });
     }
   });
 
@@ -10751,6 +11938,51 @@ export async function registerRoutes(
     }
   });
 
+  // ── Combo Component Manifest Routes ─────────────────────────────────────────
+  // GET /api/products/:id/combo-components
+  app.get("/api/products/:id/combo-components", authenticateToken, async (req: any, res) => {
+    try {
+      const product = await storage.getProduct(req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      if (product.type !== "combo") return res.status(400).json({ message: "Product is not a combo" });
+      const items = await storage.getComboComponents(req.params.id);
+      res.json(items);
+    } catch (err) {
+      console.error("[COMBO] GET combo-components failed:", err);
+      res.status(500).json({ message: "Failed to load combo components" });
+    }
+  });
+
+  // PUT /api/products/:id/combo-components  (full replace — same pattern as bundle-items)
+  app.put("/api/products/:id/combo-components", authenticateToken, requireRole("admin", "sales_manager"), async (req: any, res) => {
+    try {
+      const comboProductId = req.params.id;
+      const product = await storage.getProduct(comboProductId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      if (product.type !== "combo") return res.status(400).json({ message: "Product is not a combo" });
+
+      const { items } = req.body;
+      if (!Array.isArray(items)) return res.status(400).json({ message: "items[] array required" });
+
+      const cleaned = items
+        .filter((r: any) => r.componentName?.trim())
+        .map((r: any, idx: number) => ({
+          componentName: String(r.componentName).trim(),
+          linkedProductId: r.linkedProductId || null,
+          quantity: String(Number(r.quantity) > 0 ? Number(r.quantity) : 1),
+          requiresSerialTracking: !!r.requiresSerialTracking,
+          sortOrder: idx,
+        }));
+
+      const saved = await storage.replaceComboComponents(comboProductId, cleaned);
+      await logAction(req.user.id, "update", "combo_components", JSON.stringify({ comboProductId, count: saved.length }));
+      res.json(saved);
+    } catch (err) {
+      console.error("[COMBO] PUT combo-components failed:", err);
+      res.status(500).json({ message: "Failed to save combo components" });
+    }
+  });
+
   // GET computed auto-price for a bundle (Σ component effective price × qty).
   // Returns full breakdown for live preview in the form.
   app.get("/api/products/:id/bundle-effective-price", authenticateToken, async (req: any, res) => {
@@ -10767,6 +11999,238 @@ export async function registerRoutes(
     } catch (err) {
       console.error("[BUNDLE] effective-price failed:", err);
       res.status(500).json({ message: "Failed to compute bundle price" });
+    }
+  });
+
+  // GET /api/products/:id/set-profitability-report
+  // Query params:
+  //   mode=single&date=YYYY-MM-DD        → last invoice on or before date
+  //   mode=range&from=YYYY-MM-DD&to=YYYY-MM-DD → all invoices in period
+  // Fully transaction-based: actual GRN costs + actual sales invoices only.
+  app.get("/api/products/:id/set-profitability-report", authenticateToken, async (req: any, res) => {
+    try {
+      const bundleId = req.params.id;
+      const parent   = await storage.getProduct(bundleId);
+      if (!parent) return res.status(404).json({ message: "Bundle not found" });
+      if (parent.type !== "bundle") return res.status(400).json({ message: "Product is not a bundle" });
+
+      const mode     = (req.query.mode as string) || "single";
+      const todayIST = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      const singleDate = (req.query.date as string) || todayIST;
+      const fromDate   = (req.query.from as string) || todayIST;
+      const toDate     = (req.query.to   as string) || todayIST;
+
+      const escCsv = (v: string | number | null | undefined) =>
+        `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const blank12 = Array(12).fill("").map(escCsv).join(",");
+
+      // ── 1. Fetch actual sales invoice data ─────────────────────────────────
+      let saleRows: any[];
+      if (mode === "single") {
+        const r = await db.execute(sql`
+          SELECT sii.unit_price::numeric AS unit_price,
+                 sii.qty::numeric        AS qty,
+                 sii.gst_rate::numeric   AS gst_rate,
+                 si.invoice_number, si.invoice_date::date::text AS invoice_date
+          FROM sales_invoice_items sii
+          JOIN sales_invoices si ON si.id = sii.invoice_id
+          WHERE sii.product_id  = ${bundleId}
+            AND si.cancelled_at IS NULL
+            AND si.invoice_date::date <= ${singleDate}::date
+          ORDER BY si.invoice_date DESC
+          LIMIT 1
+        `);
+        saleRows = r.rows as any[];
+      } else {
+        const r = await db.execute(sql`
+          SELECT sii.unit_price::numeric AS unit_price,
+                 sii.qty::numeric        AS qty,
+                 sii.gst_rate::numeric   AS gst_rate,
+                 si.invoice_number, si.invoice_date::date::text AS invoice_date
+          FROM sales_invoice_items sii
+          JOIN sales_invoices si ON si.id = sii.invoice_id
+          WHERE sii.product_id  = ${bundleId}
+            AND si.cancelled_at IS NULL
+            AND si.invoice_date::date >= ${fromDate}::date
+            AND si.invoice_date::date <= ${toDate}::date
+          ORDER BY si.invoice_date
+        `);
+        saleRows = r.rows as any[];
+      }
+
+      if (saleRows.length === 0) {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", `attachment; filename="set_profitability_no_sales.csv"`);
+        return res.send("﻿No sales found for this set in the selected period.");
+      }
+
+      // Weighted average sale price (ex-GST) and totals
+      const totalSetsSold  = saleRows.reduce((s, r) => s + Number(r.qty), 0);
+      const totalRevIncGst = saleRows.reduce((s, r) => s + Number(r.unit_price) * Number(r.qty), 0);
+      const bundleGstRate  = Number(saleRows[0].gst_rate ?? 0);
+      const avgSaleIncGst  = totalRevIncGst / totalSetsSold;
+      const avgSaleExGst   = avgSaleIncGst / (1 + bundleGstRate / 100);
+
+      // ── 2. GRN costs for each component ────────────────────────────────────
+      const bundleItems = await storage.getBundleItems(bundleId);
+
+      const grnCostRows = await db.execute(sql`
+        SELECT DISTINCT ON (gi.product_id)
+          gi.product_id, gi.buying_price::numeric AS buying_price
+        FROM goods_receipt_note_items gi
+        JOIN goods_receipt_notes g ON g.id = gi.grn_id
+        WHERE g.status = 'confirmed'
+        ORDER BY gi.product_id, g.received_date DESC
+      `);
+      const grnCostMap = new Map<string, number>();
+      for (const r of grnCostRows.rows as any[]) grnCostMap.set(r.product_id, Number(r.buying_price));
+
+      // ── 3. Total set GRN cost (per one bundle unit) ────────────────────────
+      let totalSetCostPerUnit = 0;
+      let allHaveCost = true, anyHaveCost = false;
+      for (const item of bundleItems) {
+        const cost = grnCostMap.get(item.componentProductId);
+        if (cost && cost > 0) { totalSetCostPerUnit += cost * Number(item.quantity); anyHaveCost = true; }
+        else allHaveCost = false;
+      }
+
+      const overallCostStatus = !anyHaveCost
+        ? "MISSING_COST_DATA"
+        : !allHaveCost ? "PARTIAL_COST_DATA" : "OK";
+
+      const canAllocate = totalSetCostPerUnit > 0;
+
+      // ── 4. Build component rows ────────────────────────────────────────────
+      const dataRows: string[][] = [];
+      let totalPurchaseValue = 0, totalProfit = 0, totalGst = 0, totalSaleAmount = 0;
+
+      for (let i = 0; i < bundleItems.length; i++) {
+        const item = bundleItems[i];
+        const [compProd] = await db.select().from(productsTable).where(eq(productsTable.id, item.componentProductId));
+        if (!compProd) continue;
+
+        const qtyPerBundle   = Number(item.quantity);
+        const unit           = item.unit ?? compProd.unit ?? "Nos";
+        const totalQty       = qtyPerBundle * totalSetsSold;
+        const gstPct         = Number(compProd.gstRate ?? 0);
+        const compGrnCost    = grnCostMap.get(item.componentProductId) ?? 0;
+        const hasCost        = compGrnCost > 0;
+
+        // Component cost data status
+        const compCostStatus = hasCost ? "OK" : "MISSING_COST_DATA";
+
+        // Proportional allocation
+        let allocatedSalePricePerUnit = 0;
+        let profit = "", marginPct = "", grossAmt = "", onlyGst = "", salePrice = "", saleAmt = "";
+
+        if (canAllocate && hasCost) {
+          const costShare = (compGrnCost * qtyPerBundle) / totalSetCostPerUnit;
+          allocatedSalePricePerUnit = (costShare * avgSaleExGst) / qtyPerBundle;
+          const profitVal   = allocatedSalePricePerUnit - compGrnCost;
+          const marginVal   = compGrnCost > 0 ? (profitVal / compGrnCost) * 100 : 0;
+          const grossVal    = compGrnCost + profitVal;
+          const gstVal      = grossVal * (gstPct / 100);
+          const salePriceV  = grossVal + gstVal;
+          const saleAmtV    = salePriceV * totalQty;
+
+          totalPurchaseValue += compGrnCost * totalQty;
+          totalProfit        += profitVal * totalQty;
+          totalGst           += gstVal * totalQty;
+          totalSaleAmount    += saleAmtV;
+
+          profit    = profitVal.toFixed(2);
+          marginPct = marginVal.toFixed(2) + "%";
+          grossAmt  = grossVal.toFixed(2);
+          onlyGst   = gstVal.toFixed(2);
+          salePrice = salePriceV.toFixed(2);
+          saleAmt   = saleAmtV.toFixed(2);
+        } else if (hasCost) {
+          totalPurchaseValue += compGrnCost * totalQty;
+        }
+
+        dataRows.push([
+          String(i + 1),
+          compProd.name,
+          String(totalQty),
+          unit,
+          hasCost ? compGrnCost.toFixed(2) : "",
+          marginPct,
+          profit,
+          grossAmt,
+          gstPct.toFixed(2),
+          onlyGst,
+          salePrice,
+          saleAmt,
+          compCostStatus,
+        ]);
+      }
+
+      // ── 5. Assemble CSV ────────────────────────────────────────────────────
+      const lines: string[] = [];
+
+      // Period summary for date range mode
+      if (mode === "range") {
+        const totalCost      = totalPurchaseValue;
+        const totalProfitVal = totalSaleAmount - totalCost;
+        const avgMargin      = totalCost > 0 ? ((totalProfitVal / totalCost) * 100).toFixed(2) + "%" : "";
+        lines.push(escCsv("=== PERIOD SUMMARY ==="));
+        const periodSummary = [
+          ["Set Name",          parent.name ?? ""],
+          ["Period",            `${fromDate} to ${toDate}`],
+          ["Total Sets Sold",   totalSetsSold.toFixed(2)],
+          ["Average Sale Value",avgSaleIncGst.toFixed(2)],
+          ["Total Revenue",     totalRevIncGst.toFixed(2)],
+          ["Total Cost",        totalCost.toFixed(2)],
+          ["Total Profit",      totalProfitVal.toFixed(2)],
+          ["Average Margin %",  avgMargin],
+        ];
+        for (const [k, v] of periodSummary) lines.push([escCsv(k), escCsv(v)].join(","));
+        lines.push(blank12);
+      }
+
+      // Component table headers
+      const headers = [
+        "SN", "Description", "Qty", "Per",
+        "Purchase Rate (GRN)", "Margin %", "Profit", "Gross Amount",
+        "GST %", "Only GST", "Sale Price", "Sale Amount", "Cost Data Status",
+      ];
+      lines.push(headers.map(escCsv).join(","));
+      for (const r of dataRows) lines.push(r.map(escCsv).join(","));
+
+      // Total row
+      lines.push([
+        "", "TOTAL", "", "",
+        totalPurchaseValue.toFixed(2), "", totalProfit.toFixed(2),
+        (totalPurchaseValue + totalProfit).toFixed(2),
+        "", totalGst.toFixed(2), "", totalSaleAmount.toFixed(2), "",
+      ].map(escCsv).join(","));
+
+      // Summary block
+      const analysisPeriod = mode === "single" ? singleDate : `${fromDate} to ${toDate}`;
+      const totalProfitFinal = totalSaleAmount - totalPurchaseValue;
+      const marginFinal = totalPurchaseValue > 0
+        ? ((totalProfitFinal / totalPurchaseValue) * 100).toFixed(2) + "%" : "";
+      lines.push(blank12);
+      lines.push(escCsv("=== SUMMARY ==="));
+      const summaryData = [
+        ["Set Name",             parent.name ?? ""],
+        ["Analysis Period",      analysisPeriod],
+        ["Actual Set Sale Value",avgSaleIncGst.toFixed(2)],
+        ["Actual Set Cost",      (totalPurchaseValue / totalSetsSold).toFixed(2)],
+        ["Actual Profit",        totalProfitFinal.toFixed(2)],
+        ["Actual Margin %",      marginFinal],
+        ["Cost Data Status",     overallCostStatus],
+      ];
+      for (const [k, v] of summaryData) lines.push([escCsv(k), escCsv(v)].join(","));
+
+      const safeName = (parent.name ?? "set").replace(/[^a-zA-Z0-9_-]/g, "_");
+      const fileSuffix = mode === "single" ? singleDate : `${fromDate}_${toDate}`;
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${safeName}_profitability_${fileSuffix}.csv"`);
+      res.send("﻿" + lines.join("\r\n"));
+    } catch (err: any) {
+      console.error("[SET PROFITABILITY] failed:", err);
+      res.status(500).json({ message: err?.message || "Failed to generate set profitability report" });
     }
   });
 
@@ -13594,6 +15058,53 @@ export async function registerRoutes(
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ message: err?.message || "Failed to fetch serial numbers" });
+    }
+  });
+
+  // GET /api/combo-serials — all combo serial records for the registry
+  app.get("/api/combo-serials", authenticateToken, async (_req, res) => {
+    try {
+      const records = await storage.listComboSerials();
+      res.json(records);
+    } catch (err: any) {
+      res.status(500).json({ message: err?.message || "Failed to list combo serials" });
+    }
+  });
+
+  // GET /api/combo-serials/search?q=SERIAL_NUMBER
+  // Searches combo_serial_records by serial number (case-insensitive).
+  // Returns the full traceability chain: combo product, GRN, challan, customer,
+  // dispatch date, and current allocation status.
+  app.get("/api/combo-serials/search", authenticateToken, async (req: any, res) => {
+    try {
+      const q = String(req.query.q ?? "").trim();
+      if (!q || q.length < 2) return res.status(400).json({ message: "Search query must be at least 2 characters" });
+
+      const result = await storage.searchComboSerialByNumber(q);
+      if (!result) return res.json(null);
+
+      // Determine status label
+      let allocationStatus: "available" | "allocated" | "released";
+      if (result.deallocatedAt) allocationStatus = "released";
+      else if (result.allocatedChallanId) allocationStatus = "allocated";
+      else allocationStatus = "available";
+
+      res.json({
+        serialNumber: result.serialNumber,
+        componentName: result.componentName,
+        comboUnitIndex: result.comboUnitIndex,
+        comboProduct: { id: result.comboProductId, name: result.comboProductName },
+        grn: { id: result.grnId, grnNumber: result.grnNumber },
+        challan: result.allocatedChallanId ? { id: result.allocatedChallanId, challanNumber: result.challanNumber } : null,
+        customer: result.allocatedCustomerId ? { id: result.allocatedCustomerId, name: result.customerName } : null,
+        capturedAt: result.capturedAt,
+        allocatedAt: result.allocatedAt,
+        deallocatedAt: result.deallocatedAt,
+        allocationStatus,
+      });
+    } catch (err: any) {
+      console.error("[COMBO SERIAL SEARCH]", err);
+      res.status(500).json({ message: err?.message || "Search failed" });
     }
   });
 

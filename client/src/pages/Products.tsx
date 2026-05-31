@@ -26,6 +26,7 @@ import {
   COST_VISIBLE_ROLES,
 } from "@shared/schema";
 import { SpecsEditor, type SpecsValue } from "@/components/SpecsEditor";
+import { generateProductsPricePDF } from "@/lib/pricing-pdf";
 import { hasSpecTemplate } from "@/constants/categorySpecTemplates";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 
@@ -86,6 +87,14 @@ type BundleItemRow = {
   componentProductId: string;
   quantity: string;
   unit: string;
+};
+
+// Combo manifest row — one row per physical component inside a manufacturer combo.
+type ComboManifestRow = {
+  componentName: string;
+  linkedProductId: string;   // "" = not linked to a catalogue product
+  quantity: string;
+  requiresSerialTracking: boolean;
 };
 
 /** Returns true for units where decimal quantities are physically meaningful (by weight/volume/length). */
@@ -654,6 +663,8 @@ export default function Products() {
   const [bundleCompSearch, setBundleCompSearch] = useState("");
   const [bundleDragIdx, setBundleDragIdx] = useState<number | null>(null);
   const [bundleDragOverIdx, setBundleDragOverIdx] = useState<number | null>(null);
+  // Combo manifest rows (saved via separate endpoint, independent of bundleItems)
+  const [comboManifest, setComboManifest] = useState<ComboManifestRow[]>([]);
 
   // Brand mini-dialog state
   const [brandDialogOpen, setBrandDialogOpen] = useState(false);
@@ -680,8 +691,79 @@ export default function Products() {
   const [showOnlyMissingSupplier, setShowOnlyMissingSupplier] = useState(false);
   const [gridTypeFilter, setGridTypeFilter] = useState<string | null>(null);
 
-  const filteredPricesItems = productsOnly.filter((p) => {
-    if (pricesGridFilter && (p as any).gridType !== pricesGridFilter) return false;
+  // Bundle pricing for Sets filter in Today's Prices tab
+  const { data: bundlePricingProducts } = useQuery<Record<string, {
+    effectivePrice: string;
+    effectivePriceIncGst: string;
+    gstRate: string;
+    sourceStatus: string;
+    dataStatus: string;
+  }>>({
+    queryKey: ["/api/products/bundle-pricing"],
+    queryFn: async () => {
+      const token = sessionStorage.getItem("token");
+      const res = await fetch("/api/products/bundle-pricing", { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return {};
+      return res.json();
+    },
+    enabled: pricesGridFilter === "__sets__",
+  });
+  const [pdfDownloading, setPdfDownloading] = useState(false);
+
+  const handleDownloadPricesPDF = async () => {
+    setPdfDownloading(true);
+    try {
+      const filterLabel =
+        pricesGridFilter === "__sets__" ? "Sets"
+        : pricesGridFilter === "on_grid" ? "On Grid"
+        : pricesGridFilter === "off_grid" ? "Off Grid"
+        : pricesGridFilter === "hybrid" ? "Hybrid"
+        : pricesGridFilter === "others" ? "Others"
+        : "All Products";
+
+      const rows = filteredPricesItems.map(p => {
+        const ep = effectivePricesMap?.[p.id];
+        const ls = lastSoldPrices?.[p.id];
+        const status = ep?.hasConfirmedToday ? "Confirmed Today" : ep && !ep.noConfirmedPrice ? "Fallback" : "No Sheet";
+        return {
+          name: p.name,
+          sku: p.sku ?? "",
+          unit: p.unit ?? "",
+          type: p.type,
+          gridType: (p as any).gridType ?? "others",
+          gstRate: Number((p as any).gstRate ?? 0),
+          effectivePrice: ep?.effectivePrice ?? null,
+          source: ep?.source ?? "none",
+          floorPrice: ep?.globalFloorPrice ?? null,
+          lastSoldPrice: ls?.price ?? null,
+          lastSoldDate: ls?.lastSoldAt ?? null,
+          status,
+        };
+      });
+
+      const blob = await generateProductsPricePDF(rows, filterLabel, currentUser?.fullName ?? "Unknown");
+      const href = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = href;
+      a.download = `price-list-${filterLabel.toLowerCase().replace(/\s+/g, "-")}-${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })}.pdf`;
+      a.click();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      toast({ title: "PDF generation failed", variant: "destructive" });
+    } finally {
+      setPdfDownloading(false);
+    }
+  };
+
+  const filteredPricesItems = (allProducts ?? []).filter((p) => {
+    if (p.type === "service") return false;
+    if (pricesGridFilter === "__sets__") {
+      if (p.type !== "bundle") return false;
+    } else if (pricesGridFilter === "others") {
+      if ((p as any).gridType !== "others" || p.type === "bundle") return false;
+    } else if (pricesGridFilter) {
+      if ((p as any).gridType !== pricesGridFilter || p.type === "bundle") return false;
+    }
     if (!pricesSearch) return true;
     const q = pricesSearch.toLowerCase();
     return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
@@ -708,10 +790,8 @@ export default function Products() {
   const missingSupplierProductCount = productsOnly.filter(p => missingSupplierSet.has(p.id)).length;
 
   const productMutation = useMutation({
-    // Phase 7: when saving a bundle, chain a PUT /bundle-items call after the product is saved
-    // so the components list is persisted in the same user action.
-    mutationFn: async (payload: { data: any; bundleItems?: BundleItemRow[] }) => {
-      const { data, bundleItems: items } = payload;
+    mutationFn: async (payload: { data: any; bundleItems?: BundleItemRow[]; comboManifest?: ComboManifestRow[] }) => {
+      const { data, bundleItems: items, comboManifest: manifest } = payload;
       let savedId: string | undefined = editingProduct?.id;
       if (editingProduct) {
         const res = await apiRequest("PATCH", `/api/products/${editingProduct.id}`, data);
@@ -721,9 +801,16 @@ export default function Products() {
         const created = await res.json();
         savedId = created?.id;
       }
+      // Bundle: save component items
       if (data.type === "bundle" && savedId) {
         await apiRequest("PUT", `/api/products/${savedId}/bundle-items`, {
           items: (items ?? []).filter(r => r.componentProductId && Number(r.quantity) > 0),
+        });
+      }
+      // Combo: save manifest
+      if (data.type === "combo" && savedId) {
+        await apiRequest("PUT", `/api/products/${savedId}/combo-components`, {
+          items: (manifest ?? []).filter(r => r.componentName.trim()),
         });
       }
     },
@@ -733,6 +820,7 @@ export default function Products() {
       setProductDialogOpen(false);
       setEditingProduct(null);
       setBundleItems([]);
+      setComboManifest([]);
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -768,8 +856,9 @@ export default function Products() {
   });
 
   const isService = productForm.type === "service";
-  const isBundle = productForm.type === "bundle";
-  const isPanel = !isService && !isBundle && productForm.category === PANEL_CATEGORY;
+  const isBundle  = productForm.type === "bundle";
+  const isCombo   = productForm.type === "combo";
+  const isPanel   = !isService && !isBundle && !isCombo && productForm.category === PANEL_CATEGORY;
 
   // Phase 7: components available to pick = all real products (not bundles, not services, not self).
   const availableComponentProducts = useMemo(() => {
@@ -867,8 +956,9 @@ export default function Products() {
       gridType: (p as any).gridType || "others",
       requiresSerialTracking: !!(p as any).requiresSerialTracking,
     });
-    // Phase 7: pre-load bundle components for edit
+    // Pre-load bundle components for edit
     setBundleItems([]);
+    setComboManifest([]);
     if (p.type === "bundle") {
       try {
         const res = await fetch(`/api/products/${p.id}/bundle-items`, {
@@ -880,6 +970,23 @@ export default function Products() {
             componentProductId: i.componentProductId,
             quantity: String(i.quantity),
             unit: i.unit || "pcs",
+          })));
+        }
+      } catch {/* ignore — empty list shown */}
+    }
+    // Pre-load combo manifest for edit
+    if (p.type === "combo") {
+      try {
+        const res = await fetch(`/api/products/${p.id}/combo-components`, {
+          headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+        });
+        if (res.ok) {
+          const items = await res.json();
+          setComboManifest((items ?? []).map((i: any) => ({
+            componentName: i.componentName,
+            linkedProductId: i.linkedProductId || "",
+            quantity: String(i.quantity),
+            requiresSerialTracking: !!i.requiresSerialTracking,
           })));
         }
       } catch {/* ignore — empty list shown */}
@@ -898,9 +1005,8 @@ export default function Products() {
         sku: productForm.sku || `SVC-${Date.now().toString(36).toUpperCase()}`,
       });
       setBundleItems([]);
+      setComboManifest([]);
     } else if (type === "bundle") {
-      // Phase 7: bundles default to 5% GST (per spec) and 'manual' pricing.
-      // Stock-tracking fields are irrelevant (parent bundle has no stock of its own).
       setProductForm({
         ...productForm,
         type: "bundle",
@@ -910,6 +1016,19 @@ export default function Products() {
         minStockLevel: "0",
         pricingMode: "manual",
       });
+      setComboManifest([]);
+    } else if (type === "combo") {
+      // Combo: purchased as single unit from manufacturer. Manifest defines what's inside.
+      setProductForm({
+        ...productForm,
+        type: "combo",
+        category: productForm.category || "Solar Panel / PV Module",
+        gstRate: productForm.gstRate || "5",
+        unit: productForm.unit || "kit",
+        minStockLevel: "0",
+        pricingMode: "manual",
+      });
+      setBundleItems([]);
     } else {
       setProductForm({
         ...productForm,
@@ -921,6 +1040,7 @@ export default function Products() {
         minStockLevel: "10",
       });
       setBundleItems([]);
+      setComboManifest([]);
     }
   };
 
@@ -1003,8 +1123,9 @@ export default function Products() {
   };
 
   const handleSubmitProduct = () => {
-    const isProd = productForm.type === "product";
+    const isProd        = productForm.type === "product";
     const isBundleSubmit = productForm.type === "bundle";
+    const isComboSubmit  = productForm.type === "combo";
 
     // Phase 2.5 minimum-required-fields enforcement: name, category, brand (for products), unit
     if (!productForm.name.trim()) {
@@ -1016,7 +1137,7 @@ export default function Products() {
     if (!productForm.unit) {
       toast({ title: "Unit is required", variant: "destructive" }); return;
     }
-    if (isProd && !productForm.brandId) {
+    if ((isProd || isComboSubmit) && !productForm.brandId) {
       toast({ title: "Brand is required", description: "Select an existing brand or click + to add one.", variant: "destructive" }); return;
     }
 
@@ -1069,7 +1190,7 @@ export default function Products() {
       requiresSerialTracking: !!productForm.requiresSerialTracking,
     };
 
-    if (isProd) {
+    if (isProd || isComboSubmit) {
       data.distributorPrice = productForm.distributorPrice || null;
       data.warrantyPeriod = productForm.warrantyPeriod || null;
       data.mrp = productForm.mrp || null;
@@ -1111,7 +1232,7 @@ export default function Products() {
     }
     // else: editing non-price fields on an existing product → omit unitPrice entirely
 
-    productMutation.mutate({ data, bundleItems });
+    productMutation.mutate({ data, bundleItems, comboManifest });
   };
 
   const renderTable = (items: Product[], isServiceTab: boolean) => (
@@ -1503,10 +1624,12 @@ export default function Products() {
               />
             </div>
             {([
-              { label: "On Grid",  value: "on_grid"  },
-              { label: "Off Grid", value: "off_grid" },
-              { label: "Hybrid",   value: "hybrid"   },
-            ] as const).map(({ label, value }) => (
+              { label: "On Grid",  value: "on_grid"   },
+              { label: "Off Grid", value: "off_grid"  },
+              { label: "Hybrid",   value: "hybrid"    },
+              { label: "Sets",     value: "__sets__"  },
+              { label: "Others",   value: "others"    },
+            ]).map(({ label, value }) => (
               <button
                 key={value}
                 type="button"
@@ -1533,6 +1656,16 @@ export default function Products() {
                 <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>
               </button>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadPricesPDF}
+              disabled={pdfDownloading || filteredPricesItems.length === 0}
+              className="ml-auto"
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              {pdfDownloading ? "Generating…" : "Download PDF"}
+            </Button>
           </div>
             <Card>
               <CardContent className="p-0">
@@ -1542,7 +1675,8 @@ export default function Products() {
                       <tr className="border-b">
                         <th className="text-left p-3 font-medium text-muted-foreground">Product</th>
                         <th className="text-left p-3 font-medium text-muted-foreground">Unit</th>
-                        <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (₹)</th>
+                        <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (Ex GST)</th>
+                        <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (Inc GST)</th>
                         <th className="text-center p-3 font-medium text-muted-foreground">Source</th>
                         <th className="text-right p-3 font-medium text-muted-foreground">Floor Price (₹)</th>
                         <th className="text-right p-3 font-medium text-muted-foreground">Last Sold (₹)</th>
@@ -1560,16 +1694,39 @@ export default function Products() {
                           </tr>
                         ))
                       ) : filteredPricesItems.length === 0 ? (
-                        <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No products match your filters</td></tr>
+                        <tr><td colSpan={9} className="text-center py-8 text-muted-foreground">No products match your filters</td></tr>
                       ) : (
                         filteredPricesItems.map((product) => {
-                          const ep = effectivePricesMap?.[product.id];
-                          const ls = lastSoldPrices?.[product.id];
-                          const source = ep?.source ?? "none";
-                          const sourceBadge =
-                            source === "today" ? <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 border-green-300 text-[10px] px-1.5 py-0.5">🟢 Confirmed Today</Badge> :
-                            source === "fallback" ? <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border-amber-300 text-[10px] px-1.5 py-0.5">🟡 Prev Sheet ({ep?.sheetDate})</Badge> :
-                            <Badge className="bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 border-red-300 text-[10px] px-1.5 py-0.5">🔴 No Price</Badge>;
+                          const isBundle = product.type === "bundle";
+                          const ep  = effectivePricesMap?.[product.id];
+                          const bp  = bundlePricingProducts?.[product.id];
+                          const ls  = lastSoldPrices?.[product.id];
+
+                          // For bundles use bundle pricing; for singles use effective prices map
+                          const effExGst  = isBundle ? (bp ? Number(bp.effectivePrice) : null) : (ep ? Number(ep.effectivePrice) : null);
+                          const gstRate   = Number((product as any).gstRate ?? 0);
+                          const effIncGst = effExGst !== null ? effExGst * (1 + gstRate / 100) : null;
+                          const fmt = (v: number | null) => v !== null ? `₹${v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+
+                          const source = isBundle ? (bp?.sourceStatus ?? "none") : (ep?.source ?? "none");
+                          const sourceBadge = isBundle
+                            ? (bp
+                                ? <Badge className={`text-[10px] px-1.5 py-0.5 ${bp.sourceStatus === "Confirmed" ? "bg-green-100 text-green-700 border-green-300" : bp.sourceStatus === "Partial" ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-orange-100 text-orange-700 border-orange-300"}`}>{bp.sourceStatus}</Badge>
+                                : <Badge className="bg-muted text-muted-foreground text-[10px]">Loading…</Badge>)
+                            : (source === "today"
+                                ? <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 border-green-300 text-[10px] px-1.5 py-0.5">🟢 Confirmed Today</Badge>
+                                : source === "fallback"
+                                ? <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border-amber-300 text-[10px] px-1.5 py-0.5">🟡 Prev Sheet ({ep?.sheetDate})</Badge>
+                                : <Badge className="bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400 border-red-300 text-[10px] px-1.5 py-0.5">🔴 No Price</Badge>);
+
+                          const statusBadge = isBundle
+                            ? (bp ? <Badge className={`text-[10px] ${bp.dataStatus === "Complete" ? "bg-green-100 text-green-700" : bp.dataStatus === "Partial" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"}`}>{bp.dataStatus}</Badge> : null)
+                            : (ep?.hasConfirmedToday
+                                ? <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 text-[10px]">Confirmed Today</Badge>
+                                : ep && !ep.noConfirmedPrice
+                                ? <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 text-[10px]">Prior Sheet</Badge>
+                                : <Badge className="bg-muted text-muted-foreground text-[10px]">No Sheet</Badge>);
+
                           return (
                             <tr key={product.id} className="border-b last:border-0" data-testid={`row-price-${product.id}`}>
                               <td className="p-3 font-medium" data-testid={`text-price-name-${product.id}`}>
@@ -1578,33 +1735,20 @@ export default function Products() {
                                   <div className="text-xs text-muted-foreground">{product.sku}</div>
                                 </div>
                               </td>
-                              <td className="p-3 text-muted-foreground text-xs" data-testid={`text-price-unit-${product.id}`}>
-                                {product.unit || "—"}
+                              <td className="p-3 text-muted-foreground text-xs">{product.unit || "—"}</td>
+                              <td className="p-3 text-right font-semibold">{fmt(effExGst)}</td>
+                              <td className="p-3 text-right font-semibold text-blue-600 dark:text-blue-400">{fmt(effIncGst)}</td>
+                              <td className="p-3 text-center">{sourceBadge}</td>
+                              <td className="p-3 text-right text-muted-foreground">
+                                {!isBundle && ep?.globalFloorPrice ? `₹${Number(ep.globalFloorPrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                               </td>
-                              <td className="p-3 text-right font-semibold" data-testid={`text-price-effective-${product.id}`}>
-                                {ep ? `₹${Number(ep.effectivePrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
-                              </td>
-                              <td className="p-3 text-center" data-testid={`badge-price-source-${product.id}`}>
-                                {sourceBadge}
-                              </td>
-                              <td className="p-3 text-right text-muted-foreground" data-testid={`text-price-floor-${product.id}`}>
-                                {ep?.globalFloorPrice ? `₹${Number(ep.globalFloorPrice).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
-                              </td>
-                              <td className="p-3 text-right" data-testid={`text-price-lastsold-${product.id}`}>
+                              <td className="p-3 text-right">
                                 {ls ? `₹${Number(ls.price).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
                               </td>
-                              <td className="p-3 text-xs text-muted-foreground" data-testid={`text-price-lastsold-date-${product.id}`}>
+                              <td className="p-3 text-xs text-muted-foreground">
                                 {ls?.lastSoldAt ? new Date(ls.lastSoldAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                               </td>
-                              <td className="p-3 text-center">
-                                {ep?.hasConfirmedToday ? (
-                                  <Badge className="bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400 text-[10px]" data-testid={`badge-price-status-${product.id}`}>Confirmed Today</Badge>
-                                ) : ep && !ep.noConfirmedPrice ? (
-                                  <Badge className="bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 text-[10px]" data-testid={`badge-price-status-${product.id}`}>Prior Sheet</Badge>
-                                ) : (
-                                  <Badge className="bg-muted text-muted-foreground text-[10px]" data-testid={`badge-price-status-${product.id}`}>No Sheet</Badge>
-                                )}
-                              </td>
+                              <td className="p-3 text-center">{statusBadge}</td>
                             </tr>
                           );
                         })
@@ -1637,6 +1781,7 @@ export default function Products() {
                   <SelectItem value="product"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Product</span></SelectItem>
                   <SelectItem value="service"><span className="flex items-center gap-1"><Wrench className="w-3 h-3" /> Service</span></SelectItem>
                   <SelectItem value="bundle" data-testid="option-type-bundle"><span className="flex items-center gap-1"><Boxes className="w-3 h-3" /> Bundle / Kit</span></SelectItem>
+                  <SelectItem value="combo" data-testid="option-type-combo"><span className="flex items-center gap-1"><Package className="w-3 h-3" /> Combo (Manufacturer Kit)</span></SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1946,6 +2091,109 @@ export default function Products() {
               </div>
             )}
 
+            {/* Combo Manifest — only when type='combo' */}
+            {isCombo && (
+              <div className="rounded-md border-2 border-teal-200 dark:border-teal-900 p-3 space-y-3 bg-teal-50/30 dark:bg-teal-950/10" data-testid="section-combo-manifest">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm font-semibold flex items-center gap-1.5">
+                      <Package className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                      Component Manifest
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Define what is physically inside this manufacturer combo. Serial-required components will prompt for serial numbers at GRN.
+                    </p>
+                  </div>
+                  <Button
+                    type="button" size="sm" variant="outline"
+                    onClick={() => setComboManifest(prev => [...prev, { componentName: "", linkedProductId: "", quantity: "1", requiresSerialTracking: false }])}
+                    data-testid="button-add-combo-component"
+                  >
+                    <Plus className="w-3 h-3 mr-1" /> Add Component
+                  </Button>
+                </div>
+
+                {comboManifest.length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="empty-combo-manifest">
+                    No components yet. Click <strong>Add Component</strong> to define the manifest.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Header row */}
+                    <div className="grid grid-cols-12 gap-2 text-xs text-muted-foreground px-1 pb-0.5">
+                      <div className="col-span-4">Component Name <span className="text-red-500">*</span></div>
+                      <div className="col-span-3">Linked Product (optional)</div>
+                      <div className="col-span-2">Qty</div>
+                      <div className="col-span-2 text-center">Serial Required</div>
+                      <div className="col-span-1" />
+                    </div>
+                    {comboManifest.map((row, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2 items-center" data-testid={`row-combo-component-${idx}`}>
+                        {/* Component name */}
+                        <div className="col-span-4">
+                          <Input
+                            placeholder="e.g. Lithium Battery 100Ah"
+                            value={row.componentName}
+                            onChange={e => setComboManifest(prev => prev.map((r, i) => i === idx ? { ...r, componentName: e.target.value } : r))}
+                            data-testid={`input-combo-component-name-${idx}`}
+                          />
+                        </div>
+                        {/* Linked product (optional) */}
+                        <div className="col-span-3">
+                          <Select
+                            value={row.linkedProductId || "__none__"}
+                            onValueChange={v => setComboManifest(prev => prev.map((r, i) => i === idx ? { ...r, linkedProductId: v === "__none__" ? "" : v } : r))}
+                          >
+                            <SelectTrigger className="h-9 text-xs" data-testid={`select-combo-linked-product-${idx}`}>
+                              <SelectValue placeholder="Not linked" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__"><span className="text-muted-foreground">Not linked</span></SelectItem>
+                              {(allProducts ?? [])
+                                .filter(p => p.type === "product")
+                                .map(p => (
+                                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {/* Quantity */}
+                        <div className="col-span-2">
+                          <Input
+                            type="number" min="0.01" step="0.01"
+                            value={row.quantity}
+                            onChange={e => setComboManifest(prev => prev.map((r, i) => i === idx ? { ...r, quantity: e.target.value } : r))}
+                            data-testid={`input-combo-component-qty-${idx}`}
+                          />
+                        </div>
+                        {/* Serial required toggle */}
+                        <div className="col-span-2 flex justify-center">
+                          <button
+                            type="button"
+                            onClick={() => setComboManifest(prev => prev.map((r, i) => i === idx ? { ...r, requiresSerialTracking: !r.requiresSerialTracking } : r))}
+                            className={`text-xs px-2 py-1 rounded-full border font-medium transition-colors ${row.requiresSerialTracking ? "bg-teal-100 text-teal-700 border-teal-400 dark:bg-teal-950/40 dark:text-teal-300" : "bg-muted text-muted-foreground border-border"}`}
+                            data-testid={`toggle-combo-serial-${idx}`}
+                          >
+                            {row.requiresSerialTracking ? "✓ Serial" : "No Serial"}
+                          </button>
+                        </div>
+                        {/* Delete */}
+                        <div className="col-span-1 flex justify-center">
+                          <Button
+                            type="button" size="icon" variant="ghost"
+                            onClick={() => setComboManifest(prev => prev.filter((_, i) => i !== idx))}
+                            data-testid={`button-remove-combo-component-${idx}`}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Cost & landed price block — admin/accountant only, hidden for bundles */}
             {!isService && !isBundle && canSeeCosts && (
               <div className="rounded-md border p-3 space-y-3 bg-muted/20" data-testid="section-cost-block">
@@ -2057,16 +2305,16 @@ export default function Products() {
                     ))}
                   </SelectContent>
                 </Select>
-                {gstOverridden && !isBundle && (
+                {gstOverridden && !isBundle && !isCombo && (
                   <p className="text-xs text-amber-700 dark:text-amber-400 flex items-start gap-1 mt-1" data-testid="warning-gst-override">
                     <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
                     Non-standard rate for this category (default is {gstDefaultForCategory}%). Make sure this is intentional.
                   </p>
                 )}
-                {isBundle && (
+                {(isBundle || isCombo) && (
                   <p className="text-xs text-muted-foreground flex items-start gap-1 mt-1" data-testid="hint-bundle-gst">
                     <Info className="w-3 h-3 mt-0.5 shrink-0" />
-                    Bundle is invoiced as one line at this rate. Components' individual GST rates are informational only.
+                    {isCombo ? "Combo is invoiced as one line at this rate." : "Bundle is invoiced as one line at this rate. Components' individual GST rates are informational only."}
                   </p>
                 )}
               </div>

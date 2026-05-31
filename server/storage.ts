@@ -4,6 +4,7 @@ import {
   users, customers, suppliers, products, brands, warehouses, inventoryStock,
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, employeeAdvances, employeeIncentives, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems, monthlyTargets,
+  comboComponents, comboSerialRecords,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -21,6 +22,8 @@ import {
   type WhatsappConversation, type WhatsappMessage, type WhatsappTemplate, type WhatsappTemplateStatusHistory, type InsertWhatsappConversation, type InsertWhatsappMessage, type InsertWhatsappTemplate, type InsertWhatsappTemplateStatusHistory,
   type WhatsappTemplateSyncLog, type InsertWhatsappTemplateSyncLog,
   type WhatsappWebhookJob, type WhatsappWebhookJobDeadLetter,
+  type ComboComponent, type InsertComboComponent,
+  type ComboSerialRecord, type InsertComboSerialRecord,
 } from "@shared/schema";
 
 export type ExpenseFilters = {
@@ -442,6 +445,7 @@ export interface IStorage {
   getEffectivePriceForProduct(productId: string, date: string): Promise<{ effectivePrice: string | null; sheetDate: string | null; noConfirmedPrice: boolean; source: "today" | "fallback" | "none" } | null>;
 
   // Phase 7 — Bundle / Kit Engine
+  getHistoricalPriceForProduct(productId: string, date: string): Promise<{ price: string; source: "APPROVED_RATE" | "FLOOR_PRICE" | "COST_PRICE" | "UNIT_PRICE" } | null>;
   getBundleItems(bundleId: string): Promise<ProductBundleItem[]>;
   replaceBundleItems(bundleId: string, items: Omit<InsertProductBundleItem, "bundleProductId">[]): Promise<ProductBundleItem[]>;
   computeBundleAutoPrice(bundleId: string, date: string): Promise<{
@@ -602,6 +606,21 @@ export interface IStorage {
     recentOrders: SalesOrder[];
     recentActivities: AuditLog[];
   }>;
+
+  // ── Combo Components (Phase 1) ────────────────────────────────────────────
+  getComboComponents(comboProductId: string): Promise<ComboComponent[]>;
+  createComboComponent(data: InsertComboComponent): Promise<ComboComponent>;
+  updateComboComponent(id: string, data: Partial<InsertComboComponent>): Promise<ComboComponent | undefined>;
+  deleteComboComponent(id: string): Promise<boolean>;
+  replaceComboComponents(comboProductId: string, items: Omit<InsertComboComponent, "comboProductId">[]): Promise<ComboComponent[]>;
+
+  // ── Combo Serial Records (Phase 1) ───────────────────────────────────────
+  getComboSerialRecords(opts: { grnId?: string; grnItemId?: string; comboProductId?: string; allocatedChallanId?: string; available?: boolean }): Promise<ComboSerialRecord[]>;
+  createComboSerialRecord(data: InsertComboSerialRecord): Promise<ComboSerialRecord>;
+  allocateComboSerials(serialIds: string[], challanId: string, customerId: string, allocatedByUserId: string): Promise<void>;
+  deallocateComboSerials(challanId: string): Promise<void>;
+  listComboSerials(): Promise<Array<ComboSerialRecord & { comboProductName: string; grnNumber: string; challanNumber: string | null; customerName: string | null }>>;
+  searchComboSerialByNumber(serialNumber: string): Promise<(ComboSerialRecord & { comboProductName: string; grnNumber: string; challanNumber: string | null; customerName: string | null }) | null>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2005,6 +2024,46 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // ─── Set Analysis Report: historical price lookup (no date cap) ──────────────
+  // Fallback order: APPROVED_RATE → FLOOR_PRICE → COST_PRICE → UNIT_PRICE
+  // Only uses confirmed daily price sheets dated on or before the requested date.
+  async getHistoricalPriceForProduct(productId: string, date: string): Promise<{
+    price: string;
+    source: "APPROVED_RATE" | "FLOOR_PRICE" | "COST_PRICE" | "UNIT_PRICE";
+  } | null> {
+    const [sheet] = await db
+      .select()
+      .from(dailyPriceSheets)
+      .where(
+        and(
+          eq(dailyPriceSheets.productId, productId),
+          eq(dailyPriceSheets.status, "confirmed"),
+          sql`${dailyPriceSheets.sheetDate} <= ${date}`
+        )
+      )
+      .orderBy(desc(dailyPriceSheets.sheetDate))
+      .limit(1);
+
+    if (sheet) {
+      if (sheet.proposedPrice && Number(sheet.proposedPrice) > 0) {
+        return { price: sheet.proposedPrice, source: "APPROVED_RATE" };
+      }
+      if (sheet.globalFloorPrice && Number(sheet.globalFloorPrice) > 0) {
+        return { price: sheet.globalFloorPrice, source: "FLOOR_PRICE" };
+      }
+    }
+
+    const [prod] = await db.select().from(products).where(eq(products.id, productId));
+    if (!prod) return null;
+    if (prod.costPrice && Number(prod.costPrice) > 0) {
+      return { price: prod.costPrice, source: "COST_PRICE" };
+    }
+    if (prod.unitPrice && Number(prod.unitPrice) > 0) {
+      return { price: prod.unitPrice, source: "UNIT_PRICE" };
+    }
+    return null;
+  }
+
   async computeBundleAutoPrice(bundleId: string, date: string) {
     const items = await this.getBundleItems(bundleId);
     const components: Array<any> = [];
@@ -3206,6 +3265,178 @@ export class DatabaseStorage implements IStorage {
       }).returning();
       return rows[0];
     }
+  }
+  // ── Combo Components ───────────────────────────────────────────────────────
+
+  async getComboComponents(comboProductId: string): Promise<ComboComponent[]> {
+    return db.select().from(comboComponents)
+      .where(eq(comboComponents.comboProductId, comboProductId))
+      .orderBy(comboComponents.sortOrder, comboComponents.createdAt);
+  }
+
+  async createComboComponent(data: InsertComboComponent): Promise<ComboComponent> {
+    const [created] = await db.insert(comboComponents).values(data).returning();
+    return created;
+  }
+
+  async updateComboComponent(id: string, data: Partial<InsertComboComponent>): Promise<ComboComponent | undefined> {
+    const [updated] = await db.update(comboComponents).set(data).where(eq(comboComponents.id, id)).returning();
+    return updated;
+  }
+
+  async deleteComboComponent(id: string): Promise<boolean> {
+    await db.delete(comboComponents).where(eq(comboComponents.id, id));
+    return true;
+  }
+
+  async replaceComboComponents(comboProductId: string, items: Omit<InsertComboComponent, "comboProductId">[]): Promise<ComboComponent[]> {
+    await db.delete(comboComponents).where(eq(comboComponents.comboProductId, comboProductId));
+    if (items.length === 0) return [];
+    const rows = await db.insert(comboComponents)
+      .values(items.map(item => ({ ...item, comboProductId })))
+      .returning();
+    return rows;
+  }
+
+  // ── Combo Serial Records ───────────────────────────────────────────────────
+
+  async getComboSerialRecords(opts: {
+    grnId?: string;
+    grnItemId?: string;
+    comboProductId?: string;
+    allocatedChallanId?: string;
+    available?: boolean;
+  }): Promise<ComboSerialRecord[]> {
+    const conds = [];
+    if (opts.grnId)             conds.push(eq(comboSerialRecords.grnId, opts.grnId));
+    if (opts.grnItemId)         conds.push(eq(comboSerialRecords.grnItemId, opts.grnItemId));
+    if (opts.comboProductId)    conds.push(eq(comboSerialRecords.comboProductId, opts.comboProductId));
+    if (opts.allocatedChallanId) conds.push(eq(comboSerialRecords.allocatedChallanId, opts.allocatedChallanId));
+    if (opts.available === true)  conds.push(isNull(comboSerialRecords.allocatedChallanId));
+    if (opts.available === false) conds.push(sql`${comboSerialRecords.allocatedChallanId} IS NOT NULL`);
+    const q = conds.length > 0
+      ? db.select().from(comboSerialRecords).where(and(...conds))
+      : db.select().from(comboSerialRecords);
+    return q.orderBy(comboSerialRecords.comboUnitIndex, comboSerialRecords.componentName, comboSerialRecords.capturedAt);
+  }
+
+  async createComboSerialRecord(data: InsertComboSerialRecord): Promise<ComboSerialRecord> {
+    const [created] = await db.insert(comboSerialRecords).values(data).returning();
+    return created;
+  }
+
+  async allocateComboSerials(serialIds: string[], challanId: string, customerId: string, allocatedByUserId: string): Promise<void> {
+    if (serialIds.length === 0) return;
+    const now = new Date();
+    for (const id of serialIds) {
+      await db.update(comboSerialRecords)
+        .set({ allocatedChallanId: challanId, allocatedCustomerId: customerId, allocatedAt: now, allocatedByUserId, updatedAt: now })
+        .where(and(eq(comboSerialRecords.id, id), isNull(comboSerialRecords.allocatedChallanId)));
+    }
+  }
+
+  async deallocateComboSerials(challanId: string): Promise<void> {
+    const now = new Date();
+    await db.update(comboSerialRecords)
+      .set({
+        deallocatedAt: now,
+        allocatedChallanId: null,
+        allocatedCustomerId: null,
+        allocatedAt: null,
+        allocatedByUserId: null,
+        updatedAt: now,
+      })
+      .where(eq(comboSerialRecords.allocatedChallanId, challanId));
+  }
+
+  async listComboSerials(): Promise<Array<ComboSerialRecord & { comboProductName: string; grnNumber: string; challanNumber: string | null; customerName: string | null }>> {
+    const rows = await db.execute(sql`
+      SELECT
+        csr.*,
+        p.name             AS combo_product_name,
+        g.grn_number       AS grn_number,
+        dc.challan_number  AS challan_number,
+        c.name             AS customer_name
+      FROM combo_serial_records csr
+      JOIN products p          ON p.id  = csr.combo_product_id
+      JOIN goods_receipt_notes g ON g.id = csr.grn_id
+      LEFT JOIN delivery_challans dc ON dc.id = csr.allocated_challan_id
+      LEFT JOIN customers c          ON c.id  = csr.allocated_customer_id
+      ORDER BY csr.captured_at DESC
+    `);
+    return (rows.rows as any[]).map(r => ({
+      id: r.id,
+      comboProductId: r.combo_product_id,
+      grnId: r.grn_id,
+      grnItemId: r.grn_item_id,
+      comboUnitIndex: r.combo_unit_index,
+      componentName: r.component_name,
+      linkedProductId: r.linked_product_id ?? null,
+      serialNumber: r.serial_number,
+      notes: r.notes ?? null,
+      capturedAt: r.captured_at,
+      capturedByUserId: r.captured_by_user_id,
+      allocatedChallanId: r.allocated_challan_id ?? null,
+      allocatedCustomerId: r.allocated_customer_id ?? null,
+      allocatedAt: r.allocated_at ?? null,
+      allocatedByUserId: r.allocated_by_user_id ?? null,
+      deallocatedAt: r.deallocated_at ?? null,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      comboProductName: r.combo_product_name,
+      grnNumber: r.grn_number,
+      challanNumber: r.challan_number ?? null,
+      customerName: r.customer_name ?? null,
+    }));
+  }
+
+  async searchComboSerialByNumber(serialNumber: string): Promise<(ComboSerialRecord & {
+    comboProductName: string;
+    grnNumber: string;
+    challanNumber: string | null;
+    customerName: string | null;
+  }) | null> {
+    const rows = await db.execute(sql`
+      SELECT
+        csr.*,
+        p.name         AS combo_product_name,
+        g.grn_number   AS grn_number,
+        dc.challan_number AS challan_number,
+        c.name         AS customer_name
+      FROM combo_serial_records csr
+      JOIN products p          ON p.id  = csr.combo_product_id
+      JOIN goods_receipt_notes g ON g.id = csr.grn_id
+      LEFT JOIN delivery_challans dc ON dc.id = csr.allocated_challan_id
+      LEFT JOIN customers c        ON c.id  = csr.allocated_customer_id
+      WHERE csr.serial_number ILIKE ${serialNumber}
+      LIMIT 1
+    `);
+    if (rows.rows.length === 0) return null;
+    const r = rows.rows[0] as any;
+    return {
+      id: r.id,
+      comboProductId: r.combo_product_id,
+      grnId: r.grn_id,
+      grnItemId: r.grn_item_id,
+      comboUnitIndex: r.combo_unit_index,
+      componentName: r.component_name,
+      linkedProductId: r.linked_product_id ?? null,
+      serialNumber: r.serial_number,
+      notes: r.notes ?? null,
+      capturedAt: r.captured_at,
+      capturedByUserId: r.captured_by_user_id,
+      allocatedChallanId: r.allocated_challan_id ?? null,
+      allocatedCustomerId: r.allocated_customer_id ?? null,
+      allocatedAt: r.allocated_at ?? null,
+      allocatedByUserId: r.allocated_by_user_id ?? null,
+      deallocatedAt: r.deallocated_at ?? null,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      comboProductName: r.combo_product_name,
+      grnNumber: r.grn_number,
+      challanNumber: r.challan_number ?? null,
+      customerName: r.customer_name ?? null,
+    };
   }
 }
 

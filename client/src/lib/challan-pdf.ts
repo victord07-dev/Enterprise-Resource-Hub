@@ -67,6 +67,8 @@ export async function generateChallanPDF(
   logoDataUrl?: string,
   /** GST rates locked on the linked sales order, keyed by productId */
   soItemGstMap?: Record<string, { gstRate: number; hsnCode?: string | null }>,
+  /** Combo serial records allocated to this challan, grouped by productId */
+  comboSerialsMap?: Record<string, Array<{ comboUnitIndex: number; componentName: string; serialNumber: string }>>,
 ) {
   const JsPDF = await loadJsPDF();
   const doc: jsPDF = new JsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
@@ -309,6 +311,56 @@ export async function generateChallanPDF(
     doc.setTextColor(...C.textPrimary);
     y += rowH;
     rowIdx++;
+
+    // Combo serial sub-rows: print allocated serial numbers below the combo line item
+    if ((prod as any)?.type === "combo" && item.productId && comboSerialsMap?.[item.productId]) {
+      const serials = comboSerialsMap[item.productId];
+      // Group by unit index
+      const byUnit = new Map<number, Array<{ componentName: string; serialNumber: string }>>();
+      for (const sr of serials) {
+        if (!byUnit.has(sr.comboUnitIndex)) byUnit.set(sr.comboUnitIndex, []);
+        byUnit.get(sr.comboUnitIndex)!.push({ componentName: sr.componentName, serialNumber: sr.serialNumber });
+      }
+      for (const [unitIdx, comps] of Array.from(byUnit.entries())) {
+        const unitLabelH = 5;
+        doc.setFillColor(240, 253, 250); // teal-50
+        doc.rect(margin, y, contentW, unitLabelH, "F");
+        doc.setDrawColor(...C.tableBorder);
+        doc.line(margin, y + unitLabelH, margin + contentW, y + unitLabelH);
+        Object.values(COL).forEach(col => doc.line(col.x, y, col.x, y + unitLabelH));
+        doc.line(margin + contentW, y, margin + contentW, y + unitLabelH);
+        const unitMid = y + 3.5;
+        doc.setFontSize(5.5);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(15, 118, 110); // teal-700
+        doc.text(`  Unit ${unitIdx}:`, COL.desc.x + 2, unitMid);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...C.textPrimary);
+        y += unitLabelH;
+
+        for (const comp of comps) {
+          const compRowH = 4.5;
+          doc.setFillColor(240, 253, 250);
+          doc.rect(margin, y, contentW, compRowH, "F");
+          doc.setDrawColor(...C.tableBorder);
+          doc.line(margin, y + compRowH, margin + contentW, y + compRowH);
+          Object.values(COL).forEach(col => doc.line(col.x, y, col.x, y + compRowH));
+          doc.line(margin + contentW, y, margin + contentW, y + compRowH);
+          const compMid = y + 3;
+          doc.setFontSize(5);
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(...C.textSecondary);
+          doc.text(`    └ ${comp.componentName}`, COL.desc.x + 2, compMid);
+          doc.setTextColor(15, 118, 110);
+          doc.setFont("helvetica", "bold");
+          doc.text(comp.serialNumber, COL.hsn.x + 2, compMid);
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(...C.textPrimary);
+          doc.setFontSize(6.5);
+          y += compRowH;
+        }
+      }
+    }
 
     // Bundle sub-rows: list component products below the bundle parent row
     if ((prod as any)?.type === "bundle" && item.productId && bundleCompsMap?.[item.productId]) {

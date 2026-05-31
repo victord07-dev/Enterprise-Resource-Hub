@@ -123,6 +123,36 @@ export const productBundleItems = pgTable("product_bundle_items", {
   componentIdx: index("pbi_component_idx").on(t.componentProductId),
 }));
 
+// ─── Combo Components (Manufacturer Kit Manifest) ────────────────────────────
+// Defines what is physically inside a combo product (type = 'combo').
+// Unlike product_bundle_items (which drives procurement & pricing), this table
+// is a traceability manifest — it tells the system which components need serial
+// numbers captured at GRN and printed on challans.
+//
+// linked_product_id is optional: some components inside a manufacturer kit are
+// not catalogued as standalone products. Use component_name as the label in
+// that case.
+//
+// requires_serial_tracking: when true, the GRN serial capture form will show an
+// input for this component. When false, the component appears as a label only.
+export const comboComponents = pgTable("combo_components", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  comboProductId: varchar("combo_product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  componentName: text("component_name").notNull(),
+  linkedProductId: varchar("linked_product_id").references(() => products.id, { onDelete: "set null" }),
+  quantity: decimal("quantity", { precision: 12, scale: 3 }).notNull().default("1"),
+  requiresSerialTracking: boolean("requires_serial_tracking").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_combo_components_combo_id").on(t.comboProductId),
+  index("idx_combo_components_linked_product_id").on(t.linkedProductId),
+]);
+
+export const insertComboComponentSchema = createInsertSchema(comboComponents).omit({ id: true, createdAt: true });
+export type ComboComponent = typeof comboComponents.$inferSelect;
+export type InsertComboComponent = z.infer<typeof insertComboComponentSchema>;
+
 export const customFieldUsageStats = pgTable("custom_field_usage_stats", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   category: text("category").notNull(),
@@ -644,6 +674,10 @@ export const goodsReceiptNotes = pgTable("goods_receipt_notes", {
   creditApprovedBy: varchar("credit_approved_by"),
   creditApprovedAt: timestamp("credit_approved_at"),
   creditReason: text("credit_reason"),
+  // Combo Serial Tracking — true when any combo line item in this GRN has
+  // required component serials that have not yet been captured.
+  // Independent of GRN status: a confirmed GRN can still have this true.
+  comboSerialsPending: boolean("combo_serials_pending").notNull().default(false),
 });
 
 export const goodsReceiptNoteItems = pgTable("goods_receipt_note_items", {
@@ -1682,6 +1716,61 @@ export const serialNumberEvents = pgTable("serial_number_events", {
   index("idx_serial_events_actor_id").on(t.actorId),
   index("idx_serial_events_created_at").on(t.createdAt),
 ]);
+
+// ─── Combo Serial Records ─────────────────────────────────────────────────────
+// Stores serial numbers of components inside a combo product (type = 'combo').
+// These are NOT inventory stock items — they are traceability / warranty records
+// only. Stock is managed at the combo (parent) level via the normal GRN flow.
+//
+// Lifecycle:
+//   captured at GRN  → allocated at challan dispatch → released on return/cancel
+//
+// A serial is considered:
+//   available  — allocated_challan_id IS NULL
+//   allocated  — allocated_challan_id IS NOT NULL
+//   released   — deallocated_at IS NOT NULL (returns to available pool)
+//
+// Uniqueness: (grn_item_id, combo_unit_index, component_name) prevents duplicate
+// capture for the same physical unit / component pair.
+// When linked_product_id is set, it is the canonical component identifier for
+// application-level duplicate detection. component_name is the fallback.
+export const comboSerialRecords = pgTable("combo_serial_records", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  comboProductId: varchar("combo_product_id").notNull().references(() => products.id),
+  grnId: varchar("grn_id").notNull().references(() => goodsReceiptNotes.id),
+  grnItemId: varchar("grn_item_id").notNull().references(() => goodsReceiptNoteItems.id),
+  // Which unit within this GRN batch (1-based). e.g. 2 = second combo unit received.
+  comboUnitIndex: integer("combo_unit_index").notNull(),
+  componentName: text("component_name").notNull(),
+  linkedProductId: varchar("linked_product_id").references(() => products.id, { onDelete: "set null" }),
+  serialNumber: varchar("serial_number", { length: 150 }).notNull(),
+  notes: text("notes"),
+  // Inbound audit
+  capturedAt: timestamp("captured_at").notNull().defaultNow(),
+  capturedByUserId: varchar("captured_by_user_id").notNull().references(() => users.id),
+  // Outbound allocation — null = available in stock
+  allocatedChallanId: varchar("allocated_challan_id").references(() => deliveryChallans.id, { onDelete: "set null" }),
+  allocatedCustomerId: varchar("allocated_customer_id").references(() => customers.id, { onDelete: "set null" }),
+  allocatedAt: timestamp("allocated_at"),
+  allocatedByUserId: varchar("allocated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Deallocation — stamped on challan cancellation or sales return
+  deallocatedAt: timestamp("deallocated_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  // Core uniqueness: one serial per combo unit per component per GRN item
+  uniqueIndex("idx_combo_serial_unique").on(t.grnItemId, t.comboUnitIndex, t.componentName),
+  index("idx_combo_serial_combo_product").on(t.comboProductId),
+  index("idx_combo_serial_grn_id").on(t.grnId),
+  index("idx_combo_serial_grn_item_id").on(t.grnItemId),
+  index("idx_combo_serial_challan_id").on(t.allocatedChallanId),
+  index("idx_combo_serial_customer_id").on(t.allocatedCustomerId),
+  index("idx_combo_serial_serial_number").on(t.serialNumber),
+]);
+
+export const insertComboSerialRecordSchema = createInsertSchema(comboSerialRecords).omit({ id: true, createdAt: true, updatedAt: true });
+export type ComboSerialRecord = typeof comboSerialRecords.$inferSelect;
+export type InsertComboSerialRecord = z.infer<typeof insertComboSerialRecordSchema>;
 
 // ─── Inventory Lots ───────────────────────────────────────────────────────────
 // Accounting-layer perpetual inventory cost ledger. Decoupled from pricing

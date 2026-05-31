@@ -3831,7 +3831,7 @@ export default function Sales() {
           </DialogHeader>
           {(() => {
             const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-            const exceedsBalance = totalEntered > paymentDialogBalance && totalEntered > 0;
+            const exceedsBalance = Math.round(totalEntered * 100) > Math.round(paymentDialogBalance * 100) && totalEntered > 0;
             return (
           <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
             {exceedsBalance && (
@@ -3972,7 +3972,7 @@ export default function Sales() {
               disabled={
                 recordPaymentMutation.isPending ||
                 paymentRows.some(r => !r.amount || !r.cashAccountId) ||
-                paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0) > paymentDialogBalance
+                Math.round(paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0) * 100) > Math.round(paymentDialogBalance * 100)
               }
               onClick={async () => {
                 const invalid = paymentRows.find(r => !r.cashAccountId);
@@ -3981,7 +3981,7 @@ export default function Sales() {
                   return;
                 }
                 const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-                if (totalEntered > paymentDialogBalance) {
+                if (Math.round(totalEntered * 100) > Math.round(paymentDialogBalance * 100)) {
                   toast({ title: "Amount exceeds balance", description: `Maximum payable is ₹${paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}.`, variant: "destructive" });
                   return;
                 }
@@ -4115,7 +4115,7 @@ export default function Sales() {
             <Button variant="outline" onClick={() => setDispatchDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-dispatch-challan"
-              disabled={createFromSOMutation.isPending || dispatchSummary.every(i => i.qtyRemaining === 0) || !dispatchFormValid}
+              disabled={createFromSOMutation.isPending || (dispatchSummary.length > 0 && dispatchSummary.every(i => i.qtyRemaining === 0)) || !dispatchFormValid}
               onClick={() => {
                 if (!dispatchOrderId) return;
                 createFromSOMutation.mutate({ orderId: dispatchOrderId, data: { ...dispatchForm, printedBy: (currentUser as any)?.fullName || (currentUser as any)?.username || null } });

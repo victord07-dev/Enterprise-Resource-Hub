@@ -71,14 +71,14 @@ export function drawLetterhead(doc: any, opts: LetterheadOptions): number {
   doc.setFillColor(...C.headerBg);
   doc.rect(0, 0, pageWidth, headerH, "F");
 
-  // Left: logo (82 × 18 mm, vertically centred) OR COMPANY.name wordmark
-  const logoW = 82;
+  // Left: logo — aspect ratio 2850×2326 (1.225:1). At 18 mm tall → 22 mm wide.
+  const logoW = 22;
   const logoH = 18;
   const logoY = (headerH - logoH) / 2;
   let drewLogo = false;
   if (opts.logoDataUrl) {
     try {
-      doc.addImage(opts.logoDataUrl, "PNG", margin, logoY, logoW, logoH);
+      doc.addImage(opts.logoDataUrl, "JPEG", margin, logoY, logoW, logoH);
       drewLogo = true;
     } catch {
       // fall through to wordmark

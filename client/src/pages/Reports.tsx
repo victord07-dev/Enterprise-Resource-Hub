@@ -16,8 +16,9 @@ import { useToast } from "@/hooks/use-toast";
 import {
   BarChart3, Download, ShoppingCart, Package, CreditCard, Users,
   TrendingUp, FileText, AlertTriangle, Clock, CheckCircle2, AlertCircle,
-  Flame, TrendingDown, Shield, Search, ChevronDown,
+  Flame, TrendingDown, Shield, Search, ChevronDown, Layers, BarChart2, Users2,
 } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useCurrentUser, getUser } from "@/lib/auth";
 import { generateAPAgingPDF, generateARAgingPDF, generatePricingPDF } from "@/lib/reports-pdf";
 
@@ -1037,6 +1038,168 @@ export default function Reports() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
 
+  // ── Customer Statement dialog ─────────────────────────────────────────────
+  const [custStmtOpen, setCustStmtOpen]       = useState(false);
+  const [custStmtId, setCustStmtId]           = useState<string>("");
+  const [custStmtFrom, setCustStmtFrom]       = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  });
+  const [custStmtTo, setCustStmtTo]           = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+  );
+  const [custStmtLoading, setCustStmtLoading] = useState(false);
+
+  const { data: allCustomers } = useQuery<any[]>({ queryKey: ["/api/customers"] });
+
+  const downloadCustomerStatement = async () => {
+    if (!custStmtId) { toast({ title: "Select a customer first", variant: "destructive" }); return; }
+    if (!custStmtFrom) { toast({ title: "Select a from date", variant: "destructive" }); return; }
+    setCustStmtLoading(true);
+    try {
+      const token = sessionStorage.getItem("token");
+      const url   = `/api/customers/${custStmtId}/statement?from=${custStmtFrom}&to=${custStmtTo}`;
+      const r     = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.message || "Failed"); }
+      const blob  = await r.blob();
+      const href  = URL.createObjectURL(blob);
+      const a     = document.createElement("a");
+      const cust  = (allCustomers ?? []).find((c: any) => c.id === custStmtId);
+      a.href      = href;
+      a.download  = `${(cust?.name ?? "customer").replace(/[^a-zA-Z0-9_-]/g, "_")}_statement_${custStmtFrom}_${custStmtTo}.csv`;
+      a.click();
+      URL.revokeObjectURL(href);
+      setCustStmtOpen(false);
+    } catch (err: any) {
+      toast({ title: "Download failed", description: err.message, variant: "destructive" });
+    } finally {
+      setCustStmtLoading(false);
+    }
+  };
+
+  // ── Product Performance Report dialog ────────────────────────────────────
+  const [prodReportOpen, setProdReportOpen]     = useState(false);
+  const [prodReportFrom, setProdReportFrom]     = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  });
+  const [prodReportTo, setProdReportTo]         = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+  );
+  const [prodReportLoading, setProdReportLoading] = useState(false);
+
+  const downloadProductReport = async () => {
+    if (!prodReportFrom) { toast({ title: "Select a from date", variant: "destructive" }); return; }
+    setProdReportLoading(true);
+    try {
+      const token = sessionStorage.getItem("token");
+      const url   = `/api/reports/product-performance?from=${prodReportFrom}&to=${prodReportTo}`;
+      const res   = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || "Failed"); }
+      const blob  = await res.blob();
+      const href  = URL.createObjectURL(blob);
+      const a     = document.createElement("a");
+      a.href      = href;
+      a.download  = `product_performance_${prodReportFrom}_${prodReportTo}.csv`;
+      a.click();
+      URL.revokeObjectURL(href);
+      setProdReportOpen(false);
+    } catch (err: any) {
+      toast({ title: "Download failed", description: err.message, variant: "destructive" });
+    } finally {
+      setProdReportLoading(false);
+    }
+  };
+
+  // ── Supplier Statement dialog ─────────────────────────────────────────────
+  const [supplierStmtOpen, setSupplierStmtOpen]           = useState(false);
+  const [supplierStmtId, setSupplierStmtId]               = useState<string>("");
+  const [supplierStmtFrom, setSupplierStmtFrom]           = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  });
+  const [supplierStmtTo, setSupplierStmtTo]               = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+  );
+  const [supplierStmtAggregate, setSupplierStmtAggregate] = useState(false);
+  const [supplierStmtLoading, setSupplierStmtLoading]     = useState(false);
+
+  const { data: allSuppliers } = useQuery<any[]>({ queryKey: ["/api/suppliers"] });
+
+  const downloadSupplierStatement = async () => {
+    if (!supplierStmtId) { toast({ title: "Select a supplier first", variant: "destructive" }); return; }
+    if (!supplierStmtFrom) { toast({ title: "Select a from date", variant: "destructive" }); return; }
+    setSupplierStmtLoading(true);
+    try {
+      const token = sessionStorage.getItem("token");
+      const url   = `/api/suppliers/${supplierStmtId}/statement?from=${supplierStmtFrom}&to=${supplierStmtTo}&aggregate=${supplierStmtAggregate}`;
+      const res   = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.message || "Failed"); }
+      const blob  = await res.blob();
+      const href  = URL.createObjectURL(blob);
+      const a     = document.createElement("a");
+      const sup   = (allSuppliers ?? []).find((s: any) => s.id === supplierStmtId);
+      a.href      = href;
+      a.download  = `${(sup?.name ?? "supplier").replace(/[^a-zA-Z0-9_-]/g, "_")}_statement_${supplierStmtFrom}_${supplierStmtTo}.csv`;
+      a.click();
+      URL.revokeObjectURL(href);
+      setSupplierStmtOpen(false);
+    } catch (err: any) {
+      toast({ title: "Download failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSupplierStmtLoading(false);
+    }
+  };
+
+  // ── Set Profitability Report dialog ──────────────────────────────────────
+  const [setReportOpen, setSetReportOpen]           = useState(false);
+  const [setReportProductId, setSetReportProductId] = useState<string>("");
+  const [setReportMode, setSetReportMode]           = useState<"single" | "range">("single");
+  const [setReportDate, setSetReportDate]           = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+  );
+  const [setReportFrom, setSetReportFrom]           = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  });
+  const [setReportTo, setSetReportTo]               = useState(() =>
+    new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })
+  );
+  const [setReportLoading, setSetReportLoading]     = useState(false);
+
+  const { data: allProducts } = useQuery<any[]>({ queryKey: ["/api/products"] });
+  const bundleProducts = (allProducts ?? []).filter((p: any) => p.type === "bundle");
+
+  const downloadSetProfitabilityReport = async () => {
+    if (!setReportProductId) { toast({ title: "Select a set product first", variant: "destructive" }); return; }
+    setSetReportLoading(true);
+    try {
+      const token = sessionStorage.getItem("token");
+      const params = setReportMode === "single"
+        ? `mode=single&date=${setReportDate}`
+        : `mode=range&from=${setReportFrom}&to=${setReportTo}`;
+      const r = await fetch(
+        `/api/products/${setReportProductId}/set-profitability-report?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.message || "Failed"); }
+      const blob = await r.blob();
+      const href = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      const prod = bundleProducts.find((p: any) => p.id === setReportProductId);
+      const suffix = setReportMode === "single" ? setReportDate : `${setReportFrom}_${setReportTo}`;
+      a.href     = href;
+      a.download = `${(prod?.name ?? "set").replace(/[^a-zA-Z0-9_-]/g, "_")}_profitability_${suffix}.csv`;
+      a.click();
+      URL.revokeObjectURL(href);
+      setSetReportOpen(false);
+    } catch (err: any) {
+      toast({ title: "Download failed", description: err.message, variant: "destructive" });
+    } finally {
+      setSetReportLoading(false);
+    }
+  };
+
   const reportCards = [
     { title: "Sales Report", description: "Revenue, orders, and customer analytics", icon: ShoppingCart, color: "text-blue-500", bg: "bg-blue-50 dark:bg-blue-950/30", action: () => setActiveTab("sales-revenue") },
     { title: "Inventory Report", description: "Stock levels, movements, and alerts", icon: Package, color: "text-emerald-500", bg: "bg-emerald-50 dark:bg-emerald-950/30", action: () => navigate("/inventory") },
@@ -1044,6 +1207,10 @@ export default function Reports() {
     { title: "Staff Report", description: "Employee performance and attendance", icon: Users, color: "text-orange-500", bg: "bg-orange-50 dark:bg-orange-950/30", action: () => navigate("/employees") },
     { title: "Project Report", description: "Project status and timeline tracking", icon: TrendingUp, color: "text-pink-500", bg: "bg-pink-50 dark:bg-pink-950/30", action: () => navigate("/projects") },
     { title: "Tax Report", description: "GST, TDS, and tax compliance reports", icon: FileText, color: "text-indigo-500", bg: "bg-indigo-50 dark:bg-indigo-950/30", action: () => setActiveTab("tax-compliance") },
+    { title: "Set Profitability Report", description: "Actual GRN cost vs actual sale price breakdown per set component", icon: Layers, color: "text-teal-500", bg: "bg-teal-50 dark:bg-teal-950/30", action: () => setSetReportOpen(true) },
+    { title: "Supplier Statement", description: "Purchase summary & account statement for any supplier", icon: Package, color: "text-amber-500", bg: "bg-amber-50 dark:bg-amber-950/30", action: () => setSupplierStmtOpen(true) },
+    { title: "Product Report", description: "Sales, purchase cost, profit margin & FSN analysis per product", icon: BarChart2, color: "text-rose-500", bg: "bg-rose-50 dark:bg-rose-950/30", action: () => setProdReportOpen(true) },
+    { title: "Customer Statement", description: "Full purchase history, payments & account statement per customer", icon: Users2, color: "text-cyan-500", bg: "bg-cyan-50 dark:bg-cyan-950/30", action: () => setCustStmtOpen(true) },
   ];
 
   const exportCurrentTab = () => {
@@ -1060,26 +1227,6 @@ export default function Reports() {
           <h1 className="text-2xl font-bold" data-testid="text-page-title">Reports</h1>
           <p className="text-muted-foreground text-sm mt-1">Business analytics and exportable reports</p>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" data-testid="button-export-all">
-              <Download className="w-4 h-4 mr-2" />
-              Export
-              <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => exportCurrentTab()} data-testid="dropdown-export-csv">
-              <Download className="w-4 h-4 mr-2" />
-              Export {TAB_LABELS[activeTab] ?? "Current Tab"} as CSV
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => exportCurrentTab()} data-testid="dropdown-export-pdf">
-              <FileText className="w-4 h-4 mr-2" />
-              Export {TAB_LABELS[activeTab] ?? "Current Tab"} as PDF
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -1284,6 +1431,235 @@ export default function Reports() {
           </TabsContent>
         )}
       </Tabs>
+
+      {/* ── Customer Statement Dialog ── */}
+      <Dialog open={custStmtOpen} onOpenChange={setCustStmtOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users2 className="w-4 h-4 text-cyan-500" />
+              Customer Statement
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Customer</Label>
+              <Select value={custStmtId} onValueChange={setCustStmtId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a customer…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(allCustomers ?? []).length === 0 && (
+                    <SelectItem value="__none" disabled>No customers found</SelectItem>
+                  )}
+                  {(allCustomers ?? []).map((c: any) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>From Date</Label>
+                <Input type="date" value={custStmtFrom} onChange={e => setCustStmtFrom(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>To Date</Label>
+                <Input type="date" value={custStmtTo} onChange={e => setCustStmtTo(e.target.value)} />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Includes all non-cancelled invoices in the selected period. Returns & credits section appears only if applicable.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCustStmtOpen(false)}>Cancel</Button>
+            <Button
+              onClick={downloadCustomerStatement}
+              disabled={custStmtLoading || !custStmtId || !custStmtFrom}
+            >
+              <Download className="w-3.5 h-3.5 mr-2" />
+              {custStmtLoading ? "Generating…" : "Download CSV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Product Performance Report Dialog ── */}
+      <Dialog open={prodReportOpen} onOpenChange={setProdReportOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BarChart2 className="w-4 h-4 text-rose-500" />
+              Product Report
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Downloads a CSV with sales, purchase cost, profit margin and FSN classification for every product sold in the selected period.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>From Date</Label>
+                <Input type="date" value={prodReportFrom} onChange={e => setProdReportFrom(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>To Date</Label>
+                <Input type="date" value={prodReportTo} onChange={e => setProdReportTo(e.target.value)} />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Only products with at least one sale in this period will appear. FSN classification is based on last sale date ever.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProdReportOpen(false)}>Cancel</Button>
+            <Button
+              onClick={downloadProductReport}
+              disabled={prodReportLoading || !prodReportFrom}
+            >
+              <Download className="w-3.5 h-3.5 mr-2" />
+              {prodReportLoading ? "Generating…" : "Download CSV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Supplier Statement Dialog ── */}
+      <Dialog open={supplierStmtOpen} onOpenChange={setSupplierStmtOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Package className="w-4 h-4 text-amber-500" />
+              Supplier Statement
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Supplier</Label>
+              <Select value={supplierStmtId} onValueChange={setSupplierStmtId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a supplier…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(allSuppliers ?? []).length === 0 && (
+                    <SelectItem value="__none" disabled>No suppliers found</SelectItem>
+                  )}
+                  {(allSuppliers ?? []).map((s: any) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>From Date</Label>
+                <Input type="date" value={supplierStmtFrom} onChange={e => setSupplierStmtFrom(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>To Date</Label>
+                <Input type="date" value={supplierStmtTo} onChange={e => setSupplierStmtTo(e.target.value)} />
+              </div>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <Switch
+                id="stmt-aggregate"
+                checked={supplierStmtAggregate}
+                onCheckedChange={setSupplierStmtAggregate}
+              />
+              <Label htmlFor="stmt-aggregate" className="cursor-pointer">
+                Aggregate by Product
+                <span className="block text-xs text-muted-foreground font-normal">
+                  Group all GRNs by product instead of individual rows
+                </span>
+              </Label>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSupplierStmtOpen(false)}>Cancel</Button>
+            <Button
+              onClick={downloadSupplierStatement}
+              disabled={supplierStmtLoading || !supplierStmtId || !supplierStmtFrom}
+            >
+              <Download className="w-3.5 h-3.5 mr-2" />
+              {supplierStmtLoading ? "Generating…" : "Download CSV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Set Profitability Report Dialog ── */}
+      <Dialog open={setReportOpen} onOpenChange={setSetReportOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-teal-500" />
+              Set Profitability Report
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Set Product</Label>
+              <Select value={setReportProductId} onValueChange={setSetReportProductId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a set product…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {bundleProducts.length === 0 && (
+                    <SelectItem value="__none" disabled>No set products found</SelectItem>
+                  )}
+                  {bundleProducts.map((p: any) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}{p.sku ? ` (${p.sku})` : ""}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Mode</Label>
+              <div className="flex gap-2">
+                <Button
+                  variant={setReportMode === "single" ? "default" : "outline"}
+                  size="sm" className="flex-1"
+                  onClick={() => setSetReportMode("single")}
+                >Single Date</Button>
+                <Button
+                  variant={setReportMode === "range" ? "default" : "outline"}
+                  size="sm" className="flex-1"
+                  onClick={() => setSetReportMode("range")}
+                >Date Range</Button>
+              </div>
+            </div>
+            {setReportMode === "single" ? (
+              <div className="space-y-1.5">
+                <Label>Date</Label>
+                <Input type="date" value={setReportDate} onChange={e => setSetReportDate(e.target.value)} />
+                <p className="text-xs text-muted-foreground">Uses the last sold invoice on or before this date.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>From Date</Label>
+                  <Input type="date" value={setReportFrom} onChange={e => setSetReportFrom(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>To Date</Label>
+                  <Input type="date" value={setReportTo} onChange={e => setSetReportTo(e.target.value)} />
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSetReportOpen(false)}>Cancel</Button>
+            <Button
+              onClick={downloadSetProfitabilityReport}
+              disabled={setReportLoading || !setReportProductId}
+            >
+              <Download className="w-3.5 h-3.5 mr-2" />
+              {setReportLoading ? "Generating…" : "Download CSV"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

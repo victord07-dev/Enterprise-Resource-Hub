@@ -1629,10 +1629,10 @@ export default function Accounts() {
             const fmt = (v: number) => "₹" + v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             const filteredGroups = invoicePaymentGroups.filter(g => {
               if (spSupplierFilter !== "all" && g.supplierId !== spSupplierFilter) return false;
-              if (spStatusFilter === "paid") return g.status === "paid";
+              if (spStatusFilter === "paid") return g.status === "paid" || (g.type === "po_advance" && g.paid > 0);
               if (spStatusFilter === "partial") return g.status === "partial" || g.status === "partial_paid";
-              if (spStatusFilter === "unpaid") return g.status === "unpaid" || g.status === "pending" || g.status === "overdue" || g.type === "po_advance";
-              if (spStatusFilter === "advance") return g.hasPreInvoicePayment;
+              if (spStatusFilter === "unpaid") return g.status === "unpaid" || g.status === "pending" || g.status === "overdue";
+              if (spStatusFilter === "advance") return g.hasPreInvoicePayment || g.type === "po_advance";
               return true;
             });
 

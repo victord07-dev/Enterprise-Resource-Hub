@@ -12,8 +12,9 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCurrentUser } from "@/lib/auth";
-import { RefreshCw, TrendingUp, DollarSign, CheckCircle, Package, Flame, ShieldAlert, Plus, Pencil, Search } from "lucide-react";
+import { RefreshCw, TrendingUp, DollarSign, CheckCircle, Package, Flame, ShieldAlert, Plus, Pencil, Search, Download } from "lucide-react";
 import type { Product } from "@shared/schema";
+import { generatePricingModulePDF } from "@/lib/pricing-pdf";
 
 type LastSoldEntry = { price: string; lastSoldAt: string };
 type EffectivePriceEntry = {
@@ -91,8 +92,100 @@ export default function Pricing() {
     return inventoryStock.filter((s: any) => s.productId === productId).reduce((sum: number, s: any) => sum + Number(s.quantity), 0);
   };
 
-  // ─── Product search filter ───────────────────────────────────────────────────
+  // ─── Product search + grid filter ────────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
+  const [pricingGridFilter, setPricingGridFilter] = useState<string | null>(null);
+  const [pricingPdfLoading, setPricingPdfLoading] = useState(false);
+
+  // Bundle pricing — loaded when Sets filter is active
+  const { data: bundlePricing } = useQuery<Record<string, {
+    supplierPrice: string | null;
+    blendedCost: string | null;
+    effectivePrice: string;
+    effectivePriceIncGst: string;
+    gstRate: string;
+    marginPct: string | null;
+    dataStatus: string;
+    sourceStatus: string;
+  }>>({
+    queryKey: ["/api/products/bundle-pricing"],
+    queryFn: async () => {
+      const res = await fetch("/api/products/bundle-pricing", {
+        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+      });
+      if (!res.ok) return {};
+      return res.json();
+    },
+    enabled: canManagePricing && pricingGridFilter === "__sets__",
+  });
+
+  const handleDownloadPricingPDF = async () => {
+    setPricingPdfLoading(true);
+    try {
+      const filterLabel =
+        pricingGridFilter === "on_grid"   ? "On Grid"
+        : pricingGridFilter === "off_grid" ? "Off Grid"
+        : pricingGridFilter === "hybrid"   ? "Hybrid"
+        : pricingGridFilter === "others"   ? "Others"
+        : pricingGridFilter === "__sets__" ? "Sets"
+        : "All Products";
+
+      const q = productSearch.trim().toLowerCase();
+      const rows = ((products ?? []) as Product[])
+        .filter(p => {
+          if (pricingGridFilter === "__sets__") {
+            if (p.type !== "bundle" && p.type !== "combo") return false;
+          } else {
+            if (p.type !== "product" && p.type !== "combo") return false;
+            if (pricingGridFilter && (p as any).gridType !== pricingGridFilter) return false;
+          }
+          return !q || p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q);
+        })
+        .map(p => {
+          const sheet = (todaySheets ?? []).find((s: any) => s.productId === p.id);
+          const ep    = effectivePrices?.[p.id];
+          const psp   = primarySupplierPrices?.[p.id];
+          const blendedCost  = sheet ? Number(sheet.blendedCost) : null;
+          const supplierPrice = psp ? Number(psp.supplierPrice) : null;
+          const effectivePrice = ep ? Number(ep.effectivePrice) : null;
+          const proposed = sheet?.proposedPrice ? Number(sheet.proposedPrice) : null;
+          const margin = (blendedCost && proposed && proposed > 0)
+            ? ((proposed - blendedCost) / proposed * 100) : null;
+          const pressureRatio = (blendedCost && proposed && proposed > 0) ? blendedCost / proposed : null;
+          const pressureLevel = pressureRatio === null ? "None"
+            : pressureRatio > 0.9 ? "High Risk"
+            : pressureRatio > 0.75 ? "Medium" : "Safe";
+          const status = ep?.hasConfirmedToday ? "Confirmed"
+            : sheet ? "Pending" : "No Sheet";
+          return {
+            name: p.name,
+            sku: p.sku ?? "",
+            unit: p.unit ?? "",
+            gridType: (p as any).gridType ?? "others",
+            gstRate: Number(p.gstRate ?? 0),
+            totalStock: getProductTotalStock(p.id),
+            supplierPrice,
+            blendedCost,
+            effectivePrice,
+            marginPct: margin,
+            pressureLevel,
+            status,
+          };
+        });
+
+      const blob = await generatePricingModulePDF(rows, filterLabel, currentUser?.fullName ?? "Unknown");
+      const href = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = href;
+      a.download = `pricing-sheet-${filterLabel.toLowerCase().replace(/\s+/g, "-")}-${new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })}.pdf`;
+      a.click();
+      URL.revokeObjectURL(href);
+    } catch (e) {
+      toast({ title: "PDF generation failed", variant: "destructive" });
+    } finally {
+      setPricingPdfLoading(false);
+    }
+  };
 
   // ─── Dialog state ────────────────────────────────────────────────────────────
   const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
@@ -321,16 +414,58 @@ export default function Pricing() {
         ))}
       </div>
 
-      {/* Product search */}
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input
-          placeholder="Search products by name or SKU…"
-          className="pl-9"
-          data-testid="input-search-pricing-products"
-          value={productSearch}
-          onChange={e => setProductSearch(e.target.value)}
-        />
+      {/* Search + grid filters + PDF */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative max-w-sm flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search products by name or SKU…"
+            className="pl-9"
+            data-testid="input-search-pricing-products"
+            value={productSearch}
+            onChange={e => setProductSearch(e.target.value)}
+          />
+        </div>
+        {([
+          { label: "On Grid",  value: "on_grid"   },
+          { label: "Off Grid", value: "off_grid"  },
+          { label: "Hybrid",   value: "hybrid"    },
+          { label: "Others",   value: "others"    },
+          { label: "Sets",     value: "__sets__"  },
+        ]).map(({ label, value }) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setPricingGridFilter(pricingGridFilter === value ? null : value)}
+            className={[
+              "inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium border transition-colors",
+              pricingGridFilter === value
+                ? "bg-blue-600 text-white border-blue-600"
+                : "bg-white dark:bg-muted text-muted-foreground border-border hover:border-blue-400 hover:text-blue-600 dark:hover:text-blue-400",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+        {pricingGridFilter && (
+          <button
+            type="button"
+            onClick={() => setPricingGridFilter(null)}
+            className="inline-flex items-center gap-1 px-2 py-1.5 rounded-full text-xs font-medium border border-border text-muted-foreground hover:text-red-500 hover:border-red-400 transition-colors bg-white dark:bg-muted"
+          >
+            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/></svg>
+          </button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDownloadPricingPDF}
+          disabled={pricingPdfLoading}
+          className="ml-auto"
+        >
+          <Download className="w-3.5 h-3.5 mr-1.5" />
+          {pricingPdfLoading ? "Generating…" : "Download PDF"}
+        </Button>
       </div>
 
       {/* Products table */}
@@ -347,7 +482,8 @@ export default function Pricing() {
                   <th className="text-right p-3 font-medium text-muted-foreground">Global Floor</th>
                   <th className="text-right p-3 font-medium text-muted-foreground">Strict Floor</th>
                   <th className="text-right p-3 font-medium text-muted-foreground">Proposed</th>
-                  <th className="text-right p-3 font-medium text-muted-foreground">Effective Price</th>
+                  <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (Ex GST)</th>
+                  <th className="text-right p-3 font-medium text-muted-foreground">Effective Price (Inc GST)</th>
                   <th className="text-center p-3 font-medium text-muted-foreground">Margin</th>
                   <th className="text-center p-3 font-medium text-muted-foreground">Status / Source</th>
                   <th className="text-right p-3 font-medium text-muted-foreground">Action</th>
@@ -364,17 +500,70 @@ export default function Pricing() {
                   ))
                 ) : (() => {
                   const q = productSearch.trim().toLowerCase();
-                  const filtered = (products ?? []).filter(p =>
-                    p.type === "product" &&
-                    (!q || p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q))
-                  );
+                  const filtered = (products ?? []).filter(p => {
+                    if (pricingGridFilter === "__sets__") {
+                      if (p.type !== "bundle" && p.type !== "combo") return false;
+                    } else {
+                      if (p.type !== "product" && p.type !== "combo") return false;
+                      if (pricingGridFilter && (p as any).gridType !== pricingGridFilter) return false;
+                    }
+                    return !q || p.name.toLowerCase().includes(q) || (p.sku ?? "").toLowerCase().includes(q);
+                  });
                   if (filtered.length === 0) return (
                     <tr>
-                      <td colSpan={11} className="p-8 text-center text-muted-foreground">
+                      <td colSpan={13} className="p-8 text-center text-muted-foreground">
                         {q ? `No products matching "${productSearch}"` : "No products found."}
                       </td>
                     </tr>
                   );
+                  // Bundle rows for Sets filter
+                  if (pricingGridFilter === "__sets__") {
+                    return filtered.map((product) => {
+                      const bp = bundlePricing?.[product.id];
+                      const totalStock = getProductTotalStock(product.id);
+                      const dataStatusCls = bp?.dataStatus === "Complete"
+                        ? "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400"
+                        : bp?.dataStatus === "Partial"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                        : "bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400";
+                      const sourceCls = bp?.sourceStatus === "Confirmed"
+                        ? "bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400"
+                        : bp?.sourceStatus === "Partial"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400"
+                        : "bg-orange-100 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400";
+                      return (
+                        <tr key={product.id} className="border-b hover:bg-muted/20 transition-colors">
+                          <td className="p-3">
+                            <div className="font-medium flex items-center gap-1.5">{product.name}</div>
+                            <div className="text-xs text-muted-foreground">{product.sku}</div>
+                          </td>
+                          <td className="p-3 text-right"><span className="text-sm font-medium text-muted-foreground">{totalStock}</span></td>
+                          <td className="p-3 text-right text-sm text-muted-foreground">{bp?.supplierPrice ? fmtINR(bp.supplierPrice) : <span className="text-xs">—</span>}</td>
+                          <td className="p-3 text-right text-sm">{bp?.blendedCost ? fmtINR(bp.blendedCost) : <span className="text-xs text-muted-foreground">—</span>}</td>
+                          <td className="p-3 text-right text-xs text-muted-foreground">—</td>
+                          <td className="p-3 text-right text-xs text-muted-foreground">—</td>
+                          <td className="p-3 text-right text-xs text-muted-foreground">—</td>
+                          <td className="p-3 text-right text-sm font-medium">{bp ? fmtINR(bp.effectivePrice) : <span className="text-xs text-muted-foreground">—</span>}</td>
+                          <td className="p-3 text-right text-sm font-medium text-blue-600 dark:text-blue-400">{bp ? fmtINR(bp.effectivePriceIncGst) : <span className="text-xs text-muted-foreground">—</span>}</td>
+                          <td className="p-3 text-center">
+                            {bp?.marginPct ? (
+                              <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${Number(bp.marginPct) < 5 ? "text-red-600 bg-red-50" : Number(bp.marginPct) < 15 ? "text-amber-600 bg-amber-50" : "text-green-700 bg-green-50"}`}>
+                                {bp.marginPct}%
+                              </span>
+                            ) : <span className="text-xs text-muted-foreground">—</span>}
+                          </td>
+                          <td className="p-3 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                              {bp && <span className={`text-xs px-1.5 py-0.5 rounded-full ${sourceCls}`}>{bp.sourceStatus}</span>}
+                              {bp && <span className={`text-xs px-1.5 py-0.5 rounded-full ${dataStatusCls}`}>{bp.dataStatus}</span>}
+                            </div>
+                          </td>
+                          <td className="p-3 text-right text-xs text-muted-foreground">—</td>
+                        </tr>
+                      );
+                    });
+                  }
+
                   return filtered.map((product) => {
                   const sheet = (todaySheets ?? []).find((s: any) => s.productId === product.id);
                   const ep = effectivePrices?.[product.id];
@@ -437,6 +626,11 @@ export default function Pricing() {
                       <td className="p-3 text-right text-sm">
                         {effectivePrice !== null
                           ? <span className={ep?.source === "none" ? "text-muted-foreground" : "font-medium"}>{fmtINR(effectivePrice)}</span>
+                          : <span className="text-muted-foreground text-xs">—</span>}
+                      </td>
+                      <td className="p-3 text-right text-sm">
+                        {effectivePrice !== null
+                          ? <span className="font-medium text-blue-600 dark:text-blue-400">{fmtINR(effectivePrice * (1 + Number(product.gstRate ?? 0) / 100))}</span>
                           : <span className="text-muted-foreground text-xs">—</span>}
                       </td>
                       <td className="p-3 text-center">

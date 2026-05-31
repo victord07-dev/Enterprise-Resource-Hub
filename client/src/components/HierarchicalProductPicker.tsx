@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Package, Wrench, Boxes, ChevronDown } from "lucide-react";
+import { Package, Wrench, Boxes, ChevronDown, Layers } from "lucide-react";
 import type { Product } from "@shared/schema";
 
 type EffectivePriceEntry = {
@@ -151,6 +151,11 @@ export function HierarchicalProductPicker({
             <SelectItem value="bundle">
               <span className="flex items-center gap-1.5">
                 <Boxes className="w-3 h-3" /> Set
+              </span>
+            </SelectItem>
+            <SelectItem value="combo">
+              <span className="flex items-center gap-1.5">
+                <Layers className="w-3 h-3" /> Combo (Kit)
               </span>
             </SelectItem>
           </SelectContent>

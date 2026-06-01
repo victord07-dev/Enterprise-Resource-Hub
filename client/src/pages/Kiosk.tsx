@@ -234,17 +234,22 @@ export default function Kiosk() {
       let selfieObjectPath: string | null = null;
 
       if (selfieDataUrl) {
-        const blob = await (await fetch(selfieDataUrl)).blob();
-        const file = new File([blob], `selfie-${employee.id}-${Date.now()}.jpg`, { type: "image/jpeg" });
-        const urlRes = await fetch("/api/uploads/request-url", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
-        });
-        if (urlRes.ok) {
-          const { uploadURL, objectPath } = await urlRes.json();
-          await fetch(uploadURL, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
-          selfieObjectPath = objectPath;
+        try {
+          const blob = await (await fetch(selfieDataUrl)).blob();
+          const file = new File([blob], `selfie-${employee.id}-${Date.now()}.jpg`, { type: "image/jpeg" });
+          const urlRes = await fetch("/api/uploads/request-url", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
+          });
+          if (urlRes.ok) {
+            const { uploadURL, objectPath } = await urlRes.json();
+            await fetch(uploadURL, { method: "PUT", body: file, headers: { "Content-Type": file.type } });
+            selfieObjectPath = objectPath;
+          }
+        } catch {
+          // Selfie upload failed — continue with attendance submission without photo
+          selfieObjectPath = null;
         }
       }
 

@@ -7909,7 +7909,7 @@ export async function registerRoutes(
 
   // ======================== KIOSK ATTENDANCE ========================
 
-  app.get("/api/kiosk/employee/:qrCode", authenticateToken, requireRole("kiosk"), async (req, res) => {
+  app.get("/api/kiosk/employee/:qrCode", async (req, res) => {
     try {
       const qrCode = decodeURIComponent(req.params.qrCode).trim();
       const employees = await storage.getEmployees();
@@ -7937,7 +7937,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/kiosk/attendance", authenticateToken, requireRole("kiosk"), async (req, res) => {
+  app.post("/api/kiosk/attendance", async (req, res) => {
     try {
       const { qrCode, selfieUrl, action, location } = req.body;
       if (!qrCode) return res.status(400).json({ message: "QR code required" });

@@ -369,7 +369,7 @@ export async function generateQuotationPDF(
   const termLineH   = 3.4;
   const termLines   = TERMS.map(t => doc.splitTextToSize(`${TERMS.indexOf(t) + 1}. ${t}`, contentWidth));
   const termsBlockH = 8 + termLines.reduce((s, ls) => s + ls.length * termLineH + 1.5, 0);
-  const bankBlockH  = 8 + 32;
+  const bankBlockH  = 8 + 44;
   const sigH        = 18;
   const footerH     = bankBlockH + termsBlockH + sigH + 8;
 
@@ -392,7 +392,7 @@ export async function generateQuotationPDF(
   y += 5;
 
   // QR width reserved on right side
-  const qrSize = 28;
+  const qrSize = 34;
   const qrBankColW = (contentWidth - 8 - qrSize - 6) / BANKING.length;
   BANKING.forEach((bank, bi) => {
     const bx = margin + bi * (qrBankColW + 8);
@@ -427,20 +427,22 @@ export async function generateQuotationPDF(
       const upiString = `upi://pay?pa=${upiBank.upiId}&pn=${encodeURIComponent(upiBank.holder)}&cu=INR`;
       const qrDataUrl = await QRCode.toDataURL(upiString, { width: 120, margin: 1 });
       const qrX = pageWidth - margin - qrSize;
+      const boxH = qrSize + 9; // QR image + label below
       doc.setFillColor(...COLORS.infoBg);
-      drawRoundedRect(doc, qrX - 2, y, qrSize + 2, 28, 2);
+      drawRoundedRect(doc, qrX - 2, y, qrSize + 2, boxH, 2);
       doc.addImage(qrDataUrl, "PNG", qrX, y + 1, qrSize - 2, qrSize - 2);
+      // Labels sit BELOW the QR image, inside the box
       doc.setFontSize(5.5);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(...COLORS.textSecondary);
-      doc.text("SCAN & PAY", qrX + (qrSize - 2) / 2 - 1, y + qrSize - 1, { align: "center" });
+      doc.text("SCAN & PAY", qrX + (qrSize - 2) / 2 - 1, y + qrSize + 2, { align: "center" });
       doc.setFontSize(5);
       doc.setFont("helvetica", "normal");
-      doc.text(upiBank.upiId, qrX + (qrSize - 2) / 2 - 1, y + qrSize + 2.5, { align: "center" });
+      doc.text(upiBank.upiId, qrX + (qrSize - 2) / 2 - 1, y + qrSize + 6, { align: "center" });
     } catch { /* QR generation failed — skip silently */ }
   }
 
-  y += 30;
+  y += 44;
 
   // ── Terms section ─────────────────────────────────────────────────────────────
   y += 4;

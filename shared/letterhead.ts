@@ -40,10 +40,11 @@ export const BANKING = [
   },
   {
     bank:   "State Bank of India",
-    holder: "HUSSAIN ENTERPRISE",
+    holder: "MS HUSSAIN ENTERPRISE",
     branch: "Nagaon",
-    acNo:   "44833748463",
+    acNo:   "44466228203",
     ifsc:   "SBIN0000146",
+    upiId:  "hussainenterprise8463@sbi",
   },
 ] as const;
 

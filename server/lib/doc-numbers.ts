@@ -236,5 +236,6 @@ export async function nextDocNumberInTx(
     RETURNING last_seq
   `);
   const seq = (result.rows[0] as { last_seq: number }).last_seq;
-  return `${prefix}/${fyStr}/${String(seq).padStart(4, "0")}`;
+  const month = String(new Date().getMonth() + 1).padStart(2, "0");
+  return `${prefix}/${fyStr}/${month}/${String(seq).padStart(4, "0")}`;
 }

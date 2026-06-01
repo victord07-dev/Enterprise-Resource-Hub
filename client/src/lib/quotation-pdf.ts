@@ -9,6 +9,7 @@ async function loadJsPDF() {
 import { COMPANY, BANKING } from "@shared/letterhead";
 import { drawLetterhead } from "@shared/pdf-letterhead";
 import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
+import QRCode from "qrcode";
 
 const COLORS = {
   headerBg:      [30, 41, 59]   as [number, number, number],
@@ -368,7 +369,7 @@ export async function generateQuotationPDF(
   const termLineH   = 3.4;
   const termLines   = TERMS.map(t => doc.splitTextToSize(`${TERMS.indexOf(t) + 1}. ${t}`, contentWidth));
   const termsBlockH = 8 + termLines.reduce((s, ls) => s + ls.length * termLineH + 1.5, 0);
-  const bankBlockH  = 8 + 26;
+  const bankBlockH  = 8 + 32;
   const sigH        = 18;
   const footerH     = bankBlockH + termsBlockH + sigH + 8;
 
@@ -390,11 +391,13 @@ export async function generateQuotationPDF(
   doc.text("BANKING DETAILS", margin, y);
   y += 5;
 
-  const bankColW = (contentWidth - 8) / BANKING.length;
+  // QR width reserved on right side
+  const qrSize = 28;
+  const qrBankColW = (contentWidth - 8 - qrSize - 6) / BANKING.length;
   BANKING.forEach((bank, bi) => {
-    const bx = margin + bi * (bankColW + 8);
+    const bx = margin + bi * (qrBankColW + 8);
     doc.setFillColor(...COLORS.infoBg);
-    drawRoundedRect(doc, bx, y, bankColW, 22, 2);
+    drawRoundedRect(doc, bx, y, qrBankColW, 22, 2);
 
     doc.setFontSize(8);
     doc.setFont("helvetica", "bold");
@@ -412,12 +415,32 @@ export async function generateQuotationPDF(
     doc.text("IFSC Code",   bx + 4, y + 20.5);
 
     doc.setTextColor(...COLORS.textPrimary);
-    doc.text(bank.branch, bx + bankColW - 4, y + 13.5, { align: "right" });
-    doc.text(bank.acNo,   bx + bankColW - 4, y + 17,   { align: "right" });
-    doc.text(bank.ifsc,   bx + bankColW - 4, y + 20.5, { align: "right" });
+    doc.text(bank.branch, bx + qrBankColW - 4, y + 13.5, { align: "right" });
+    doc.text(bank.acNo,   bx + qrBankColW - 4, y + 17,   { align: "right" });
+    doc.text(bank.ifsc,   bx + qrBankColW - 4, y + 20.5, { align: "right" });
   });
 
-  y += 26;
+  // UPI QR code box on the right
+  const upiBank = (BANKING as any[]).find((b: any) => b.upiId);
+  if (upiBank?.upiId) {
+    try {
+      const upiString = `upi://pay?pa=${upiBank.upiId}&pn=${encodeURIComponent(upiBank.holder)}&cu=INR`;
+      const qrDataUrl = await QRCode.toDataURL(upiString, { width: 120, margin: 1 });
+      const qrX = pageWidth - margin - qrSize;
+      doc.setFillColor(...COLORS.infoBg);
+      drawRoundedRect(doc, qrX - 2, y, qrSize + 2, 28, 2);
+      doc.addImage(qrDataUrl, "PNG", qrX, y + 1, qrSize - 2, qrSize - 2);
+      doc.setFontSize(5.5);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...COLORS.textSecondary);
+      doc.text("SCAN & PAY", qrX + (qrSize - 2) / 2 - 1, y + qrSize - 1, { align: "center" });
+      doc.setFontSize(5);
+      doc.setFont("helvetica", "normal");
+      doc.text(upiBank.upiId, qrX + (qrSize - 2) / 2 - 1, y + qrSize + 2.5, { align: "center" });
+    } catch { /* QR generation failed — skip silently */ }
+  }
+
+  y += 30;
 
   // ── Terms section ─────────────────────────────────────────────────────────────
   y += 4;

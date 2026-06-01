@@ -66,10 +66,14 @@ export function drawLetterhead(doc: any, opts: LetterheadOptions): number {
   const pageWidth = opts.pageWidth;
   const drawBanner = opts.drawBanner !== false;
 
-  // ── Navy header band (30 mm tall) ─────────────────────────────────────────
+  // ── White header band (30 mm tall) ───────────────────────────────────────
   const headerH = 30;
-  doc.setFillColor(...C.headerBg);
+  doc.setFillColor(255, 255, 255);
   doc.rect(0, 0, pageWidth, headerH, "F");
+  // Thin bottom border separating header from banner
+  doc.setDrawColor(200, 200, 200);
+  doc.setLineWidth(0.2);
+  doc.line(0, headerH, pageWidth, headerH);
 
   // Left: logo — aspect ratio 2850×2326 (1.225:1). At 18 mm tall → 22 mm wide.
   const logoW = 22;
@@ -87,20 +91,20 @@ export function drawLetterhead(doc: any, opts: LetterheadOptions): number {
   if (!drewLogo) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    doc.setTextColor(...C.headerText);
+    doc.setTextColor(20, 20, 20);
     doc.text(COMPANY.name, margin, headerH / 2 + 2);
   }
 
-  // Right column: COMPANY.name + address line 1 + Phone/Email/Website/GSTIN
+  // Right column: COMPANY.name + address + Phone/Email/Website/GSTIN (black text)
   const rx = pageWidth - margin;
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(220, 230, 248);
+  doc.setFontSize(7.5);
+  doc.setTextColor(20, 20, 20);
   doc.text(COMPANY.name, rx, 5.5, { align: "right" });
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(5.5);
-  doc.setTextColor(180, 190, 210);
+  doc.setFontSize(5.8);
+  doc.setTextColor(40, 40, 40);
   const addrLines = doc.splitTextToSize(COMPANY.address, 82);
   doc.text(addrLines[0], rx, 9.5, { align: "right" });
 

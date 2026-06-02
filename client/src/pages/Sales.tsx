@@ -1,4 +1,4 @@
-﻿import { useState, useCallback, useEffect, Fragment } from "react";
+import { useState, useCallback, useEffect, Fragment } from "react";
 import { HierarchicalProductPicker } from "@/components/HierarchicalProductPicker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useLocation } from "wouter";
@@ -17,7 +17,7 @@ import { ToastAction } from "@/components/ui/toast";
 import { useCurrentUser } from "@/lib/auth";
 import { Plus, Search, ShoppingCart, FileText, Users as UsersIcon, Pencil, Trash2, X, XCircle, ArrowRightLeft, ChevronDown, ChevronRight, Package, Wrench, CreditCard, Receipt, Download, Phone, Mail, MapPin, MessageCircle, StickyNote, Check, CalendarDays, Truck, Eye, Bell, AlertTriangle, BarChart3, Sun, ShieldCheck, Boxes, ExternalLink, CheckCircle2, Upload, Info as InfoIcon } from "lucide-react";
 import { generateQuotationPDF } from "@/lib/quotation-pdf";
-import logoPath from "@assets/HE-LOGO.jpeg";
+import logoPath from "@assets/ITFI-LOGO-FIN_1777273207283.png";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,7 +34,7 @@ import {
 type BundleItemRow = { componentProductId: string; quantity: number | string; unit: string };
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount, SalesInvoice } from "@shared/schema";
+import type { SalesOrder, SalesOrderItem, Customer, Quotation, QuotationItem, Product, QuotationActivity, QuotationFollowup, Warehouse, Supplier, DeliveryChallan, CashAccount } from "@shared/schema";
 import { Banknote, Landmark } from "lucide-react";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
@@ -42,19 +42,15 @@ import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type Merg
 const SOLAR_PANEL_CATEGORY = "Solar Panel / PV Module";
 const SUBSIDY_SCHEMES = ["none", "PM Surya Ghar", "MNRE Rooftop", "KUSUM", "Other"] as const;
 
-/** Phase 3: customer-type label + badge */
-const customerTypeLabel = (t?: string | null) => {
-  if (t === "vendor") return "Vendor";
-  if (t === "solar_consumer") return "Solar Consumer";
-  if (t === "customer") return "Customer";
-  if (t === "business") return "Business";
-  return "End User";
-};
+/** Phase 3: customer-type label + badge — uses existing Badge variants (no new colors invented). */
+const customerTypeLabel = (t?: string | null) => (t === "business" ? "Business" : "End User");
 function CustomerTypeBadge({ type }: { type?: string | null }) {
-  const variant = type === "vendor" ? "default" : type === "solar_consumer" ? "secondary" : "outline";
+  const t = type === "business" ? "business" : "end_user";
+  // Business -> default (primary, prominent); End User -> secondary (neutral). Existing variants only.
+  const variant = t === "business" ? "default" : "secondary";
   return (
-    <Badge variant={variant} className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${type || "unknown"}`}>
-      {customerTypeLabel(type)}
+    <Badge variant={variant} className="text-xs no-default-active-elevate ml-2 shrink-0" data-testid={`badge-customer-type-${t}`}>
+      {customerTypeLabel(t)}
     </Badge>
   );
 }
@@ -482,19 +478,6 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
       item.gstRate = Number(value);
       item.taxAmount = item.totalPrice * Number(value) / 100;
     }
-    if (field === "customComponents" && Array.isArray(value)) {
-      const comps = value as Array<{ componentProductId: string; quantity: number; unit: string }>;
-      const newUnitPrice = comps.reduce((sum, comp) => {
-        const ep = effectivePrices?.[comp.componentProductId];
-        const compPrice = (ep && !ep.noConfirmedPrice)
-          ? Number(ep.effectivePrice)
-          : Number(products.find(p => p.id === comp.componentProductId)?.unitPrice ?? 0);
-        return sum + compPrice * Number(comp.quantity || 1);
-      }, 0);
-      item.unitPrice = Math.round(newUnitPrice * 100) / 100;
-      item.totalPrice = item.quantity * item.unitPrice;
-      item.taxAmount = item.totalPrice * item.gstRate / 100;
-    }
     if (field === "itemType") {
       item.productId = "";
       item.description = "";
@@ -634,7 +617,6 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
             if (!prod || (prod as any).category !== SOLAR_PANEL_CATEGORY) return null;
             const almmOk = !!(prod as any).almm;
             const dcrOk = !!(prod as any).dcrCompliant;
-            const nonDcrOk = !!(prod as any).nonDcrCompliant;
             return (
               <div className="flex items-center gap-2 flex-wrap" data-testid={`chips-almm-dcr-${i}`}>
                 <Badge
@@ -645,34 +627,14 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
                   <Sun className="w-3 h-3" />
                   ALMM {almmOk ? "✓" : "✗"}
                 </Badge>
-                {dcrOk ? (
-                  <Badge
-                    variant="outline"
-                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-emerald-500 text-emerald-700 dark:text-emerald-400"
-                    data-testid={`badge-dcr-line-${i}`}
-                  >
-                    <ShieldCheck className="w-3 h-3" />
-                    DCR ✓
-                  </Badge>
-                ) : nonDcrOk ? (
-                  <Badge
-                    variant="outline"
-                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-orange-500 text-orange-700 dark:text-orange-400"
-                    data-testid={`badge-dcr-line-${i}`}
-                  >
-                    <ShieldCheck className="w-3 h-3" />
-                    Non-DCR
-                  </Badge>
-                ) : (
-                  <Badge
-                    variant="outline"
-                    className="text-xs px-2 py-0.5 inline-flex items-center gap-1 border-amber-500 text-amber-700 dark:text-amber-400"
-                    data-testid={`badge-dcr-line-${i}`}
-                  >
-                    <ShieldCheck className="w-3 h-3" />
-                    DCR ✗
-                  </Badge>
-                )}
+                <Badge
+                  variant="outline"
+                  className={`text-xs px-2 py-0.5 inline-flex items-center gap-1 ${dcrOk ? "border-emerald-500 text-emerald-700 dark:text-emerald-400" : "border-amber-500 text-amber-700 dark:text-amber-400"}`}
+                  data-testid={`badge-dcr-line-${i}`}
+                >
+                  <ShieldCheck className="w-3 h-3" />
+                  DCR {dcrOk ? "✓" : "✗"}
+                </Badge>
               </div>
             );
           })()}
@@ -1190,7 +1152,7 @@ function CustomerOutstandingInline({ customerId }: { customerId: string }) {
   const { data, isLoading } = useQuery<{ outstanding: number; total: number; collected: number }>({
     queryKey: ["/api/customers", customerId, "outstanding"],
     queryFn: () => {
-      const token = sessionStorage.getItem("token");
+      const token = localStorage.getItem("token");
       return fetch(`/api/customers/${customerId}/outstanding`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
     },
     enabled: !!customerId,
@@ -1246,7 +1208,7 @@ export default function Sales() {
     if (bundleComponentsMap[bundleId]) return bundleComponentsMap[bundleId];
     try {
       const res = await fetch(`/api/products/${bundleId}/bundle-items`, {
-        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
       if (!res.ok) return [];
       const items = await res.json();
@@ -1264,7 +1226,7 @@ export default function Sales() {
   const { data: effectivePrices } = useQuery<Record<string, EffectivePriceEntry>>({
     queryKey: ["/api/daily-price-sheets/effective-prices-today"],
     queryFn: async () => {
-      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
+      const res = await fetch("/api/daily-price-sheets/effective-prices-today", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
       if (!res.ok) return {};
       return res.json();
     },
@@ -1273,7 +1235,7 @@ export default function Sales() {
 
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<SalesOrder | null>(null);
-  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
+  const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none", orderDate: new Date().toISOString().slice(0, 10) });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
   // Phase 5 — touched-line tracking: warnings only shown on lines edited after Phase 5 deploy
@@ -1312,7 +1274,7 @@ export default function Sales() {
   }>({
     queryKey: ["/api/customers", orderForm.customerId, "outstanding"],
     queryFn: () => fetch(`/api/customers/${orderForm.customerId}/outstanding`, {
-      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: orderDialogOpen && !!orderForm.customerId && !editingOrder,
   });
@@ -1326,7 +1288,7 @@ export default function Sales() {
   }>({
     queryKey: ["/api/customers", quoteForm.customerId, "outstanding"],
     queryFn: () => fetch(`/api/customers/${quoteForm.customerId}/outstanding`, {
-      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: quoteDialogOpen && !!quoteForm.customerId,
   });
@@ -1336,9 +1298,7 @@ export default function Sales() {
 
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
-  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "customer" as string, paymentTerms: "immediate" });
-  const [showQuoteNewCust, setShowQuoteNewCust] = useState(false);
-  const [quoteNewCust, setQuoteNewCust] = useState({ name: "", email: "", phone: "", address: "", customerType: "customer", gstNumber: "" });
+  const [customerForm, setCustomerForm] = useState({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user" as "end_user" | "business", paymentTerms: "immediate" });
   const [customerSearchQuery, setCustomerSearchQuery] = useState("");
   const [customerTypeFilter, setCustomerTypeFilter] = useState<string>("__all__");
 
@@ -1358,11 +1318,7 @@ export default function Sales() {
 
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
-  const [paymentDialogBalance, setPaymentDialogBalance] = useState<number>(0);
-  type PaymentRow = { method: string; amount: string; cashAccountId: string; reference: string };
-  const [paymentRows, setPaymentRows] = useState<PaymentRow[]>([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
-  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
-  const [collapsedPaymentRows, setCollapsedPaymentRows] = useState<number[]>([]);
+  const [paymentForm, setPaymentForm] = useState({ amount: "", method: "cash", reference: "", cashAccountId: "" });
 
   const [orderChallansMap, setOrderChallansMap] = useState<Record<string, DeliveryChallan[]>>({});
   const [orderDispatchSummaryMap, setOrderDispatchSummaryMap] = useState<Record<string, Array<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }>>>({});
@@ -1371,17 +1327,17 @@ export default function Sales() {
   const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
   const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
   const [dispatchSummary, setDispatchSummary] = useState<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }[]>([]);
-  const [dispatchForm, setDispatchForm] = useState({ sourceId: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: "" });
+  const [dispatchForm, setDispatchForm] = useState({ sourceType: "warehouse", sourceId: "", physicalChallanNumber: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "" });
   const [dispatchPhoneError, setDispatchPhoneError] = useState("");
   const [dispatchSummaryLoading, setDispatchSummaryLoading] = useState(false);
 
   const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
   const dispatchFormValid =
+    dispatchForm.physicalChallanNumber.trim() &&
     dispatchForm.vehicleNumber.trim() &&
     dispatchForm.vehicleOwnerName.trim() &&
     dispatchForm.driverName.trim() &&
-    INDIAN_MOBILE_RE.test(dispatchForm.driverPhone.trim()) &&
-    dispatchForm.deliveryAddress.trim();
+    INDIAN_MOBILE_RE.test(dispatchForm.driverPhone.trim());
 
   const toggleOrderExpand = useCallback(async (orderId: string) => {
     if (expandedOrderId === orderId) {
@@ -1389,7 +1345,7 @@ export default function Sales() {
       return;
     }
     try {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const order = orders?.find(o => o.id === orderId);
       const isDispatchEligible = order && ["confirmed", "procurement", "ready_to_ship", "partial", "dispatched", "delivered", "installed", "completed"].includes(order.status);
       const fetches: Promise<any>[] = [
@@ -1425,7 +1381,7 @@ export default function Sales() {
       return;
     }
     try {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const [itemsRes, activitiesRes, followupsRes] = await Promise.all([
         fetch(`/api/quotations/${quoteId}/items`, { headers }),
         fetch(`/api/quotations/${quoteId}/activities`, { headers }),
@@ -1678,30 +1634,19 @@ export default function Sales() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
       toast({ title: "Payment recorded" });
       setPaymentDialogOpen(false);
       setPaymentOrderId(null);
-      setPaymentRows([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
-      setPaymentDate(new Date().toISOString().slice(0, 10));
-      setCollapsedPaymentRows([]);
+      setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
-  // Phase 4B: cash accounts list for Record Payment dropdown
+  // Phase 4B: cash accounts list for Record Payment dropdown (smart-filtered by method)
   const { data: cashAccountsForPayment } = useQuery<(CashAccount & { balance?: number })[]>({ queryKey: ["/api/cash-accounts"] });
-
-  // Sales invoices — used to detect if an SO already has an invoice (soId match)
-  const { data: allSalesInvoices } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
-  const soInvoiceMap = (allSalesInvoices ?? []).reduce<Record<string, SalesInvoice>>((acc, inv) => {
-    if (inv.soId) acc[inv.soId] = inv;
-    return acc;
-  }, {});
-  const getPaymentAccounts = (method: string) =>
-    (cashAccountsForPayment ?? []).filter(a => a.isActive && (method === "cash" ? a.type === "cash" : a.type === "bank"));
+  const paymentAccounts = (cashAccountsForPayment ?? []).filter(a => a.isActive && (paymentForm.method === "cash" ? a.type === "cash" : a.type === "bank"));
 
   const generateInvoiceMutation = useMutation({
     mutationFn: async (orderId: string) => {
@@ -1718,6 +1663,21 @@ export default function Sales() {
     },
   });
 
+  const confirmPickupMutation = useMutation({
+    mutationFn: async (orderId: string) => {
+      const res = await apiRequest("POST", `/api/sales-orders/${orderId}/confirm-pickup`);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
+      toast({ title: "Pickup confirmed", description: "Order marked as delivered and stock deducted." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    },
+  });
 
   const customerMutation = useMutation({
     mutationFn: async (data: any) => {
@@ -1732,23 +1692,6 @@ export default function Sales() {
       toast({ title: editingCustomer ? "Customer updated" : "Customer created" });
       setCustomerDialogOpen(false);
       setEditingCustomer(null);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    },
-  });
-
-  const quoteInlineCustMutation = useMutation({
-    mutationFn: async (data: typeof quoteNewCust) => {
-      const res = await apiRequest("POST", "/api/customers", data);
-      return res.json();
-    },
-    onSuccess: (created: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
-      setQuoteForm((f) => ({ ...f, customerId: created.id }));
-      setShowQuoteNewCust(false);
-      setQuoteNewCust({ name: "", email: "", phone: "", address: "", customerType: "customer", gstNumber: "" });
-      toast({ title: "Customer created", description: `${created.name} added and selected` });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1772,7 +1715,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/activities`, { headers });
       const data = await res.json();
       setExpandedQuoteActivities(data);
@@ -1794,7 +1737,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
       const data = await res.json();
       setExpandedQuoteFollowups(data);
@@ -1814,7 +1757,7 @@ export default function Sales() {
       return quoteId;
     },
     onSuccess: async (quoteId: string) => {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const res = await fetch(`/api/quotations/${quoteId}/followups`, { headers });
       const data = await res.json();
       setExpandedQuoteFollowups(data);
@@ -1876,7 +1819,7 @@ export default function Sales() {
 
   const fetchAllQuoteFollowups = useCallback(async () => {
     if (!quotations || quotations.length === 0) return;
-    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
     const map: Record<string, QuotationFollowup[]> = {};
     await Promise.all(
       quotations.map(async (q) => {
@@ -1897,7 +1840,7 @@ export default function Sales() {
 
   const openNewOrder = () => {
     setEditingOrder(null);
-    setOrderForm({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
+    setOrderForm({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none", orderDate: new Date().toISOString().slice(0, 10) });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
     setOrderTouchedLines(new Set()); // Phase 5: fresh order — start empty, warn on any line the user touches
@@ -1919,6 +1862,7 @@ export default function Sales() {
       deliveryAddress: (order as any).deliveryAddress || "",
       warehouseId: order.warehouseId || "",
       subsidyScheme: (order as any).subsidyScheme || "none",
+      orderDate: order.orderDate ? new Date(order.orderDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
     });
     setOrderTouchedLines(new Set()); // Phase 5: editing existing order — pre-existing lines are untouched
     setOrderDiscount({
@@ -1927,7 +1871,7 @@ export default function Sales() {
     });
     try {
       const res = await fetch(`/api/sales-orders/${order.id}/items`, {
-        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -1980,7 +1924,7 @@ export default function Sales() {
     setQuoteTouchedLines(new Set()); // Phase 5: editing existing quote — pre-existing lines are untouched
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
-        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
@@ -2018,7 +1962,7 @@ export default function Sales() {
 
   const openNewCustomer = () => {
     setEditingCustomer(null);
-    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "customer", paymentTerms: "immediate" });
+    setCustomerForm({ name: "", email: "", phone: "", address: "", gstNumber: "", contactPerson: "", customerType: "end_user", paymentTerms: "immediate" });
     setCustomerDialogOpen(true);
   };
 
@@ -2031,20 +1975,16 @@ export default function Sales() {
       address: c.address || "",
       gstNumber: c.gstNumber || "",
       contactPerson: c.contactPerson || "",
-      customerType: c.customerType || "customer",
+      // Hydrate from migrated value; default to end_user if column is missing/empty for any reason
+      customerType: (c.customerType === "business" ? "business" : "end_user"),
       paymentTerms: (c as any).paymentTerms || "immediate",
     });
     setCustomerDialogOpen(true);
   };
 
   const openRecordPayment = (orderId: string) => {
-    const order = (orders ?? []).find(o => o.id === orderId);
-    const balance = order ? Math.max(0, Number(order.totalAmount) - Number(order.paidAmount || 0)) : 0;
     setPaymentOrderId(orderId);
-    setPaymentDialogBalance(balance);
-    setPaymentRows([{ method: "cash", amount: "", cashAccountId: "", reference: "" }]);
-    setPaymentDate(new Date().toISOString().slice(0, 10));
-    setCollapsedPaymentRows([]);
+    setPaymentForm({ amount: "", method: "cash", reference: "", cashAccountId: "" });
     setPaymentDialogOpen(true);
   };
 
@@ -2060,17 +2000,13 @@ export default function Sales() {
 
   const openDispatchDialog = async (orderId: string) => {
     setDispatchOrderId(orderId);
-    const order = orders?.find(o => o.id === orderId);
-    const customer = customers?.find(c => c.id === (order as any)?.customerId);
-    const prefillAddr = (order as any)?.deliveryAddress || customer?.address || "";
-    const prefillWarehouse = (order as any)?.warehouseId || "";
-    setDispatchForm({ sourceId: prefillWarehouse, vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: prefillAddr });
+    setDispatchForm({ sourceType: "warehouse", sourceId: "", physicalChallanNumber: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "" });
     setDispatchPhoneError("");
     setDispatchSummary([]);
     setDispatchDialogOpen(true);
     setDispatchSummaryLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
       const res = await fetch(`/api/sales-orders/${orderId}/dispatch-summary`, { headers });
       const data = await res.json();
       setDispatchSummary(Array.isArray(data.items) ? data.items : []);
@@ -2083,7 +2019,7 @@ export default function Sales() {
 
   const createFromSOMutation = useMutation({
     mutationFn: async ({ orderId, data }: { orderId: string; data: any }) => {
-      const token = sessionStorage.getItem("token");
+      const token = localStorage.getItem("token");
       const res = await fetch(`/api/delivery-challans/create-from-so/${orderId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -2110,7 +2046,7 @@ export default function Sales() {
       }
       setDispatchDialogOpen(false);
       if (expandedOrderId) {
-        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
         fetch(`/api/delivery-challans/by-order/${expandedOrderId}`, { headers })
           .then(r => r.json())
           .then(d => setOrderChallansMap(prev => ({ ...prev, [expandedOrderId]: Array.isArray(d) ? d : [] })));
@@ -2124,7 +2060,7 @@ export default function Sales() {
   const downloadQuotePDF = async (q: Quotation) => {
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
-        headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
       });
       if (!res.ok) throw new Error("Failed to fetch items");
       const qItems: QuotationItem[] = await res.json();
@@ -2219,7 +2155,7 @@ export default function Sales() {
     setWaDialogOpen(true);
     if (customer?.phone) {
       try {
-        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
         if (convs.ok) {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
@@ -2258,7 +2194,7 @@ export default function Sales() {
     // Check if there's an existing open conversation/window for this phone
     if (customer?.phone) {
       try {
-        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } });
+        const convs = await fetch("/api/whatsapp/conversations", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
         if (convs.ok) {
           const list = await convs.json();
           const phone = customer.phone.replace(/\D/g, "");
@@ -2336,7 +2272,7 @@ export default function Sales() {
             </div>
             <div>
               <p className="text-2xl font-bold">{orders?.length ?? 0}</p>
-              <p className="text-xs text-muted-foreground">Total Sales Confirmed</p>
+              <p className="text-xs text-muted-foreground">Total Orders</p>
             </div>
           </CardContent>
         </Card>
@@ -2628,38 +2564,38 @@ export default function Sales() {
                                       <Button size="sm" variant="ghost" className="text-green-600 hover:text-green-700 hover:bg-green-50 dark:hover:bg-green-950/20" data-testid={`button-wa-order-${order.id}`} title="Send order update via WhatsApp" onClick={() => openWaDialogForOrder(order)}>
                                         <MessageCircle className="w-3.5 h-3.5 mr-1" /> WhatsApp
                                       </Button>
-                                      {CHALLAN_CREATE_ELIGIBLE.includes(order.status) && !isReadOnly && !(orderChallansMap[order.id] ?? []).some((c: DeliveryChallan) => c.status !== "cancelled") && (
+                                      {CHALLAN_CREATE_ELIGIBLE.includes(order.status) && !isReadOnly && (
                                         <Button size="sm" variant="outline" className="border-blue-400 text-blue-600 dark:text-blue-400 dark:border-blue-600" data-testid={`button-create-dispatch-challan-${order.id}`} onClick={() => openDispatchDialog(order.id)}>
                                           <Truck className="w-3 h-3 mr-1" /> Create Dispatch Challan
                                         </Button>
                                       )}
-                                      {!isReadOnly && (Number(order.totalAmount) - Number(order.paidAmount || 0)) > 0 && (
+                                      {!isReadOnly && (
                                         <Button size="sm" variant="outline" data-testid={`button-record-payment-${order.id}`} onClick={() => openRecordPayment(order.id)}>
                                           <CreditCard className="w-3 h-3 mr-1" /> Record Payment
                                         </Button>
                                       )}
+                                      {!isReadOnly && order.status === "ready_to_ship" && (order as any).deliveryMethod === "pickup" && (
+                                        <Button
+                                          size="sm"
+                                          variant="default"
+                                          className="bg-green-600 hover:bg-green-700 text-white"
+                                          data-testid={`button-confirm-pickup-${order.id}`}
+                                          disabled={confirmPickupMutation.isPending}
+                                          onClick={() => { if (confirm("Confirm pickup? This will deduct stock and mark the order as delivered.")) confirmPickupMutation.mutate(order.id); }}
+                                        >
+                                          <Check className="w-3 h-3 mr-1" /> Confirm Pickup
+                                        </Button>
+                                      )}
                                       {INVOICE_ELIGIBLE_STATUSES.includes(order.status) && (
-                                        soInvoiceMap[order.id] ? (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="border-emerald-400 text-emerald-600 dark:text-emerald-400 dark:border-emerald-600"
-                                            data-testid={`button-view-invoice-${order.id}`}
-                                            onClick={() => navigate(`/sales-invoices`)}
-                                          >
-                                            <Receipt className="w-3 h-3 mr-1" /> View Invoice
-                                          </Button>
-                                        ) : (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            data-testid={`button-generate-invoice-${order.id}`}
-                                            disabled={generateInvoiceMutation.isPending}
-                                            onClick={() => { if (confirm("Generate invoice for this order?")) generateInvoiceMutation.mutate(order.id); }}
-                                          >
-                                            <Receipt className="w-3 h-3 mr-1" /> Generate Invoice
-                                          </Button>
-                                        )
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          data-testid={`button-generate-invoice-${order.id}`}
+                                          disabled={generateInvoiceMutation.isPending}
+                                          onClick={() => { if (confirm("Generate invoice for this order?")) generateInvoiceMutation.mutate(order.id); }}
+                                        >
+                                          <Receipt className="w-3 h-3 mr-1" /> Generate Invoice
+                                        </Button>
                                       )}
                                     </div>
                                   </div>
@@ -2742,7 +2678,7 @@ export default function Sales() {
                                                   onClick={async (e) => {
                                                     e.stopPropagation();
                                                     if (!confirm(`Issue Delivery Order for Challan #${challan.challanNumber}?`)) return;
-                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/issue-delivery-order`, { method: "POST", headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}`, "Content-Type": "application/json" } });
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/issue-delivery-order`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" } });
                                                     if (res.ok) {
                                                       const updated = await res.json();
                                                       setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
@@ -2760,7 +2696,7 @@ export default function Sales() {
                                                     e.stopPropagation();
                                                     const reason = window.prompt(`Cancel Challan #${challan.challanNumber}?\nEnter reason:`);
                                                     if (!reason?.trim()) return;
-                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}`, "Content-Type": "application/json" }, body: JSON.stringify({ cancellationReason: reason }) });
+                                                    const res = await fetch(`/api/delivery-challans/${challan.id}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}`, "Content-Type": "application/json" }, body: JSON.stringify({ cancellationReason: reason }) });
                                                     if (res.ok) {
                                                       const updated = await res.json();
                                                       setOrderChallansMap(prev => ({ ...prev, [order.id]: (prev[order.id] || []).map(c => c.id === challan.id ? updated : c) }));
@@ -2829,14 +2765,13 @@ export default function Sales() {
                       <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Valid Until</th>
                       <th className="text-left p-3 font-medium text-muted-foreground">Next Follow-up</th>
-                      <th className="text-left p-3 font-medium text-muted-foreground">Issued By</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Amount</th>
                       <th className="text-right p-3 font-medium text-muted-foreground">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {quotationsLoading ? (
-                      <tr><td colSpan={9} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
+                      <tr><td colSpan={8} className="p-3"><Skeleton className="h-4 w-full" /></td></tr>
                     ) : quotations && quotations.length > 0 ? (
                       quotations.map((q) => {
                         const nextFu = getNextFollowup(q.id);
@@ -2866,9 +2801,6 @@ export default function Sales() {
                                 <span className="text-muted-foreground text-xs">—</span>
                               )}
                             </td>
-                            <td className="p-3 text-muted-foreground text-sm" data-testid={`text-quote-issued-by-${q.id}`}>
-                              {(q as any).createdByName ?? "—"}
-                            </td>
                             <td className="p-3 text-right font-medium">₹{Number(q.totalAmount).toLocaleString()}</td>
                             <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
@@ -2879,7 +2811,7 @@ export default function Sales() {
                                       setConvertingQuoteId(q.id);
                                       try {
                                         const result = await fetch(`/api/customers/${q.customerId}/outstanding`, {
-                                          headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+                                          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
                                         }).then((r) => r.json());
                                         if (result.outstanding > 0) {
                                           if (isAdmin) {
@@ -3218,15 +3150,15 @@ export default function Sales() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all__" data-testid="option-customer-filter-all">All Customers</SelectItem>
-                <SelectItem value="vendor" data-testid="option-customer-filter-vendor">Vendor</SelectItem>
-                <SelectItem value="solar_consumer" data-testid="option-customer-filter-solar_consumer">Solar Consumer</SelectItem>
-                <SelectItem value="customer" data-testid="option-customer-filter-customer">Customer</SelectItem>
+                <SelectItem value="end_user" data-testid="option-customer-filter-end_user">End User</SelectItem>
+                <SelectItem value="business" data-testid="option-customer-filter-business">Business</SelectItem>
               </SelectContent>
             </Select>
           </div>
           {(() => {
             const filteredCustomers = (customers ?? []).filter((c) => {
-              if (customerTypeFilter !== "__all__" && c.customerType !== customerTypeFilter) return false;
+              const ct = c.customerType === "business" ? "business" : "end_user";
+              if (customerTypeFilter !== "__all__" && ct !== customerTypeFilter) return false;
               if (!customerSearchQuery) return true;
               const q = customerSearchQuery.toLowerCase();
               return (
@@ -3367,6 +3299,10 @@ export default function Sales() {
               <div className="space-y-2">
                 <Label htmlFor="orderAdvanceAmount">Advance Amount (₹)</Label>
                 <Input id="orderAdvanceAmount" data-testid="input-order-advance-amount" type="number" min="0" step="0.01" value={orderForm.advanceAmount} onChange={(e) => setOrderForm({ ...orderForm, advanceAmount: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="orderDate">Order Date</Label>
+                <Input id="orderDate" data-testid="input-order-date" type="date" value={(orderForm as any).orderDate} onChange={(e) => setOrderForm({ ...orderForm, orderDate: e.target.value } as any)} max={new Date().toISOString().slice(0, 10)} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="orderExpectedDeliveryDate">Expected Delivery Date</Label>
@@ -3586,7 +3522,7 @@ export default function Sales() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="quoteCustomerId">Customer</Label>
-                <Select value={quoteForm.customerId} onValueChange={(v) => { setQuoteForm({ ...quoteForm, customerId: v }); setShowQuoteNewCust(false); }}>
+                <Select value={quoteForm.customerId} onValueChange={(v) => setQuoteForm({ ...quoteForm, customerId: v })}>
                   <SelectTrigger data-testid="select-quote-customer">
                     <SelectValue placeholder="Select customer" />
                   </SelectTrigger>
@@ -3596,66 +3532,6 @@ export default function Sales() {
                     ))}
                   </SelectContent>
                 </Select>
-                <button
-                  type="button"
-                  data-testid="button-quote-add-new-customer"
-                  onClick={() => setShowQuoteNewCust(!showQuoteNewCust)}
-                  className="text-xs text-blue-600 hover:text-blue-700 dark:text-blue-400 flex items-center gap-1 mt-1"
-                >
-                  <Plus className="w-3 h-3" />
-                  {showQuoteNewCust ? "Cancel" : "Add new customer"}
-                </button>
-                {showQuoteNewCust && (
-                  <div className="mt-2 rounded-lg border bg-muted/40 p-3 space-y-3" data-testid="panel-quote-new-customer">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">New Customer</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="space-y-1">
-                        <Label className="text-xs">Name <span className="text-destructive">*</span></Label>
-                        <Input className="h-8 text-sm" data-testid="input-qnc-name" placeholder="Full name" value={quoteNewCust.name} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, name: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Phone <span className="text-destructive">*</span></Label>
-                        <Input className="h-8 text-sm" data-testid="input-qnc-phone" placeholder="Mobile number" value={quoteNewCust.phone} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, phone: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Email</Label>
-                        <Input className="h-8 text-sm" data-testid="input-qnc-email" placeholder="Optional" value={quoteNewCust.email} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, email: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Customer Type <span className="text-destructive">*</span></Label>
-                        <Select value={quoteNewCust.customerType} onValueChange={(v) => setQuoteNewCust({ ...quoteNewCust, customerType: v })}>
-                          <SelectTrigger className="h-8 text-sm" data-testid="select-qnc-type">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="vendor">Vendor</SelectItem>
-                            <SelectItem value="solar_consumer">Solar Consumer</SelectItem>
-                            <SelectItem value="customer">Customer</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1 col-span-2">
-                        <Label className="text-xs">Address</Label>
-                        <Input className="h-8 text-sm" data-testid="input-qnc-address" placeholder="Optional" value={quoteNewCust.address} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, address: e.target.value })} />
-                      </div>
-                      <div className="space-y-1 col-span-2">
-                        <Label className="text-xs">
-                          GST Number {quoteNewCust.customerType === "vendor" ? <span className="text-destructive">*</span> : <span className="text-muted-foreground">(optional)</span>}
-                        </Label>
-                        <Input className="h-8 text-sm" data-testid="input-qnc-gst" placeholder={quoteNewCust.customerType === "vendor" ? "Required for Vendor" : "Optional"} value={quoteNewCust.gstNumber} onChange={(e) => setQuoteNewCust({ ...quoteNewCust, gstNumber: e.target.value })} />
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      data-testid="button-qnc-save"
-                      disabled={quoteInlineCustMutation.isPending || !quoteNewCust.name.trim() || !quoteNewCust.phone.trim() || (quoteNewCust.customerType === "vendor" && !quoteNewCust.gstNumber.trim())}
-                      onClick={() => quoteInlineCustMutation.mutate(quoteNewCust)}
-                    >
-                      {quoteInlineCustMutation.isPending ? "Saving..." : "Save & Select"}
-                    </Button>
-                  </div>
-                )}
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4">
@@ -3821,182 +3697,76 @@ export default function Sales() {
       </Dialog>
 
       <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Record Payment</DialogTitle>
-            <DialogDescription>
-              Add one or more payment lines for this order.{" "}
-              <span className="font-medium text-foreground">Outstanding balance: ₹{paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
-            </DialogDescription>
+            <DialogDescription>Enter payment details for this order</DialogDescription>
           </DialogHeader>
-          {(() => {
-            const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-            const exceedsBalance = Math.round(totalEntered * 100) > Math.round(paymentDialogBalance * 100) && totalEntered > 0;
-            return (
-          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
-            {exceedsBalance && (
-              <div className="rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-                Total entered (₹{totalEntered.toLocaleString("en-IN", { minimumFractionDigits: 2 })}) exceeds the outstanding balance of ₹{paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}. Reduce the amount.
-              </div>
-            )}
-            {paymentRows.map((row, idx) => {
-              const isCollapsed = collapsedPaymentRows.includes(idx);
-              const accounts = getPaymentAccounts(row.method);
-              const accountName = accounts.find(a => a.id === row.cashAccountId)?.name;
-              const rowExceeds = exceedsBalance;
-              const updateRow = (patch: Partial<PaymentRow>) =>
-                setPaymentRows(rows => rows.map((r, i) => i === idx ? { ...r, ...patch } : r));
-              return (
-                <div key={idx} className="border rounded-md">
-                  {isCollapsed ? (
-                    <div
-                      className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-muted/40"
-                      data-testid={`payment-row-collapsed-${idx}`}
-                      onClick={() => setCollapsedPaymentRows(prev => prev.filter(i => i !== idx))}
-                    >
-                      <span className="text-sm font-medium">
-                        {row.method.replace("_", " ").replace(/\b\w/g, c => c.toUpperCase())} — ₹{Number(row.amount || 0).toLocaleString()}
-                        {accountName ? ` · ${accountName}` : ""}
-                      </span>
-                      <ChevronDown className="w-4 h-4 text-muted-foreground" />
-                    </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="paymentAmount">Amount (₹)</Label>
+              <Input id="paymentAmount" data-testid="input-payment-amount" type="number" min="0" step="0.01" value={paymentForm.amount} onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paymentMethod">Method</Label>
+              <Select value={paymentForm.method} onValueChange={(v) => setPaymentForm({ ...paymentForm, method: v, cashAccountId: "" })}>
+                <SelectTrigger data-testid="select-payment-method">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="cheque">Cheque</SelectItem>
+                  <SelectItem value="upi">UPI</SelectItem>
+                  <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paymentAccount">Account *</Label>
+              <Select value={paymentForm.cashAccountId} onValueChange={(v) => setPaymentForm({ ...paymentForm, cashAccountId: v })}>
+                <SelectTrigger id="paymentAccount" data-testid="select-payment-account">
+                  <SelectValue placeholder="Select account" />
+                </SelectTrigger>
+                <SelectContent>
+                  {paymentAccounts.length === 0 ? (
+                    <SelectItem value="__no_match__" disabled>No active {paymentForm.method === "cash" ? "cash" : "bank"} account — create one in Accounts → Cash Accounts</SelectItem>
                   ) : (
-                    <div className="p-3 space-y-3">
-                      {paymentRows.length > 1 && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-medium text-muted-foreground">Payment {idx + 1}</span>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            data-testid={`button-remove-payment-row-${idx}`}
-                            onClick={() => {
-                              setPaymentRows(rows => rows.filter((_, i) => i !== idx));
-                              setCollapsedPaymentRows(prev => prev.filter(i => i !== idx).map(i => i > idx ? i - 1 : i));
-                            }}
-                          >
-                            <X className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      )}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label className="text-xs">Method</Label>
-                          <Select value={row.method} onValueChange={(v) => updateRow({ method: v, cashAccountId: "" })}>
-                            <SelectTrigger data-testid={`select-payment-method-${idx}`} className="h-8 text-sm">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="cash">Cash</SelectItem>
-                              <SelectItem value="cheque">Cheque</SelectItem>
-                              <SelectItem value="upi">UPI</SelectItem>
-                              <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1">
-                          <Label className="text-xs">Amount (₹)</Label>
-                          <Input
-                            data-testid={`input-payment-amount-${idx}`}
-                            type="number" min="0" step="0.01" max={paymentDialogBalance}
-                            className={`h-8 text-sm${rowExceeds ? " border-red-400 focus-visible:ring-red-400" : ""}`}
-                            value={row.amount}
-                            onChange={(e) => updateRow({ amount: e.target.value })}
-                          />
-                        </div>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Account *</Label>
-                        <Select value={row.cashAccountId} onValueChange={(v) => updateRow({ cashAccountId: v })}>
-                          <SelectTrigger data-testid={`select-payment-account-${idx}`} className="h-8 text-sm">
-                            <SelectValue placeholder="Select account" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {accounts.length === 0 ? (
-                              <SelectItem value="__no_match__" disabled>No active {row.method === "cash" ? "cash" : "bank"} account</SelectItem>
-                            ) : (
-                              accounts.map(a => (
-                                <SelectItem key={a.id} value={a.id} data-testid={`option-payment-account-${a.id}`}>
-                                  {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
-                                  {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
-                                </SelectItem>
-                              ))
-                            )}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Reference</Label>
-                        <Input
-                          data-testid={`input-payment-reference-${idx}`}
-                          className="h-8 text-sm"
-                          placeholder="Transaction ID, cheque no., etc."
-                          value={row.reference}
-                          onChange={(e) => updateRow({ reference: e.target.value })}
-                        />
-                      </div>
-                    </div>
+                    paymentAccounts.map(a => (
+                      <SelectItem key={a.id} value={a.id} data-testid={`option-payment-account-${a.id}`}>
+                        {a.type === "cash" ? <Banknote className="inline mr-1 h-3 w-3" /> : <Landmark className="inline mr-1 h-3 w-3" />}
+                        {a.name}{a.balance !== undefined ? ` — ₹${Number(a.balance).toLocaleString()}` : ""}
+                      </SelectItem>
+                    ))
                   )}
-                </div>
-              );
-            })}
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              data-testid="button-add-payment-row"
-              onClick={() => {
-                const lastIdx = paymentRows.length - 1;
-                setCollapsedPaymentRows(prev => [...prev, lastIdx]);
-                setPaymentRows(rows => [...rows, { method: "cash", amount: "", cashAccountId: "", reference: "" }]);
-              }}
-            >
-              <Plus className="w-3 h-3 mr-1" /> Add Payment
-            </Button>
-            <div className="space-y-1 pt-1">
-              <Label className="text-xs">Payment Date</Label>
-              <Input
-                data-testid="input-payment-date"
-                type="date"
-                className="h-8 text-sm"
-                value={paymentDate}
-                onChange={(e) => setPaymentDate(e.target.value)}
-              />
+                </SelectContent>
+              </Select>
+              {!paymentForm.cashAccountId && (
+                <p className="text-xs text-muted-foreground" data-testid="text-payment-account-required">Required — pick the account where this payment was received.</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="paymentReference">Reference</Label>
+              <Input id="paymentReference" data-testid="input-payment-reference" placeholder="Transaction ID, cheque no., etc." value={paymentForm.reference} onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })} />
             </div>
           </div>
-            );
-          })()}
           <DialogFooter>
             <Button
               data-testid="button-submit-payment"
-              disabled={
-                recordPaymentMutation.isPending ||
-                paymentRows.some(r => !r.amount || !r.cashAccountId) ||
-                Math.round(paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0) * 100) > Math.round(paymentDialogBalance * 100)
-              }
-              onClick={async () => {
-                const invalid = paymentRows.find(r => !r.cashAccountId);
-                if (invalid) {
-                  toast({ title: "Account required", description: "Select an account for every payment line.", variant: "destructive" });
+              disabled={recordPaymentMutation.isPending || !paymentForm.amount || !paymentForm.cashAccountId}
+              onClick={() => {
+                if (!paymentForm.cashAccountId) {
+                  toast({ title: "Account required", description: "Select the account where this payment was received.", variant: "destructive" });
                   return;
                 }
-                const totalEntered = paymentRows.reduce((s, r) => s + Number(r.amount || 0), 0);
-                if (Math.round(totalEntered * 100) > Math.round(paymentDialogBalance * 100)) {
-                  toast({ title: "Amount exceeds balance", description: `Maximum payable is ₹${paymentDialogBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}.`, variant: "destructive" });
-                  return;
-                }
-                if (!paymentOrderId) return;
-                for (const row of paymentRows) {
-                  await new Promise<void>((resolve, reject) => {
-                    recordPaymentMutation.mutate(
-                      { orderId: paymentOrderId, data: { amount: row.amount, method: row.method, reference: row.reference, cashAccountId: row.cashAccountId, paymentDate } },
-                      { onSuccess: () => resolve(), onError: (e) => reject(e) }
-                    );
+                if (paymentOrderId) {
+                  recordPaymentMutation.mutate({
+                    orderId: paymentOrderId,
+                    data: { amount: paymentForm.amount, method: paymentForm.method, reference: paymentForm.reference, cashAccountId: paymentForm.cashAccountId },
                   });
                 }
               }}
             >
-              {recordPaymentMutation.isPending ? "Recording..." : paymentRows.length > 1 ? `Record ${paymentRows.length} Payments` : "Record Payment"}
+              {recordPaymentMutation.isPending ? "Recording..." : "Record Payment"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -4041,64 +3811,85 @@ export default function Sales() {
               <p className="text-sm text-muted-foreground">All items have already been dispatched.</p>
             )}
 
-            <div className="space-y-1">
-              <Label htmlFor="dispatchWarehouse">Source Warehouse</Label>
-              <select
-                id="dispatchWarehouse"
-                data-testid="select-dispatch-warehouse"
-                className="w-full border rounded-md px-3 py-2 text-sm bg-background"
-                value={dispatchForm.sourceId}
-                onChange={e => setDispatchForm({ ...dispatchForm, sourceId: e.target.value })}
-              >
-                <option value="">Auto (from order)</option>
-                {(warehouses ?? []).map(w => (
-                  <option key={w.id} value={w.id}>{w.name}{w.location ? ` — ${w.location}` : ""}</option>
-                ))}
-              </select>
+            <div className="rounded-md bg-muted/50 border px-3 py-2 text-xs text-muted-foreground">
+              Source warehouse is automatically derived from the sales order's assigned warehouse.
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="dispatchDeliveryAddress">
-                Delivery Address <span className="text-red-500">*</span>
+              <Label htmlFor="dispatchChallanNo">
+                Real Challan No. <span className="text-red-500">*</span>
               </Label>
-              <textarea
-                id="dispatchDeliveryAddress"
-                data-testid="input-dispatch-delivery-address"
-                className="w-full border rounded-md px-3 py-2 text-sm bg-background resize-none"
-                rows={2}
-                value={dispatchForm.deliveryAddress}
-                onChange={e => setDispatchForm({ ...dispatchForm, deliveryAddress: e.target.value })}
-                placeholder="Full delivery address"
+              <Input
+                id="dispatchChallanNo"
+                data-testid="input-dispatch-challan-number"
+                value={dispatchForm.physicalChallanNumber}
+                onChange={e => setDispatchForm({ ...dispatchForm, physicalChallanNumber: e.target.value })}
+                placeholder="Supplier / physical challan number"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="dispatchVehicle">Vehicle No. <span className="text-red-500">*</span></Label>
-                <Input id="dispatchVehicle" data-testid="input-dispatch-vehicle" value={dispatchForm.vehicleNumber} onChange={e => setDispatchForm({ ...dispatchForm, vehicleNumber: e.target.value })} placeholder="e.g. AS01AB1234" />
+                <Label htmlFor="dispatchVehicle">
+                  Vehicle No. <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchVehicle"
+                  data-testid="input-dispatch-vehicle"
+                  value={dispatchForm.vehicleNumber}
+                  onChange={e => setDispatchForm({ ...dispatchForm, vehicleNumber: e.target.value })}
+                  placeholder="e.g. AS01AB1234"
+                />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="dispatchVehicleOwner">Vehicle Owner <span className="text-red-500">*</span></Label>
-                <Input id="dispatchVehicleOwner" data-testid="input-dispatch-vehicle-owner" value={dispatchForm.vehicleOwnerName} onChange={e => setDispatchForm({ ...dispatchForm, vehicleOwnerName: e.target.value })} placeholder="Owner's full name" />
+                <Label htmlFor="dispatchVehicleOwner">
+                  Vehicle Owner Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchVehicleOwner"
+                  data-testid="input-dispatch-vehicle-owner"
+                  value={dispatchForm.vehicleOwnerName}
+                  onChange={e => setDispatchForm({ ...dispatchForm, vehicleOwnerName: e.target.value })}
+                  placeholder="Owner's full name"
+                />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label htmlFor="dispatchDriver">Driver Name <span className="text-red-500">*</span></Label>
-                <Input id="dispatchDriver" data-testid="input-dispatch-driver" value={dispatchForm.driverName} onChange={e => setDispatchForm({ ...dispatchForm, driverName: e.target.value })} placeholder="Driver's full name" />
+                <Label htmlFor="dispatchDriver">
+                  Driver Name <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchDriver"
+                  data-testid="input-dispatch-driver"
+                  value={dispatchForm.driverName}
+                  onChange={e => setDispatchForm({ ...dispatchForm, driverName: e.target.value })}
+                  placeholder="Driver's full name"
+                />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="dispatchDriverPhone">Driver Phone <span className="text-red-500">*</span></Label>
-                <Input id="dispatchDriverPhone" data-testid="input-dispatch-driver-phone" value={dispatchForm.driverPhone}
+                <Label htmlFor="dispatchDriverPhone">
+                  Driver Phone <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="dispatchDriverPhone"
+                  data-testid="input-dispatch-driver-phone"
+                  value={dispatchForm.driverPhone}
                   onChange={e => {
                     const val = e.target.value;
                     setDispatchForm({ ...dispatchForm, driverPhone: val });
-                    setDispatchPhoneError(val && !INDIAN_MOBILE_RE.test(val.trim()) ? "Enter a valid Indian mobile number" : "");
+                    if (val && !INDIAN_MOBILE_RE.test(val.trim())) {
+                      setDispatchPhoneError("Enter a valid Indian mobile number");
+                    } else {
+                      setDispatchPhoneError("");
+                    }
                   }}
                   placeholder="e.g. 9876543210"
                 />
-                {dispatchPhoneError && <p className="text-xs text-red-500 mt-0.5">{dispatchPhoneError}</p>}
+                {dispatchPhoneError && (
+                  <p className="text-xs text-red-500 mt-0.5">{dispatchPhoneError}</p>
+                )}
               </div>
             </div>
 
@@ -4106,19 +3897,15 @@ export default function Sales() {
               <Label htmlFor="dispatchNotes">Notes (optional)</Label>
               <Input id="dispatchNotes" data-testid="input-dispatch-notes" value={dispatchForm.notes} onChange={e => setDispatchForm({ ...dispatchForm, notes: e.target.value })} placeholder="Any special instructions" />
             </div>
-
-            {currentUser && (
-              <p className="text-xs text-muted-foreground">Printed by: <span className="font-medium text-foreground">{(currentUser as any).fullName || (currentUser as any).username}</span></p>
-            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDispatchDialogOpen(false)}>Cancel</Button>
             <Button
               data-testid="button-submit-dispatch-challan"
-              disabled={createFromSOMutation.isPending || (dispatchSummary.length > 0 && dispatchSummary.every(i => i.qtyRemaining === 0)) || !dispatchFormValid}
+              disabled={createFromSOMutation.isPending || dispatchSummary.every(i => i.qtyRemaining === 0) || !dispatchFormValid}
               onClick={() => {
                 if (!dispatchOrderId) return;
-                createFromSOMutation.mutate({ orderId: dispatchOrderId, data: { ...dispatchForm, printedBy: (currentUser as any)?.fullName || (currentUser as any)?.username || null } });
+                createFromSOMutation.mutate({ orderId: dispatchOrderId, data: dispatchForm });
               }}
             >
               {createFromSOMutation.isPending ? "Creating..." : "Create Challan"}
@@ -4168,15 +3955,14 @@ export default function Sales() {
                 <Label htmlFor="custType">Customer Type <span className="text-destructive">*</span></Label>
                 <Select
                   value={customerForm.customerType}
-                  onValueChange={(v) => setCustomerForm({ ...customerForm, customerType: v })}
+                  onValueChange={(v) => setCustomerForm({ ...customerForm, customerType: (v as "end_user" | "business") })}
                 >
                   <SelectTrigger id="custType" data-testid="select-customer-type">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="vendor" data-testid="option-customer-type-vendor">Vendor</SelectItem>
-                    <SelectItem value="solar_consumer" data-testid="option-customer-type-solar_consumer">Solar Consumer</SelectItem>
-                    <SelectItem value="customer" data-testid="option-customer-type-customer">Customer</SelectItem>
+                    <SelectItem value="end_user" data-testid="option-customer-type-end_user">End User</SelectItem>
+                    <SelectItem value="business" data-testid="option-customer-type-business">Business</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

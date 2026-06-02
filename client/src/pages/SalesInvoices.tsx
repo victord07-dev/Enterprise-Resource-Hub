@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useCurrentUser } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -18,9 +18,8 @@ import AttachmentsPanel from "@/components/AttachmentsPanel";
 import {
   FileText, Plus, CheckCircle2, AlertCircle,
   ChevronDown, ChevronUp, CreditCard, Building2, User, Search, RotateCcw, RefreshCw,
-  MessageCircle, AlertTriangle, Upload, ExternalLink, ClipboardCheck, Truck, ScanLine
+  MessageCircle, AlertTriangle, Upload, ExternalLink, ClipboardCheck, Truck, Pencil
 } from "lucide-react";
-import { Checkbox } from "@/components/ui/checkbox";
 import type { SalesInvoice, SalesInvoiceItem, CustomerPayment, DeliveryChallan, Customer } from "@shared/schema";
 import { resolveMergeField, isCommonMergeField, mergeFieldSourceLabel, type MergeFieldDocumentContext } from "@shared/mergeFields";
 
@@ -213,89 +212,34 @@ function RecordPaymentDialog({
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split("T")[0]);
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
-  const [cashAccountId, setCashAccountId] = useState("");
-
-  const { data: cashAccountsData } = useQuery<{ id: string; name: string; type: string; isActive: boolean }[]>({
-    queryKey: ["/api/cash-accounts"],
-  });
-
-  // Filter accounts by method: cash method → cash-type accounts; everything else → bank-type
-  const accountOptions = (cashAccountsData ?? []).filter(a =>
-    a.isActive && (method === "cash" ? a.type === "cash" : a.type === "bank")
-  );
-
-  // Reset cash account when method changes
-  const handleMethodChange = (val: string) => {
-    setMethod(val);
-    setCashAccountId("");
-  };
-
-  const [dupConfirmOpen, setDupConfirmOpen] = useState(false);
-  const [dupMessage, setDupMessage] = useState("");
-
-  const submitPayment = (force = false) =>
-    apiRequest("POST", "/api/customer-payments", {
-      invoiceId: invoice.id,
-      customerId: invoice.customerId,
-      amount: parseFloat(amount),
-      paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-      method,
-      reference: reference || undefined,
-      notes: notes || undefined,
-      cashAccountId,
-      ...(force ? { force: true } : {}),
-    });
 
   const payMut = useMutation({
-    mutationFn: () => submitPayment(false),
+    mutationFn: () =>
+      apiRequest("POST", "/api/customer-payments", {
+        invoiceId: invoice.id,
+        customerId: invoice.customerId,
+        amount: parseFloat(amount),
+        paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+        method,
+        reference: reference || undefined,
+        notes: notes || undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices", invoice.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/customer-payments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
       toast({ title: "Payment Recorded", description: `₹${parseFloat(amount).toLocaleString("en-IN")} recorded for ${invoice.invoiceNumber}` });
-      onClose();
-    },
-    onError: async (err: any) => {
-      let body: any = {};
-      try { body = await err?.response?.json?.() ?? {}; } catch {}
-      // Fix #9 — Duplicate detected: show inline confirmation
-      if (err?.status === 409 && body?.isDuplicate) {
-        setDupMessage(body.message ?? "This payment looks like a duplicate.");
-        setDupConfirmOpen(true);
-        return;
-      }
-      toast({ title: "Error", description: body?.message ?? "Failed to record payment", variant: "destructive" });
-    },
-  });
-
-  const forcePayMut = useMutation({
-    mutationFn: () => submitPayment(true),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices", invoice.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/customer-payments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
-      toast({ title: "Payment Recorded", description: `₹${parseFloat(amount).toLocaleString("en-IN")} recorded for ${invoice.invoiceNumber}` });
-      setDupConfirmOpen(false);
       onClose();
     },
     onError: async (err: any) => {
       let msg = "Failed to record payment";
-      try { const b = await err?.response?.json?.(); msg = b?.message ?? msg; } catch {}
+      try { const b = await err.response?.json?.(); msg = b?.message ?? msg; } catch {}
       toast({ title: "Error", description: msg, variant: "destructive" });
-      setDupConfirmOpen(false);
     },
   });
 
   const maxAmount = invoice.balance;
-  const parsedAmount = parseFloat(amount) || 0;
-  // Fix #8 — warn if entered amount exceeds the balance
-  const isOverpayment = parsedAmount > maxAmount + 0.005;
-  const canSubmit = !!amount && parsedAmount > 0 && !!cashAccountId && !payMut.isPending && !isOverpayment;
 
   return (
-    <>
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
@@ -317,13 +261,7 @@ function RecordPaymentDialog({
               onChange={(e) => setAmount(e.target.value)}
               placeholder="Enter amount"
               data-testid="input-payment-amount"
-              className={isOverpayment ? "border-red-500 focus-visible:ring-red-500" : ""}
             />
-            {isOverpayment && (
-              <p className="text-xs text-red-600 mt-1">
-                Amount exceeds the outstanding balance of {fmt(maxAmount)}.
-              </p>
-            )}
           </div>
           <div className="space-y-1">
             <Label>Payment Date *</Label>
@@ -336,7 +274,7 @@ function RecordPaymentDialog({
           </div>
           <div className="space-y-1">
             <Label>Method</Label>
-            <Select value={method} onValueChange={handleMethodChange}>
+            <Select value={method} onValueChange={setMethod}>
               <SelectTrigger data-testid="select-payment-method">
                 <SelectValue />
               </SelectTrigger>
@@ -347,22 +285,6 @@ function RecordPaymentDialog({
                 <SelectItem value="upi">UPI</SelectItem>
                 <SelectItem value="neft">NEFT</SelectItem>
                 <SelectItem value="rtgs">RTGS</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <Label>Received Into Account *</Label>
-            <Select value={cashAccountId} onValueChange={setCashAccountId}>
-              <SelectTrigger data-testid="select-cash-account">
-                <SelectValue placeholder="Select account…" />
-              </SelectTrigger>
-              <SelectContent>
-                {accountOptions.length === 0 && (
-                  <SelectItem value="_none" disabled>No active accounts for this method</SelectItem>
-                )}
-                {accountOptions.map(a => (
-                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
-                ))}
               </SelectContent>
             </Select>
           </div>
@@ -388,7 +310,7 @@ function RecordPaymentDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose} data-testid="button-cancel-payment">Cancel</Button>
           <Button
-            disabled={!canSubmit}
+            disabled={!amount || parseFloat(amount) <= 0 || payMut.isPending}
             onClick={() => payMut.mutate()}
             data-testid="button-record-payment"
           >
@@ -397,28 +319,6 @@ function RecordPaymentDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-
-    {/* Fix #9 — Duplicate payment confirmation */}
-    <AlertDialog open={dupConfirmOpen} onOpenChange={setDupConfirmOpen}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Possible Duplicate Payment</AlertDialogTitle>
-          <AlertDialogDescription>{dupMessage}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={forcePayMut.isPending}>Go Back</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={() => forcePayMut.mutate()}
-            disabled={forcePayMut.isPending}
-            className="bg-amber-600 hover:bg-amber-700"
-            data-testid="button-confirm-duplicate-payment"
-          >
-            {forcePayMut.isPending ? "Recording…" : "Record Anyway"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-    </>
   );
 }
 
@@ -438,48 +338,10 @@ function SalesReturnDialog({
   const [reason, setReason] = useState("");
   const [qtys, setQtys] = useState<Record<string, string>>({});
   const [processed, setProcessed] = useState(false);
-  const [selectedSerialIds, setSelectedSerialIds] = useState<string[]>([]);
-  const [scanInput, setScanInput] = useState("");
-
-  // Fetch dispatched serials for this invoice's challan (only when there is a challan)
-  const challanId = (invoice as any).challanId ?? (invoice as any).challan_id ?? null;
-  const { data: dispatchedSerials = [] } = useQuery<any[]>({
-    queryKey: ["/api/serial-numbers/by-challan", challanId],
-    queryFn: () => fetch(`/api/serial-numbers/by-challan/${challanId}`, {
-      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
-    }).then((r) => r.json()),
-    enabled: !!challanId && open,
-  });
-
-  function toggleSerial(id: string) {
-    setSelectedSerialIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
-  }
-
-  function handleScanKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key !== "Enter") return;
-    const val = scanInput.trim();
-    if (!val) return;
-    const match = dispatchedSerials.find(
-      (s) => s.serial_number?.toLowerCase() === val.toLowerCase()
-    );
-    if (match) {
-      if (!selectedSerialIds.includes(match.id)) {
-        setSelectedSerialIds((prev) => [...prev, match.id]);
-        toast({ title: "Serial added", description: match.serial_number });
-      } else {
-        toast({ title: "Already selected", description: match.serial_number, variant: "destructive" });
-      }
-    } else {
-      toast({ title: "Not found", description: `Serial "${val}" not found among dispatched serials for this challan`, variant: "destructive" });
-    }
-    setScanInput("");
-  }
 
   const createMut = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/sales-returns/create-from-invoice/${invoice.id}`, {});
-      return res.json();
-    },
+    mutationFn: () =>
+      apiRequest("POST", `/api/sales-returns/create-from-invoice/${invoice.id}`, {}),
     onSuccess: (sr: any) => {
       setSalesReturn(sr);
       const initQtys: Record<string, string> = {};
@@ -506,10 +368,7 @@ function SalesReturnDialog({
           qtyReturned: parseFloat(qtys[item.id] ?? "0"),
         })),
       });
-      const res = await apiRequest("POST", `/api/sales-returns/${salesReturn.id}/process`, {
-        returnedSerialIds: selectedSerialIds,
-      });
-      return res.json();
+      return apiRequest("POST", `/api/sales-returns/${salesReturn.id}/process`, {});
     },
     onSuccess: (result: any) => {
       setProcessed(true);
@@ -552,8 +411,6 @@ function SalesReturnDialog({
     setReason("");
     setQtys({});
     setProcessed(false);
-    setSelectedSerialIds([]);
-    setScanInput("");
     onClose();
   }
 
@@ -690,71 +547,6 @@ function SalesReturnDialog({
                   </div>
                 </div>
 
-                {/* Serial Number Selection — only shown when challan has dispatched tracked serials */}
-                {challanId && !processed && dispatchedSerials.length > 0 && (
-                  <div>
-                    <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                      <ScanLine className="w-4 h-4" />
-                      Serial Numbers Being Returned
-                      <span className="text-xs font-normal text-muted-foreground ml-1">
-                        ({selectedSerialIds.length}/{dispatchedSerials.length} selected)
-                      </span>
-                    </h3>
-                    <div className="flex gap-2 mb-2">
-                      <Input
-                        placeholder="Scan or type serial number, press Enter to add…"
-                        value={scanInput}
-                        onChange={(e) => setScanInput(e.target.value)}
-                        onKeyDown={handleScanKey}
-                        className="h-8 text-sm"
-                        data-testid="input-serial-scan"
-                      />
-                    </div>
-                    <div className="rounded-lg border overflow-hidden max-h-44 overflow-y-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow className="bg-muted/50">
-                            <TableHead className="w-8 text-xs py-1.5 px-3">
-                              <Checkbox
-                                checked={dispatchedSerials.length > 0 && selectedSerialIds.length === dispatchedSerials.length}
-                                onCheckedChange={(c) => setSelectedSerialIds(c ? dispatchedSerials.map((s: any) => s.id) : [])}
-                                aria-label="Select all serials"
-                              />
-                            </TableHead>
-                            <TableHead className="text-xs py-1.5">Serial #</TableHead>
-                            <TableHead className="text-xs py-1.5">Product</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {dispatchedSerials.map((sn: any) => (
-                            <TableRow
-                              key={sn.id}
-                              className="cursor-pointer hover:bg-muted/30"
-                              onClick={() => toggleSerial(sn.id)}
-                              data-testid={`row-serial-${sn.id}`}
-                            >
-                              <TableCell className="py-1.5 px-3">
-                                <Checkbox
-                                  checked={selectedSerialIds.includes(sn.id)}
-                                  onCheckedChange={() => toggleSerial(sn.id)}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                              </TableCell>
-                              <TableCell className="text-sm font-mono py-1.5">{sn.serial_number}</TableCell>
-                              <TableCell className="text-xs text-muted-foreground py-1.5">{sn.product_name ?? sn.sku ?? sn.product_id}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                    {selectedSerialIds.length > 0 && (
-                      <p className="text-xs text-green-700 mt-1">
-                        ✓ {selectedSerialIds.length} serial(s) will be marked as returned
-                      </p>
-                    )}
-                  </div>
-                )}
-
                 {/* Summary footer */}
                 {!processed && (
                   <Card className="bg-muted/30">
@@ -817,7 +609,7 @@ function SalesReturnDialog({
 
 // ─── Invoice Detail Panel ────────────────────────────────────────────────────
 async function uploadInvoiceFile(invoiceId: string, route: string, file: File, extra?: Record<string, string>) {
-  const token = sessionStorage.getItem("token");
+  const token = localStorage.getItem("token");
   const fd = new FormData();
   fd.append("file", file);
   if (extra) Object.entries(extra).forEach(([k, v]) => v && fd.append(k, v));
@@ -841,8 +633,6 @@ function InvoiceDetailPanel({
   const [payOpen, setPayOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [waOpen, setWaOpen] = useState(false);
-  const [cancelOpen, setCancelOpen] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
   const [signedCopyFile, setSignedCopyFile] = useState<File | null>(null);
   const [ewayBillFile, setEwayBillFile] = useState<File | null>(null);
   const [ewayBillNumber, setEwayBillNumber] = useState("");
@@ -858,7 +648,7 @@ function InvoiceDetailPanel({
   const { data: inv, isLoading } = useQuery<InvoiceWithExtras>({
     queryKey: ["/api/sales-invoices", invoiceId],
     queryFn: () => fetch(`/api/sales-invoices/${invoiceId}`, {
-      headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
     }).then((r) => r.json()),
     enabled: !!invoiceId,
   });
@@ -918,24 +708,6 @@ function InvoiceDetailPanel({
     },
     onSuccess: () => { invalidateInv(); setEwayBillFile(null); setEwayBillNumber(""); setEwayBillDate(""); toast({ title: "E-way Bill Saved", description: "E-way bill details updated." }); },
     onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
-  });
-
-  const cancelMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/sales-invoices/${invoiceId}/cancel`, { cancellationReason: cancelReason });
-      return res.json();
-    },
-    onSuccess: () => {
-      invalidateInv();
-      setCancelOpen(false);
-      setCancelReason("");
-      toast({ title: "Invoice Cancelled", description: "The invoice has been cancelled." });
-    },
-    onError: async (e: any) => {
-      let msg = "Failed to cancel invoice";
-      try { const b = await e.response?.json?.(); msg = b?.message ?? e.message ?? msg; } catch { msg = e.message ?? msg; }
-      toast({ title: "Cannot Cancel", description: msg, variant: "destructive" });
-    },
   });
 
   if (isLoading || !inv) return <div className="p-6 text-muted-foreground text-sm">Loading invoice…</div>;
@@ -1145,6 +917,9 @@ function InvoiceDetailPanel({
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-semibold">Payment History</h3>
           <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setReturnOpen(true)} data-testid="button-create-return">
+              <RotateCcw className="w-3 h-3 mr-1" /> Create Return
+            </Button>
             {inv.status !== "paid" && (
               <Button size="sm" variant="outline" onClick={() => setPayOpen(true)} data-testid="button-add-payment">
                 <CreditCard className="w-4 h-4 mr-1" /> Record Payment
@@ -1361,21 +1136,6 @@ function InvoiceDetailPanel({
       {/* ── Attachments ───────────────────────────────────────────────────── */}
       <AttachmentsPanel entityType="sales_invoices" entityId={invoiceId} />
 
-      {/* ── Cancel Invoice ────────────────────────────────────────────────── */}
-      {(inv as any).uploadStatus !== "cancelled" && (
-        <div className="pt-1">
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
-            onClick={() => setCancelOpen(true)}
-            data-testid="button-cancel-invoice"
-          >
-            Cancel Invoice
-          </Button>
-        </div>
-      )}
-
       {/* ── Action Buttons ────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 pt-1">
         {(inv as any).signedCopyUrl ? (
@@ -1401,46 +1161,6 @@ function InvoiceDetailPanel({
           </Button>
         )}
       </div>
-
-      {/* Cancel Invoice confirmation dialog */}
-      <Dialog open={cancelOpen} onOpenChange={(o) => { if (!o) { setCancelOpen(false); setCancelReason(""); } }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-600">
-              <AlertTriangle className="w-4 h-4" /> Cancel Invoice
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 py-2">
-            <p className="text-sm text-muted-foreground">
-              This will permanently cancel invoice <span className="font-mono font-semibold">{inv.invoiceNumber}</span>.
-              Invoices with recorded payments cannot be cancelled.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-xs">Cancellation Reason *</Label>
-              <Textarea
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                placeholder="Enter reason for cancellation…"
-                className="text-sm h-20 resize-none"
-                data-testid="input-cancel-reason"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setCancelOpen(false); setCancelReason(""); }}>
-              Keep Invoice
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={!cancelReason.trim() || cancelMutation.isPending}
-              onClick={() => cancelMutation.mutate()}
-              data-testid="button-confirm-cancel-invoice"
-            >
-              {cancelMutation.isPending ? "Cancelling…" : "Cancel Invoice"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {payOpen && (
         <RecordPaymentDialog invoice={inv} open={payOpen} onClose={() => { setPayOpen(false); }} />
@@ -1732,6 +1452,11 @@ export default function SalesInvoices() {
   const [search, setSearch] = useState("");
   const [activeView, setActiveView] = useState<"invoices" | "returns">("invoices");
   const [uploadFilter, setUploadFilter] = useState<"all" | "pending_upload" | "recorded">("all");
+  const [editInvoiceDateDialog, setEditInvoiceDateDialog] = useState<{ invoiceId: string; invoiceNumber: string } | null>(null);
+  const [editInvoiceDateValue, setEditInvoiceDateValue] = useState<string>("");
+  const { data: currentUser } = useCurrentUser();
+  const isAdmin = (currentUser as any)?.role === "admin";
+  const { toast } = useToast();
 
   // Phase 3 D3: redirect ?tab=returns to invoices tab
   useEffect(() => {
@@ -1747,6 +1472,20 @@ export default function SalesInvoices() {
   const { data: invoices = [], isLoading } = useQuery<SalesInvoice[]>({ queryKey: ["/api/sales-invoices"] });
   const { data: customers = [] } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: allReturns = [], isLoading: returnsLoading } = useQuery<SalesReturnSummary[]>({ queryKey: ["/api/sales-returns"] });
+
+  const editInvoiceDateMutation = useMutation({
+    mutationFn: async ({ invoiceId, invoiceDate }: { invoiceId: string; invoiceDate: string }) => {
+      const res = await apiRequest("PATCH", `/api/sales-invoices/${invoiceId}/invoice-date`, { invoiceDate });
+      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to update date"); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/sales-invoices"] });
+      setEditInvoiceDateDialog(null);
+      toast({ title: "Invoice date updated" });
+    },
+    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
 
   const filtered = invoices.filter((inv) => {
     const q = search.toLowerCase();
@@ -1903,8 +1642,17 @@ export default function SalesInvoices() {
                           <span className="font-semibold text-sm font-mono truncate">{inv.invoiceNumber}</span>
                         </div>
                         <p className="text-xs text-muted-foreground truncate mt-0.5">{customer?.name ?? "—"}</p>
-                        <p className="text-xs text-muted-foreground/70 mt-0.5">
+                        <p className="text-xs text-muted-foreground/70 mt-0.5 flex items-center gap-1">
                           {new Date(inv.invoiceDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                          {isAdmin && (
+                            <button
+                              className="ml-1 opacity-50 hover:opacity-100 transition-opacity"
+                              title="Edit invoice date"
+                              onClick={e => { e.stopPropagation(); const d = new Date(inv.invoiceDate).toISOString().slice(0, 10); setEditInvoiceDateDialog({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber }); setEditInvoiceDateValue(d); }}
+                            >
+                              <Pencil className="w-2.5 h-2.5" />
+                            </button>
+                          )}
                         </p>
                       </div>
                       {/* Right: amount + badges */}
@@ -1951,6 +1699,34 @@ export default function SalesInvoices() {
       </div>
 
       {createOpen && <CreateInvoiceDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
+
+      {/* Edit Invoice Date Dialog (admin only) */}
+      <Dialog open={!!editInvoiceDateDialog} onOpenChange={(o) => { if (!o) setEditInvoiceDateDialog(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Edit Invoice Date</DialogTitle>
+            <DialogDescription>{editInvoiceDateDialog?.invoiceNumber} — Update the invoice date</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label>Invoice Date</Label>
+            <Input
+              type="date"
+              value={editInvoiceDateValue}
+              onChange={e => setEditInvoiceDateValue(e.target.value)}
+              max={new Date().toISOString().slice(0, 10)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditInvoiceDateDialog(null)}>Cancel</Button>
+            <Button
+              disabled={!editInvoiceDateValue || editInvoiceDateMutation.isPending}
+              onClick={() => { if (editInvoiceDateDialog && editInvoiceDateValue) editInvoiceDateMutation.mutate({ invoiceId: editInvoiceDateDialog.invoiceId, invoiceDate: editInvoiceDateValue }); }}
+            >
+              {editInvoiceDateMutation.isPending ? "Saving..." : "Save Date"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       </div>
       )}
     </div>

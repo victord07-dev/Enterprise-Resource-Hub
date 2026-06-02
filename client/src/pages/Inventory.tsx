@@ -2792,7 +2792,11 @@ export default function Inventory() {
                                 {s.status.replace("_", " ")}
                               </Badge>
                             </td>
-                            <td className="p-2 font-mono text-xs text-muted-foreground">{so?.orderNumber ?? "—"}</td>
+                            <td className="p-2 font-mono text-xs text-muted-foreground">
+                              {s.grnNumber && <div className="text-green-700">{s.grnNumber}</div>}
+                              {s.challanNumber && <div className="text-blue-600">{s.challanNumber}</div>}
+                              {!s.grnNumber && !s.challanNumber && "—"}
+                            </td>
                             <td className="p-2">{cust?.name ?? (s.customerId ? s.customerId.slice(0, 8) + "…" : "—")}</td>
                             <td className="p-2 text-muted-foreground text-xs">
                               {s.createdAt ? new Date(s.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}

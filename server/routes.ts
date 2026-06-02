@@ -5561,6 +5561,58 @@ export async function registerRoutes(
     }
   });
 
+  // ======================== SERIAL NUMBERS ========================
+  // GET /api/serial-numbers — list all regular (non-combo) serial numbers
+  // JOINs delivery_challans and goods_receipt_notes to return challanNumber and grnNumber.
+  app.get("/api/serial-numbers", authenticateToken, async (req: any, res) => {
+    try {
+      const { search, status } = req.query as { search?: string; status?: string };
+      const result = await db.execute(sql`
+        SELECT
+          sn.id,
+          sn.product_id       AS "productId",
+          sn.serial_number    AS "serialNumber",
+          sn.barcode_value    AS "barcodeValue",
+          sn.status,
+          sn.warehouse_id     AS "warehouseId",
+          sn.grn_id           AS "grnId",
+          sn.grn_item_id      AS "grnItemId",
+          sn.challan_id       AS "challanId",
+          sn.sales_order_id   AS "salesOrderId",
+          sn.customer_id      AS "customerId",
+          sn.dispatched_at    AS "dispatchedAt",
+          sn.warranty_months  AS "warrantyMonths",
+          sn.warranty_expires_at AS "warrantyExpiresAt",
+          sn.notes,
+          sn.created_at       AS "createdAt",
+          g.grn_number        AS "grnNumber",
+          dc.challan_number   AS "challanNumber"
+        FROM serial_numbers sn
+        LEFT JOIN goods_receipt_notes g  ON g.id  = sn.grn_id
+        LEFT JOIN delivery_challans  dc ON dc.id = sn.challan_id
+        WHERE 1=1
+          ${search ? sql`AND sn.serial_number ILIKE ${'%' + search + '%'}` : sql``}
+          ${status && status !== 'all' ? sql`AND sn.status = ${status}` : sql``}
+        ORDER BY sn.created_at DESC
+      `);
+      res.json((result as any).rows ?? result);
+    } catch (error) {
+      console.error("GET /api/serial-numbers error:", error);
+      res.status(500).json({ message: "Failed to fetch serial numbers" });
+    }
+  });
+
+  // GET /api/combo-serials — list all combo component serial records
+  app.get("/api/combo-serials", authenticateToken, async (_req, res) => {
+    try {
+      const data = await storage.listComboSerials();
+      res.json(data);
+    } catch (error) {
+      console.error("GET /api/combo-serials error:", error);
+      res.status(500).json({ message: "Failed to fetch combo serials" });
+    }
+  });
+
   // ======================== GOODS RECEIPT NOTES (GRN) ========================
   app.get("/api/grns", authenticateToken, async (_req, res) => {
     try {

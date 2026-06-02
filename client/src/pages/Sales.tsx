@@ -2645,7 +2645,7 @@ export default function Sales() {
                                             variant="outline"
                                             className="border-emerald-400 text-emerald-600 dark:text-emerald-400 dark:border-emerald-600"
                                             data-testid={`button-view-invoice-${order.id}`}
-                                            onClick={() => navigate(`/sales-invoices`)}
+                                            onClick={() => navigate(`/sales-invoices?invoiceId=${soInvoiceMap[order.id].id}`)}
                                           >
                                             <Receipt className="w-3 h-3 mr-1" /> View Invoice
                                           </Button>

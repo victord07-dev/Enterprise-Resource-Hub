@@ -1781,13 +1781,17 @@ export default function SalesInvoices() {
   const [uploadFilter, setUploadFilter] = useState<"all" | "pending_upload" | "recorded">("all");
 
   // Phase 3 D3: redirect ?tab=returns to invoices tab
+  // Also: ?invoiceId=<id> deep-links directly to a specific invoice from Sales Orders
   useEffect(() => {
-    if (!SHOW_SALES_RETURNS) {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("tab") === "returns") {
-        window.history.replaceState({}, "", "/sales-invoices");
-        setActiveView("invoices");
-      }
+    const params = new URLSearchParams(window.location.search);
+    if (!SHOW_SALES_RETURNS && params.get("tab") === "returns") {
+      window.history.replaceState({}, "", "/sales-invoices");
+      setActiveView("invoices");
+    }
+    const deepLinkId = params.get("invoiceId");
+    if (deepLinkId) {
+      setSelectedId(deepLinkId);
+      window.history.replaceState({}, "", "/sales-invoices");
     }
   }, []);
 

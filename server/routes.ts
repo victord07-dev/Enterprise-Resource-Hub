@@ -163,7 +163,7 @@ async function calculateReservedStockForOtherOrders(excludeOrderId: string, stor
   const reserved: Record<string, number> = {};
   for (const order of activeOrders) {
     const orderItems = await storage.getSalesOrderItems(order.id);
-    const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+    const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle" || it.itemType === "combo") && it.productId);
     if (productItems.length === 0) continue;
 
     const challans = await storage.getDeliveryChallansByOrder(order.id);
@@ -402,7 +402,7 @@ async function checkAndAdvanceSalesOrderOnChallan(orderId: string, storage: ISto
   if (!order) return;
 
   const orderItems = await storage.getSalesOrderItems(orderId);
-  const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+  const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle" || it.itemType === "combo") && it.productId);
   if (productItems.length === 0) return;
 
   const allChallans = await storage.getDeliveryChallans();
@@ -4727,7 +4727,7 @@ export async function registerRoutes(
 
       for (const order of activeOrders) {
         const orderItems = await storage.getSalesOrderItems(order.id);
-        const productItems = orderItems.filter(it => it.itemType === "product" && it.productId);
+        const productItems = orderItems.filter(it => (it.itemType === "product" || it.itemType === "bundle" || it.itemType === "combo") && it.productId);
         if (productItems.length === 0) continue;
 
         const challans = await storage.getDeliveryChallansByOrder(order.id);
@@ -7349,6 +7349,22 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Confirm GRN error:", error);
       res.status(500).json({ message: "Failed to confirm GRN" });
+    }
+  });
+
+  // POST /api/grns/:id/reset-combo-pending — admin-only, resets comboSerialsPending=true
+  // Used when a GRN was confirmed without the flag being set (e.g. server bug during confirmation).
+  app.post("/api/grns/:id/reset-combo-pending", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin") return res.status(403).json({ message: "Admin only" });
+      const grn = await storage.getGRN(req.params.id);
+      if (!grn) return res.status(404).json({ message: "GRN not found" });
+      if (grn.status !== "confirmed") return res.status(400).json({ message: "Only confirmed GRNs" });
+      await db.execute(sql`UPDATE goods_receipt_notes SET combo_serials_pending = true WHERE id = ${grn.id}`);
+      await logAction(req.user.id, "reset_combo_pending", "grn", `Reset comboSerialsPending=true on ${grn.grnNumber}`);
+      res.json({ success: true, grnNumber: grn.grnNumber });
+    } catch (e) {
+      res.status(500).json({ message: "Failed to reset flag" });
     }
   });
 

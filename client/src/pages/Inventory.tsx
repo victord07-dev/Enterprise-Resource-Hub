@@ -1,4 +1,4 @@
-import { useState, Fragment, useCallback, useEffect, useRef } from "react";
+﻿import { useState, Fragment, useCallback, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,11 +15,16 @@ import { getUser } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt } from "lucide-react";
+import { Plus, Search, Package, Warehouse, AlertTriangle, ArrowUpDown, Pencil, Trash2, Wrench, ArrowDownCircle, ArrowUpCircle, RefreshCw, Calendar, ChevronDown, ChevronRight, Truck, Send, CheckCircle, FileText, PackagePlus, ShoppingCart, MapPin, Lock, Upload, Download, PenLine, XCircle, ClipboardCheck, Receipt, ScanLine, History, Layers } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Product, Warehouse as WarehouseType, StockMovement, InventoryStock, DeliveryChallan, DeliveryChallanItem, SalesOrder, SalesOrderItem, Supplier, PurchaseOrder, PurchaseOrderItem, GoodsReceiptNote, GoodsReceiptNoteItem, Customer } from "@shared/schema";
 import AttachmentsPanel from "@/components/AttachmentsPanel";
 import { generateChallanPDF } from "@/lib/challan-pdf";
+import SerialEntryDialog, { type SerialEntryItem } from "@/components/inventory/SerialEntryDialog";
+import SerialDispatchDialog, {
+  type SerialAssignmentSpec,
+  type ConfirmedAssignment,
+} from "@/components/inventory/SerialDispatchDialog";
 
 const productCategories = ["Solar Panels", "Electronics", "Commodities", "Accessories"];
 const serviceCategories = ["Installation", "AMC", "Site Survey", "Repair", "Maintenance", "Custom"];
@@ -31,7 +36,7 @@ async function uploadFileToStorage(
   entityId: string,
   documentType: string,
 ): Promise<string> {
-  const token = localStorage.getItem("token");
+  const token = sessionStorage.getItem("token");
   const formData = new FormData();
   formData.append("file", file);
   formData.append("entityType", entityType);
@@ -55,6 +60,7 @@ export default function Inventory() {
   const { toast } = useToast();
   const { user } = useAuth();
   const isAdmin = getUser()?.role === "admin";
+  const isSalesManager = user?.role === "sales_manager";
   const [location, navigate] = useLocation();
   const { data: products, isLoading: productsLoading } = useQuery<Product[]>({ queryKey: ["/api/products"] });
   const [productSearch, setProductSearch] = useState("");
@@ -72,7 +78,9 @@ export default function Inventory() {
   const SHOW_STOCK_ADJUSTMENT = false; // Phase 3: hidden from UI; keep to re-enable later
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [adjustmentForm, setAdjustmentForm] = useState({ productId: "", warehouseId: "", movementType: "in", quantity: "", notes: "" });
-  const [activeTab, setActiveTab] = useState("products");
+  // getUser() reads synchronously from sessionStorage so the correct default tab
+  // is set on the very first render — before the useAuth query resolves.
+  const [activeTab, setActiveTab] = useState(getUser()?.role === "sales_manager" ? "challans" : "products");
 
   const urlParamsHandled = useRef(false);
   const [movementFilterProduct, setMovementFilterProduct] = useState("all");
@@ -138,7 +146,9 @@ export default function Inventory() {
     if (p.type === "service") return false;
     const totalStock = getProductTotalStock(p.id);
     const reserved = reservedStockData?.[p.id]?.total ?? 0;
-    const available = Math.max(0, totalStock - reserved);
+    // M-4: Do NOT clamp to 0 — negative available stock is a discrepancy that
+    // must be surfaced (it is always below any minStockLevel threshold).
+    const available = totalStock - reserved;
     return available < (p.minStockLevel ?? 0);
   }) ?? [];
 
@@ -245,17 +255,17 @@ export default function Inventory() {
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
 
   const [challanDialogOpen, setChallanDialogOpen] = useState(false);
-  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
   const [challanPhoneError, setChallanPhoneError] = useState("");
   const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
   const challanFormValid =
     !!challanForm.orderId &&
     !!challanForm.sourceId &&
-    !!challanForm.physicalChallanNumber.trim() &&
     !!challanForm.vehicleNumber.trim() &&
     !!challanForm.vehicleOwnerName.trim() &&
     !!challanForm.driverName.trim() &&
-    INDIAN_MOBILE_RE.test(challanForm.driverPhone.trim());
+    INDIAN_MOBILE_RE.test(challanForm.driverPhone.trim()) &&
+    !!challanForm.deliveryAddress.trim();
   const [challanItems, setChallanItems] = useState<Array<{ productId: string; description: string; quantity: number; unitPrice: number; maxQty: number }>>([]);
   const [challanStockAvailability, setChallanStockAvailability] = useState<Record<string, InventoryStock[]>>({});
   const [challanFilterStatus, setChallanFilterStatus] = useState("all");
@@ -263,26 +273,36 @@ export default function Inventory() {
   const [expandedChallanIds, setExpandedChallanIds] = useState<Set<string>>(new Set());
   const [highlightedChallanId, setHighlightedChallanId] = useState<string | null>(null);
   const [challanItemsMap, setChallanItemsMap] = useState<Record<string, DeliveryChallanItem[]>>({});
+  const [challanBundleCompsMap, setChallanBundleCompsMap] = useState<Record<string, any[]>>({});
+  const [requestedBundleComps, setRequestedBundleComps] = useState<Set<string>>(new Set());
   const [challanItemQtyEdits, setChallanItemQtyEdits] = useState<Record<string, string>>({});
 
-  // C2: Credit override dialog state
+  // C2: Credit override dialog state (challan dispatch)
   const [creditOverrideDialog, setCreditOverrideDialog] = useState<{ challanId: string; challanNumber: string; outstanding: number } | null>(null);
   const [creditOverrideReason, setCreditOverrideReason] = useState("");
+
+  // H-3: Credit override dialog state (GRN creation when supplier has outstanding balance)
+  // pendingGrnPayload stores the EXACT payload from the initial submission so the retry
+  // is bit-for-bit identical — line items, qty, rates, warehouse, notes all preserved.
+  const [grnCreditOverrideDialog, setGrnCreditOverrideDialog] = useState<{ outstanding: number; poNumber?: string } | null>(null);
+  const [grnCreditOverrideReason, setGrnCreditOverrideReason] = useState("");
+  const [pendingGrnPayload, setPendingGrnPayload] = useState<any>(null);
 
   // Challan lifecycle dialog state
   const [challanSignedCopyDialog, setChallanSignedCopyDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
   const [challanCancelDialog, setChallanCancelDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
   const [challanSignedCopyFile, setChallanSignedCopyFile] = useState<File | null>(null);
   const [challanCancelReason, setChallanCancelReason] = useState("");
+  // Date-correction dialogs
   const [challanDispatchDateDialog, setChallanDispatchDateDialog] = useState<{ challanId: string; challanNumber: string } | null>(null);
   const [challanDispatchDate, setChallanDispatchDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [challanDeliverDateDialog, setChallanDeliverDateDialog] = useState<{ challanId: string; challanNumber: string } | null>(null);
   const [challanDeliverDate, setChallanDeliverDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [editGrnDateDialog, setEditGrnDateDialog] = useState<{ grnId: string; grnNumber: string; currentDate: string } | null>(null);
+  const [editGrnDateValue, setEditGrnDateValue] = useState<string>("");
   const [grnSignedCopyDialog, setGrnSignedCopyDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
   const [grnSupplierInvoiceDialog, setGrnSupplierInvoiceDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
   const [grnCancelDialog, setGrnCancelDialog] = useState<{ open: boolean; grnId: string; grnNumber: string } | null>(null);
-  const [editGrnDateDialog, setEditGrnDateDialog] = useState<{ grnId: string; grnNumber: string; currentDate: string } | null>(null);
-  const [editGrnDateValue, setEditGrnDateValue] = useState<string>("");
   const [grnSignedCopyFile, setGrnSignedCopyFile] = useState<File | null>(null);
   const [grnSupplierInvoiceFile, setGrnSupplierInvoiceFile] = useState<File | null>(null);
   const [grnSupplierInvoiceNumber, setGrnSupplierInvoiceNumber] = useState("");
@@ -291,9 +311,112 @@ export default function Inventory() {
   const [grnChallanFile, setGrnChallanFile] = useState<File | null>(null);
   const [grnChallanFileUrl, setGrnChallanFileUrl] = useState<string>("");
 
+  // ── Combo Serial Capture state (Phase 3) ─────────────────────────────────────
+  const [comboSerialGrnId, setComboSerialGrnId]         = useState<string | null>(null);
+  // Loaded from /api/grns/:id/combo-serial-info
+  const [comboSerialItems, setComboSerialItems]         = useState<Array<{
+    grnItemId: string; productId: string; productName: string; receivedQty: number;
+    manifest: Array<{ id: string; componentName: string; linkedProductId: string | null; quantity: string; requiresSerialTracking: boolean; sortOrder: number }>;
+  }>>([]);
+  // Map of "grnItemId-unitIndex-componentName" → serial value
+  const [comboSerialValues, setComboSerialValues]       = useState<Record<string, string>>({});
+  const [comboSerialSaving, setComboSerialSaving]       = useState(false);
+
+  // ── Phase 4E: Serial Number state ────────────────────────────────────────────
+  const [serialEntryGrnId, setSerialEntryGrnId]         = useState<string | null>(null);
+  const [serialEntryItem, setSerialEntryItem]           = useState<SerialEntryItem | null>(null);
+  const [serialEntryQueue, setSerialEntryQueue]         = useState<SerialEntryItem[]>([]);
+  // Tracks which GRN is currently having its items fetched before confirm
+  const [fetchingItemsForGrn, setFetchingItemsForGrn]   = useState<string | null>(null);
+  const [serialDispatchChallanId, setSerialDispatchChallanId] = useState<string | null>(null);
+  const [serialDispatchSoId, setSerialDispatchSoId]           = useState<string | null>(null);
+  const [serialDispatchCustomerId, setSerialDispatchCustomerId] = useState<string>("");
+  /** All serial-assignment specs for the challan currently being dispatched. */
+  const [serialDispatchSpecs, setSerialDispatchSpecs]         = useState<SerialAssignmentSpec[]>([]);
+  // (dialog open-state is derived from serialDispatchSpecs.length > 0)
+  const [serialSearch, setSerialSearch]                 = useState("");
+  const [serialStatusFilter, setSerialStatusFilter]     = useState("all");
+  // Phase 5 — Combo Serial Lookup
+  const [comboLookupQuery, setComboLookupQuery]         = useState("");
+  const [comboLookupResult, setComboLookupResult]       = useState<any>(null); // null=no search, false=not found, object=found
+  const [comboLookupLoading, setComboLookupLoading]     = useState(false);
+
+  // Combo dispatch: interactive serial selection per unit/component
+  type ComboSerialSlot = {
+    componentName: string;
+    selectedId: string;       // record ID of selected combo_serial_record
+    serialNumber: string;     // display value (scanned/typed or from selection)
+    valid: boolean;
+    availableRecords: Array<{ id: string; serialNumber: string }>;
+  };
+  type ComboDispatchUnit = { productName: string; productId: string; unitIndex: number; slots: ComboSerialSlot[] };
+  type ComboDispatchPreview = { challanId: string; units: ComboDispatchUnit[] };
+  const [comboDispatchPreview, setComboDispatchPreview] = useState<ComboDispatchPreview | null>(null);
+  const updateComboSlot = (unitIdx: number, slotIdx: number, scanned: string) => {
+    setComboDispatchPreview(prev => {
+      if (!prev) return prev;
+      const units = prev.units.map((u, ui) => {
+        if (ui !== unitIdx) return u;
+        const slots = u.slots.map((s, si) => {
+          if (si !== slotIdx) return s;
+          const match = s.availableRecords.find(r => r.serialNumber.toLowerCase() === scanned.trim().toLowerCase());
+          return { ...s, serialNumber: scanned, selectedId: match?.id ?? "", valid: !!match };
+        });
+        return { ...u, slots };
+      });
+      return { ...prev, units };
+    });
+  };
+
+  const { data: allSerials = [], isLoading: serialsLoading } = useQuery<any[]>({
+    queryKey: ["/api/serial-numbers", serialSearch, serialStatusFilter],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (serialSearch)                           params.set("search", serialSearch);
+      if (serialStatusFilter !== "all")           params.set("status", serialStatusFilter);
+      return apiRequest("GET", `/api/serial-numbers?${params}`).then(r => r.json());
+    },
+  });
+
+  const { data: allComboSerials = [], isLoading: comboSerialsLoading } = useQuery<any[]>({
+    queryKey: ["/api/combo-serials"],
+    queryFn: () => apiRequest("GET", "/api/combo-serials").then(r => r.json()),
+  });
+
+  // After all serials for a GRN are entered, proceed to confirm
+  function handleSerialEntrySaved(grnItemId: string) {
+    const remaining = serialEntryQueue.filter(q => q.grnItemId !== grnItemId);
+    setSerialEntryQueue(remaining);
+    if (remaining.length > 0) {
+      setSerialEntryItem(remaining[0]);
+    } else {
+      setSerialEntryItem(null);
+      setSerialEntryGrnId(null);
+      // Now actually confirm the GRN
+      if (serialEntryGrnId) confirmGrnMutation.mutate(serialEntryGrnId);
+    }
+  }
+
+  /**
+   * Called by SerialDispatchDialog when the user confirms all serial selections.
+   * Closes the dialog and fires the single atomic dispatch request.
+   */
+  function handleSerialDispatchConfirm(assignments: ConfirmedAssignment[], warrantyMonths: number) {
+    const challanId = serialDispatchChallanId;
+    // Close dialog immediately
+    setSerialDispatchSpecs([]);
+    setSerialDispatchChallanId(null);
+    if (challanId) {
+      dispatchChallanMutation.mutate({ id: challanId, assignments, warrantyMonths });
+    }
+  }
+
   const CHALLAN_ELIGIBLE_STATUSES = ["confirmed", "procurement", "ready_to_ship", "dispatched", "shipped", "delivered", "installed", "completed"];
 
-  const eligibleSalesOrders = (salesOrders ?? []).filter(o => CHALLAN_ELIGIBLE_STATUSES.includes(o.status));
+  const eligibleSalesOrders = (salesOrders ?? []).filter(o =>
+    CHALLAN_ELIGIBLE_STATUSES.includes(o.status) &&
+    !(deliveryChallans ?? []).some(c => c.orderId === o.id && c.status !== "cancelled")
+  );
 
   const filteredChallans = (deliveryChallans ?? []).filter((c) => {
     if (challanFilterStatus !== "all" && c.status !== challanFilterStatus) return false;
@@ -331,7 +454,7 @@ export default function Inventory() {
     });
     if (!challanItemsMap[challanId]) {
       try {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
         const res = await fetch(`/api/delivery-challans/${challanId}/items`, { headers });
         const items = await res.json();
         setChallanItemsMap(prev => ({ ...prev, [challanId]: Array.isArray(items) ? items : [] }));
@@ -341,8 +464,32 @@ export default function Inventory() {
     }
   }, [challanItemsMap]);
 
+  // Load bundle components whenever new challan items are fetched
+  useEffect(() => {
+    if (!products) return;
+    const token = sessionStorage.getItem("token");
+    const headers = { Authorization: `Bearer ${token}` };
+    const toLoad: string[] = [];
+    Object.values(challanItemsMap).flat().forEach(item => {
+      if (item.productId && !requestedBundleComps.has(item.productId)) {
+        const prod = products.find(p => p.id === item.productId);
+        if ((prod as any)?.type === "bundle") toLoad.push(item.productId);
+      }
+    });
+    if (toLoad.length === 0) return;
+    setRequestedBundleComps(prev => new Set([...prev, ...toLoad]));
+    toLoad.forEach(pid => {
+      fetch(`/api/products/${pid}/bundle-items`, { headers })
+        .then(r => r.json())
+        .then(comps => {
+          if (Array.isArray(comps)) setChallanBundleCompsMap(prev => ({ ...prev, [pid]: comps }));
+        })
+        .catch(() => {});
+    });
+  }, [challanItemsMap, products]);
+
   const openCreateChallan = () => {
-    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", physicalChallanNumber: "", vehicleOwnerName: "", driverPhone: "", notes: "" });
+    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
     setChallanPhoneError("");
     setChallanItems([]);
     setChallanStockAvailability({});
@@ -350,7 +497,7 @@ export default function Inventory() {
   };
 
   const loadOrderItems = async (orderId: string) => {
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
     try {
       const [itemsRes, remainingRes] = await Promise.all([
         fetch(`/api/sales-orders/${orderId}/items`, { headers }),
@@ -399,11 +546,19 @@ export default function Inventory() {
   });
 
   const dispatchChallanMutation = useMutation({
-    mutationFn: async ({ challanId, dispatchDate }: { challanId: string; dispatchDate?: string }) => {
-      const body: any = {};
-      if (dispatchDate) body.dispatchDate = dispatchDate;
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/dispatch`, body);
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Dispatch failed"); }
+    mutationFn: async (payload: string | { id: string; assignments?: ConfirmedAssignment[]; warrantyMonths?: number; comboSerialIds?: string[]; dispatchDate?: string }) => {
+      const id   = typeof payload === "string" ? payload : payload.id;
+      const body = typeof payload === "string" ? {} : {
+        assignments:    payload.assignments,
+        warrantyMonths: payload.warrantyMonths,
+        comboSerialIds: payload.comboSerialIds,
+        dispatchDate:   payload.dispatchDate,
+      };
+      const res = await apiRequest("POST", `/api/delivery-challans/${id}/dispatch`, body);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || "Dispatch failed");
+      }
       return res.json();
     },
     onSuccess: () => {
@@ -412,7 +567,6 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
-      setChallanDispatchDateDialog(null);
       toast({ title: "Challan dispatched" });
     },
     onError: (error: Error) => {
@@ -421,17 +575,15 @@ export default function Inventory() {
   });
 
   const deliverChallanMutation = useMutation({
-    mutationFn: async ({ challanId, deliveryDate }: { challanId: string; deliveryDate?: string }) => {
-      const body: any = {};
-      if (deliveryDate) body.deliveryDate = deliveryDate;
-      const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/deliver`, body);
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Deliver failed"); }
+    mutationFn: async (payload: string | { challanId: string; deliveryDate?: string }) => {
+      const id = typeof payload === "string" ? payload : payload.challanId;
+      const body = typeof payload === "string" ? {} : { deliveryDate: payload.deliveryDate };
+      const res = await apiRequest("POST", `/api/delivery-challans/${id}/deliver`, body);
       return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
-      setChallanDeliverDateDialog(null);
       toast({ title: "Challan delivered" });
     },
     onError: (error: Error) => {
@@ -453,8 +605,11 @@ export default function Inventory() {
       toast({ title: "Challan marked ready for signature" });
     },
     onError: (e: any, variables: { challanId: string; creditOverride?: boolean; creditReason?: string }) => {
-      const outstanding = e?.body?.outstanding ?? e?.outstanding;
-      if (e?.status === 400 && outstanding !== undefined) {
+      // H-2: ApiError.body contains the full server JSON response.
+      // Guard against NaN by requiring a finite number before opening the dialog.
+      const rawOutstanding = e?.body?.outstanding ?? e?.outstanding;
+      const outstanding = rawOutstanding !== undefined ? Number(rawOutstanding) : undefined;
+      if (e?.status === 400 && outstanding !== undefined && !isNaN(outstanding)) {
         const challan = (deliveryChallans ?? []).find(c => c.id === variables.challanId);
         setCreditOverrideDialog({
           challanId: variables.challanId,
@@ -497,6 +652,20 @@ export default function Inventory() {
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
 
+  // Edit GRN Received Date (admin-only for confirmed GRNs, cascades to inventory_lots)
+  const editGrnDateMutation = useMutation({
+    mutationFn: async ({ grnId, receivedDate }: { grnId: string; receivedDate: string }) => {
+      const res = await apiRequest("PATCH", `/api/grns/${grnId}/received-date`, { receivedDate });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      setEditGrnDateDialog(null);
+      toast({ title: "Received date updated", description: "Inventory lot dates updated for FIFO ordering." });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message ?? "Failed to update date", variant: "destructive" }),
+  });
+
   const cancelChallanMutation = useMutation({
     mutationFn: async ({ challanId, reason }: { challanId: string; reason: string }) => {
       const res = await apiRequest("POST", `/api/delivery-challans/${challanId}/cancel`, { cancellationReason: reason });
@@ -523,7 +692,7 @@ export default function Inventory() {
     },
     onSuccess: (_data, { challanId }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/delivery-challans"] });
-      const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
       fetch(`/api/delivery-challans/${challanId}/items`, { headers })
         .then(r => r.json())
         .then(items => setChallanItemsMap(prev => ({ ...prev, [challanId]: items })));
@@ -536,6 +705,7 @@ export default function Inventory() {
 
   const { data: purchaseOrders } = useQuery<PurchaseOrder[]>({ queryKey: ["/api/purchase-orders"] });
   const { data: grns, isLoading: grnsLoading } = useQuery<GoodsReceiptNote[]>({ queryKey: ["/api/grns"] });
+  const { data: supplierInvoices } = useQuery<any[]>({ queryKey: ["/api/supplier-invoices"] });
 
   const [grnDialogOpen, setGrnDialogOpen] = useState(false);
   const [grnForm, setGrnForm] = useState({ purchaseOrderId: "", warehouseId: "", deliveryCost: "", notes: "", supplierChallanNumber: "", supplierChallanDate: "" });
@@ -547,8 +717,14 @@ export default function Inventory() {
 
   useEffect(() => {
     if (!highlightedGrnId) return;
-    const t = setTimeout(() => setHighlightedGrnId(null), 3000);
-    return () => clearTimeout(t);
+    // Scroll highlighted GRN row into view
+    const scrollTimer = setTimeout(() => {
+      const el = document.getElementById(`grn-row-${highlightedGrnId}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 400);
+    // Fade out highlight after 3s
+    const fadeTimer = setTimeout(() => setHighlightedGrnId(null), 3000);
+    return () => { clearTimeout(scrollTimer); clearTimeout(fadeTimer); };
   }, [highlightedGrnId]);
 
   useEffect(() => {
@@ -563,10 +739,21 @@ export default function Inventory() {
       if (highlightGrn) {
         setHighlightedGrnId(highlightGrn);
         setExpandedGrnIds(prev => { const next = new Set(prev); next.add(highlightGrn); return next; });
+        // Pre-fetch items for the highlighted GRN so Confirm works immediately without a full refresh
+        fetch(`/api/grns/${highlightGrn}/items`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } })
+          .then(r => r.json())
+          .then(items => setGrnItemsMap(prev => ({ ...prev, [highlightGrn]: Array.isArray(items) ? items : [] })))
+          .catch(() => setGrnItemsMap(prev => ({ ...prev, [highlightGrn]: [] })));
       }
       if (challanId) {
         setHighlightedChallanId(challanId);
         setExpandedChallanIds(prev => { const next = new Set(prev); next.add(challanId); return next; });
+        // Pre-fetch items immediately so Dispatch works correctly (serial tracking, etc.)
+        // without requiring a manual expand or page refresh — mirrors GRN deep-link behaviour.
+        fetch(`/api/delivery-challans/${challanId}/items`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` } })
+          .then(r => r.json())
+          .then(items => setChallanItemsMap(prev => ({ ...prev, [challanId]: Array.isArray(items) ? items : [] })))
+          .catch(() => setChallanItemsMap(prev => ({ ...prev, [challanId]: [] })));
       }
       navigate("/inventory", { replace: true });
     }
@@ -603,7 +790,7 @@ export default function Inventory() {
     });
     if (!grnItemsMap[grnId]) {
       try {
-        const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+        const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
         const res = await fetch(`/api/grns/${grnId}/items`, { headers });
         const items = await res.json();
         setGrnItemsMap(prev => ({ ...prev, [grnId]: Array.isArray(items) ? items : [] }));
@@ -614,7 +801,7 @@ export default function Inventory() {
   }, [grnItemsMap]);
 
   const loadPOItemsForGRN = async (poId: string) => {
-    const headers = { Authorization: `Bearer ${localStorage.getItem("token")}` };
+    const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
     try {
       const res = await fetch(`/api/purchase-orders/${poId}/items`, { headers });
       const items: PurchaseOrderItem[] = await res.json();
@@ -638,23 +825,50 @@ export default function Inventory() {
 
   const grnMutation = useMutation({
     mutationFn: async (data: any) => {
-      const { lineItems: _lineItems, deliveryCost: _dc, totalAmount: _ta, ...grnData } = data;
+      // C-2: include edited line items (receivedQuantity + buyingPrice) so the server
+      // persists actual received values instead of PO defaults.
+      // H-3: creditOverride + creditReason are passed on the retry path; stripped here
+      // so they don't pollute grnData but forwarded explicitly in the body.
+      const { lineItems, deliveryCost: _dc, totalAmount: _ta, creditOverride, creditReason, ...grnData } = data;
       const poId = grnData.purchaseOrderId;
-      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`, {
+      const body: Record<string, any> = {
         warehouseId: grnData.warehouseId,
         supplierChallanNumber: grnData.supplierChallanNumber,
         supplierChallanDate: grnData.supplierChallanDate || undefined,
         notes: grnData.notes || undefined,
-      });
+        lineItems: Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : undefined,
+      };
+      if (creditOverride) {
+        body.creditOverride = true;
+        body.creditReason = creditReason;
+      }
+      const res = await apiRequest("POST", `/api/grns/create-from-po/${poId}`, body);
       return res.json();
     },
     onSuccess: (grn: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
       toast({ title: "GRN created", description: `GRN ${grn.grnNumber} created as draft` });
       setGrnDialogOpen(false);
+      // H-3: clear credit override state on success
+      setGrnCreditOverrideDialog(null);
+      setGrnCreditOverrideReason("");
+      setPendingGrnPayload(null);
     },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    onError: (error: any, variables: any) => {
+      // H-3: if the server returns 400 with outstanding supplier balance data,
+      // open the credit override dialog instead of a generic toast.
+      // `variables` is the EXACT payload passed to mutate() — stored as-is so
+      // the retry sends an identical request with creditOverride: true appended.
+      const rawOutstanding = error?.body?.outstanding ?? error?.outstanding;
+      const outstanding = rawOutstanding !== undefined ? Number(rawOutstanding) : undefined;
+      if (error?.status === 400 && outstanding !== undefined && !isNaN(outstanding) && isFinite(outstanding)) {
+        const po = (purchaseOrders ?? []).find((p: any) => p.id === variables.purchaseOrderId);
+        setPendingGrnPayload(variables);
+        setGrnCreditOverrideDialog({ outstanding, poNumber: po?.poNumber });
+        setGrnCreditOverrideReason("");
+      } else {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+      }
     },
   });
 
@@ -663,7 +877,7 @@ export default function Inventory() {
       const res = await apiRequest("POST", `/api/grns/${grnId}/confirm`);
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: async (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
       queryClient.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory-stock"] });
@@ -671,12 +885,80 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
+      // Phase 3: If combo serials are pending, open the capture modal automatically
+      if (data?.comboSerialsPending && data?.pendingComboItems?.length > 0 && data?.id) {
+        toast({ title: "GRN confirmed", description: "Goods received. Please capture serial numbers for combo components." });
+        openComboSerialModal(data.id);
+      } else {
+        toast({ title: "GRN confirmed", description: "Goods received and inventory updated" });
+      }
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
+
+  // Open the combo serial capture modal for a GRN (called after confirm or from pending badge)
+  const openComboSerialModal = async (grnId: string) => {
+    try {
+      const res = await apiRequest("GET", `/api/grns/${grnId}/combo-serial-info`);
+      const data = await res.json();
+      if (!data?.items?.length) {
+        toast({ title: "No combo items", description: "No manifest-defined combo items found in this GRN.", variant: "destructive" });
+        return;
+      }
+      // Pre-fill existing serials
+      const prefill: Record<string, string> = {};
+      for (const sr of (data.existingSerials ?? [])) {
+        const key = `${sr.grnItemId}-${sr.comboUnitIndex}-${sr.componentName}`;
+        prefill[key] = sr.serialNumber;
+      }
+      setComboSerialItems(data.items);
+      setComboSerialValues(prefill);
+      setComboSerialGrnId(grnId);
+    } catch {
+      toast({ title: "Error", description: "Could not load combo serial info.", variant: "destructive" });
+    }
+  };
+
+  const saveComboSerials = async () => {
+    if (!comboSerialGrnId) return;
+    setComboSerialSaving(true);
+    try {
+      const records: any[] = [];
+      for (const item of comboSerialItems) {
+        for (let unitIdx = 1; unitIdx <= item.receivedQty; unitIdx++) {
+          for (const comp of item.manifest.filter(c => c.requiresSerialTracking)) {
+            const key = `${item.grnItemId}-${unitIdx}-${comp.componentName}`;
+            const serial = comboSerialValues[key]?.trim() ?? "";
+            records.push({
+              grnItemId: item.grnItemId,
+              comboProductId: item.productId,
+              comboUnitIndex: unitIdx,
+              componentName: comp.componentName,
+              linkedProductId: comp.linkedProductId ?? null,
+              serialNumber: serial,
+            });
+          }
+        }
+      }
+      const res = await apiRequest("POST", `/api/grns/${comboSerialGrnId}/combo-serials`, { records });
+      const result = await res.json();
+      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
+      if (result.comboSerialsPending) {
+        toast({ title: `Serials saved (${result.saved})`, description: `${result.skipped} blank entries skipped. GRN still has pending serials.` });
+      } else {
+        toast({ title: "All serials captured", description: `${result.saved} serial records saved. GRN fully captured.` });
+        setComboSerialGrnId(null);
+        setComboSerialItems([]);
+        setComboSerialValues({});
+      }
+    } catch (err: any) {
+      toast({ title: "Error saving serials", description: err.message, variant: "destructive" });
+    } finally {
+      setComboSerialSaving(false);
+    }
+  };
 
   const deleteGrnMutation = useMutation({
     mutationFn: async (grnId: string) => {
@@ -755,20 +1037,6 @@ export default function Inventory() {
       setGrnCancelDialog(null);
       setGrnCancelReason("");
       toast({ title: "GRN cancelled" });
-    },
-    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
-  });
-
-  const editGrnDateMutation = useMutation({
-    mutationFn: async ({ grnId, receivedDate }: { grnId: string; receivedDate: string }) => {
-      const res = await apiRequest("PATCH", `/api/grns/${grnId}/received-date`, { receivedDate });
-      if (!res.ok) { const e = await res.json(); throw new Error(e.message || "Failed to update date"); }
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/grns"] });
-      setEditGrnDateDialog(null);
-      toast({ title: "GRN date updated" });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -938,9 +1206,10 @@ export default function Inventory() {
         className="space-y-4"
       >
         <TabsList>
+          {/* sales_manager sees: Products & Services, Challans, Serial Numbers */}
           <TabsTrigger value="products" data-testid="tab-products">Products & Services</TabsTrigger>
-          <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>
-          <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>
+          {!isSalesManager && <TabsTrigger value="warehouses" data-testid="tab-warehouses">Warehouses</TabsTrigger>}
+          {!isSalesManager && <TabsTrigger value="movements" data-testid="tab-movements">Stock Movements</TabsTrigger>}
           <TabsTrigger value="challans" data-testid="tab-challans">
             Challans
             {(deliveryChallans?.filter(c => c.status === "draft").length ?? 0) > 0 && (
@@ -949,7 +1218,10 @@ export default function Inventory() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>
+          {!isSalesManager && <TabsTrigger value="grn" data-testid="tab-grn">GRN</TabsTrigger>}
+          <TabsTrigger value="serial-numbers" data-testid="tab-serial-numbers" className="flex items-center gap-1">
+            <ScanLine className="w-3 h-3" />Serial Numbers
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -1008,7 +1280,8 @@ export default function Inventory() {
                         const totalStock = isProduct ? getProductTotalStock(product.id) : null;
                         const reservedInfo = isProduct ? reservedStockData?.[product.id] : null;
                         const reservedStock = reservedInfo?.total ?? 0;
-                        const availableStock = isProduct && totalStock !== null ? Math.max(0, totalStock - reservedStock) : null;
+                        // M-4: No Math.max clamp — negative stock must be visible, not hidden as 0.
+                        const availableStock = isProduct && totalStock !== null ? (totalStock - reservedStock) : null;
                         const incomingInfo = isProduct ? incomingStockData?.[product.id] : null;
                         const incomingStock = incomingInfo?.total ?? 0;
                         const isLowStock = isProduct && availableStock !== null && availableStock < (product.minStockLevel ?? 0);
@@ -1074,12 +1347,30 @@ export default function Inventory() {
                               </td>
                               <td className="p-3 text-right" data-testid={`text-product-available-${product.id}`}>
                                 {isProduct && availableStock !== null ? (
-                                  <span className={`font-medium ${availableStock <= 0 ? "text-red-600 dark:text-red-400" : isLowStock ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                                    {availableStock}
-                                    {isLowStock && (
+                                  // M-4: Negative stock renders red + ⚠ tooltip — discrepancy, not hidden as 0.
+                                  // Low-but-positive stock renders amber + ⚠. Zero renders muted. Positive renders green.
+                                  availableStock < 0 ? (
+                                    <span
+                                      className="font-medium text-red-600 dark:text-red-400 cursor-help"
+                                      title="Inventory discrepancy — available stock is negative. A stock adjustment is recommended."
+                                    >
+                                      {availableStock}
                                       <AlertTriangle className="w-3.5 h-3.5 inline-block ml-1" />
-                                    )}
-                                  </span>
+                                    </span>
+                                  ) : (
+                                    <span className={`font-medium ${
+                                      isLowStock
+                                        ? "text-amber-600 dark:text-amber-400"
+                                        : availableStock === 0
+                                          ? "text-muted-foreground"
+                                          : "text-emerald-600 dark:text-emerald-400"
+                                    }`}>
+                                      {availableStock}
+                                      {isLowStock && (
+                                        <AlertTriangle className="w-3.5 h-3.5 inline-block ml-1" />
+                                      )}
+                                    </span>
+                                  )
                                 ) : "—"}
                               </td>
                               <td className="p-3 text-right" data-testid={`text-product-incoming-${product.id}`}>
@@ -1563,9 +1854,52 @@ export default function Inventory() {
                                     data-testid={`button-pdf-challan-${challan.id}`}
                                     title="Download PDF"
                                     onClick={async () => {
-                                      const items = challanItemsMap[challan.id] || [];
+                                      const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+                                      // Fetch items on-demand if not yet loaded (row not expanded)
+                                      let items = challanItemsMap[challan.id];
+                                      if (!items) {
+                                        try {
+                                          const res = await fetch(`/api/delivery-challans/${challan.id}/items`, { headers });
+                                          const fetched = await res.json();
+                                          items = Array.isArray(fetched) ? fetched : [];
+                                          setChallanItemsMap(prev => ({ ...prev, [challan.id]: items as any }));
+                                        } catch {
+                                          items = [];
+                                        }
+                                      }
                                       const customer = customers?.find(c => c.id === challan.customerId);
-                                      await generateChallanPDF(challan, items, customer, products ?? []);
+
+                                      // Build SO item GST map so the PDF uses the rate locked on the SO
+                                      // (not the product master which may differ)
+                                      let soItemGstMap: Record<string, { gstRate: number; hsnCode?: string | null }> | undefined;
+                                      if (challan.orderId) {
+                                        try {
+                                          const soRes = await fetch(`/api/sales-orders/${challan.orderId}/items`, { headers });
+                                          const soItems = await soRes.json();
+                                          if (Array.isArray(soItems)) {
+                                            soItemGstMap = {};
+                                            for (const si of soItems) {
+                                              if (si.productId) {
+                                                soItemGstMap[si.productId] = {
+                                                  gstRate: Number(si.gstRate ?? si.gst_rate ?? 0),
+                                                  hsnCode: si.hsnCode ?? si.hsn_code ?? null,
+                                                };
+                                              }
+                                            }
+                                          }
+                                        } catch {
+                                          // non-fatal — fall back to product master
+                                        }
+                                      }
+
+                                      // Fetch combo serials allocated to this challan (non-fatal)
+                                      let comboSerialsMap: Record<string, Array<{ comboUnitIndex: number; componentName: string; serialNumber: string }>> | undefined;
+                                      try {
+                                        const csRes = await fetch(`/api/delivery-challans/${challan.id}/combo-serials`, { headers });
+                                        if (csRes.ok) comboSerialsMap = await csRes.json();
+                                      } catch { /* non-fatal */ }
+
+                                      await generateChallanPDF(challan, items, customer, products ?? [], challanBundleCompsMap, undefined, soItemGstMap, comboSerialsMap);
                                     }}
                                   >
                                     <Download className="w-3 h-3" />
@@ -1673,28 +2007,157 @@ export default function Inventory() {
                                       variant="outline"
                                       className="border-blue-400 text-blue-600 dark:text-blue-400"
                                       data-testid={`button-dispatch-challan-${challan.id}`}
-                                      disabled={dispatchChallanMutation.isPending}
-                                      onClick={() => { setChallanDispatchDate(new Date().toISOString().slice(0, 10)); setChallanDispatchDateDialog({ challanId: challan.id, challanNumber: challan.challanNumber }); }}
+                                      disabled={dispatchChallanMutation.isPending || challanItemsMap[challan.id] === undefined}
+                                      title={challanItemsMap[challan.id] === undefined ? "Loading items — please wait" : undefined}
+                                      onClick={async () => {
+                                        if (!confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) return;
+                                        // Phase 4E v2: build serial-assignment specs covering both
+                                        // regular tracked products and serialised bundle components.
+                                        try {
+                                          const challanItems = challanItemsMap[challan.id] ?? [];
+                                          const warehouseId  = challan.sourceType === "warehouse" ? challan.sourceId : null;
+                                          const token        = sessionStorage.getItem("token");
+                                          const headers      = { Authorization: `Bearer ${token}` };
+                                          const specs: SerialAssignmentSpec[] = [];
+
+                                          for (const item of challanItems) {
+                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                            if (!prod) continue;
+                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+
+                                            if ((prod as any).type === "bundle") {
+                                              // Fetch bundle components on-demand if not cached
+                                              let comps: any[] = challanBundleCompsMap[item.productId];
+                                              if (!comps) {
+                                                try {
+                                                  const r = await fetch(`/api/products/${item.productId}/bundle-items`, { headers });
+                                                  comps = await r.json();
+                                                  if (Array.isArray(comps)) {
+                                                    setChallanBundleCompsMap(prev => ({ ...prev, [item.productId]: comps }));
+                                                  } else {
+                                                    comps = [];
+                                                  }
+                                                } catch { comps = []; }
+                                              }
+                                              for (const comp of (comps ?? [])) {
+                                                const compProd = (products ?? []).find((p: any) => p.id === comp.componentProductId);
+                                                if (compProd?.requiresSerialTracking) {
+                                                  const reqQty = Math.round(Number(comp.quantity) * dispatchQty);
+                                                  specs.push({
+                                                    challanItemId:      item.id,
+                                                    componentProductId: comp.componentProductId,
+                                                    displayName:        (compProd as any).name ?? "Component",
+                                                    parentBundleName:   (prod as any).name,
+                                                    requiredQty:        reqQty,
+                                                    warehouseId,
+                                                  });
+                                                }
+                                              }
+                                            } else if ((prod as any).requiresSerialTracking) {
+                                              specs.push({
+                                                challanItemId:      item.id,
+                                                componentProductId: item.productId,
+                                                displayName:        (prod as any).name ?? "Product",
+                                                requiredQty:        dispatchQty,
+                                                warehouseId,
+                                              });
+                                            }
+                                          }
+
+                                          // Combo type — check available serial records and show preview
+                                          const comboUnits: ComboDispatchPreview["units"] = [];
+                                          for (const item of challanItems) {
+                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                            if (!prod || (prod as any).type !== "combo") continue;
+                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+                                            let manifest: any[] = [];
+                                            try {
+                                              const r = await fetch(`/api/products/${item.productId}/combo-components`, { headers });
+                                              manifest = await r.json();
+                                            } catch { manifest = []; }
+                                            const serialComponents = manifest.filter((c: any) => c.requiresSerialTracking);
+                                            if (serialComponents.length === 0) continue;
+                                            const needed = dispatchQty * serialComponents.length;
+                                            const available = (allComboSerials as any[])
+                                              .filter((r: any) => r.comboProductId === item.productId && !r.allocatedChallanId && !r.deallocatedAt)
+                                              .sort((a: any, b: any) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+                                            if (available.length < needed) {
+                                              toast({
+                                                title: "Serial numbers not captured",
+                                                description: `"${(prod as any).name}": need ${needed} serial record(s) for ${dispatchQty} unit(s) × ${serialComponents.length} tracked component(s), but only ${available.length} captured at GRN. Go to GRN and capture serial numbers first.`,
+                                                variant: "destructive",
+                                              });
+                                              return;
+                                            }
+                                            // Build interactive slots: one per (unit × serial-tracked component)
+                                            // availableRecords per component = all unallocated records for that componentName
+                                            const availByComp: Record<string, Array<{ id: string; serialNumber: string }>> = {};
+                                            for (const comp of serialComponents) {
+                                              availByComp[comp.componentName] = available
+                                                .filter((r: any) => r.componentName === comp.componentName)
+                                                .map((r: any) => ({ id: r.id, serialNumber: r.serialNumber }));
+                                            }
+                                            // Track used IDs so each unit gets a distinct record
+                                            const usedIds = new Set<string>();
+                                            for (let u = 0; u < dispatchQty; u++) {
+                                              const slots: ComboSerialSlot[] = serialComponents.map((comp: any) => {
+                                                const records = availByComp[comp.componentName] ?? [];
+                                                const fifo = records.find(r => !usedIds.has(r.id));
+                                                if (fifo) usedIds.add(fifo.id);
+                                                return {
+                                                  componentName: comp.componentName,
+                                                  selectedId: fifo?.id ?? "",
+                                                  serialNumber: fifo?.serialNumber ?? "",
+                                                  valid: !!fifo,
+                                                  availableRecords: records,
+                                                };
+                                              });
+                                              comboUnits.push({
+                                                productName: (prod as any).name,
+                                                productId: item.productId,
+                                                unitIndex: u + 1,
+                                                slots,
+                                              });
+                                            }
+                                          }
+
+                                          if (specs.length > 0 && challan.customerId) {
+                                            setSerialDispatchChallanId(challan.id);
+                                            setSerialDispatchSoId(challan.orderId ?? null);
+                                            setSerialDispatchCustomerId(challan.customerId);
+                                            setSerialDispatchSpecs(specs);
+                                          } else if (comboUnits.length > 0) {
+                                            setComboDispatchPreview({ challanId: challan.id, units: comboUnits });
+                                          } else {
+                                            dispatchChallanMutation.mutate(challan.id);
+                                          }
+                                        } catch {
+                                          dispatchChallanMutation.mutate(challan.id);
+                                        }
+                                      }}
                                     >
                                       <Send className="w-3 h-3 mr-1" /> Dispatch
                                     </Button>
                                   )}
 
-                                  {/* Dispatched → Mark Delivered */}
+                                  {/* Dispatched → Mark Delivered (opens date picker dialog) */}
                                   {challan.status === "dispatched" && (
                                     <Button
                                       size="sm"
                                       variant="outline"
                                       data-testid={`button-deliver-challan-${challan.id}`}
                                       disabled={deliverChallanMutation.isPending}
-                                      onClick={() => { setChallanDeliverDate(new Date().toISOString().slice(0, 10)); setChallanDeliverDateDialog({ challanId: challan.id, challanNumber: challan.challanNumber }); }}
+                                      onClick={() => {
+                                        setChallanDeliverDate(new Date().toISOString().slice(0,10));
+                                        setChallanDeliverDateDialog({ challanId: challan.id, challanNumber: challan.challanNumber });
+                                      }}
                                     >
                                       <CheckCircle className="w-3 h-3 mr-1" /> Delivered
                                     </Button>
                                   )}
 
                                   {/* Cancel — sales_manager or admin, draft/ready/do_issued only */}
-                                  {["admin", "sales_manager"].includes(getUser()?.role ?? "") && ["draft", "ready", "do_issued"].includes(challan.status) && (
+                                  {["admin", "sales_manager"].includes(user?.role ?? "") && ["draft", "ready", "do_issued"].includes(challan.status) && (
                                     <Button
                                       size="sm"
                                       variant="ghost"
@@ -1766,6 +2229,8 @@ export default function Inventory() {
                                           <tbody>
                                             {items.map((item) => {
                                               const product = products?.find(p => p.id === item.productId);
+                                              const isBundle = (product as any)?.type === "bundle";
+                                              const bundleComps = isBundle && item.productId ? challanBundleCompsMap[item.productId] : undefined;
                                               const isDraft = challan.status === "draft";
                                               const qtyOrdered = item.qtyOrdered != null ? Number(item.qtyOrdered) : item.quantity;
                                               const qtyDispatched = item.qtyDispatched != null ? Number(item.qtyDispatched) : 0;
@@ -1774,11 +2239,13 @@ export default function Inventory() {
                                               const editVal = challanItemQtyEdits[editKey];
                                               const displayVal = editVal !== undefined ? editVal : String(qtyToDispatch);
                                               return (
-                                                <tr key={item.id} className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
+                                                <Fragment key={item.id}>
+                                                <tr className="border-b last:border-0" data-testid={`text-challan-item-${item.id}`}>
                                                   <td className="py-1.5">
                                                     <span className="flex items-center gap-1.5 font-medium">
                                                       <Package className="w-3 h-3 text-muted-foreground" />
                                                       {product?.name || item.productId}
+                                                      {isBundle && <Badge variant="outline" className="text-[10px] px-1 py-0 ml-1">Bundle</Badge>}
                                                       {item.description && <span className="text-muted-foreground font-normal ml-1">({item.description})</span>}
                                                     </span>
                                                   </td>
@@ -1811,6 +2278,26 @@ export default function Inventory() {
                                                   <td className="py-1.5 text-center font-semibold text-green-600 dark:text-green-400">{qtyDispatched || "—"}</td>
                                                   <td className="py-1.5 text-right text-muted-foreground">{item.unitPrice ? `₹${Number(item.unitPrice).toLocaleString()}` : "—"}</td>
                                                 </tr>
+                                                {isBundle && bundleComps && bundleComps.map((comp: any, ci: number) => {
+                                                  const compProd = products?.find(p => p.id === comp.componentProductId);
+                                                  const compQty = Number(comp.quantity ?? 1) * qtyToDispatch;
+                                                  return (
+                                                    <tr key={`${item.id}-comp-${ci}`} className="bg-muted/20 border-b last:border-0" data-testid={`text-challan-comp-${item.id}-${ci}`}>
+                                                      <td className="py-1 pl-8 text-[11px] text-muted-foreground">
+                                                        <span className="flex items-center gap-1">
+                                                          <span className="text-muted-foreground/50">└</span>
+                                                          {compProd?.name || comp.componentProductId}
+                                                        </span>
+                                                      </td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">{compQty}</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-center text-[11px] text-muted-foreground">—</td>
+                                                      <td className="py-1 text-right text-[11px] text-muted-foreground">—</td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                                </Fragment>
                                               );
                                             })}
                                           </tbody>
@@ -1924,7 +2411,14 @@ export default function Inventory() {
                                   <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800">Draft</Badge>
                                 )}
                                 {grn.status === "confirmed" && (
-                                  <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
+                                  <div className="flex flex-col gap-1">
+                                    <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800">Confirmed</Badge>
+                                    {(grn as any).comboSerialsPending && (
+                                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700 text-[10px]">
+                                        <Layers className="w-2.5 h-2.5 mr-1" />Serials Pending
+                                      </Badge>
+                                    )}
+                                  </div>
                                 )}
                                 {grn.status === "cancelled" && (
                                   <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800">Cancelled</Badge>
@@ -1942,10 +2436,63 @@ export default function Inventory() {
                                         size="sm"
                                         variant="outline"
                                         data-testid={`button-confirm-grn-${grn.id}`}
-                                        disabled={confirmGrnMutation.isPending}
-                                        onClick={() => { if (confirm("Confirm this GRN? Stock will be added to the warehouse.")) confirmGrnMutation.mutate(grn.id); }}
+                                        disabled={confirmGrnMutation.isPending || fetchingItemsForGrn === grn.id}
+                                        onClick={async () => {
+                                          if (!confirm("Confirm this GRN? Stock will be added to the warehouse.")) return;
+
+                                          // Phase 4E: ensure items are loaded before checking serial tracking.
+                                          // Items are lazily fetched on row-expand; if not yet loaded, fetch now.
+                                          let items: GoodsReceiptNoteItem[] = grnItemsMap[grn.id] !== undefined
+                                            ? grnItemsMap[grn.id]
+                                            : [];
+
+                                          if (grnItemsMap[grn.id] === undefined) {
+                                            setFetchingItemsForGrn(grn.id);
+                                            try {
+                                              const headers = { Authorization: `Bearer ${sessionStorage.getItem("token")}` };
+                                              const res = await fetch(`/api/grns/${grn.id}/items`, { headers });
+                                              const fetched = await res.json();
+                                              items = Array.isArray(fetched) ? fetched : [];
+                                              setGrnItemsMap(prev => ({ ...prev, [grn.id]: items }));
+                                            } catch {
+                                              setFetchingItemsForGrn(null);
+                                              toast({ title: "Error", description: "Could not load GRN items. Please refresh and try again.", variant: "destructive" });
+                                              return; // Never confirm if items failed to load
+                                            } finally {
+                                              setFetchingItemsForGrn(null);
+                                            }
+                                          }
+
+                                          // Check which items need serial entry
+                                          const trackedItems: SerialEntryItem[] = items
+                                            .filter((item: any) => {
+                                              const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                              return prod?.requiresSerialTracking;
+                                            })
+                                            .map((item: any) => {
+                                              const prod = (products ?? []).find((p: any) => p.id === item.productId);
+                                              return {
+                                                grnItemId:   item.id,
+                                                productId:   item.productId,
+                                                productName: prod?.name ?? item.description ?? "Product",
+                                                receivedQty: Number(item.receivedQuantity),
+                                                warehouseId: grn.warehouseId,
+                                              };
+                                            });
+
+                                          if (trackedItems.length > 0) {
+                                            setSerialEntryGrnId(grn.id);
+                                            setSerialEntryQueue(trackedItems);
+                                            setSerialEntryItem(trackedItems[0]);
+                                          } else {
+                                            confirmGrnMutation.mutate(grn.id);
+                                          }
+                                        }}
                                       >
-                                        <CheckCircle className="w-3 h-3 mr-1" /> Confirm
+                                        {fetchingItemsForGrn === grn.id
+                                          ? <><span className="w-3 h-3 mr-1 animate-spin inline-block border-2 border-current border-t-transparent rounded-full" /> Loading…</>
+                                          : <><CheckCircle className="w-3 h-3 mr-1" /> Confirm</>
+                                        }
                                       </Button>
                                       {/* Cancel — admin only */}
                                       {isAdmin && (
@@ -1961,37 +2508,79 @@ export default function Inventory() {
                                       )}
                                     </>
                                   )}
-                                  {/* Confirmed: upload supplier invoice */}
-                                  {grn.status === "confirmed" && (
+                                  {/* Confirmed + combo serials pending: show Capture Serials button */}
+                                  {grn.status === "confirmed" && (grn as any).comboSerialsPending && (
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      data-testid={`button-upload-supp-inv-grn-${grn.id}`}
-                                      onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
+                                      className="text-amber-700 border-amber-400 hover:bg-amber-50 dark:text-amber-400 dark:border-amber-700"
+                                      data-testid={`button-capture-combo-serials-${grn.id}`}
+                                      onClick={() => openComboSerialModal(grn.id)}
                                     >
-                                      <Receipt className="w-3 h-3 mr-1" />
-                                      {(grn as any).supplierInvoiceUrl
-                                        ? "Re-upload Invoice"
-                                        : (grn as any).supplierInvoiceNumber
-                                          ? "Update Invoice"
-                                          : "Supplier Invoice"}
+                                      <Layers className="w-3 h-3 mr-1" />
+                                      Capture Serials
                                     </Button>
                                   )}
-                                  {/* Admin-only: edit received date on any GRN */}
+                                  {/* Confirmed: view or upload supplier invoice */}
+                                  {grn.status === "confirmed" && (() => {
+                                    const linkedInv = (supplierInvoices ?? []).find((si: any) => si.grnId === grn.id);
+                                    const hasRecorded = !!(grn as any).supplierInvoiceNumber || !!linkedInv;
+                                    const fileUrl = (grn as any).supplierInvoiceUrl || linkedInv?.fileUrl || null;
+                                    if (hasRecorded) {
+                                      return (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="border-green-400 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/20"
+                                          data-testid={`button-view-supp-inv-grn-${grn.id}`}
+                                          onClick={() => {
+                                            if (fileUrl) {
+                                              window.open(fileUrl, "_blank");
+                                            } else {
+                                              const invId = linkedInv?.id ?? "";
+                                              navigate(`/accounts?tab=supplier-invoices${invId ? `&highlight=${invId}` : ""}`);
+                                            }
+                                          }}
+                                        >
+                                          <FileText className="w-3 h-3 mr-1" />
+                                          View Invoice
+                                        </Button>
+                                      );
+                                    }
+                                    return (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        data-testid={`button-upload-supp-inv-grn-${grn.id}`}
+                                        onClick={() => { setGrnSupplierInvoiceFile(null); setGrnSupplierInvoiceNumber(""); setGrnSupplierInvoiceDate(""); setGrnSupplierInvoiceDialog({ open: true, grnId: grn.id, grnNumber: grn.grnNumber }); }}
+                                      >
+                                        <Receipt className="w-3 h-3 mr-1" />
+                                        Supplier Invoice
+                                      </Button>
+                                    );
+                                  })()}
+                                  {/* Edit Received Date — admin only, confirmed GRNs */}
                                   {isAdmin && (
-                                    <Button
-                                      size="sm"
-                                      variant="ghost"
-                                      data-testid={`button-edit-grn-date-${grn.id}`}
-                                      onClick={() => {
-                                        const dateStr = grn.receivedDate ? new Date(grn.receivedDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
-                                        setEditGrnDateDialog({ grnId: grn.id, grnNumber: grn.grnNumber, currentDate: dateStr });
-                                        setEditGrnDateValue(dateStr);
-                                      }}
-                                      title="Edit received date"
-                                    >
-                                      <Pencil className="w-3 h-3" />
-                                    </Button>
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="text-blue-600 hover:text-blue-700"
+                                            data-testid={`button-edit-grn-date-${grn.id}`}
+                                            onClick={() => {
+                                              const d = grn.receivedDate ? new Date(grn.receivedDate).toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+                                              setEditGrnDateValue(d);
+                                              setEditGrnDateDialog({ grnId: grn.id, grnNumber: grn.grnNumber, currentDate: d });
+                                            }}
+                                          >
+                                            <Calendar className="w-3 h-3" />
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Edit Received Date</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
                                   )}
                                 </div>
                               </td>
@@ -2084,7 +2673,7 @@ export default function Inventory() {
                                           className="h-7 text-xs"
                                           data-testid={`button-pdf-grn-${grn.id}`}
                                           onClick={async () => {
-                                            const token = localStorage.getItem("token");
+                                            const token = sessionStorage.getItem("token");
                                             const res = await fetch(`/api/grns/${grn.id}/pdf`, { headers: { Authorization: `Bearer ${token}` } });
                                             if (!res.ok) { toast({ title: "Failed to download PDF", variant: "destructive" }); return; }
                                             const blob = await res.blob();
@@ -2121,7 +2710,450 @@ export default function Inventory() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* ── Phase 4E: Serial Numbers tab ── */}
+        <TabsContent value="serial-numbers" className="space-y-4">
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              <div className="flex flex-wrap items-center gap-3 justify-between">
+                <h3 className="font-semibold text-sm flex items-center gap-2">
+                  <ScanLine className="w-4 h-4 text-blue-600" />
+                  Serial Number Registry
+                </h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Input
+                    placeholder="Search serial number..."
+                    value={serialSearch}
+                    onChange={e => setSerialSearch(e.target.value)}
+                    className="w-52 h-8 text-sm"
+                    data-testid="input-serial-search"
+                  />
+                  <Select value={serialStatusFilter} onValueChange={setSerialStatusFilter}>
+                    <SelectTrigger className="w-36 h-8 text-sm" data-testid="select-serial-status">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Statuses</SelectItem>
+                      <SelectItem value="in_stock">In Stock</SelectItem>
+                      <SelectItem value="dispatched">Dispatched</SelectItem>
+                      <SelectItem value="delivered">Delivered</SelectItem>
+                      <SelectItem value="returned">Returned</SelectItem>
+                      <SelectItem value="scrapped">Scrapped</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {(serialsLoading || comboSerialsLoading) ? (
+                <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+              ) : allSerials.length === 0 && allComboSerials.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  <ScanLine className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                  No serial numbers found. Enable serial tracking on a product and confirm a GRN to register units.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/30">
+                        <th className="text-left p-2 font-medium text-muted-foreground">Serial Number</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Product / Component</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">GRN / Challan</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Customer</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Captured</th>
+                        <th className="text-left p-2 font-medium text-muted-foreground">Dispatched</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allSerials
+                        .filter((s: any) => {
+                          if (serialSearch && !s.serialNumber?.toLowerCase().includes(serialSearch.toLowerCase())) return false;
+                          if (serialStatusFilter !== "all" && s.status !== serialStatusFilter) return false;
+                          return true;
+                        })
+                        .map((s: any, i: number) => {
+                        const prod = (products ?? []).find((p: any) => p.id === s.productId);
+                        const cust = (customers ?? []).find((c: any) => c.id === s.customerId);
+                        const so = s.salesOrderId ? (salesOrders ?? []).find((o: any) => o.id === s.salesOrderId) : null;
+                        const statusColors: Record<string, string> = {
+                          in_stock:   "bg-green-100 text-green-700 border-green-200",
+                          dispatched: "bg-blue-100 text-blue-700 border-blue-200",
+                          delivered:  "bg-emerald-100 text-emerald-700 border-emerald-200",
+                          returned:   "bg-amber-100 text-amber-700 border-amber-200",
+                          scrapped:   "bg-red-100 text-red-700 border-red-200",
+                        };
+                        return (
+                          <tr key={s.id} className={`border-b ${i % 2 === 0 ? "bg-muted/10" : ""}`}>
+                            <td className="p-2 font-mono font-medium">{s.serialNumber}</td>
+                            <td className="p-2">{prod?.name ?? s.productId}</td>
+                            <td className="p-2">
+                              <Badge variant="outline" className={`text-xs ${statusColors[s.status] ?? ""}`}>
+                                {s.status.replace("_", " ")}
+                              </Badge>
+                            </td>
+                            <td className="p-2 font-mono text-xs text-muted-foreground">{so?.orderNumber ?? "—"}</td>
+                            <td className="p-2">{cust?.name ?? (s.customerId ? s.customerId.slice(0, 8) + "…" : "—")}</td>
+                            <td className="p-2 text-muted-foreground text-xs">
+                              {s.createdAt ? new Date(s.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                            <td className="p-2 text-muted-foreground text-xs">
+                              {s.dispatchedAt ? new Date(s.dispatchedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Combo component serial rows */}
+                      {allComboSerials
+                        .filter((s: any) => {
+                          if (serialSearch && !s.serialNumber?.toLowerCase().includes(serialSearch.toLowerCase()) &&
+                              !s.comboProductName?.toLowerCase().includes(serialSearch.toLowerCase()) &&
+                              !s.componentName?.toLowerCase().includes(serialSearch.toLowerCase())) return false;
+                          if (serialStatusFilter !== "all") {
+                            const status = s.deallocatedAt ? "returned" : s.allocatedChallanId ? "dispatched" : "in_stock";
+                            if (status !== serialStatusFilter) return false;
+                          }
+                          return true;
+                        })
+                        .map((s: any, i: number) => {
+                          const status = s.deallocatedAt ? "returned" : s.allocatedChallanId ? "dispatched" : "in_stock";
+                          const statusColors: Record<string, string> = {
+                            in_stock:  "bg-green-100 text-green-700 border-green-200",
+                            dispatched:"bg-blue-100 text-blue-700 border-blue-200",
+                            returned:  "bg-amber-100 text-amber-700 border-amber-200",
+                          };
+                          return (
+                            <tr key={s.id} className={`border-b border-teal-100 dark:border-teal-900 ${i % 2 === 0 ? "bg-teal-50/40 dark:bg-teal-950/10" : "bg-teal-50/20 dark:bg-teal-950/5"}`}>
+                              <td className="p-2 font-mono font-medium text-teal-800 dark:text-teal-300">{s.serialNumber}</td>
+                              <td className="p-2">
+                                <div className="text-xs font-medium">{s.comboProductName}</div>
+                                <div className="text-xs text-teal-700 dark:text-teal-400 flex items-center gap-1">
+                                  <Layers className="w-3 h-3" /> {s.componentName} · Unit {s.comboUnitIndex}
+                                </div>
+                              </td>
+                              <td className="p-2">
+                                <Badge variant="outline" className={`text-xs ${statusColors[status] ?? ""}`}>
+                                  {status.replace("_", " ")}
+                                </Badge>
+                              </td>
+                              <td className="p-2 font-mono text-xs text-muted-foreground">
+                                <div>{s.grnNumber}</div>
+                                {s.challanNumber && <div className="text-blue-600">{s.challanNumber}</div>}
+                              </td>
+                              <td className="p-2">{s.customerName ?? "—"}</td>
+                              <td className="p-2 text-muted-foreground text-xs">
+                                {s.capturedAt ? new Date(s.capturedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                              </td>
+                              <td className="p-2 text-muted-foreground text-xs">
+                                {s.allocatedAt ? new Date(s.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* ── Phase 5: Combo Serial Quick-Lookup (kept for direct serial search) ── */}
+          <Card>
+            <CardContent className="p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-teal-600" />
+                <h3 className="font-semibold text-sm">Combo Component Serial Lookup</h3>
+                <span className="text-xs text-muted-foreground">— search by any component serial number inside a manufacturer combo</span>
+              </div>
+
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Enter serial number (e.g. ELB-2026-001)…"
+                  value={comboLookupQuery}
+                  onChange={e => setComboLookupQuery(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && comboLookupQuery.trim().length >= 2) {
+                      (async () => {
+                        setComboLookupLoading(true);
+                        setComboLookupResult(null);
+                        try {
+                          const res = await apiRequest("GET", `/api/combo-serials/search?q=${encodeURIComponent(comboLookupQuery.trim())}`);
+                          const data = await res.json();
+                          setComboLookupResult(data ?? false);
+                        } catch { setComboLookupResult(false); }
+                        finally { setComboLookupLoading(false); }
+                      })();
+                    }
+                  }}
+                  className="flex-1 h-9"
+                  data-testid="input-combo-serial-lookup"
+                />
+                <Button
+                  size="sm"
+                  onClick={async () => {
+                    if (comboLookupQuery.trim().length < 2) return;
+                    setComboLookupLoading(true);
+                    setComboLookupResult(null);
+                    try {
+                      const res = await apiRequest("GET", `/api/combo-serials/search?q=${encodeURIComponent(comboLookupQuery.trim())}`);
+                      const data = await res.json();
+                      setComboLookupResult(data ?? false);
+                    } catch { setComboLookupResult(false); }
+                    finally { setComboLookupLoading(false); }
+                  }}
+                  disabled={comboLookupLoading || comboLookupQuery.trim().length < 2}
+                  data-testid="button-combo-serial-lookup"
+                  className="bg-teal-600 hover:bg-teal-700 text-white"
+                >
+                  {comboLookupLoading ? "Searching…" : "Search"}
+                </Button>
+              </div>
+
+              {/* Result */}
+              {comboLookupResult === false && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  No combo serial record found for <strong>"{comboLookupQuery}"</strong>.
+                </div>
+              )}
+
+              {comboLookupResult && typeof comboLookupResult === "object" && (
+                <div className="rounded-md border border-teal-200 dark:border-teal-800 bg-teal-50/40 dark:bg-teal-950/10 p-4 space-y-3" data-testid="combo-serial-lookup-result">
+                  {/* Header */}
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-teal-800 dark:text-teal-300 flex items-center gap-2">
+                      <Layers className="w-4 h-4" />
+                      {comboLookupResult.serialNumber}
+                    </div>
+                    <Badge className={
+                      comboLookupResult.allocationStatus === "allocated"
+                        ? "bg-blue-100 text-blue-700 border-blue-300"
+                        : comboLookupResult.allocationStatus === "released"
+                        ? "bg-amber-100 text-amber-700 border-amber-300"
+                        : "bg-green-100 text-green-700 border-green-300"
+                    }>
+                      {comboLookupResult.allocationStatus === "allocated" ? "Dispatched"
+                        : comboLookupResult.allocationStatus === "released" ? "Returned / Released"
+                        : "In Stock"}
+                    </Badge>
+                  </div>
+
+                  {/* Details grid */}
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                    <div>
+                      <span className="text-muted-foreground text-xs">Component</span>
+                      <div className="font-medium">{comboLookupResult.componentName}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Combo Unit</span>
+                      <div className="font-medium">Unit {comboLookupResult.comboUnitIndex}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Combo Product</span>
+                      <div className="font-medium">{comboLookupResult.comboProduct?.name ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">GRN Received</span>
+                      <div className="font-medium font-mono text-xs">{comboLookupResult.grn?.grnNumber ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Challan</span>
+                      <div className="font-medium font-mono text-xs">{comboLookupResult.challan?.challanNumber ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Customer</span>
+                      <div className="font-medium">{comboLookupResult.customer?.name ?? "—"}</div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Captured At GRN</span>
+                      <div className="font-medium">
+                        {comboLookupResult.capturedAt
+                          ? new Date(comboLookupResult.capturedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground text-xs">Dispatch Date</span>
+                      <div className="font-medium">
+                        {comboLookupResult.allocatedAt
+                          ? new Date(comboLookupResult.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                          : "—"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
+
+      {/* Phase 3: Combo Serial Capture Modal */}
+      <Dialog open={!!comboSerialGrnId} onOpenChange={(open) => { if (!open) { setComboSerialGrnId(null); setComboSerialItems([]); setComboSerialValues({}); } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-teal-600" />
+              Capture Combo Serial Numbers
+            </DialogTitle>
+            <DialogDescription>
+              Enter serial numbers for components inside each combo unit received. Leave blank to skip — the GRN will remain marked as Serials Pending.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-2">
+            {comboSerialItems.map((item) => (
+              <div key={item.grnItemId} className="space-y-3">
+                <div className="font-semibold text-sm text-foreground border-b pb-1.5 flex items-center gap-2">
+                  <Package className="w-3.5 h-3.5 text-teal-600" />
+                  {item.productName}
+                  <span className="text-xs text-muted-foreground font-normal">({item.receivedQty} unit{item.receivedQty !== 1 ? "s" : ""} received)</span>
+                </div>
+
+                {Array.from({ length: item.receivedQty }, (_, i) => i + 1).map(unitIdx => (
+                  <div key={unitIdx} className="rounded-md border border-teal-200 dark:border-teal-800 bg-teal-50/30 dark:bg-teal-950/10 p-3 space-y-2">
+                    <div className="text-xs font-semibold text-teal-700 dark:text-teal-400">
+                      Unit {unitIdx} of {item.receivedQty}
+                    </div>
+                    {item.manifest.map(comp => {
+                      const key = `${item.grnItemId}-${unitIdx}-${comp.componentName}`;
+                      return comp.requiresSerialTracking ? (
+                        <div key={comp.componentName} className="grid grid-cols-2 gap-3 items-center">
+                          <Label className="text-xs font-medium">
+                            {comp.componentName}
+                            <span className="ml-1 text-[10px] text-teal-600 font-normal">(serial required)</span>
+                          </Label>
+                          <Input
+                            placeholder="Scan or type serial number…"
+                            value={comboSerialValues[key] ?? ""}
+                            onChange={e => setComboSerialValues(prev => ({ ...prev, [key]: e.target.value }))}
+                            className="h-8 text-sm font-mono"
+                            data-testid={`input-combo-serial-${item.grnItemId}-${unitIdx}-${comp.componentName.replace(/\s+/g, "-")}`}
+                          />
+                        </div>
+                      ) : (
+                        <div key={comp.componentName} className="text-xs text-muted-foreground flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-muted-foreground/40 inline-block" />
+                          {comp.componentName} — no serial needed
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2 border-t">
+            <Button variant="outline" onClick={() => { setComboSerialGrnId(null); setComboSerialItems([]); setComboSerialValues({}); }}>
+              Save Later
+            </Button>
+            <Button onClick={saveComboSerials} disabled={comboSerialSaving} className="bg-teal-600 hover:bg-teal-700 text-white">
+              {comboSerialSaving ? "Saving…" : "Save Serials"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Phase 4E: Serial Entry Dialog (GRN confirmation) */}
+      <SerialEntryDialog
+        open={!!serialEntryItem}
+        grnId={serialEntryGrnId ?? ""}
+        item={serialEntryItem}
+        onClose={() => { setSerialEntryItem(null); setSerialEntryGrnId(null); setSerialEntryQueue([]); }}
+        onSaved={handleSerialEntrySaved}
+      />
+
+      {/* Phase 4E v2: Serial Dispatch Dialog — atomic multi-component serial assignment */}
+      <SerialDispatchDialog
+        open={serialDispatchSpecs.length > 0}
+        challanId={serialDispatchChallanId ?? ""}
+        salesOrderId={serialDispatchSoId}
+        customerId={serialDispatchCustomerId}
+        specs={serialDispatchSpecs}
+        onClose={() => {
+          setSerialDispatchSpecs([]);
+          setSerialDispatchChallanId(null);
+        }}
+        onConfirm={handleSerialDispatchConfirm}
+      />
+
+      {/* Combo Dispatch — scan / select serial numbers per unit × component */}
+      <Dialog open={!!comboDispatchPreview} onOpenChange={open => { if (!open) setComboDispatchPreview(null); }}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Dispatch — Scan Combo Serial Numbers</DialogTitle>
+            <DialogDescription>
+              Scan or select the serial number for each component. Pre-filled from GRN (FIFO) — change if the physical unit differs.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {(comboDispatchPreview?.units ?? []).map((unit, ui) => (
+              <div key={ui} className="border rounded-md overflow-hidden">
+                <div className="bg-muted/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {unit.productName} — Unit {unit.unitIndex}
+                </div>
+                <div className="divide-y">
+                  {unit.slots.map((slot, si) => (
+                    <div key={si} className="px-3 py-2 space-y-1">
+                      <p className="text-xs text-muted-foreground">{slot.componentName}</p>
+                      <div className="flex gap-2 items-center">
+                        <Input
+                          className={`font-mono text-sm h-8 ${!slot.valid && slot.serialNumber ? "border-red-400 focus-visible:ring-red-400" : slot.valid ? "border-green-400" : ""}`}
+                          placeholder="Scan or type serial number…"
+                          value={slot.serialNumber}
+                          onChange={e => updateComboSlot(ui, si, e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); updateComboSlot(ui, si, (e.target as HTMLInputElement).value); } }}
+                          autoFocus={ui === 0 && si === 0}
+                        />
+                        {slot.valid && <span className="text-green-600 text-xs shrink-0">✓</span>}
+                        {!slot.valid && slot.serialNumber && <span className="text-red-500 text-xs shrink-0">Not found</span>}
+                      </div>
+                      {slot.availableRecords.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {slot.availableRecords.map(r => (
+                            <button
+                              key={r.id}
+                              type="button"
+                              onClick={() => updateComboSlot(ui, si, r.serialNumber)}
+                              className={`text-xs px-2 py-0.5 rounded border font-mono transition-colors ${slot.selectedId === r.id ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted border-border"}`}
+                            >
+                              {r.serialNumber}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {(comboDispatchPreview?.units ?? []).some(u => u.slots.some(s => !s.valid)) && (
+              <p className="text-xs text-red-600 dark:text-red-400">
+                All serial numbers must match captured GRN records before dispatching.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setComboDispatchPreview(null)}>Cancel</Button>
+            <Button
+              disabled={
+                dispatchChallanMutation.isPending ||
+                (comboDispatchPreview?.units ?? []).some(u => u.slots.some(s => !s.valid))
+              }
+              onClick={() => {
+                const preview = comboDispatchPreview;
+                if (!preview) return;
+                setComboDispatchPreview(null);
+                const comboSerialIds = preview.units.flatMap(u => u.slots.map(s => s.selectedId)).filter(Boolean);
+                dispatchChallanMutation.mutate({ id: preview.challanId, comboSerialIds } as any);
+              }}
+            >
+              {dispatchChallanMutation.isPending ? "Dispatching…" : "Confirm & Dispatch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={grnDialogOpen} onOpenChange={setGrnDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -2322,7 +3354,9 @@ export default function Inventory() {
               <Select
                 value={challanForm.orderId}
                 onValueChange={(v) => {
-                  setChallanForm({ ...challanForm, orderId: v });
+                  const linked = salesOrders?.find(o => o.id === v);
+                  const prefillAddr = (linked as any)?.deliveryAddress || "";
+                  setChallanForm({ ...challanForm, orderId: v, deliveryAddress: prefillAddr });
                   loadOrderItems(v);
                 }}
               >
@@ -2405,13 +3439,29 @@ export default function Inventory() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Physical Challan Number <span className="text-red-500">*</span></Label>
-              <Input data-testid="input-challan-physical-number" placeholder="Transporter's own challan no." value={challanForm.physicalChallanNumber} onChange={(e) => setChallanForm({ ...challanForm, physicalChallanNumber: e.target.value })} />
+              <Label>Delivery Address <span className="text-red-500">*</span></Label>
+              <Textarea
+                data-testid="input-challan-delivery-address"
+                className="resize-none text-sm"
+                rows={2}
+                placeholder="Full delivery address..."
+                value={challanForm.deliveryAddress}
+                onChange={(e) => {
+                  const linked = salesOrders?.find(o => o.id === challanForm.orderId);
+                  setChallanForm({ ...challanForm, deliveryAddress: e.target.value });
+                }}
+              />
             </div>
             <div className="space-y-2">
               <Label>Notes</Label>
               <Textarea data-testid="input-challan-notes" className="resize-none text-sm" rows={2} placeholder="Delivery notes..." value={challanForm.notes} onChange={(e) => setChallanForm({ ...challanForm, notes: e.target.value })} />
             </div>
+
+            {user && (
+              <p className="text-xs text-muted-foreground" data-testid="text-challan-printed-by">
+                Printed by: <span className="font-medium text-foreground">{(user as any).fullName || user.username}</span>
+              </p>
+            )}
 
             <div className="space-y-3">
               <Label className="text-sm font-semibold">Items</Label>
@@ -2483,10 +3533,11 @@ export default function Inventory() {
                           sourceId: challanForm.sourceId,
                           vehicleNumber: challanForm.vehicleNumber.trim(),
                           driverName: challanForm.driverName.trim(),
-                          physicalChallanNumber: challanForm.physicalChallanNumber.trim(),
                           vehicleOwnerName: challanForm.vehicleOwnerName.trim(),
                           driverPhone: challanForm.driverPhone.trim(),
                           notes: challanForm.notes || null,
+                          deliveryAddress: challanForm.deliveryAddress.trim() || null,
+                          printedBy: (user as any)?.fullName || user?.username || null,
                           items: challanItems.filter(it => it.quantity > 0).map(it => ({
                             productId: it.productId,
                             description: it.description,
@@ -2509,7 +3560,7 @@ export default function Inventory() {
                         ? `Select a ${challanForm.sourceType}`
                         : challanItems.length === 0
                         ? "Order has no remaining items to dispatch"
-                        : "Fill all required transport fields (Real Challan No., Vehicle No., Owner, Driver, valid phone)"}
+                        : "Fill all required transport fields (Vehicle No., Owner, Driver, valid phone, Delivery Address)"}
                     </p>
                   </TooltipContent>
                 )}
@@ -2795,6 +3846,76 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
+      {/* ── H-3: GRN Credit Override Dialog (admin/accountant authorize GRN on credit) ── */}
+      <Dialog
+        open={!!grnCreditOverrideDialog}
+        onOpenChange={(o) => {
+          if (!o) {
+            setGrnCreditOverrideDialog(null);
+            setGrnCreditOverrideReason("");
+            setPendingGrnPayload(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Credit GRN Authorization</DialogTitle>
+            <DialogDescription>
+              {grnCreditOverrideDialog?.poNumber && (
+                <>PO <strong>{grnCreditOverrideDialog.poNumber}</strong> — </>
+              )}
+              This supplier has an outstanding balance of{" "}
+              <strong>₹{grnCreditOverrideDialog?.outstanding?.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>{" "}
+              that has not been fully paid. As admin or accountant, you can authorize receiving goods on credit.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Label htmlFor="grn-credit-override-reason">
+              Credit Authorization Reason <span className="text-red-500">*</span>{" "}
+              <span className="text-muted-foreground text-xs">(min 10 chars)</span>
+            </Label>
+            <Textarea
+              id="grn-credit-override-reason"
+              data-testid="input-grn-credit-override-reason"
+              value={grnCreditOverrideReason}
+              onChange={(e) => setGrnCreditOverrideReason(e.target.value)}
+              placeholder="e.g. Goods already received at warehouse. Supplier payment in process. Authorized by accounts manager."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setGrnCreditOverrideDialog(null);
+                setGrnCreditOverrideReason("");
+                setPendingGrnPayload(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              data-testid="button-confirm-grn-credit-override"
+              disabled={grnCreditOverrideReason.trim().length < 10 || grnMutation.isPending}
+              onClick={() => {
+                if (pendingGrnPayload) {
+                  // Re-submit the EXACT original payload — all line items, quantities,
+                  // rates, warehouse, challan details and notes are preserved from
+                  // pendingGrnPayload. Only creditOverride flag + reason are appended.
+                  grnMutation.mutate({
+                    ...pendingGrnPayload,
+                    creditOverride: true,
+                    creditReason: grnCreditOverrideReason.trim(),
+                  });
+                }
+              }}
+            >
+              {grnMutation.isPending ? "Authorizing..." : "Authorize Credit GRN"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Challan: Cancel ─────────────────────────────────────────────── */}
       <Dialog open={!!challanCancelDialog?.open} onOpenChange={(o) => { if (!o) { setChallanCancelDialog(null); setChallanCancelReason(""); } }}>
         <DialogContent>
@@ -2930,27 +4051,27 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {/* Edit GRN Received Date Dialog */}
+      {/* Edit GRN Received Date dialog (admin-only, confirmed GRNs) */}
       <Dialog open={!!editGrnDateDialog} onOpenChange={(o) => { if (!o) setEditGrnDateDialog(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Edit Received Date</DialogTitle>
             <DialogDescription>{editGrnDateDialog?.grnNumber} — Update the received date for this GRN</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-3 py-2">
             <Label>Received Date</Label>
             <Input
               type="date"
               value={editGrnDateValue}
-              onChange={e => setEditGrnDateValue(e.target.value)}
-              max={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setEditGrnDateValue(e.target.value)}
+              className="w-full"
             />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditGrnDateDialog(null)}>Cancel</Button>
             <Button
               disabled={!editGrnDateValue || editGrnDateMutation.isPending}
-              onClick={() => { if (editGrnDateDialog && editGrnDateValue) editGrnDateMutation.mutate({ grnId: editGrnDateDialog.grnId, receivedDate: editGrnDateValue }); }}
+              onClick={() => { if (editGrnDateDialog) editGrnDateMutation.mutate({ grnId: editGrnDateDialog.grnId, receivedDate: editGrnDateValue }); }}
             >
               {editGrnDateMutation.isPending ? "Saving..." : "Save Date"}
             </Button>
@@ -2958,51 +4079,56 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {/* Challan Dispatch Date Dialog */}
+      {/* Challan Dispatch Date dialog */}
       <Dialog open={!!challanDispatchDateDialog} onOpenChange={(o) => { if (!o) setChallanDispatchDateDialog(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Dispatch Challan</DialogTitle>
-            <DialogDescription>{challanDispatchDateDialog?.challanNumber} — Select the dispatch date</DialogDescription>
+            <DialogTitle>Confirm Dispatch Date</DialogTitle>
+            <DialogDescription>{challanDispatchDateDialog?.challanNumber} — Set the actual dispatch date</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-3 py-2">
             <Label>Dispatch Date</Label>
             <Input
               type="date"
               value={challanDispatchDate}
-              onChange={e => setChallanDispatchDate(e.target.value)}
-              max={new Date().toISOString().slice(0, 10)}
+              max={new Date().toISOString().slice(0,10)}
+              onChange={(e) => setChallanDispatchDate(e.target.value)}
+              className="w-full"
             />
+            <p className="text-xs text-muted-foreground">This date controls FIFO stock selection — only stock received on or before this date will be used.</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setChallanDispatchDateDialog(null)}>Cancel</Button>
             <Button
               disabled={!challanDispatchDate || dispatchChallanMutation.isPending}
               onClick={() => {
-                if (challanDispatchDateDialog && challanDispatchDate)
-                  dispatchChallanMutation.mutate({ challanId: challanDispatchDateDialog.challanId, dispatchDate: challanDispatchDate });
+                if (challanDispatchDateDialog) {
+                  dispatchChallanMutation.mutate({ id: challanDispatchDateDialog.challanId, dispatchDate: challanDispatchDate });
+                  setChallanDispatchDateDialog(null);
+                }
               }}
             >
-              {dispatchChallanMutation.isPending ? "Dispatching..." : "Confirm Dispatch"}
+              {dispatchChallanMutation.isPending ? "Dispatching..." : "Dispatch"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Challan Delivery Date Dialog */}
+      {/* Challan Delivery Date dialog */}
       <Dialog open={!!challanDeliverDateDialog} onOpenChange={(o) => { if (!o) setChallanDeliverDateDialog(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Mark as Delivered</DialogTitle>
-            <DialogDescription>{challanDeliverDateDialog?.challanNumber} — Select the delivery date</DialogDescription>
+            <DialogTitle>Confirm Delivery Date</DialogTitle>
+            <DialogDescription>{challanDeliverDateDialog?.challanNumber} — Set the actual delivery date</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+          <div className="space-y-3 py-2">
             <Label>Delivery Date</Label>
             <Input
               type="date"
               value={challanDeliverDate}
-              onChange={e => setChallanDeliverDate(e.target.value)}
-              max={new Date().toISOString().slice(0, 10)}
+              max={new Date().toISOString().slice(0,10)}
+              onChange={(e) => setChallanDeliverDate(e.target.value)}
+              className="w-full"
             />
           </div>
           <DialogFooter>
@@ -3010,15 +4136,18 @@ export default function Inventory() {
             <Button
               disabled={!challanDeliverDate || deliverChallanMutation.isPending}
               onClick={() => {
-                if (challanDeliverDateDialog && challanDeliverDate)
+                if (challanDeliverDateDialog) {
                   deliverChallanMutation.mutate({ challanId: challanDeliverDateDialog.challanId, deliveryDate: challanDeliverDate });
+                  setChallanDeliverDateDialog(null);
+                }
               }}
             >
-              {deliverChallanMutation.isPending ? "Saving..." : "Confirm Delivery"}
+              {deliverChallanMutation.isPending ? "Saving..." : "Mark Delivered"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
     </div>
   );
 }

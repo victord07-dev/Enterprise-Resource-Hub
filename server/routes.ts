@@ -3855,6 +3855,24 @@ export async function registerRoutes(
           }
         }
       }
+      // Recalculate grandTotal server-side whenever any financial component is present,
+      // so the stored value is always authoritative regardless of client-side calculation.
+      const hasFinancials = ["subtotal","totalTax","deliveryCost","discountAmount","applyRounding","roundingAmount"].some(k => k in updateData);
+      if (hasFinancials) {
+        const existing = await storage.getPurchaseOrder(req.params.id);
+        if (existing) {
+          const sub  = Number(updateData.subtotal    ?? (existing as any).subtotal    ?? 0);
+          const tax  = Number(updateData.totalTax    ?? (existing as any).totalTax    ?? 0);
+          const del  = Number(updateData.deliveryCost ?? (existing as any).deliveryCost ?? 0);
+          const disc = Number(updateData.discountAmount ?? (existing as any).discountAmount ?? 0);
+          const applyRnd = "applyRounding" in updateData ? Boolean(updateData.applyRounding) : Boolean((existing as any).applyRounding);
+          const rawTotal = sub + tax + del - disc;
+          const roundedTotal = applyRnd ? Math.round(rawTotal) : rawTotal;
+          const rndAmt = applyRnd ? Math.round((roundedTotal - rawTotal) * 100) / 100 : 0;
+          updateData.grandTotal = String(roundedTotal);
+          if (applyRnd) updateData.roundingAmount = String(rndAmt);
+        }
+      }
       const updated = await storage.updatePurchaseOrder(req.params.id, updateData);
       if (!updated) return res.status(404).json({ message: "Purchase order not found" });
       await logAction(req.user.id, "update", "supply_chain", `Updated PO ${updated.poNumber}`);

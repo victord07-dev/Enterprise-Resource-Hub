@@ -187,10 +187,12 @@ export function generatePOPdfBuffer(
     return { taxable, gstRate, gstAmt, total, hsn, unit };
   });
 
-  // K10-B: delivery cost
-  const deliveryCost = Number((po as any).deliveryCost ?? 0);
+  // K10-B: delivery cost, discount, rounding
+  const deliveryCost   = Number((po as any).deliveryCost   ?? 0);
+  const discountAmtPdf = Number((po as any).discountAmount ?? 0);
+  const roundingAmtPdf = (po as any).applyRounding ? Number((po as any).roundingAmount ?? 0) : 0;
   const lineItemsTotal = lineGsts.reduce((s: number, g: LG) => s + g.total, 0);
-  const grandTotal   = lineItemsTotal + deliveryCost;
+  const grandTotal     = lineItemsTotal + deliveryCost - discountAmtPdf + roundingAmtPdf;
   const totalTaxable = lineGsts.reduce((s: number, g: LG) => s + g.taxable, 0);
   const totalGst     = lineGsts.reduce((s: number, g: LG) => s + g.gstAmt, 0);
 

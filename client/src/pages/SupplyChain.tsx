@@ -959,7 +959,7 @@ function POExpandedItems({ poId, linkedSalesOrder, deliveryType, deliveryAddress
             <tr>
               <td colSpan={6} className="p-2 text-right font-semibold text-xs">Grand Total:</td>
               <td className="p-2 text-right font-semibold" data-testid={`text-po-items-total-${poId}`}>
-                ₹{items.reduce((sum, i) => sum + Number(i.totalCost), 0).toLocaleString()}
+                ₹{poTotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </td>
             </tr>
           </tfoot>

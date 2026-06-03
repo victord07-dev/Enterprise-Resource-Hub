@@ -2651,3 +2651,208 @@ export async function computeBalanceSheet(asOfDate?: string): Promise<BalanceShe
     balanced,
   };
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VEHICLE FLEET REPORT — Phase 7
+// ══════════════════════════════════════════════════════════════════════════════
+
+export interface VehicleFleetRow {
+  vehicleId: string;
+  vehicleName: string;
+  registrationNo: string;
+  trips: number;
+  distanceKm: number;
+  revenue: number;
+  fuelCost: number;
+  maintenanceCost: number;
+  costPerKm: number | null;
+  netProfit: number;
+}
+
+export interface DriverFleetRow {
+  driverId: string;
+  driverName: string;
+  trips: number;
+  distanceKm: number;
+  revenue: number;
+}
+
+export interface FleetTotals {
+  trips: number;
+  distanceKm: number;
+  revenue: number;
+  fuelCost: number;
+  maintenanceCost: number;
+  netProfit: number;
+}
+
+export interface VehicleFleetReport {
+  vehicles: VehicleFleetRow[];
+  drivers: DriverFleetRow[];
+  totals: FleetTotals;
+  period: { from: string | null; to: string | null };
+}
+
+export async function getVehicleFleetReport(p: PeriodFilter): Promise<VehicleFleetReport> {
+  const from = p.from ?? null;
+  const to   = p.to   ?? null;
+
+  // Build optional date range fragments for each entity's natural date column
+  const tripDateWhere = from && to
+    ? sql`AND vt.trip_date BETWEEN ${from}::date AND ${to}::date`
+    : from
+    ? sql`AND vt.trip_date >= ${from}::date`
+    : to
+    ? sql`AND vt.trip_date <= ${to}::date`
+    : sql``;
+
+  const fuelDateWhere = from && to
+    ? sql`AND fl.log_date BETWEEN ${from}::date AND ${to}::date`
+    : from
+    ? sql`AND fl.log_date >= ${from}::date`
+    : to
+    ? sql`AND fl.log_date <= ${to}::date`
+    : sql``;
+
+  const maintDateWhere = from && to
+    ? sql`AND ml.service_date BETWEEN ${from}::date AND ${to}::date`
+    : from
+    ? sql`AND ml.service_date >= ${from}::date`
+    : to
+    ? sql`AND ml.service_date <= ${to}::date`
+    : sql``;
+
+  const invDateWhere = from && to
+    ? sql`AND vti.invoice_date BETWEEN ${from}::date AND ${to}::date`
+    : from
+    ? sql`AND vti.invoice_date >= ${from}::date`
+    : to
+    ? sql`AND vti.invoice_date <= ${to}::date`
+    : sql``;
+
+  // ── Vehicle performance ───────────────────────────────────────────────────
+  const vehicleRows = (await db.execute(sql`
+    SELECT
+      v.id                                                        AS vehicle_id,
+      v.name                                                      AS vehicle_name,
+      v.registration_no                                           AS registration_no,
+      COALESCE(t.trips, 0)                                        AS trips,
+      COALESCE(t.distance_km, 0)                                  AS distance_km,
+      COALESCE(inv.revenue, 0)                                    AS revenue,
+      COALESCE(f.fuel_cost, 0)                                    AS fuel_cost,
+      COALESCE(m.maint_cost, 0)                                   AS maint_cost
+    FROM vehicles v
+    LEFT JOIN (
+      SELECT vehicle_id,
+             COUNT(*)                    AS trips,
+             COALESCE(SUM(distance_km), 0) AS distance_km
+      FROM vehicle_trips vt
+      WHERE status != 'cancelled'
+      ${tripDateWhere}
+      GROUP BY vehicle_id
+    ) t ON t.vehicle_id = v.id
+    LEFT JOIN (
+      SELECT vt.vehicle_id,
+             COALESCE(SUM(vti.grand_total), 0) AS revenue
+      FROM vehicle_trip_invoices vti
+      JOIN vehicle_trips vt ON vti.trip_id = vt.id
+      WHERE vti.status != 'cancelled'
+      ${invDateWhere}
+      GROUP BY vt.vehicle_id
+    ) inv ON inv.vehicle_id = v.id
+    LEFT JOIN (
+      SELECT vehicle_id,
+             COALESCE(SUM(total_cost), 0) AS fuel_cost
+      FROM vehicle_fuel_logs fl
+      WHERE posted_to_accounts = true
+      ${fuelDateWhere}
+      GROUP BY vehicle_id
+    ) f ON f.vehicle_id = v.id
+    LEFT JOIN (
+      SELECT vehicle_id,
+             COALESCE(SUM(cost), 0) AS maint_cost
+      FROM vehicle_maintenance_logs ml
+      WHERE posted_to_accounts = true
+      ${maintDateWhere}
+      GROUP BY vehicle_id
+    ) m ON m.vehicle_id = v.id
+    WHERE COALESCE(t.trips, 0) > 0
+       OR COALESCE(inv.revenue, 0) > 0
+       OR COALESCE(f.fuel_cost, 0) > 0
+       OR COALESCE(m.maint_cost, 0) > 0
+    ORDER BY (COALESCE(inv.revenue, 0) - COALESCE(f.fuel_cost, 0) - COALESCE(m.maint_cost, 0)) DESC
+  `)).rows as any[];
+
+  const vehicles: VehicleFleetRow[] = vehicleRows.map(r => {
+    const fuelCost      = parseFloat(r.fuel_cost)   || 0;
+    const maintCost     = parseFloat(r.maint_cost)  || 0;
+    const distanceKm    = parseFloat(r.distance_km) || 0;
+    const revenue       = parseFloat(r.revenue)     || 0;
+    const totalCost     = fuelCost + maintCost;
+    return {
+      vehicleId:       r.vehicle_id,
+      vehicleName:     r.vehicle_name,
+      registrationNo:  r.registration_no,
+      trips:           parseInt(r.trips) || 0,
+      distanceKm,
+      revenue,
+      fuelCost,
+      maintenanceCost: maintCost,
+      costPerKm:       distanceKm > 0 ? parseFloat((totalCost / distanceKm).toFixed(2)) : null,
+      netProfit:       parseFloat((revenue - totalCost).toFixed(2)),
+    };
+  });
+
+  // ── Driver performance ────────────────────────────────────────────────────
+  const driverRows = (await db.execute(sql`
+    SELECT
+      e.id                                                        AS driver_id,
+      e.name                                                      AS driver_name,
+      COALESCE(t.trips, 0)                                        AS trips,
+      COALESCE(t.distance_km, 0)                                  AS distance_km,
+      COALESCE(inv.revenue, 0)                                    AS revenue
+    FROM employees e
+    JOIN (
+      SELECT driver_id,
+             COUNT(*)                      AS trips,
+             COALESCE(SUM(distance_km), 0) AS distance_km
+      FROM vehicle_trips vt
+      WHERE status != 'cancelled'
+      ${tripDateWhere}
+      GROUP BY driver_id
+    ) t ON t.driver_id = e.id
+    LEFT JOIN (
+      SELECT vt.driver_id,
+             COALESCE(SUM(vti.grand_total), 0) AS revenue
+      FROM vehicle_trip_invoices vti
+      JOIN vehicle_trips vt ON vti.trip_id = vt.id
+      WHERE vti.status != 'cancelled'
+      ${invDateWhere}
+      GROUP BY vt.driver_id
+    ) inv ON inv.driver_id = e.id
+    ORDER BY (COALESCE(inv.revenue, 0)) DESC
+  `)).rows as any[];
+
+  const drivers: DriverFleetRow[] = driverRows.map(r => ({
+    driverId:    r.driver_id,
+    driverName:  r.driver_name,
+    trips:       parseInt(r.trips)       || 0,
+    distanceKm:  parseFloat(r.distance_km) || 0,
+    revenue:     parseFloat(r.revenue)   || 0,
+  }));
+
+  // ── Fleet totals ──────────────────────────────────────────────────────────
+  const totals: FleetTotals = vehicles.reduce(
+    (acc, v) => ({
+      trips:           acc.trips           + v.trips,
+      distanceKm:      acc.distanceKm      + v.distanceKm,
+      revenue:         parseFloat((acc.revenue         + v.revenue).toFixed(2)),
+      fuelCost:        parseFloat((acc.fuelCost        + v.fuelCost).toFixed(2)),
+      maintenanceCost: parseFloat((acc.maintenanceCost + v.maintenanceCost).toFixed(2)),
+      netProfit:       parseFloat((acc.netProfit       + v.netProfit).toFixed(2)),
+    }),
+    { trips: 0, distanceKm: 0, revenue: 0, fuelCost: 0, maintenanceCost: 0, netProfit: 0 },
+  );
+
+  return { vehicles, drivers, totals, period: { from, to } };
+}

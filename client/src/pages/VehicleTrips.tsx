@@ -109,6 +109,22 @@ interface VehicleTripInvoice {
   outstanding?: number;
 }
 interface CashAccount { id: string; name: string; accountType: string; balance?: string; }
+interface VehicleFleetRow {
+  vehicleId: string; vehicleName: string; registrationNo: string;
+  trips: number; distanceKm: number; revenue: number;
+  fuelCost: number; maintenanceCost: number; costPerKm: number | null; netProfit: number;
+}
+interface DriverFleetRow {
+  driverId: string; driverName: string; trips: number; distanceKm: number; revenue: number;
+}
+interface FleetTotals {
+  trips: number; distanceKm: number; revenue: number;
+  fuelCost: number; maintenanceCost: number; netProfit: number;
+}
+interface VehicleFleetReport {
+  vehicles: VehicleFleetRow[]; drivers: DriverFleetRow[];
+  totals: FleetTotals; period: { from: string | null; to: string | null };
+}
 interface VehicleFuelLog {
   id: string; vehicleId: string; tripId?: string | null;
   logDate: string; litres: string; ratePerLitre: string; totalCost: string;
@@ -476,6 +492,22 @@ export default function VehicleTrips() {
     queryKey: ["/api/vehicle-maintenance-logs"],
     queryFn: () => apiRequest("GET", "/api/vehicle-maintenance-logs").then(r => r.json()),
   });
+
+  // ── Fleet report period state ─────────────────────────────────────────────
+  const fyStart = (() => {
+    const now = new Date();
+    const year = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+    return `${year}-04-01`;
+  })();
+  const [fleetFrom, setFleetFrom] = useState(fyStart);
+  const [fleetTo,   setFleetTo]   = useState(new Date().toISOString().slice(0, 10));
+  const [fleetQuery, setFleetQuery] = useState<{ from: string; to: string }>({ from: fyStart, to: new Date().toISOString().slice(0, 10) });
+
+  const { data: fleetReport, isLoading: loadingFleet } = useQuery<VehicleFleetReport>({
+    queryKey: ["/api/reports/vehicle-fleet", fleetQuery.from, fleetQuery.to],
+    queryFn: () => apiRequest("GET", `/api/reports/vehicle-fleet?from=${fleetQuery.from}&to=${fleetQuery.to}`).then(r => r.json()),
+  });
+
   const [invoiceDialog, setInvoiceDialog] = useState<"create" | "view" | "pay" | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<VehicleTripInvoice | null>(null);
   const [invoiceForm, setInvoiceForm] = useState({
@@ -1546,13 +1578,145 @@ export default function VehicleTrips() {
           </Dialog>
         </TabsContent>
 
-        {/* Reports stub — Phase 7 */}
-        <TabsContent value="reports" className="mt-4">
-          <Card><CardContent className="py-16 text-center">
-            <FileBarChart2 className="h-12 w-12 mx-auto mb-3 opacity-20" />
-            <p className="font-semibold text-lg">Vehicle Reports</p>
-            <p className="text-muted-foreground text-sm mt-1">Phase 7 — Revenue per vehicle, profit per driver, monthly P&L and more.</p>
-          </CardContent></Card>
+        {/* Fleet Reports Tab — Phase 7 */}
+        <TabsContent value="reports" className="mt-4 space-y-5">
+
+          {/* Period filter */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label className="whitespace-nowrap text-sm">From</Label>
+              <Input type="date" className="w-40 h-8 text-sm" value={fleetFrom} onChange={e => setFleetFrom(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="whitespace-nowrap text-sm">To</Label>
+              <Input type="date" className="w-40 h-8 text-sm" value={fleetTo} onChange={e => setFleetTo(e.target.value)} />
+            </div>
+            <Button size="sm" className="h-8 gap-1.5" onClick={() => setFleetQuery({ from: fleetFrom, to: fleetTo })}>
+              <RefreshCw className="h-3.5 w-3.5" />Apply
+            </Button>
+          </div>
+
+          {loadingFleet ? (
+            <div className="text-center text-muted-foreground py-16">Loading fleet report…</div>
+          ) : !fleetReport || (fleetReport.vehicles.length === 0 && fleetReport.drivers.length === 0) ? (
+            <Card><CardContent className="py-16 text-center">
+              <FileBarChart2 className="h-10 w-10 mx-auto mb-2 opacity-20" />
+              <p className="font-medium">No fleet data for this period</p>
+              <p className="text-muted-foreground text-sm mt-1">Try adjusting the date range or add trips, fuel logs, or maintenance records.</p>
+            </CardContent></Card>
+          ) : (
+            <>
+              {/* Summary Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Fleet Revenue",       value: fleetReport.totals.revenue,         color: "text-green-600" },
+                  { label: "Total Fuel Cost",      value: fleetReport.totals.fuelCost,        color: "text-orange-500" },
+                  { label: "Total Maintenance",    value: fleetReport.totals.maintenanceCost, color: "text-blue-500" },
+                  { label: "Net Fleet Profit",     value: fleetReport.totals.netProfit,       color: fleetReport.totals.netProfit >= 0 ? "text-green-600" : "text-red-600" },
+                ].map(({ label, value, color }) => (
+                  <Card key={label}>
+                    <CardContent className="py-4 px-4">
+                      <p className="text-xs text-muted-foreground mb-1">{label}</p>
+                      <p className={`text-lg font-bold ${color}`}>{fmt(value)}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Vehicle Performance Table */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2">Vehicle Performance</h3>
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Vehicle</TableHead>
+                        <TableHead className="text-right">Trips</TableHead>
+                        <TableHead className="text-right">KM</TableHead>
+                        <TableHead className="text-right">Revenue</TableHead>
+                        <TableHead className="text-right">Fuel Cost</TableHead>
+                        <TableHead className="text-right">Maintenance</TableHead>
+                        <TableHead className="text-right">Cost/KM</TableHead>
+                        <TableHead className="text-right">Net Profit</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fleetReport.vehicles.map(v => (
+                        <TableRow key={v.vehicleId} className="hover:bg-muted/30">
+                          <TableCell>
+                            <div className="font-medium">{v.vehicleName}</div>
+                            <div className="text-xs text-muted-foreground font-mono">{v.registrationNo}</div>
+                          </TableCell>
+                          <TableCell className="text-right">{v.trips}</TableCell>
+                          <TableCell className="text-right">{v.distanceKm.toFixed(1)}</TableCell>
+                          <TableCell className="text-right">{fmt(v.revenue)}</TableCell>
+                          <TableCell className="text-right text-orange-600">{v.fuelCost > 0 ? fmt(v.fuelCost) : "—"}</TableCell>
+                          <TableCell className="text-right text-blue-600">{v.maintenanceCost > 0 ? fmt(v.maintenanceCost) : "—"}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">
+                            {v.costPerKm != null ? `₹${v.costPerKm.toFixed(2)}/km` : "—"}
+                          </TableCell>
+                          <TableCell className={`text-right font-semibold ${v.netProfit >= 0 ? "text-green-700" : "text-red-600"}`}>
+                            {fmt(v.netProfit)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {/* Totals row */}
+                      <TableRow className="bg-muted/40 font-semibold border-t-2">
+                        <TableCell>Fleet Total</TableCell>
+                        <TableCell className="text-right">{fleetReport.totals.trips}</TableCell>
+                        <TableCell className="text-right">{fleetReport.totals.distanceKm.toFixed(1)}</TableCell>
+                        <TableCell className="text-right">{fmt(fleetReport.totals.revenue)}</TableCell>
+                        <TableCell className="text-right text-orange-600">{fmt(fleetReport.totals.fuelCost)}</TableCell>
+                        <TableCell className="text-right text-blue-600">{fmt(fleetReport.totals.maintenanceCost)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">
+                          {fleetReport.totals.distanceKm > 0
+                            ? `₹${((fleetReport.totals.fuelCost + fleetReport.totals.maintenanceCost) / fleetReport.totals.distanceKm).toFixed(2)}/km`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className={`text-right ${fleetReport.totals.netProfit >= 0 ? "text-green-700" : "text-red-600"}`}>
+                          {fmt(fleetReport.totals.netProfit)}
+                        </TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Driver Performance Table */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2">Driver Performance</h3>
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Driver</TableHead>
+                        <TableHead className="text-right">Trips</TableHead>
+                        <TableHead className="text-right">KM</TableHead>
+                        <TableHead className="text-right">Revenue</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {fleetReport.drivers.map(d => (
+                        <TableRow key={d.driverId} className="hover:bg-muted/30">
+                          <TableCell className="font-medium">{d.driverName}</TableCell>
+                          <TableCell className="text-right">{d.trips}</TableCell>
+                          <TableCell className="text-right">{d.distanceKm.toFixed(1)}</TableCell>
+                          <TableCell className="text-right">{fmt(d.revenue)}</TableCell>
+                        </TableRow>
+                      ))}
+                      {/* Driver totals */}
+                      <TableRow className="bg-muted/40 font-semibold border-t-2">
+                        <TableCell>Total</TableCell>
+                        <TableCell className="text-right">{fleetReport.drivers.reduce((s, d) => s + d.trips, 0)}</TableCell>
+                        <TableCell className="text-right">{fleetReport.drivers.reduce((s, d) => s + d.distanceKm, 0).toFixed(1)}</TableCell>
+                        <TableCell className="text-right">{fmt(fleetReport.drivers.reduce((s, d) => s + d.revenue, 0))}</TableCell>
+                      </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </>
+          )}
         </TabsContent>
       </Tabs>
 

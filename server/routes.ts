@@ -16184,6 +16184,20 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/reports/vehicle-fleet — Phase 7
+  app.get("/api/reports/vehicle-fleet", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+      const from = typeof req.query.from === "string" && isoRe.test(req.query.from) ? req.query.from : undefined;
+      const to   = typeof req.query.to   === "string" && isoRe.test(req.query.to)   ? req.query.to   : undefined;
+      const { getVehicleFleetReport } = await import("./lib/financial-aggregations");
+      const data = await getVehicleFleetReport({ from, to });
+      res.json(data);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to generate vehicle fleet report" });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════════════════
   // VEHICLE TRIP INVOICES — Phase 4 (service invoices, separate from salesInvoices)
   // ══════════════════════════════════════════════════════════════════════════════

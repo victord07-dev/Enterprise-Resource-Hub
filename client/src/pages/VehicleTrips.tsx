@@ -109,6 +109,15 @@ interface VehicleTripInvoice {
   outstanding?: number;
 }
 interface CashAccount { id: string; name: string; accountType: string; balance?: string; }
+interface VehicleFuelLog {
+  id: string; vehicleId: string; tripId?: string | null;
+  logDate: string; litres: string; ratePerLitre: string; totalCost: string;
+  odometerReading?: string | null; vendorName?: string | null; notes?: string | null;
+  expenseId?: string | null; postedToAccounts: boolean;
+  postedAt?: string | null; postedBy?: string | null;
+  createdBy: string; createdAt: string;
+}
+interface ExpenseCategory { id: string; name: string; isActive: boolean; }
 
 interface NominatimResult {
   place_id: number; display_name: string; lat: string; lon: string;
@@ -133,6 +142,13 @@ const BLANK_TRIP = {
   endLat: null as number | null, endLng: null as number | null,
   estimatedDurationMinutes: null as number | null,
 };
+
+const BLANK_FUEL_LOG = {
+  vehicleId: "", tripId: "",
+  logDate: new Date().toISOString().slice(0, 10),
+  litres: "", ratePerLitre: "", totalCost: "", notes: "",
+};
+const BLANK_POST_FUEL = { categoryId: "", cashAccountId: "", paymentMethod: "cash", notes: "" };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapPanel — self-contained Leaflet component for trip creation
@@ -422,6 +438,14 @@ export default function VehicleTrips() {
     queryKey: ["/api/cash-accounts"],
     queryFn: () => apiRequest("GET", "/api/cash-accounts").then(r => r.json()),
   });
+  const { data: fuelLogs = [], isLoading: loadingFuelLogs } = useQuery<VehicleFuelLog[]>({
+    queryKey: ["/api/vehicle-fuel-logs"],
+    queryFn: () => apiRequest("GET", "/api/vehicle-fuel-logs").then(r => r.json()),
+  });
+  const { data: expenseCategories = [] } = useQuery<ExpenseCategory[]>({
+    queryKey: ["/api/expense-categories"],
+    queryFn: () => apiRequest("GET", "/api/expense-categories").then(r => r.json()),
+  });
   const [invoiceDialog, setInvoiceDialog] = useState<"create" | "view" | "pay" | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<VehicleTripInvoice | null>(null);
   const [invoiceForm, setInvoiceForm] = useState({
@@ -468,6 +492,44 @@ export default function VehicleTrips() {
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
+
+  // ── Fuel log state + mutations ────────────────────────────────────────────────
+  const [fuelDialog, setFuelDialog] = useState<"add" | "post" | null>(null);
+  const [selectedFuelLog, setSelectedFuelLog] = useState<VehicleFuelLog | null>(null);
+  const [fuelForm, setFuelForm] = useState<typeof BLANK_FUEL_LOG>({ ...BLANK_FUEL_LOG });
+  const [postFuelForm, setPostFuelForm] = useState<typeof BLANK_POST_FUEL>({ ...BLANK_POST_FUEL });
+  const [fuelVehicleFilter, setFuelVehicleFilter] = useState("all");
+
+  const createFuelLog = useMutation({
+    mutationFn: (d: Record<string, unknown>) => apiRequest("POST", "/api/vehicle-fuel-logs", d).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/vehicle-fuel-logs"] });
+      toast({ title: "Fuel log added" });
+      setFuelDialog(null);
+      setFuelForm({ ...BLANK_FUEL_LOG });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+  const postFuelExpense = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      apiRequest("POST", `/api/vehicle-fuel-logs/${id}/post-expense`, data).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/vehicle-fuel-logs"] });
+      qc.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      toast({ title: "Posted to accounts", description: "Expense created and account balance updated." });
+      setFuelDialog(null);
+      setSelectedFuelLog(null);
+      setPostFuelForm({ ...BLANK_POST_FUEL });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  // Auto-calculate fuel total when litres or rate changes
+  const recalcFuel = (f: typeof fuelForm) => {
+    const litres = parseFloat(f.litres) || 0;
+    const rate = parseFloat(f.ratePerLitre) || 0;
+    return { ...f, totalCost: (litres * rate).toFixed(2) };
+  };
 
   // Auto-calculate invoice amounts when distance / rate / gstRate changes
   const recalcInvoice = (f: typeof invoiceForm) => {
@@ -1017,10 +1079,214 @@ export default function VehicleTrips() {
           )}
         </TabsContent>
 
+        {/* ── Fuel Log Tab ─────────────────────────────────────────────────── */}
+        <TabsContent value="fuel" className="mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Select value={fuelVehicleFilter} onValueChange={setFuelVehicleFilter}>
+                <SelectTrigger className="w-44"><SelectValue placeholder="All Vehicles" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Vehicles</SelectItem>
+                  {vehicles.filter(v => v.status === "active").map(v => (
+                    <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {canEdit && (
+              <Button className="gap-1.5" onClick={() => { setFuelForm({ ...BLANK_FUEL_LOG }); setFuelDialog("add"); }}>
+                <Plus className="h-4 w-4" />Add Fuel Log
+              </Button>
+            )}
+          </div>
+
+          {loadingFuelLogs ? (
+            <div className="text-center text-muted-foreground py-12">Loading…</div>
+          ) : (
+            <div className="rounded-md border overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Vehicle</TableHead>
+                    <TableHead>Trip</TableHead>
+                    <TableHead className="text-right">Litres</TableHead>
+                    <TableHead className="text-right">Rate/L</TableHead>
+                    <TableHead className="text-right">Total Cost</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {fuelLogs
+                    .filter(fl => fuelVehicleFilter === "all" || fl.vehicleId === fuelVehicleFilter)
+                    .map(fl => (
+                      <TableRow key={fl.id} className="hover:bg-muted/30">
+                        <TableCell className="whitespace-nowrap">{fmtDate(fl.logDate)}</TableCell>
+                        <TableCell className="font-medium">{vehicleName(fl.vehicleId)}</TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          {fl.tripId ? (trips.find(t => t.id === fl.tripId)?.tripNumber ?? "—") : "—"}
+                        </TableCell>
+                        <TableCell className="text-right">{fl.litres} L</TableCell>
+                        <TableCell className="text-right">₹{parseFloat(fl.ratePerLitre).toFixed(2)}</TableCell>
+                        <TableCell className="text-right font-medium">{fmt(fl.totalCost)}</TableCell>
+                        <TableCell>
+                          {fl.postedToAccounts ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                              ✓ Posted {fl.postedAt ? fmtDate(fl.postedAt) : ""}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+                              Pending
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {canEdit && !fl.postedToAccounts && (
+                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
+                              onClick={() => { setSelectedFuelLog(fl); setPostFuelForm({ ...BLANK_POST_FUEL }); setFuelDialog("post"); }}>
+                              Post to Accounts
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  {fuelLogs.filter(fl => fuelVehicleFilter === "all" || fl.vehicleId === fuelVehicleFilter).length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center py-12 text-muted-foreground">
+                        <Fuel className="h-10 w-10 mx-auto mb-2 opacity-20" />
+                        <p className="font-medium">No fuel logs yet</p>
+                        {canEdit && <Button variant="outline" size="sm" className="mt-2 gap-1" onClick={() => { setFuelForm({ ...BLANK_FUEL_LOG }); setFuelDialog("add"); }}><Plus className="h-4 w-4" />Add first entry</Button>}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          {/* Add Fuel Log Dialog */}
+          <Dialog open={fuelDialog === "add"} onOpenChange={o => !o && setFuelDialog(null)}>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle>Add Fuel Log</DialogTitle></DialogHeader>
+              <div className="space-y-3 py-2">
+                <div>
+                  <Label>Vehicle *</Label>
+                  <Select value={fuelForm.vehicleId} onValueChange={v => setFuelForm(f => ({ ...f, vehicleId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select vehicle" /></SelectTrigger>
+                    <SelectContent>{vehicles.filter(v => v.status === "active").map(v => <SelectItem key={v.id} value={v.id}>{v.name} ({v.registrationNo})</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Trip (optional)</Label>
+                  <Select value={fuelForm.tripId || "none"} onValueChange={v => setFuelForm(f => ({ ...f, tripId: v === "none" ? "" : v }))}>
+                    <SelectTrigger><SelectValue placeholder="No trip linked" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No trip linked</SelectItem>
+                      {trips.filter(t => !["cancelled"].includes(t.status) && (!fuelForm.vehicleId || t.vehicleId === fuelForm.vehicleId)).map(t => (
+                        <SelectItem key={t.id} value={t.id}>{t.tripNumber} — {t.startLocation} → {t.endLocation}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Date *</Label>
+                  <Input type="date" value={fuelForm.logDate} onChange={e => setFuelForm(f => ({ ...f, logDate: e.target.value }))} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Litres *</Label>
+                    <Input type="number" step="0.01" placeholder="45.00" value={fuelForm.litres}
+                      onChange={e => setFuelForm(f => recalcFuel({ ...f, litres: e.target.value }))} />
+                  </div>
+                  <div>
+                    <Label>Rate/Litre (₹) *</Label>
+                    <Input type="number" step="0.01" placeholder="105.00" value={fuelForm.ratePerLitre}
+                      onChange={e => setFuelForm(f => recalcFuel({ ...f, ratePerLitre: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="flex justify-between items-center py-1 px-3 bg-muted rounded text-sm font-medium">
+                  <span>Total Cost</span>
+                  <span>{fmt(fuelForm.totalCost || "0")}</span>
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Textarea rows={2} placeholder="Optional notes…" value={fuelForm.notes} onChange={e => setFuelForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setFuelDialog(null)}>Cancel</Button>
+                <Button
+                  disabled={createFuelLog.isPending || !fuelForm.vehicleId || !fuelForm.logDate || !fuelForm.litres || !fuelForm.ratePerLitre}
+                  onClick={() => {
+                    const payload: any = { ...fuelForm, tripId: fuelForm.tripId || null };
+                    createFuelLog.mutate(payload);
+                  }}>
+                  {createFuelLog.isPending ? "Saving…" : "Save Fuel Log"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Post to Accounts Dialog */}
+          <Dialog open={fuelDialog === "post"} onOpenChange={o => !o && setFuelDialog(null)}>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle>Post to Accounts</DialogTitle></DialogHeader>
+              {selectedFuelLog && (
+                <p className="text-sm text-muted-foreground -mt-1">
+                  {vehicleName(selectedFuelLog.vehicleId)} · {fmtDate(selectedFuelLog.logDate)} · {selectedFuelLog.litres} L · <strong>{fmt(selectedFuelLog.totalCost)}</strong>
+                </p>
+              )}
+              <div className="space-y-3 py-2">
+                <div>
+                  <Label>Expense Category *</Label>
+                  <Select value={postFuelForm.categoryId} onValueChange={v => setPostFuelForm(f => ({ ...f, categoryId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                    <SelectContent>{expenseCategories.filter(c => c.isActive).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Cash / Bank Account *</Label>
+                  <Select value={postFuelForm.cashAccountId} onValueChange={v => setPostFuelForm(f => ({ ...f, cashAccountId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
+                    <SelectContent>{cashAccounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Payment Method</Label>
+                  <Select value={postFuelForm.paymentMethod} onValueChange={v => setPostFuelForm(f => ({ ...f, paymentMethod: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["cash","upi","card","bank_transfer","cheque"].map(m => <SelectItem key={m} value={m} className="capitalize">{m.replace("_", " ")}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Textarea rows={2} placeholder="Optional notes…" value={postFuelForm.notes} onChange={e => setPostFuelForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Expense date will be set to the fuel log date ({selectedFuelLog ? fmtDate(selectedFuelLog.logDate) : ""}), not today.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setFuelDialog(null)}>Cancel</Button>
+                <Button
+                  disabled={postFuelExpense.isPending || !postFuelForm.categoryId || !postFuelForm.cashAccountId}
+                  onClick={() => {
+                    if (!selectedFuelLog) return;
+                    postFuelExpense.mutate({ id: selectedFuelLog.id, data: postFuelForm });
+                  }}>
+                  {postFuelExpense.isPending ? "Posting…" : "Post to Accounts"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </TabsContent>
+
         {/* Stub tabs */}
         {[
-          { value: "fuel", icon: Fuel, title: "Fuel Log", msg: "Phase 5 — Available after Phase 4 financial integration." },
-          { value: "maintenance", icon: Wrench, title: "Maintenance Log", msg: "Phase 6 — Available after Phase 5 fuel log." },
+          { value: "maintenance", icon: Wrench, title: "Maintenance Log", msg: "Phase 6 — Coming soon." },
           { value: "reports", icon: FileBarChart2, title: "Vehicle Reports", msg: "Phase 7 — Revenue per vehicle, profit per driver, monthly P&L and more." },
         ].map(({ value, icon: Icon, title, msg }) => (
           <TabsContent key={value} value={value} className="mt-4">

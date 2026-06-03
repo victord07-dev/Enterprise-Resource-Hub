@@ -16053,6 +16053,59 @@ export async function registerRoutes(
     } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update fuel log" }); }
   });
 
+  // POST /api/vehicle-fuel-logs/:id/post-expense — Phase 5
+  app.post("/api/vehicle-fuel-logs/:id/post-expense", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { categoryId, cashAccountId, paymentMethod, notes } = req.body;
+      if (!categoryId) return res.status(400).json({ message: "categoryId is required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required" });
+
+      const [fuelLog] = (await db.execute(sql`
+        SELECT * FROM vehicle_fuel_logs WHERE id = ${req.params.id}
+      `)).rows as any[];
+      if (!fuelLog) return res.status(404).json({ message: "Fuel log not found" });
+      if (fuelLog.posted_to_accounts) return res.status(400).json({ message: "This fuel log has already been posted to accounts" });
+
+      const cat = await storage.getExpenseCategory(categoryId);
+      if (!cat || !cat.isActive) return res.status(400).json({ message: "Invalid or inactive expense category" });
+      const acct = await storage.getCashAccount(cashAccountId);
+      if (!acct) return res.status(400).json({ message: "Cash account not found" });
+
+      const [vehicle] = (await db.execute(sql`SELECT name FROM vehicles WHERE id = ${fuelLog.vehicle_id}`)).rows as any[];
+      const vehicleName = vehicle?.name ?? fuelLog.vehicle_id;
+      const description = `Fuel — ${vehicleName} — ${fuelLog.log_date}`;
+      const method = paymentMethod ?? "cash";
+
+      const expense = await db.transaction(async (tx) => {
+        const [exp] = (await tx.execute(sql`
+          INSERT INTO expenses (
+            expense_date, category_id, amount, payment_method, description,
+            cash_account_id, linked_entity_type, linked_entity_id,
+            notes, paid_by_user_id, created_by_user_id, created_at, updated_at
+          ) VALUES (
+            ${fuelLog.log_date}, ${categoryId}, ${fuelLog.total_cost}, ${method}, ${description},
+            ${cashAccountId}, 'vehicle_fuel_log', ${fuelLog.id},
+            ${notes ?? null}, ${req.user.id}, ${req.user.id}, NOW(), NOW()
+          ) RETURNING *
+        `)).rows as any[];
+
+        await tx.execute(sql`
+          UPDATE vehicle_fuel_logs
+          SET expense_id = ${exp.id}, posted_to_accounts = true,
+              posted_at = NOW(), posted_by = ${req.user.id}
+          WHERE id = ${fuelLog.id}
+        `);
+
+        return exp;
+      });
+
+      await logAction(req.user.id, "CREATE", "Expense", `Fuel ₹${fuelLog.total_cost} — ${vehicleName} — ${fuelLog.log_date}`);
+      res.status(201).json({ expense, fuelLogId: fuelLog.id });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to post fuel log to accounts" });
+    }
+  });
+
   // GET /api/vehicle-maintenance-logs
   app.get("/api/vehicle-maintenance-logs", authenticateToken, async (req: any, res) => {
     try {

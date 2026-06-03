@@ -117,6 +117,16 @@ interface VehicleFuelLog {
   postedAt?: string | null; postedBy?: string | null;
   createdBy: string; createdAt: string;
 }
+interface VehicleMaintenanceLog {
+  id: string; vehicleId: string;
+  serviceDate: string; serviceType: string;
+  vendorName?: string | null; cost: string;
+  odometerReading?: string | null; nextServiceDate?: string | null;
+  nextServiceOdometer?: string | null; notes?: string | null;
+  expenseId?: string | null; postedToAccounts: boolean;
+  postedAt?: string | null; postedBy?: string | null;
+  createdBy: string; createdAt: string;
+}
 interface ExpenseCategory { id: string; name: string; isActive: boolean; }
 
 interface NominatimResult {
@@ -149,6 +159,22 @@ const BLANK_FUEL_LOG = {
   litres: "", ratePerLitre: "", totalCost: "", notes: "",
 };
 const BLANK_POST_FUEL = { categoryId: "", cashAccountId: "", paymentMethod: "cash", notes: "" };
+
+const SERVICE_TYPES = [
+  { value: "oil_change", label: "Oil Change" },
+  { value: "tyre", label: "Tyre" },
+  { value: "brake", label: "Brake" },
+  { value: "major_service", label: "Major Service" },
+  { value: "inspection", label: "Inspection" },
+  { value: "cleaning", label: "Cleaning" },
+  { value: "other", label: "Other" },
+];
+const BLANK_MAINTENANCE_LOG = {
+  vehicleId: "", serviceDate: new Date().toISOString().slice(0, 10),
+  serviceType: "oil_change", vendorName: "", cost: "",
+  odometerReading: "", nextServiceDate: "", notes: "",
+};
+const BLANK_POST_MAINTENANCE = { categoryId: "", cashAccountId: "", paymentMethod: "cash", notes: "" };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MapPanel — self-contained Leaflet component for trip creation
@@ -446,6 +472,10 @@ export default function VehicleTrips() {
     queryKey: ["/api/expense-categories"],
     queryFn: () => apiRequest("GET", "/api/expense-categories").then(r => r.json()),
   });
+  const { data: maintenanceLogs = [], isLoading: loadingMaintenanceLogs } = useQuery<VehicleMaintenanceLog[]>({
+    queryKey: ["/api/vehicle-maintenance-logs"],
+    queryFn: () => apiRequest("GET", "/api/vehicle-maintenance-logs").then(r => r.json()),
+  });
   const [invoiceDialog, setInvoiceDialog] = useState<"create" | "view" | "pay" | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<VehicleTripInvoice | null>(null);
   const [invoiceForm, setInvoiceForm] = useState({
@@ -520,6 +550,37 @@ export default function VehicleTrips() {
       setFuelDialog(null);
       setSelectedFuelLog(null);
       setPostFuelForm({ ...BLANK_POST_FUEL });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+
+  // ── Maintenance log state + mutations ────────────────────────────────────────
+  const [maintDialog, setMaintDialog] = useState<"add" | "post" | null>(null);
+  const [selectedMaintLog, setSelectedMaintLog] = useState<VehicleMaintenanceLog | null>(null);
+  const [maintForm, setMaintForm] = useState<typeof BLANK_MAINTENANCE_LOG>({ ...BLANK_MAINTENANCE_LOG });
+  const [postMaintForm, setPostMaintForm] = useState<typeof BLANK_POST_MAINTENANCE>({ ...BLANK_POST_MAINTENANCE });
+  const [maintVehicleFilter, setMaintVehicleFilter] = useState("all");
+
+  const createMaintenanceLog = useMutation({
+    mutationFn: (d: Record<string, unknown>) => apiRequest("POST", "/api/vehicle-maintenance-logs", d).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/vehicle-maintenance-logs"] });
+      toast({ title: "Maintenance log added" });
+      setMaintDialog(null);
+      setMaintForm({ ...BLANK_MAINTENANCE_LOG });
+    },
+    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+  const postMaintenanceExpense = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
+      apiRequest("POST", `/api/vehicle-maintenance-logs/${id}/post-expense`, data).then(r => r.json()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/vehicle-maintenance-logs"] });
+      qc.invalidateQueries({ queryKey: ["/api/cash-accounts"] });
+      toast({ title: "Posted to accounts", description: "Expense created and account balance updated." });
+      setMaintDialog(null);
+      setSelectedMaintLog(null);
+      setPostMaintForm({ ...BLANK_POST_MAINTENANCE });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" }),
   });
@@ -1284,19 +1345,215 @@ export default function VehicleTrips() {
           </Dialog>
         </TabsContent>
 
-        {/* Stub tabs */}
-        {[
-          { value: "maintenance", icon: Wrench, title: "Maintenance Log", msg: "Phase 6 — Coming soon." },
-          { value: "reports", icon: FileBarChart2, title: "Vehicle Reports", msg: "Phase 7 — Revenue per vehicle, profit per driver, monthly P&L and more." },
-        ].map(({ value, icon: Icon, title, msg }) => (
-          <TabsContent key={value} value={value} className="mt-4">
-            <Card><CardContent className="py-16 text-center">
-              <Icon className="h-12 w-12 mx-auto mb-3 opacity-20" />
-              <p className="font-semibold text-lg">{title}</p>
-              <p className="text-muted-foreground text-sm mt-1">{msg}</p>
-            </CardContent></Card>
-          </TabsContent>
-        ))}
+        {/* Maintenance Log Tab — Phase 6 */}
+        <TabsContent value="maintenance" className="mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Select value={maintVehicleFilter} onValueChange={setMaintVehicleFilter}>
+                <SelectTrigger className="w-44"><SelectValue placeholder="All Vehicles" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Vehicles</SelectItem>
+                  {vehicles.filter(v => v.status === "active").map(v => (
+                    <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {canEdit && (
+              <Button className="gap-1.5" onClick={() => { setMaintForm({ ...BLANK_MAINTENANCE_LOG }); setMaintDialog("add"); }}>
+                <Plus className="h-4 w-4" />Add Maintenance Log
+              </Button>
+            )}
+          </div>
+
+          {loadingMaintenanceLogs ? (
+            <div className="text-center text-muted-foreground py-12">Loading…</div>
+          ) : (
+            <div className="rounded-md border overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Vehicle</TableHead>
+                    <TableHead>Service Type</TableHead>
+                    <TableHead>Vendor</TableHead>
+                    <TableHead className="text-right">Cost</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {maintenanceLogs
+                    .filter(ml => maintVehicleFilter === "all" || ml.vehicleId === maintVehicleFilter)
+                    .map(ml => (
+                      <TableRow key={ml.id} className="hover:bg-muted/30">
+                        <TableCell className="whitespace-nowrap">{fmtDate(ml.serviceDate)}</TableCell>
+                        <TableCell className="font-medium">{vehicleName(ml.vehicleId)}</TableCell>
+                        <TableCell className="capitalize">{SERVICE_TYPES.find(s => s.value === ml.serviceType)?.label ?? ml.serviceType}</TableCell>
+                        <TableCell className="text-muted-foreground text-sm">{ml.vendorName ?? "—"}</TableCell>
+                        <TableCell className="text-right font-medium">{fmt(ml.cost)}</TableCell>
+                        <TableCell>
+                          {ml.postedToAccounts ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                              ✓ Posted {ml.postedAt ? fmtDate(ml.postedAt) : ""}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
+                              Pending
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {canEdit && !ml.postedToAccounts && (
+                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1"
+                              onClick={() => { setSelectedMaintLog(ml); setPostMaintForm({ ...BLANK_POST_MAINTENANCE }); setMaintDialog("post"); }}>
+                              Post to Accounts
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  {maintenanceLogs.filter(ml => maintVehicleFilter === "all" || ml.vehicleId === maintVehicleFilter).length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center py-12 text-muted-foreground">
+                        <Wrench className="h-10 w-10 mx-auto mb-2 opacity-20" />
+                        <p className="font-medium">No maintenance logs yet</p>
+                        {canEdit && <Button variant="outline" size="sm" className="mt-2 gap-1" onClick={() => { setMaintForm({ ...BLANK_MAINTENANCE_LOG }); setMaintDialog("add"); }}><Plus className="h-4 w-4" />Add first entry</Button>}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          {/* Add Maintenance Log Dialog */}
+          <Dialog open={maintDialog === "add"} onOpenChange={o => !o && setMaintDialog(null)}>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle>Add Maintenance Log</DialogTitle></DialogHeader>
+              <div className="space-y-3 py-2">
+                <div>
+                  <Label>Vehicle *</Label>
+                  <Select value={maintForm.vehicleId} onValueChange={v => setMaintForm(f => ({ ...f, vehicleId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select vehicle" /></SelectTrigger>
+                    <SelectContent>{vehicles.map(v => <SelectItem key={v.id} value={v.id}>{v.name} ({v.registrationNo})</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Service Date *</Label>
+                  <Input type="date" value={maintForm.serviceDate} onChange={e => setMaintForm(f => ({ ...f, serviceDate: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Service Type *</Label>
+                  <Select value={maintForm.serviceType} onValueChange={v => setMaintForm(f => ({ ...f, serviceType: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{SERVICE_TYPES.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Vendor / Workshop</Label>
+                  <Input placeholder="Optional" value={maintForm.vendorName} onChange={e => setMaintForm(f => ({ ...f, vendorName: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Cost (₹) *</Label>
+                  <Input type="number" step="0.01" placeholder="0.00" value={maintForm.cost} onChange={e => setMaintForm(f => ({ ...f, cost: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Current Odometer (km)</Label>
+                  <Input type="number" step="1" placeholder="Optional" value={maintForm.odometerReading} onChange={e => setMaintForm(f => ({ ...f, odometerReading: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Next Service Date</Label>
+                  <Input type="date" value={maintForm.nextServiceDate} onChange={e => setMaintForm(f => ({ ...f, nextServiceDate: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Textarea rows={2} placeholder="Optional notes…" value={maintForm.notes} onChange={e => setMaintForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setMaintDialog(null)}>Cancel</Button>
+                <Button
+                  disabled={createMaintenanceLog.isPending || !maintForm.vehicleId || !maintForm.serviceDate || !maintForm.serviceType || !maintForm.cost}
+                  onClick={() => {
+                    const payload: any = {
+                      ...maintForm,
+                      vendorName: maintForm.vendorName || null,
+                      odometerReading: maintForm.odometerReading || null,
+                      nextServiceDate: maintForm.nextServiceDate || null,
+                    };
+                    createMaintenanceLog.mutate(payload);
+                  }}>
+                  {createMaintenanceLog.isPending ? "Saving…" : "Save Maintenance Log"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Post to Accounts Dialog */}
+          <Dialog open={maintDialog === "post"} onOpenChange={o => !o && setMaintDialog(null)}>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle>Post to Accounts</DialogTitle></DialogHeader>
+              {selectedMaintLog && (
+                <p className="text-sm text-muted-foreground -mt-1">
+                  {vehicleName(selectedMaintLog.vehicleId)} · {SERVICE_TYPES.find(s => s.value === selectedMaintLog.serviceType)?.label ?? selectedMaintLog.serviceType} · {fmtDate(selectedMaintLog.serviceDate)} · <strong>{fmt(selectedMaintLog.cost)}</strong>
+                </p>
+              )}
+              <div className="space-y-3 py-2">
+                <div>
+                  <Label>Expense Category *</Label>
+                  <Select value={postMaintForm.categoryId} onValueChange={v => setPostMaintForm(f => ({ ...f, categoryId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
+                    <SelectContent>{expenseCategories.filter(c => c.isActive).map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Cash / Bank Account *</Label>
+                  <Select value={postMaintForm.cashAccountId} onValueChange={v => setPostMaintForm(f => ({ ...f, cashAccountId: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
+                    <SelectContent>{cashAccounts.map(a => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Payment Method</Label>
+                  <Select value={postMaintForm.paymentMethod} onValueChange={v => setPostMaintForm(f => ({ ...f, paymentMethod: v }))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["cash","upi","card","bank_transfer","cheque"].map(m => <SelectItem key={m} value={m} className="capitalize">{m.replace("_", " ")}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Notes</Label>
+                  <Textarea rows={2} placeholder="Optional notes…" value={postMaintForm.notes} onChange={e => setPostMaintForm(f => ({ ...f, notes: e.target.value }))} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Expense date will be set to the maintenance log date ({selectedMaintLog ? fmtDate(selectedMaintLog.serviceDate) : ""}), not today.
+                </p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setMaintDialog(null)}>Cancel</Button>
+                <Button
+                  disabled={postMaintenanceExpense.isPending || !postMaintForm.categoryId || !postMaintForm.cashAccountId}
+                  onClick={() => {
+                    if (!selectedMaintLog) return;
+                    postMaintenanceExpense.mutate({ id: selectedMaintLog.id, data: postMaintForm });
+                  }}>
+                  {postMaintenanceExpense.isPending ? "Posting…" : "Post to Accounts"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </TabsContent>
+
+        {/* Reports stub — Phase 7 */}
+        <TabsContent value="reports" className="mt-4">
+          <Card><CardContent className="py-16 text-center">
+            <FileBarChart2 className="h-12 w-12 mx-auto mb-3 opacity-20" />
+            <p className="font-semibold text-lg">Vehicle Reports</p>
+            <p className="text-muted-foreground text-sm mt-1">Phase 7 — Revenue per vehicle, profit per driver, monthly P&L and more.</p>
+          </CardContent></Card>
+        </TabsContent>
       </Tabs>
 
       {/* ══════════════════════════════════════════════════════════════════════════

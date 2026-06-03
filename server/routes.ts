@@ -16131,6 +16131,59 @@ export async function registerRoutes(
     } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update maintenance log" }); }
   });
 
+  // POST /api/vehicle-maintenance-logs/:id/post-expense — Phase 6
+  app.post("/api/vehicle-maintenance-logs/:id/post-expense", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const { categoryId, cashAccountId, paymentMethod, notes } = req.body;
+      if (!categoryId) return res.status(400).json({ message: "categoryId is required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required" });
+
+      const [mLog] = (await db.execute(sql`
+        SELECT * FROM vehicle_maintenance_logs WHERE id = ${req.params.id}
+      `)).rows as any[];
+      if (!mLog) return res.status(404).json({ message: "Maintenance log not found" });
+      if (mLog.posted_to_accounts) return res.status(400).json({ message: "This maintenance log has already been posted to accounts" });
+
+      const cat = await storage.getExpenseCategory(categoryId);
+      if (!cat || !cat.isActive) return res.status(400).json({ message: "Invalid or inactive expense category" });
+      const acct = await storage.getCashAccount(cashAccountId);
+      if (!acct) return res.status(400).json({ message: "Cash account not found" });
+
+      const [vehicle] = (await db.execute(sql`SELECT name FROM vehicles WHERE id = ${mLog.vehicle_id}`)).rows as any[];
+      const vehicleName = vehicle?.name ?? mLog.vehicle_id;
+      const description = `Maintenance — ${vehicleName} — ${mLog.service_date} — ${mLog.service_type}`;
+      const method = paymentMethod ?? "cash";
+
+      const expense = await db.transaction(async (tx) => {
+        const [exp] = (await tx.execute(sql`
+          INSERT INTO expenses (
+            expense_date, category_id, amount, payment_method, description,
+            cash_account_id, linked_entity_type, linked_entity_id,
+            notes, paid_by_user_id, created_by_user_id, created_at, updated_at
+          ) VALUES (
+            ${mLog.service_date}, ${categoryId}, ${mLog.cost}, ${method}, ${description},
+            ${cashAccountId}, 'vehicle_maintenance', ${mLog.id},
+            ${notes ?? null}, ${req.user.id}, ${req.user.id}, NOW(), NOW()
+          ) RETURNING *
+        `)).rows as any[];
+
+        await tx.execute(sql`
+          UPDATE vehicle_maintenance_logs
+          SET expense_id = ${exp.id}, posted_to_accounts = true,
+              posted_at = NOW(), posted_by = ${req.user.id}
+          WHERE id = ${mLog.id}
+        `);
+
+        return exp;
+      });
+
+      await logAction(req.user.id, "CREATE", "Expense", `Maintenance ₹${mLog.cost} — ${vehicleName} — ${mLog.service_date}`);
+      res.status(201).json({ expense, maintenanceLogId: mLog.id });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to post maintenance log to accounts" });
+    }
+  });
+
   // ══════════════════════════════════════════════════════════════════════════════
   // VEHICLE TRIP INVOICES — Phase 4 (service invoices, separate from salesInvoices)
   // ══════════════════════════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@ export async function exportPLStatementExcel(pl: PLStatement): Promise<Buffer> {
     { label: "REVENUE", amount: "" },
     { label: "  Sales Revenue (ex-GST)", amount: pl.revenue.salesRevenue },
     { label: "  Less: Sales Returns", amount: -pl.revenue.salesReturns },
-    { label: "  Net Revenue", amount: pl.revenue.netRevenue },
+    { label: "  Net Revenue", amount: pl.revenue.netProductRevenue },
     { label: "", amount: "" },
     { label: pl.cogs.label.toUpperCase(), amount: "" },
     { label: `  Purchases (${pl.cogs.supplierInvoiceCount} supplier invoices)`, amount: -pl.cogs.purchases },

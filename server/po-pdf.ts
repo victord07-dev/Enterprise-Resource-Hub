@@ -334,6 +334,19 @@ export function generatePOPdfBuffer(
     if (deliveryCost > 0) {
       summaryRows.push({ label: "Delivery / Freight Cost", value: fmt(deliveryCost) });
     }
+    const discountAmount = Number((po as any).discountAmount ?? 0);
+    const discountType   = (po as any).discountType as string | null | undefined;
+    const discountValue  = Number((po as any).discountValue ?? 0);
+    if (discountAmount > 0) {
+      const discLabel = discountType === "percentage"
+        ? `Discount (${discountValue}%)`
+        : "Discount";
+      summaryRows.push({ label: discLabel, value: `- ${fmt(discountAmount)}`, color: [220, 38, 38] as [number, number, number] });
+    }
+    const roundingAmt = Number((po as any).roundingAmount ?? 0);
+    if ((po as any).applyRounding && roundingAmt !== 0) {
+      summaryRows.push({ label: "Rounding", value: `${roundingAmt > 0 ? "+" : ""}${fmt(Math.abs(roundingAmt))}` });
+    }
     summaryRows.push({ label: "Grand Total", value: fmt(effectiveGrandTotal), bold: true });
   }
 

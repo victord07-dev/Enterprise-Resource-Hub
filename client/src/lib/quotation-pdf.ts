@@ -308,8 +308,9 @@ export async function generateQuotationPDF(
   // ── Summary / Totals ──────────────────────────────────────────────────────────
   const summaryX     = pageWidth - margin - 80;
   const summaryWidth = 80;
-  const hasDiscount  = quotation.discountType && quotation.discountValue && Number(quotation.discountValue) > 0;
-  const summaryBoxH  = (hasDiscount ? 7 : 0) + 14;
+  const hasDiscount   = quotation.discountType && quotation.discountValue && Number(quotation.discountValue) > 0;
+  const hasRounding   = (quotation as any).applyRounding && Number((quotation as any).roundingAmount ?? 0) !== 0;
+  const summaryBoxH   = (hasDiscount ? 7 : 0) + (hasRounding ? 7 : 0) + 14;
 
   doc.setFillColor(...COLORS.infoBg);
   drawRoundedRect(doc, summaryX, y, summaryWidth, summaryBoxH, 2);
@@ -327,6 +328,15 @@ export async function generateQuotationPDF(
     doc.setTextColor(220, 38, 38);
     doc.text(discountLabel, summaryX + 4, lineY);
     doc.text(`- ${fmt(discountAmt)}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
+    lineY += 7;
+  }
+  if (hasRounding) {
+    const roundingAmt = Number((quotation as any).roundingAmount);
+    doc.setFontSize(8);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(...COLORS.textSecondary);
+    doc.text("Rounding", summaryX + 4, lineY);
+    doc.text(`${roundingAmt > 0 ? "+" : ""}${fmt(Math.abs(roundingAmt))}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
     lineY += 7;
   }
 

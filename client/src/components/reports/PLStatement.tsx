@@ -33,8 +33,11 @@ interface PLStatementData {
   revenue: {
     salesRevenue: number;
     salesReturns: number;
-    netRevenue: number;
+    netProductRevenue: number;
+    fleetServiceRevenue?: number;
+    totalNetRevenue?: number;
     salesInvoiceCount: number;
+    tripInvoiceCount?: number;
     creditNoteCount: number;
   };
   cogs: {
@@ -261,7 +264,13 @@ export default function PLStatement() {
           <Section title="REVENUE">
             <Line label="Sales Revenue (ex-GST)" amount={data.revenue.salesRevenue} count={`${data.revenue.salesInvoiceCount} invoices`} testId="line-pl-sales-revenue" />
             <Line label="Less: Sales Returns" amount={-data.revenue.salesReturns} count={`${data.revenue.creditNoteCount} CN`} testId="line-pl-sales-returns" muted />
-            <SubTotal label="Net Revenue" amount={data.revenue.netRevenue} testId="line-pl-net-revenue" />
+            <SubTotal label="Net Product Revenue" amount={data.revenue.netProductRevenue} testId="line-pl-net-revenue" />
+            {(data.revenue.fleetServiceRevenue ?? 0) > 0 && (
+              <Line label="Fleet Service Revenue (ex-GST)" amount={data.revenue.fleetServiceRevenue ?? 0} count={`${data.revenue.tripInvoiceCount ?? 0} trip invoices`} testId="line-pl-fleet-revenue" />
+            )}
+            {(data.revenue.fleetServiceRevenue ?? 0) > 0 && (
+              <SubTotal label="Total Net Revenue" amount={data.revenue.totalNetRevenue ?? data.revenue.netProductRevenue} testId="line-pl-total-revenue" />
+            )}
           </Section>
 
           {/* COGS — finalized dispatch-based actual cost */}
@@ -270,7 +279,10 @@ export default function PLStatement() {
           </Section>
 
           {/* GROSS PROFIT */}
-          <SubTotal label="GROSS PROFIT" amount={data.grossProfit} prominent testId="line-pl-gross-profit" />
+          <SubTotal label="GROSS PROFIT (Product)" amount={data.grossProfit} prominent testId="line-pl-gross-profit" />
+          {(data.revenue.fleetServiceRevenue ?? 0) > 0 && (
+            <SubTotal label="TOTAL GROSS PROFIT" amount={(data as any).totalGrossProfit ?? data.grossProfit} prominent testId="line-pl-total-gross-profit" />
+          )}
 
           {/* OPERATING EXPENSES */}
           <Section title="OPERATING EXPENSES">

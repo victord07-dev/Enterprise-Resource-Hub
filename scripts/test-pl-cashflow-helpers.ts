@@ -42,7 +42,7 @@ async function runForPeriod(label: string, from: string, to: string) {
   console.log("\n── P&L Snapshot ──");
   console.log(`  Sales Revenue           ₹${pl.revenue.salesRevenue.toFixed(2).padStart(14)}`);
   console.log(`  Less: Sales Returns     ₹${pl.revenue.salesReturns.toFixed(2).padStart(14)}  (${pl.revenue.creditNoteCount} CN)`);
-  console.log(`  Net Revenue             ₹${pl.revenue.netRevenue.toFixed(2).padStart(14)}`);
+  console.log(`  Net Revenue             ₹${pl.revenue.netProductRevenue.toFixed(2).padStart(14)}`);
   console.log(`  ${pl.cogs.label.padEnd(30)} ₹${pl.cogs.purchases.toFixed(2).padStart(14)}  (${pl.cogs.supplierInvoiceCount} SI)`);
   console.log(`  Gross Profit            ₹${pl.grossProfit.toFixed(2).padStart(14)}`);
   console.log(`  Operating Expenses      ₹${pl.operatingExpenses.total.toFixed(2).padStart(14)}  (${pl.operatingExpenses.byCategory.length} categories)`);

@@ -155,7 +155,7 @@ function emptyLineItem(): POLineItem {
   return { productId: "", description: "", quantity: 1, unitCost: 0, totalCost: 0, hsnCode: "", gstRate: 18, taxableAmount: 0, gstAmount: 0 };
 }
 
-function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected, deliveryCost = 0 }: {
+function POLineItemsEditor({ items, onChange, products, supplierProducts, supplierProductsLoading, supplierSelected, deliveryCost = 0, discountAmount = 0, applyRounding = false, roundingAmount = 0, discountType = "none", discountValue = "0", onDiscountChange }: {
   items: POLineItem[];
   onChange: (items: POLineItem[]) => void;
   products: Product[];
@@ -163,6 +163,12 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
   supplierProductsLoading: boolean;
   supplierSelected: boolean;
   deliveryCost?: number;
+  discountAmount?: number;
+  applyRounding?: boolean;
+  roundingAmount?: number;
+  discountType?: string;
+  discountValue?: string;
+  onDiscountChange?: (type: string, value: string) => void;
 }) {
   const { toast: poToast } = useToast();
   const spMap = new Map<string, SupplierProduct>();
@@ -486,6 +492,44 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
         })}
       </div>
 
+      {items.length > 0 && onDiscountChange && (
+        <div className="border rounded-lg p-3 space-y-3 bg-muted/10">
+          <Label className="text-sm font-semibold">Discount</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs text-muted-foreground">Discount Type</Label>
+              <Select value={discountType} onValueChange={(v) => onDiscountChange(v, v === "none" ? "0" : discountValue)}>
+                <SelectTrigger className="h-8 text-xs" data-testid="select-po-discount-type">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="percentage">Percentage</SelectItem>
+                  <SelectItem value="fixed">Fixed Amount</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {discountType !== "none" && (
+              <div>
+                <Label className="text-xs text-muted-foreground">
+                  {discountType === "percentage" ? "Discount (%)" : "Discount Amount (₹)"}
+                </Label>
+                <Input
+                  className="h-8 text-xs"
+                  type="number"
+                  min="0"
+                  step={discountType === "percentage" ? "1" : "0.01"}
+                  max={discountType === "percentage" ? "100" : undefined}
+                  value={discountValue}
+                  onChange={(e) => onDiscountChange(discountType, e.target.value)}
+                  data-testid="input-po-discount-value"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="pt-2 border-t space-y-1 text-sm text-right">
         <div className="text-muted-foreground">
           Subtotal: <span className="font-medium text-foreground" data-testid="text-po-subtotal">
@@ -504,8 +548,22 @@ function POLineItemsEditor({ items, onChange, products, supplierProducts, suppli
             </span>
           </div>
         )}
+        {discountAmount > 0 && (
+          <div className="text-muted-foreground">
+            Discount: <span className="font-medium text-red-600 dark:text-red-400" data-testid="text-po-discount">
+              - ₹{discountAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+        )}
+        {applyRounding && roundingAmount !== 0 && (
+          <div className="text-muted-foreground">
+            Rounding: <span className="font-medium text-foreground" data-testid="text-po-rounding">
+              {roundingAmount > 0 ? "+" : ""}₹{roundingAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </span>
+          </div>
+        )}
         <div className="font-semibold text-base" data-testid="text-po-grand-total">
-          Grand Total (incl. GST{deliveryCost > 0 ? " + Delivery" : ""}): ₹{(grandTotal + items.reduce((s, it) => s + (it.gstAmount ?? 0), 0) + deliveryCost).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+          Grand Total (incl. GST{deliveryCost > 0 ? " + Delivery" : ""}): ₹{(grandTotal + items.reduce((s, it) => s + (it.gstAmount ?? 0), 0) + deliveryCost - discountAmount + (applyRounding ? roundingAmount : 0)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
         </div>
       </div>
     </div>
@@ -1234,7 +1292,7 @@ export default function SupplyChain() {
 
   const [poDialogOpen, setPoDialogOpen] = useState(false);
   const [editingPo, setEditingPo] = useState<PurchaseOrder | null>(null);
-  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0" });
+  const [poForm, setPoForm] = useState({ poNumber: "", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0", discountType: "none", discountValue: "0", applyRounding: false });
   const [poLineItems, setPoLineItems] = useState<POLineItem[]>([emptyLineItem()]);
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
@@ -1357,8 +1415,32 @@ export default function SupplyChain() {
       const subtotal = lineItems.reduce((sum: number, item: POLineItem) => sum + item.totalCost, 0);
       const totalTax = lineItems.reduce((sum: number, item: POLineItem) => sum + (item.gstAmount ?? 0), 0);
       const deliveryCostNum = parseFloat(poData.deliveryCost || "0") || 0;
-      const grandTotal = subtotal + totalTax + deliveryCostNum;
-      const payload = { ...poData, totalAmount: String(subtotal), subtotal: String(subtotal), totalTax: String(totalTax), deliveryCost: String(deliveryCostNum), grandTotal: String(grandTotal) };
+      // Discount
+      const discountType = poData.discountType && poData.discountType !== "none" ? poData.discountType : null;
+      const discountVal = parseFloat(poData.discountValue || "0") || 0;
+      const discountAmount = discountType === "percentage"
+        ? Math.round(subtotal * discountVal / 100 * 100) / 100
+        : discountType === "fixed" ? Math.min(discountVal, subtotal) : 0;
+      // Raw total before rounding
+      const rawTotal = subtotal + totalTax + deliveryCostNum - discountAmount;
+      // Rounding
+      const applyRounding = Boolean(poData.applyRounding);
+      const roundedTotal = applyRounding ? Math.round(rawTotal) : rawTotal;
+      const roundingAmount = applyRounding ? Math.round((roundedTotal - rawTotal) * 100) / 100 : 0;
+      const grandTotal = roundedTotal;
+      const payload = {
+        ...poData,
+        totalAmount: String(subtotal),
+        subtotal: String(subtotal),
+        totalTax: String(totalTax),
+        deliveryCost: String(deliveryCostNum),
+        discountType,
+        discountValue: discountType ? String(discountVal) : null,
+        discountAmount: discountAmount > 0 ? String(discountAmount) : null,
+        applyRounding,
+        roundingAmount: String(roundingAmount),
+        grandTotal: String(grandTotal),
+      };
 
       let po: any;
       if (editingPo) {
@@ -1770,7 +1852,7 @@ export default function SupplyChain() {
 
   const openNewPo = () => {
     setEditingPo(null);
-    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0" });
+    setPoForm({ poNumber: "(Auto-generated)", supplierId: "", status: "pending", deliveryType: "warehouse", expectedDelivery: "", notes: "", deliveryCost: "0", discountType: "none", discountValue: "0", applyRounding: false });
     setPoLineItems([emptyLineItem()]);
     setPoDialogOpen(true);
   };
@@ -1785,6 +1867,9 @@ export default function SupplyChain() {
       expectedDelivery: po.expectedDelivery ? new Date(po.expectedDelivery).toISOString().split("T")[0] : "",
       notes: po.notes || "",
       deliveryCost: String((po as any).deliveryCost ?? "0"),
+      discountType: (po as any).discountType || "none",
+      discountValue: String((po as any).discountValue ?? "0"),
+      applyRounding: Boolean((po as any).applyRounding),
     });
     try {
       const resp = await apiRequest("GET", `/api/purchase-orders/${po.id}/items`);
@@ -2629,7 +2714,37 @@ export default function SupplyChain() {
               supplierProductsLoading={!!selectedSupplierId && (supplierCatalogLoading || supplierCatalogFetching)}
               supplierSelected={!!selectedSupplierId}
               deliveryCost={parseFloat(poForm.deliveryCost || "0") || 0}
+              discountType={(poForm as any).discountType || "none"}
+              discountValue={String((poForm as any).discountValue || "0")}
+              onDiscountChange={(type, value) => setPoForm({ ...poForm, discountType: type, discountValue: value } as any)}
+              discountAmount={(() => {
+                const subtotal = poLineItems.reduce((s, it) => s + it.totalCost, 0);
+                const dt = (poForm as any).discountType;
+                const dv = parseFloat((poForm as any).discountValue || "0") || 0;
+                return dt === "percentage" ? Math.round(subtotal * dv / 100 * 100) / 100 : dt === "fixed" ? Math.min(dv, subtotal) : 0;
+              })()}
+              applyRounding={Boolean((poForm as any).applyRounding)}
+              roundingAmount={(() => {
+                const subtotal = poLineItems.reduce((s, it) => s + it.totalCost, 0);
+                const totalTax = poLineItems.reduce((s, it) => s + (it.gstAmount ?? 0), 0);
+                const deliveryCostNum = parseFloat(poForm.deliveryCost || "0") || 0;
+                const dt = (poForm as any).discountType;
+                const dv = parseFloat((poForm as any).discountValue || "0") || 0;
+                const discountAmount = dt === "percentage" ? Math.round(subtotal * dv / 100 * 100) / 100 : dt === "fixed" ? Math.min(dv, subtotal) : 0;
+                const rawTotal = subtotal + totalTax + deliveryCostNum - discountAmount;
+                return (poForm as any).applyRounding ? Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100 : 0;
+              })()}
             />
+            {/* Rounding control */}
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="poApplyRounding"
+                checked={Boolean((poForm as any).applyRounding)}
+                onChange={(e) => setPoForm({ ...poForm, applyRounding: e.target.checked } as any)}
+              />
+              <Label htmlFor="poApplyRounding" className="cursor-pointer">Round to nearest ₹ (eliminate paise)</Label>
+            </div>
           </div>
           <DialogFooter>
             {(() => {

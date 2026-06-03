@@ -43,6 +43,7 @@ const Campaigns = lazy(() => import("@/pages/Campaigns"));
 const WhatsAppTemplates = lazy(() => import("@/pages/WhatsAppTemplates"));
 const CashAccountDetail = lazy(() => import("@/pages/CashAccountDetail"));
 const Countdown = lazy(() => import("@/pages/Countdown"));
+const VehicleTrips = lazy(() => import("@/pages/VehicleTrips"));
 
 interface NotificationBellProps {
   open: boolean;
@@ -201,6 +202,7 @@ function Router() {
       <Route path="/accounts" component={() => <ProtectedRoute component={Accounts} path="/accounts" />} />
       <Route path="/employees" component={() => <ProtectedRoute component={Employees} path="/employees" />} />
       <Route path="/field-staff" component={() => <ProtectedRoute component={FieldStaff} path="/field-staff" />} />
+      <Route path="/vehicle-trips" component={() => <ProtectedRoute component={VehicleTrips} path="/vehicle-trips" />} />
       <Route path="/reports" component={() => <ProtectedRoute component={Reports} path="/reports" />} />
       <Route path="/audit-trail" component={() => <ProtectedRoute component={AuditTrail} path="/audit-trail" />} />
       <Route path="/sales-invoices" component={() => <ProtectedRoute component={SalesInvoices} path="/sales-invoices" />} />

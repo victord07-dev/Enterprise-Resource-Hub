@@ -340,7 +340,7 @@ function FloorPriceRefPanel({ item, ep, touched }: { item: LineItem; ep: Effecti
   );
 }
 
-function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct, deliveryCost, allowBundleCustomization = false }: {
+function LineItemsEditor({ items, onChange, products, discount, onDiscountChange, effectivePrices, subsidyScheme, customer, touchedLineIndices, onLineTouched, bundleComponentsMap, loadBundleComponents, inventoryByProduct, deliveryCost, allowBundleCustomization = false, applyRounding = false, roundingAmount = 0 }: {
   items: LineItem[];
   onChange: (items: LineItem[]) => void;
   products: Product[];
@@ -363,6 +363,9 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   deliveryCost?: number;
   /** Phase 98 — enable per-line bundle component customization (quotations only; deferred for orders) */
   allowBundleCustomization?: boolean;
+  /** Rounding */
+  applyRounding?: boolean;
+  roundingAmount?: number;
 }) {
   const [marginDialogIdx, setMarginDialogIdx] = useState<number | null>(null);
   // Phase 7 — discontinued-component confirm dialog (when a bundle has a non-active component)
@@ -555,7 +558,8 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
   const subtotal = items.reduce((sum, it) => sum + (it.totalPrice || 0), 0);
   const totalTax = items.reduce((sum, it) => sum + (it.taxAmount || 0), 0);
   const discountAmount = discount ? calculateDiscount(subtotal, discount) : 0;
-  const netTotal = subtotal - discountAmount + totalTax + (deliveryCost || 0);
+  const rawTotal = subtotal - discountAmount + totalTax + (deliveryCost || 0);
+  const netTotal = applyRounding ? Math.round(rawTotal) : rawTotal;
 
   return (
     <div className="space-y-3">
@@ -1113,6 +1117,12 @@ function LineItemsEditor({ items, onChange, products, discount, onDiscountChange
               <span data-testid="text-delivery-cost">+ ₹{(deliveryCost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           )}
+          {applyRounding && roundingAmount !== 0 && (
+            <div className="flex justify-between text-sm text-muted-foreground">
+              <span>Rounding</span>
+              <span data-testid="text-rounding-amount">{roundingAmount > 0 ? "+" : ""}₹{roundingAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          )}
           <div className="flex justify-between text-sm font-semibold border-t pt-1">
             <span>Grand Total</span>
             <span data-testid="text-line-items-total">₹{netTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
@@ -1276,6 +1286,7 @@ export default function Sales() {
   const [orderForm, setOrderForm] = useState({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
   const [orderItems, setOrderItems] = useState<LineItem[]>([emptyLineItem()]);
   const [orderDiscount, setOrderDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
+  const [orderApplyRounding, setOrderApplyRounding] = useState(false);
   // Phase 5 — touched-line tracking: warnings only shown on lines edited after Phase 5 deploy
   const [orderTouchedLines, setOrderTouchedLines] = useState<Set<number>>(new Set());
   const handleOrderLineTouched = (idx: number) => setOrderTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
@@ -1285,6 +1296,7 @@ export default function Sales() {
   const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
   const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
+  const [quoteApplyRounding, setQuoteApplyRounding] = useState(false);
   // Phase 5 — touched-line tracking for quotes
   const [quoteTouchedLines, setQuoteTouchedLines] = useState<Set<number>>(new Set());
   const handleQuoteLineTouched = (idx: number) => setQuoteTouchedLines(prev => { const s = new Set(prev); s.add(idx); return s; });
@@ -1449,11 +1461,26 @@ export default function Sales() {
     } catch { setExpandedQuoteId(null); }
   }, [expandedQuoteId]);
 
-  const getNetTotal = (items: LineItem[], discount: DiscountState, deliveryCost?: number) => {
+  const getNetTotal = (items: LineItem[], discount: DiscountState, deliveryCost?: number, applyRounding?: boolean) => {
     const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
     const tax = items.reduce((s, it) => s + (it.taxAmount || 0), 0);
     const discountAmt = calculateDiscount(subtotal, discount);
-    return subtotal - discountAmt + tax + (deliveryCost || 0);
+    const raw = subtotal - discountAmt + tax + (deliveryCost || 0);
+    return applyRounding ? Math.round(raw) : raw;
+  };
+  const getQuoteRoundingAmount = (items: LineItem[], discount: DiscountState, deliveryCost?: number) => {
+    const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
+    const tax = items.reduce((s, it) => s + (it.taxAmount || 0), 0);
+    const discountAmt = calculateDiscount(subtotal, discount);
+    const raw = subtotal - discountAmt + tax + (deliveryCost || 0);
+    return Math.round((Math.round(raw) - raw) * 100) / 100;
+  };
+  const getOrderRoundingAmount = (items: LineItem[], discount: DiscountState, deliveryCost?: number) => {
+    const subtotal = items.reduce((s, it) => s + (it.totalPrice || 0), 0);
+    const tax = items.reduce((s, it) => s + (it.taxAmount || 0), 0);
+    const discountAmt = calculateDiscount(subtotal, discount);
+    const raw = subtotal - discountAmt + tax + (deliveryCost || 0);
+    return Math.round((Math.round(raw) - raw) * 100) / 100;
   };
 
   const orderMutation = useMutation({
@@ -1462,7 +1489,9 @@ export default function Sales() {
       const itemSubtotal = orderItems.reduce((s, it) => s + (it.totalPrice || 0), 0);
       const itemTotalTax = orderItems.reduce((s, it) => s + (it.taxAmount || 0), 0);
       const discountAmt = calculateDiscount(itemSubtotal, orderDiscount);
-      const totalAmount = String(itemSubtotal - discountAmt + itemTotalTax + deliveryCostNum);
+      const rawTotal = itemSubtotal - discountAmt + itemTotalTax + deliveryCostNum;
+      const roundingAmt = orderApplyRounding ? getOrderRoundingAmount(orderItems, orderDiscount, deliveryCostNum) : 0;
+      const totalAmount = String(rawTotal + roundingAmt);
       const orderData = {
         ...data,
         totalAmount,
@@ -1470,6 +1499,8 @@ export default function Sales() {
         totalTax: String(itemTotalTax),
         discountType: orderDiscount.discountType === "none" ? null : orderDiscount.discountType,
         discountValue: orderDiscount.discountType === "none" ? null : String(orderDiscount.discountValue),
+        applyRounding: orderApplyRounding,
+        roundingAmount: String(roundingAmt),
         paymentTerms: data.paymentTerms || null,
         advanceAmount: data.advanceAmount ? String(data.advanceAmount) : null,
         expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
@@ -1561,13 +1592,16 @@ export default function Sales() {
   const quoteMutation = useMutation({
     mutationFn: async (data: any) => {
       const deliveryCostNum = data.deliveryMethod === "delivery" && data.deliveryCost ? Number(data.deliveryCost) : 0;
-      const totalAmount = String(getNetTotal(quoteItems, quoteDiscount, deliveryCostNum));
+      const roundingAmt = quoteApplyRounding ? getQuoteRoundingAmount(quoteItems, quoteDiscount, deliveryCostNum) : 0;
+      const totalAmount = String(getNetTotal(quoteItems, quoteDiscount, deliveryCostNum, quoteApplyRounding));
       const quoteData = {
         ...data,
         totalAmount,
         validUntil: data.validUntil ? new Date(data.validUntil).toISOString() : null,
         discountType: quoteDiscount.discountType === "none" ? null : quoteDiscount.discountType,
         discountValue: quoteDiscount.discountType === "none" ? null : String(quoteDiscount.discountValue),
+        applyRounding: quoteApplyRounding,
+        roundingAmount: String(roundingAmt),
         expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate).toISOString() : null,
         deliveryMethod: data.deliveryMethod || null,
         deliveryCost: data.deliveryMethod === "delivery" && data.deliveryCost ? String(data.deliveryCost) : null,
@@ -1900,6 +1934,7 @@ export default function Sales() {
     setOrderForm({ orderNumber: "", customerId: "", status: "pending", notes: "", paymentTerms: "", advanceAmount: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "", warehouseId: "", subsidyScheme: "none" });
     setOrderItems([emptyLineItem()]);
     setOrderDiscount({ discountType: "none", discountValue: 0 });
+    setOrderApplyRounding(false);
     setOrderTouchedLines(new Set()); // Phase 5: fresh order — start empty, warn on any line the user touches
     setOrderDialogOpen(true);
   };
@@ -1925,6 +1960,7 @@ export default function Sales() {
       discountType: order.discountType || "none",
       discountValue: order.discountValue ? Number(order.discountValue) : 0,
     });
+    setOrderApplyRounding(Boolean((order as any).applyRounding));
     try {
       const res = await fetch(`/api/sales-orders/${order.id}/items`, {
         headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
@@ -1956,6 +1992,7 @@ export default function Sales() {
     setQuoteForm({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
+    setQuoteApplyRounding(false);
     setQuoteTouchedLines(new Set()); // Phase 5: fresh quote — start empty
     setQuoteDialogOpen(true);
   };
@@ -1977,6 +2014,7 @@ export default function Sales() {
       discountType: q.discountType || "none",
       discountValue: q.discountValue ? Number(q.discountValue) : 0,
     });
+    setQuoteApplyRounding(Boolean((q as any).applyRounding));
     setQuoteTouchedLines(new Set()); // Phase 5: editing existing quote — pre-existing lines are untouched
     try {
       const res = await fetch(`/api/quotations/${q.id}/items`, {
@@ -2586,6 +2624,12 @@ export default function Sales() {
                                           <div className="flex justify-between text-muted-foreground">
                                             <span>Delivery Cost</span>
                                             <span>+ ₹{deliveryCostNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                          </div>
+                                        )}
+                                        {(order as any).applyRounding && Number((order as any).roundingAmount) !== 0 && (
+                                          <div className="flex justify-between text-muted-foreground">
+                                            <span>Rounding</span>
+                                            <span>{Number((order as any).roundingAmount) > 0 ? "+" : ""}₹{Number((order as any).roundingAmount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                                           </div>
                                         )}
                                         <div className="flex justify-between font-semibold border-t pt-0.5" data-testid={`text-order-grand-total-${order.id}`}>
@@ -3433,7 +3477,19 @@ export default function Sales() {
               loadBundleComponents={loadBundleComponents}
               inventoryByProduct={inventoryByProduct}
               deliveryCost={orderForm.deliveryMethod === "delivery" && orderForm.deliveryCost ? Number(orderForm.deliveryCost) : 0}
+              applyRounding={orderApplyRounding}
+              roundingAmount={orderApplyRounding ? getOrderRoundingAmount(orderItems, orderDiscount, orderForm.deliveryMethod === "delivery" && orderForm.deliveryCost ? Number(orderForm.deliveryCost) : 0) : 0}
             />
+            {/* Rounding control */}
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="orderApplyRounding"
+                checked={orderApplyRounding}
+                onChange={(e) => setOrderApplyRounding(e.target.checked)}
+              />
+              <label htmlFor="orderApplyRounding" className="text-sm cursor-pointer">Round to nearest ₹ (eliminate paise)</label>
+            </div>
           </div>
           {(() => {
             const almmBlocked = findAlmmHardBlockIndices(orderItems, products, orderForm.subsidyScheme, orderTouchedLines);
@@ -3729,7 +3785,19 @@ export default function Sales() {
               inventoryByProduct={inventoryByProduct}
               deliveryCost={quoteForm.deliveryMethod === "delivery" && quoteForm.deliveryCost ? Number(quoteForm.deliveryCost) : 0}
               allowBundleCustomization={true}
+              applyRounding={quoteApplyRounding}
+              roundingAmount={quoteApplyRounding ? getQuoteRoundingAmount(quoteItems, quoteDiscount, quoteForm.deliveryMethod === "delivery" && quoteForm.deliveryCost ? Number(quoteForm.deliveryCost) : 0) : 0}
             />
+            {/* Rounding control */}
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="quoteApplyRounding"
+                checked={quoteApplyRounding}
+                onChange={(e) => setQuoteApplyRounding(e.target.checked)}
+              />
+              <label htmlFor="quoteApplyRounding" className="text-sm cursor-pointer">Round to nearest ₹ (eliminate paise)</label>
+            </div>
           </div>
           {/* Phase 4 Cleanup A — Below-floor advisory + admin override for quotations */}
           {(() => {

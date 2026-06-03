@@ -761,7 +761,7 @@ export interface PLStatementPDFData {
   revenue: {
     salesRevenue: number;
     salesReturns: number;
-    netRevenue: number;
+    netProductRevenue: number;
     salesInvoiceCount: number;
     creditNoteCount: number;
   };
@@ -840,7 +840,7 @@ export async function generatePLStatementPDF(d: PLStatementPDFData, charts: PLCh
   drawRow("REVENUE", null, { bold: true, bg: C.tableHeaderBg, height: 7 });
   drawRow(`Sales Revenue (ex-GST) — ${d.revenue.salesInvoiceCount} invoices`, d.revenue.salesRevenue, { indent: 3 });
   drawRow(`Less: Sales Returns — ${d.revenue.creditNoteCount} CN`, -d.revenue.salesReturns, { indent: 3, muted: true });
-  drawRow("Net Revenue", d.revenue.netRevenue, { bold: true, indent: 3, topBorder: true });
+  drawRow("Net Revenue", d.revenue.netProductRevenue, { bold: true, indent: 3, topBorder: true });
   y += 3;
 
   drawRow(d.cogs.label.toUpperCase(), null, { bold: true, bg: C.tableHeaderBg, height: 7 });

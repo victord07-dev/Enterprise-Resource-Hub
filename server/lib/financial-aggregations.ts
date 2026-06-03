@@ -25,6 +25,7 @@ import {
   goodsReceiptNotes, quotations, expenseCategories,
   fixedAssets, loans, equityAccounts, openingBalances,
   dailyPriceSheetLots, dailyPriceSheets,
+  vehicleTripInvoices,
 } from "@shared/schema";
 
 // ── Date helpers ─────────────────────────────────────────────────────────────
@@ -119,6 +120,15 @@ export async function getPeriodTotals(p: PeriodFilter): Promise<PeriodTotals> {
       ne(salesInvoices.status, "cancelled"),
     ));
 
+  // Trip invoice grand totals add to invoicedSales (fleet service billing)
+  const [tripInv] = await db
+    .select({ s: sql<string>`COALESCE(SUM(${vehicleTripInvoices.grandTotal}),0)` })
+    .from(vehicleTripInvoices)
+    .where(and(
+      buildRange(vehicleTripInvoices.invoiceDate),
+      ne(vehicleTripInvoices.status, "cancelled"),
+    ));
+
   const [exp] = await db
     .select({ s: sql<string>`COALESCE(SUM(${expenses.amount}),0)` })
     .from(expenses)
@@ -130,7 +140,7 @@ export async function getPeriodTotals(p: PeriodFilter): Promise<PeriodTotals> {
     .where(buildRange(supplierPayments.paymentDate));
 
   const revenue = Number(rev?.s ?? 0);
-  const invoicedSales = Number(inv?.s ?? 0);
+  const invoicedSales = Number(inv?.s ?? 0) + Number(tripInv?.s ?? 0);
   const expensesAmt = Number(exp?.s ?? 0);
   const supplierPaid = Number(supp?.s ?? 0);
 
@@ -458,8 +468,11 @@ export interface PLStatement {
   revenue: {
     salesRevenue: number;        // sales_invoices.subtotal in period (excl GST)
     salesReturns: number;        // credit_notes.subtotal (created_at in period)
-    netRevenue: number;          // salesRevenue - salesReturns
+    netProductRevenue: number;   // salesRevenue - salesReturns (product sales only)
+    fleetServiceRevenue: number; // vehicle_trip_invoices.subtotal in period (excl GST) — NEW
+    totalNetRevenue: number;     // netProductRevenue + fleetServiceRevenue — NEW
     salesInvoiceCount: number;
+    tripInvoiceCount: number;    // NEW
     creditNoteCount: number;
   };
   cogs: {
@@ -469,13 +482,15 @@ export interface PLStatement {
     challanCount: number;        // finalized delivery challans contributing to COGS
     productCount: number;        // distinct products dispatched in period
   };
-  grossProfit: number;
+  grossProfit: number;           // netProductRevenue - COGS (product margin only)
+  fleetServiceGrossProfit: number; // fleetServiceRevenue (no COGS on service) — NEW
+  totalGrossProfit: number;      // grossProfit + fleetServiceGrossProfit — NEW
   operatingExpenses: {
     byCategory: PLOpexCategoryLine[];
     total: number;
     expenseCount: number;
   };
-  netProfitBeforeTax: number;
+  netProfitBeforeTax: number;    // totalGrossProfit - opexTotal
   /**
    * 12-month trend ending at the calendar month containing `to`
    * (or current month if `to` is null). DECOUPLED from period filter
@@ -595,23 +610,40 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
     .from(expenses)
     .where(buildRange(expenses.expenseDate));
 
+  // ─── Fleet Service Revenue: vehicle_trip_invoices.subtotal (ex-GST) ─────────
+  const fleetResult = await db.execute(sql`
+    SELECT
+      COALESCE(SUM(subtotal::numeric), 0) AS total,
+      COUNT(*)::int AS cnt
+    FROM vehicle_trip_invoices
+    WHERE status <> 'cancelled'
+      ${from ? sql`AND invoice_date >= ${from.toISOString().slice(0, 10)}::date` : sql``}
+      ${to   ? sql`AND invoice_date <= ${to.toISOString().slice(0, 10)}::date`   : sql``}
+  `);
+  const fleetRow = fleetResult.rows[0] as any;
+
   const cogsRow = cogsResult.rows[0] as any;
   const salesRevenue = Number(salesRow?.total ?? 0);
   const salesReturns = Number(cnRow?.total ?? 0);
-  const netRevenue = salesRevenue - salesReturns;
+  const netProductRevenue = salesRevenue - salesReturns;
+  const fleetServiceRevenue = Number(fleetRow?.total ?? 0);
+  const totalNetRevenue = netProductRevenue + fleetServiceRevenue;
   const cogs = Number(cogsRow?.total_cogs ?? 0);
-  const grossProfit = netRevenue - cogs;
+  const grossProfit = netProductRevenue - cogs;           // product margin only
+  const fleetServiceGrossProfit = fleetServiceRevenue;    // service — no COGS
+  const totalGrossProfit = grossProfit + fleetServiceGrossProfit;
   const opexByCategory: PLOpexCategoryLine[] = opexRows.map((r) => ({
     categoryId: r.categoryId ?? null,
     categoryName: r.categoryName ?? "Uncategorised",
     total: Number(r.total),
   }));
   const opexTotal = opexByCategory.reduce((s, r) => s + r.total, 0);
-  const netProfitBeforeTax = grossProfit - opexTotal;
+  const netProfitBeforeTax = totalGrossProfit - opexTotal;
 
   const notes: string[] = [
     "P&L is net-of-GST. Revenue = sales invoice subtotal (ex-GST).",
     "COGS = immutable dispatch-time journal (cogs_entries). Unit cost frozen at dispatch per FIFO lot (ex-GST).",
+    "Gross profit calculated on product sales only. Fleet service revenue has no COGS and is reported separately.",
     "Net Profit shown is Before Income Tax. GST and income tax not modelled.",
   ];
   if (Number(cnRow?.cnt ?? 0) === 0) {
@@ -623,8 +655,11 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
     revenue: {
       salesRevenue,
       salesReturns,
-      netRevenue,
+      netProductRevenue,
+      fleetServiceRevenue,
+      totalNetRevenue,
       salesInvoiceCount: salesRow?.cnt ?? 0,
+      tripInvoiceCount: Number(fleetRow?.cnt ?? 0),
       creditNoteCount: Number(cnRow?.cnt ?? 0),
     },
     cogs: {
@@ -635,6 +670,8 @@ export async function getPLStatement(p: PeriodFilter): Promise<PLStatement> {
       productCount: Number(cogsRow?.product_count ?? 0),
     },
     grossProfit,
+    fleetServiceGrossProfit,
+    totalGrossProfit,
     operatingExpenses: {
       byCategory: opexByCategory,
       total: opexTotal,
@@ -674,8 +711,8 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
   const latestStr = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth(), latest.getUTCDate()))
     .toISOString().slice(0, 10);
 
-  // Run 4 month-bucketed queries in parallel
-  const [revRes, retRes, cogsRes, expRes] = await Promise.all([
+  // Run 5 month-bucketed queries in parallel (5th = fleet revenue)
+  const [revRes, retRes, cogsRes, expRes, fleetRevRes] = await Promise.all([
     db.execute(sql`
       SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
              COALESCE(SUM(subtotal::numeric), 0) AS total
@@ -710,6 +747,15 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
       WHERE expense_date >= ${earliestStr}::date AND expense_date <= ${latestStr}::date
       GROUP BY 1
     `),
+    // Fleet service revenue: vehicle_trip_invoices.subtotal per month
+    db.execute(sql`
+      SELECT to_char(date_trunc('month', invoice_date::date), 'YYYY-MM') AS m,
+             COALESCE(SUM(subtotal::numeric), 0) AS total
+      FROM vehicle_trip_invoices
+      WHERE status <> 'cancelled'
+        AND invoice_date >= ${earliestStr}::date AND invoice_date <= ${latestStr}::date
+      GROUP BY 1
+    `),
   ]);
 
   const toMap = (r: any) => {
@@ -717,16 +763,19 @@ async function getPLTrendBlock(toIso?: string): Promise<{ trend: PLTrendPoint[];
     for (const row of r.rows as any[]) m.set(row.m, Number(row.total));
     return m;
   };
-  const revMap  = toMap(revRes);
-  const retMap  = toMap(retRes);
-  const cogsMap = toMap(cogsRes);
-  const expMap  = toMap(expRes);
+  const revMap      = toMap(revRes);
+  const retMap      = toMap(retRes);
+  const cogsMap     = toMap(cogsRes);
+  const expMap      = toMap(expRes);
+  const fleetRevMap = toMap(fleetRevRes);
 
   const trend: PLTrendPoint[] = months.map(({ key }) => {
-    const revenue = revMap.get(key) ?? 0;
-    const returns = retMap.get(key) ?? 0;
-    const cogs    = cogsMap.get(key) ?? 0;
-    const expense = expMap.get(key) ?? 0;
+    const productRevenue = revMap.get(key) ?? 0;
+    const fleetRevenue   = fleetRevMap.get(key) ?? 0;
+    const revenue        = productRevenue + fleetRevenue;  // total revenue for chart
+    const returns        = retMap.get(key) ?? 0;
+    const cogs           = cogsMap.get(key) ?? 0;
+    const expense        = expMap.get(key) ?? 0;
     return {
       month: key,
       revenue,
@@ -1053,19 +1102,30 @@ export async function getCustomerAging(asOf?: string, customerId?: string): Prom
 
   const invResult = await db.execute(sql`
     SELECT si.id, si.invoice_date, si.due_date, si.customer_id,
-           c.name AS customer_name, c.gst_number, c.customer_type
+           c.name AS customer_name, c.gst_number, c.customer_type,
+           'sales_invoice' AS source_type
     FROM sales_invoices si
     JOIN customers c ON c.id = si.customer_id
     WHERE si.status NOT IN ('paid', 'cancelled')
       AND (si.upload_status IS NULL OR si.upload_status <> 'cancelled')
       ${customerId ? sql`AND si.customer_id = ${customerId}` : sql``}
-    ORDER BY si.due_date ASC NULLS LAST
+    UNION ALL
+    SELECT vti.id, vti.invoice_date, vti.due_date, vti.customer_id,
+           c.name AS customer_name, c.gst_number, c.customer_type,
+           'trip_invoice' AS source_type
+    FROM vehicle_trip_invoices vti
+    JOIN customers c ON c.id = vti.customer_id
+    WHERE vti.status NOT IN ('paid', 'cancelled')
+      ${customerId ? sql`AND vti.customer_id = ${customerId}` : sql``}
+    ORDER BY due_date ASC NULLS LAST
   `);
 
   const customerMap = new Map<string, CustomerAgingRow>();
 
   for (const row of invResult.rows as any[]) {
-    const outstanding = await storage.computeCustomerInvoiceOutstanding(row.id);
+    const outstanding = row.source_type === 'trip_invoice'
+      ? await storage.computeTripInvoiceOutstanding(row.id)
+      : await storage.computeCustomerInvoiceOutstanding(row.id);
     if (outstanding < 0.005) continue;
 
     const dueDate = row.due_date ? new Date(String(row.due_date) + "T00:00:00") : null;

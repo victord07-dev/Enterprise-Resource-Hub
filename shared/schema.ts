@@ -206,6 +206,9 @@ export const salesOrders = pgTable("sales_orders", {
   // Phase 4 Cleanup A — strict floor override audit (parent-level)
   floorOverrideBy: varchar("floor_override_by"),
   floorOverrideAt: timestamp("floor_override_at"),
+  // Rounding fields
+  applyRounding: boolean("apply_rounding").notNull().default(false),
+  roundingAmount: decimal("rounding_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const salesOrderItems = pgTable("sales_order_items", {
@@ -245,6 +248,9 @@ export const quotations = pgTable("quotations", {
   floorOverrideAt: timestamp("floor_override_at"),
   // Issued By — user who created this quotation
   createdBy: varchar("created_by"),
+  // Rounding fields
+  applyRounding: boolean("apply_rounding").notNull().default(false),
+  roundingAmount: decimal("rounding_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const quotationItems = pgTable("quotation_items", {
@@ -299,6 +305,13 @@ export const purchaseOrders = pgTable("purchase_orders", {
   totalTax: decimal("total_tax", { precision: 12, scale: 2 }),
   deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }),
   grandTotal: decimal("grand_total", { precision: 12, scale: 2 }),
+  // Discount fields
+  discountType: text("discount_type"),
+  discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
+  discountAmount: decimal("discount_amount", { precision: 12, scale: 2 }),
+  // Rounding fields
+  applyRounding: boolean("apply_rounding").notNull().default(false),
+  roundingAmount: decimal("rounding_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const invoices = pgTable("invoices", {
@@ -877,6 +890,7 @@ export const customerPayments = pgTable("customer_payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   invoiceId: varchar("invoice_id"),           // nullable — NULL for SO-level advance payments
   salesOrderId: varchar("sales_order_id"),    // set when payment is advance (no invoice yet)
+  tripInvoiceId: varchar("trip_invoice_id"),  // nullable — set when payment clears a vehicle trip invoice
   customerId: varchar("customer_id").notNull(),
   amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
   paymentDate: timestamp("payment_date").notNull().defaultNow(),
@@ -1129,7 +1143,7 @@ export const expenseCategories = pgTable("expense_categories", {
 }));
 
 export const EXPENSE_PAYMENT_METHODS = ["cash", "upi", "card", "bank_transfer", "cheque"] as const;
-export const EXPENSE_LINKED_ENTITY_TYPES = ["sales_order", "delivery_challan", "customer", "project", "purchase_order", "goods_receipt_note"] as const;
+export const EXPENSE_LINKED_ENTITY_TYPES = ["sales_order", "delivery_challan", "customer", "project", "purchase_order", "goods_receipt_note", "vehicle_trip", "vehicle_fuel_log", "vehicle_maintenance"] as const;
 
 export const expenses = pgTable("expenses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1851,4 +1865,180 @@ export const cogsEntries = pgTable("cogs_entries", {
 
 export type CogsEntry = typeof cogsEntries.$inferSelect;
 export type InsertCogsEntry = typeof cogsEntries.$inferInsert;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Vehicle Trips Module
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── 1. Vehicles (Fleet Master) ────────────────────────────────────────────────
+export const vehicles = pgTable("vehicles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),                          // e.g. "Innova - AS01AB1234"
+  registrationNo: text("registration_no").notNull().unique(),
+  type: text("type").notNull().default("car"),           // car|suv|pickup|truck|van|bus|other
+  make: text("make"),                                    // Toyota
+  model: text("model"),                                  // Innova Crysta
+  year: integer("year"),
+  ownershipType: text("ownership_type").notNull().default("owned"), // owned|hired|vendor
+  fuelType: text("fuel_type").notNull().default("diesel"),          // petrol|diesel|cng|ev
+  fuelEfficiency: decimal("fuel_efficiency", { precision: 8, scale: 2 }),   // km per litre
+  fuelRatePerLitre: decimal("fuel_rate_per_litre", { precision: 8, scale: 2 }), // ₹/litre
+  ratePerKm: decimal("rate_per_km", { precision: 8, scale: 2 }),    // ₹/km charged to customer
+  baseCharge: decimal("base_charge", { precision: 10, scale: 2 }).default("0"), // fixed per-trip charge
+  insuranceExpiry: date("insurance_expiry"),
+  fitnessExpiry: date("fitness_expiry"),
+  permitExpiry: date("permit_expiry"),
+  currentOdometer: decimal("current_odometer", { precision: 10, scale: 2 }).default("0"),
+  status: text("status").notNull().default("active"),    // active|maintenance|inactive
+  notes: text("notes"),
+  // Link to Fixed Asset record (only applicable for owned vehicles — for Balance Sheet depreciation)
+  fixedAssetId: varchar("fixed_asset_id").references(() => fixedAssets.id, { onDelete: "set null" }),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_vehicles_status").on(t.status),
+  index("idx_vehicles_type").on(t.type),
+  index("idx_vehicles_registration").on(t.registrationNo),
+]);
+
+export const insertVehicleSchema = createInsertSchema(vehicles).omit({ id: true, createdAt: true, updatedAt: true });
+export type Vehicle = typeof vehicles.$inferSelect;
+export type InsertVehicle = z.infer<typeof insertVehicleSchema>;
+
+// ── 2. Vehicle Trips ──────────────────────────────────────────────────────────
+export const vehicleTrips = pgTable("vehicle_trips", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tripNumber: text("trip_number").notNull().unique(),    // HE-TR/2026-27/06/0001
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  vehicleId: varchar("vehicle_id").notNull().references(() => vehicles.id),
+  driverId: varchar("driver_id").notNull().references(() => employees.id),
+  startLocation: text("start_location").notNull(),
+  endLocation: text("end_location").notNull(),
+  distanceKm: decimal("distance_km", { precision: 10, scale: 2 }),
+  startOdometer: decimal("start_odometer", { precision: 10, scale: 2 }),
+  endOdometer: decimal("end_odometer", { precision: 10, scale: 2 }),
+  tripDate: date("trip_date").notNull(),
+  returnTrip: boolean("return_trip").notNull().default(false), // if true, distance × 2
+  purpose: text("purpose"),
+  notes: text("notes"),
+  status: text("status").notNull().default("draft"),    // draft|confirmed|invoiced|completed|cancelled
+  // Auto-calculated financials (stored for quick display — derived from vehicle rates)
+  fuelCostEstimate: decimal("fuel_cost_estimate", { precision: 10, scale: 2 }),
+  revenueEstimate: decimal("revenue_estimate", { precision: 10, scale: 2 }),
+  // OSRM route data (populated when route is calculated)
+  startLat: decimal("start_lat", { precision: 10, scale: 7 }),
+  startLng: decimal("start_lng", { precision: 10, scale: 7 }),
+  endLat: decimal("end_lat", { precision: 10, scale: 7 }),
+  endLng: decimal("end_lng", { precision: 10, scale: 7 }),
+  estimatedDurationMinutes: integer("estimated_duration_minutes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_vehicle_trips_customer_id").on(t.customerId),
+  index("idx_vehicle_trips_vehicle_id").on(t.vehicleId),
+  index("idx_vehicle_trips_driver_id").on(t.driverId),
+  index("idx_vehicle_trips_date").on(t.tripDate),
+  index("idx_vehicle_trips_status").on(t.status),
+]);
+
+const nullableDecimalStr = z.union([z.string(), z.number()]).transform(v => v === "" || v === null || v === undefined ? null : String(v)).nullable().optional();
+export const insertVehicleTripSchema = createInsertSchema(vehicleTrips, {
+  distanceKm: nullableDecimalStr,
+  startOdometer: nullableDecimalStr,
+  endOdometer: nullableDecimalStr,
+  fuelCostEstimate: nullableDecimalStr,
+  revenueEstimate: nullableDecimalStr,
+  startLat: nullableDecimalStr,
+  startLng: nullableDecimalStr,
+  endLat: nullableDecimalStr,
+  endLng: nullableDecimalStr,
+  estimatedDurationMinutes: z.number().int().nullable().optional(),
+}).omit({ id: true, tripNumber: true, createdAt: true, updatedAt: true });
+export type VehicleTrip = typeof vehicleTrips.$inferSelect;
+export type InsertVehicleTrip = z.infer<typeof insertVehicleTripSchema>;
+
+// ── 3. Vehicle Trip Invoices (service invoices, separate from salesInvoices) ──
+export const vehicleTripInvoices = pgTable("vehicle_trip_invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  invoiceNumber: text("invoice_number").notNull().unique(), // HE-VT/2026-27/06/0001
+  tripId: varchar("trip_id").notNull().references(() => vehicleTrips.id),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  invoiceDate: date("invoice_date").notNull(),
+  dueDate: date("due_date"),
+  // Amounts (service invoice — no COGS, no inventory)
+  subtotal: decimal("subtotal", { precision: 12, scale: 2 }).notNull(),   // ex-GST service amount
+  gstRate: decimal("gst_rate", { precision: 5, scale: 2 }).notNull().default("0"),
+  taxAmount: decimal("tax_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  grandTotal: decimal("grand_total", { precision: 12, scale: 2 }).notNull(), // inc GST
+  creditedAmount: decimal("credited_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  // Breakdown stored for PDF rendering
+  distanceKm: decimal("distance_km", { precision: 10, scale: 2 }),
+  ratePerKm: decimal("rate_per_km", { precision: 8, scale: 2 }),
+  baseCharge: decimal("base_charge", { precision: 10, scale: 2 }).default("0"),
+  // Status
+  status: text("status").notNull().default("pending"),   // pending|partial|paid|cancelled
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_vehicle_trip_invoices_trip_id").on(t.tripId),
+  index("idx_vehicle_trip_invoices_customer_id").on(t.customerId),
+  index("idx_vehicle_trip_invoices_date").on(t.invoiceDate),
+  index("idx_vehicle_trip_invoices_status").on(t.status),
+]);
+
+export const insertVehicleTripInvoiceSchema = createInsertSchema(vehicleTripInvoices).omit({ id: true, invoiceNumber: true, createdAt: true, updatedAt: true });
+export type VehicleTripInvoice = typeof vehicleTripInvoices.$inferSelect;
+export type InsertVehicleTripInvoice = z.infer<typeof insertVehicleTripInvoiceSchema>;
+
+// ── 4. Vehicle Fuel Logs ──────────────────────────────────────────────────────
+export const vehicleFuelLogs = pgTable("vehicle_fuel_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull().references(() => vehicles.id),
+  tripId: varchar("trip_id").references(() => vehicleTrips.id),  // optional
+  logDate: date("log_date").notNull(),
+  litres: decimal("litres", { precision: 8, scale: 2 }).notNull(),
+  ratePerLitre: decimal("rate_per_litre", { precision: 8, scale: 2 }).notNull(),
+  totalCost: decimal("total_cost", { precision: 10, scale: 2 }).notNull(), // litres × ratePerLitre
+  odometerReading: decimal("odometer_reading", { precision: 10, scale: 2 }),
+  vendorName: text("vendor_name"),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_vehicle_fuel_logs_vehicle_id").on(t.vehicleId),
+  index("idx_vehicle_fuel_logs_date").on(t.logDate),
+  index("idx_vehicle_fuel_logs_trip_id").on(t.tripId),
+]);
+
+export const insertVehicleFuelLogSchema = createInsertSchema(vehicleFuelLogs).omit({ id: true, createdAt: true });
+export type VehicleFuelLog = typeof vehicleFuelLogs.$inferSelect;
+export type InsertVehicleFuelLog = z.infer<typeof insertVehicleFuelLogSchema>;
+
+// ── 5. Vehicle Maintenance Logs ───────────────────────────────────────────────
+export const vehicleMaintenanceLogs = pgTable("vehicle_maintenance_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  vehicleId: varchar("vehicle_id").notNull().references(() => vehicles.id),
+  serviceDate: date("service_date").notNull(),
+  serviceType: text("service_type").notNull(), // oil_change|tyre|brake|major_service|inspection|cleaning|other
+  vendorName: text("vendor_name"),
+  cost: decimal("cost", { precision: 10, scale: 2 }).notNull(),
+  odometerReading: decimal("odometer_reading", { precision: 10, scale: 2 }),
+  nextServiceDate: date("next_service_date"),
+  nextServiceOdometer: decimal("next_service_odometer", { precision: 10, scale: 2 }),
+  notes: text("notes"),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("idx_vehicle_maintenance_vehicle_id").on(t.vehicleId),
+  index("idx_vehicle_maintenance_date").on(t.serviceDate),
+]);
+
+export const insertVehicleMaintenanceLogSchema = createInsertSchema(vehicleMaintenanceLogs).omit({ id: true, createdAt: true, updatedAt: true });
+export type VehicleMaintenanceLog = typeof vehicleMaintenanceLogs.$inferSelect;
+export type InsertVehicleMaintenanceLog = z.infer<typeof insertVehicleMaintenanceLogSchema>;
 

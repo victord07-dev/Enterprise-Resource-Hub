@@ -92,6 +92,14 @@ export async function migrateCustomerPaymentsSchema(): Promise<void> {
       ADD COLUMN IF NOT EXISTS sales_order_id VARCHAR
   `);
 
+  // 2b. Add trip_invoice_id column — links a payment to a vehicle trip invoice.
+  //     Nullable. When set, this payment clears a vehicle_trip_invoices row.
+  //     Must NOT be treated as an "advance from customers" on the Balance Sheet.
+  await db.execute(sql`
+    ALTER TABLE customer_payments
+      ADD COLUMN IF NOT EXISTS trip_invoice_id VARCHAR
+  `);
+
   // 3. Backfill: set serial status → 'delivered' for any serials still stuck at
   //    'dispatched' whose delivery challan has already been marked delivered.
   await db.execute(sql`
@@ -149,6 +157,29 @@ export async function migrateCustomerPaymentsSchema(): Promise<void> {
         AND sp.payment_type = 'advance'
     ), 0)
   `);
+
+  // 5e. Add discount + rounding columns to purchase_orders (idempotent)
+  await db.execute(sql`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS discount_type TEXT`);
+  await db.execute(sql`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS discount_value DECIMAL(12,2)`);
+  await db.execute(sql`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(12,2)`);
+  await db.execute(sql`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS apply_rounding BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.execute(sql`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
+
+  // 5f. Add rounding columns to quotations (idempotent)
+  await db.execute(sql`ALTER TABLE quotations ADD COLUMN IF NOT EXISTS apply_rounding BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.execute(sql`ALTER TABLE quotations ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
+
+  // 5g. Add rounding columns to sales_orders (idempotent)
+  await db.execute(sql`ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS apply_rounding BOOLEAN NOT NULL DEFAULT FALSE`);
+  await db.execute(sql`ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
+
+  // 5h. Add discount/delivery/rounding columns to sales_invoices (idempotent)
+  await db.execute(sql`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS discount_type TEXT`);
+  await db.execute(sql`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS discount_value DECIMAL(12,2)`);
+  await db.execute(sql`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS delivery_cost DECIMAL(12,2) NOT NULL DEFAULT 0`);
+  await db.execute(sql`ALTER TABLE sales_invoices ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
+
 
   // 5b. Backfill: set grand_total for purchase_orders rows created before Phase 4A
   //     (grand_total was added later; old rows have NULL).

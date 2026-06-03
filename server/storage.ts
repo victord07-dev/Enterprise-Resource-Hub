@@ -5,6 +5,11 @@ import {
   salesOrders, salesOrderItems, quotations, quotationItems, projects, purchaseOrders,
   invoices, payments, employees, employeeAdvances, employeeIncentives, attendanceRecords, fieldStaffActivities, payrollStatus, travelExpenses, trips, locationLogs, leads, leadActivities, leadFollowups, quotationActivities, quotationFollowups, supplierProducts, purchaseOrderItems, stockMovements, deliveryChallans, deliveryChallanItems, purchaseRequests, purchaseRequestItems, goodsReceiptNotes, goodsReceiptNoteItems, auditLogs, notifications, leaveRequests, lateArrivalRequests, supplierInvoices, supplierPayments, salesInvoices, salesInvoiceItems, customerPayments, attachments, salesReturns, salesReturnItems, creditNotes, dailyPriceSheets, dailyPriceSheetLots, productBundleItems, monthlyTargets,
   comboComponents, comboSerialRecords,
+  vehicles, vehicleTrips, vehicleTripInvoices, vehicleFuelLogs, vehicleMaintenanceLogs,
+  type Vehicle, type InsertVehicle, type VehicleTrip, type InsertVehicleTrip,
+  type VehicleTripInvoice, type InsertVehicleTripInvoice,
+  type VehicleFuelLog, type InsertVehicleFuelLog,
+  type VehicleMaintenanceLog, type InsertVehicleMaintenanceLog,
   whatsappConversations, whatsappMessages, whatsappTemplates, whatsappTemplateStatusHistory, whatsappTemplateSyncLogs,
   whatsappWebhookJobs, whatsappWebhookJobsDeadLetter, whatsappWebhookRejectedPayloads,
   type WhatsappWebhookRejectedPayload,
@@ -621,6 +626,38 @@ export interface IStorage {
   deallocateComboSerials(challanId: string): Promise<void>;
   listComboSerials(): Promise<Array<ComboSerialRecord & { comboProductName: string; grnNumber: string; challanNumber: string | null; customerName: string | null }>>;
   searchComboSerialByNumber(serialNumber: string): Promise<(ComboSerialRecord & { comboProductName: string; grnNumber: string; challanNumber: string | null; customerName: string | null }) | null>;
+
+  // ── Vehicle Trips Module ──────────────────────────────────────────────────
+  // Vehicles
+  getVehicles(includeInactive?: boolean): Promise<Vehicle[]>;
+  getVehicle(id: string): Promise<Vehicle | undefined>;
+  createVehicle(data: Omit<Vehicle, "id" | "createdAt" | "updatedAt">): Promise<Vehicle>;
+  updateVehicle(id: string, data: Partial<Omit<Vehicle, "id" | "createdAt" | "updatedAt">>): Promise<Vehicle | undefined>;
+  // Vehicle Trips
+  getVehicleTrips(filters?: { customerId?: string; vehicleId?: string; driverId?: string; status?: string; from?: string; to?: string }): Promise<VehicleTrip[]>;
+  getVehicleTrip(id: string): Promise<VehicleTrip | undefined>;
+  createVehicleTrip(data: Omit<VehicleTrip, "id" | "tripNumber" | "createdAt" | "updatedAt">): Promise<VehicleTrip>;
+  updateVehicleTrip(id: string, data: Partial<Omit<VehicleTrip, "id" | "createdAt" | "updatedAt">>): Promise<VehicleTrip | undefined>;
+  generateTripNumber(): Promise<string>;
+  // Vehicle Trip Invoices
+  getVehicleTripInvoices(filters?: { customerId?: string; tripId?: string; status?: string; from?: string; to?: string }): Promise<VehicleTripInvoice[]>;
+  getVehicleTripInvoice(id: string): Promise<VehicleTripInvoice | undefined>;
+  createVehicleTripInvoice(data: Omit<VehicleTripInvoice, "id" | "invoiceNumber" | "createdAt" | "updatedAt">): Promise<VehicleTripInvoice>;
+  updateVehicleTripInvoice(id: string, data: Partial<Omit<VehicleTripInvoice, "id" | "createdAt" | "updatedAt">>): Promise<VehicleTripInvoice | undefined>;
+  generateTripInvoiceNumber(): Promise<string>;
+  computeTripInvoiceOutstanding(invoiceId: string): Promise<number>;
+  // Vehicle Fuel Logs
+  getVehicleFuelLogs(vehicleId?: string, tripId?: string): Promise<VehicleFuelLog[]>;
+  createVehicleFuelLog(data: Omit<VehicleFuelLog, "id" | "createdAt">): Promise<VehicleFuelLog>;
+  updateVehicleFuelLog(id: string, data: Partial<Omit<VehicleFuelLog, "id" | "createdAt">>): Promise<VehicleFuelLog | undefined>;
+  deleteVehicleFuelLog(id: string): Promise<boolean>;
+  // Vehicle Maintenance Logs
+  getVehicleMaintenanceLogs(vehicleId?: string): Promise<VehicleMaintenanceLog[]>;
+  createVehicleMaintenanceLog(data: Omit<VehicleMaintenanceLog, "id" | "createdAt" | "updatedAt">): Promise<VehicleMaintenanceLog>;
+  updateVehicleMaintenanceLog(id: string, data: Partial<Omit<VehicleMaintenanceLog, "id" | "createdAt" | "updatedAt">>): Promise<VehicleMaintenanceLog | undefined>;
+  deleteVehicleMaintenanceLog(id: string): Promise<boolean>;
+  // Vehicle expense category seeding
+  seedVehicleExpenseCategories(): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -929,7 +966,7 @@ export class DatabaseStorage implements IStorage {
 
   // Purchase Orders
   async getPurchaseOrders(): Promise<PurchaseOrder[]> {
-    return db.select().from(purchaseOrders).orderBy(desc(purchaseOrders.orderDate));
+    return db.select().from(purchaseOrders).orderBy(desc(purchaseOrders.poNumber));
   }
 
   async getPurchaseOrder(id: string): Promise<PurchaseOrder | undefined> {
@@ -2955,6 +2992,18 @@ export class DatabaseStorage implements IStorage {
         WHERE si.status <> 'paid'
           AND si.upload_status <> 'cancelled'
           ${dueFilter}
+        UNION ALL
+        -- Fleet service invoices (no upload_status column)
+        SELECT GREATEST(
+          vti.grand_total::numeric
+          - COALESCE((SELECT SUM(amount::numeric) FROM customer_payments WHERE trip_invoice_id = vti.id), 0)
+          - vti.credited_amount::numeric,
+          0
+        ) AS outstanding
+        FROM vehicle_trip_invoices vti
+        WHERE vti.status <> 'cancelled'
+          AND vti.status <> 'paid'
+          ${opts?.dueDateBefore ? sql`AND vti.due_date < ${opts.dueDateBefore.toISOString()}` : sql``}
       ) t
     `);
     const row: any = r.rows[0] ?? {};
@@ -3437,6 +3486,210 @@ export class DatabaseStorage implements IStorage {
       challanNumber: r.challan_number ?? null,
       customerName: r.customer_name ?? null,
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Vehicle Trips Module
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // ── Vehicles ─────────────────────────────────────────────────────────────────
+  async getVehicles(includeInactive = false): Promise<Vehicle[]> {
+    if (includeInactive) return db.select().from(vehicles).orderBy(vehicles.name);
+    return db.select().from(vehicles).where(sql`${vehicles.status} != 'inactive'`).orderBy(vehicles.name);
+  }
+
+  async getVehicle(id: string): Promise<Vehicle | undefined> {
+    const [v] = await db.select().from(vehicles).where(eq(vehicles.id, id));
+    return v;
+  }
+
+  async createVehicle(data: Omit<Vehicle, "id" | "createdAt" | "updatedAt">): Promise<Vehicle> {
+    const [created] = await db.insert(vehicles).values({ ...data, createdAt: new Date(), updatedAt: new Date() }).returning();
+    return created;
+  }
+
+  async updateVehicle(id: string, data: Partial<Omit<Vehicle, "id" | "createdAt" | "updatedAt">>): Promise<Vehicle | undefined> {
+    const [updated] = await db.update(vehicles).set({ ...data, updatedAt: new Date() }).where(eq(vehicles.id, id)).returning();
+    return updated;
+  }
+
+  // ── Vehicle Trips ─────────────────────────────────────────────────────────────
+  async getVehicleTrips(filters?: { customerId?: string; vehicleId?: string; driverId?: string; status?: string; from?: string; to?: string }): Promise<VehicleTrip[]> {
+    const conds: any[] = [];
+    if (filters?.customerId) conds.push(eq(vehicleTrips.customerId, filters.customerId));
+    if (filters?.vehicleId) conds.push(eq(vehicleTrips.vehicleId, filters.vehicleId));
+    if (filters?.driverId) conds.push(eq(vehicleTrips.driverId, filters.driverId));
+    if (filters?.status) conds.push(eq(vehicleTrips.status, filters.status));
+    if (filters?.from) conds.push(gte(vehicleTrips.tripDate, filters.from));
+    if (filters?.to) conds.push(lte(vehicleTrips.tripDate, filters.to));
+    const query = db.select().from(vehicleTrips);
+    if (conds.length) return query.where(and(...conds)).orderBy(desc(vehicleTrips.tripDate));
+    return query.orderBy(desc(vehicleTrips.tripDate));
+  }
+
+  async getVehicleTrip(id: string): Promise<VehicleTrip | undefined> {
+    const [t] = await db.select().from(vehicleTrips).where(eq(vehicleTrips.id, id));
+    return t;
+  }
+
+  async createVehicleTrip(data: Omit<VehicleTrip, "id" | "tripNumber" | "createdAt" | "updatedAt">): Promise<VehicleTrip> {
+    return db.transaction(async (tx) => {
+      const { nextDocNumberInTx, getFinancialYear } = await import("./lib/doc-numbers");
+      const fyStr = getFinancialYear();
+      const tripNumber = await nextDocNumberInTx(tx as any, "HE-TR", fyStr);
+      const [created] = await tx.insert(vehicleTrips).values({ ...data, tripNumber, createdAt: new Date(), updatedAt: new Date() }).returning();
+      return created;
+    });
+  }
+
+  async updateVehicleTrip(id: string, data: Partial<Omit<VehicleTrip, "id" | "createdAt" | "updatedAt">>): Promise<VehicleTrip | undefined> {
+    const [updated] = await db.update(vehicleTrips).set({ ...data, updatedAt: new Date() }).where(eq(vehicleTrips.id, id)).returning();
+    return updated;
+  }
+
+  async generateTripNumber(): Promise<string> {
+    const { getFinancialYear } = await import("./lib/doc-numbers");
+    const fyStr = getFinancialYear();
+    const result = await db.execute(sql`
+      SELECT COALESCE(last_seq, 0) + 1 AS next_seq
+      FROM doc_number_sequences
+      WHERE doc_type = 'HE-TR' AND fy_str = ${fyStr}
+    `);
+    const seq = Number((result.rows[0] as any)?.next_seq ?? 1);
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    return `HE-TR/${fyStr}/${month}/${String(seq).padStart(4, "0")}`;
+  }
+
+  // ── Vehicle Trip Invoices ─────────────────────────────────────────────────────
+  async getVehicleTripInvoices(filters?: { customerId?: string; tripId?: string; status?: string; from?: string; to?: string }): Promise<VehicleTripInvoice[]> {
+    const conds: any[] = [];
+    if (filters?.customerId) conds.push(eq(vehicleTripInvoices.customerId, filters.customerId));
+    if (filters?.tripId) conds.push(eq(vehicleTripInvoices.tripId, filters.tripId));
+    if (filters?.status) conds.push(eq(vehicleTripInvoices.status, filters.status));
+    if (filters?.from) conds.push(gte(vehicleTripInvoices.invoiceDate, filters.from));
+    if (filters?.to) conds.push(lte(vehicleTripInvoices.invoiceDate, filters.to));
+    const query = db.select().from(vehicleTripInvoices);
+    if (conds.length) return query.where(and(...conds)).orderBy(desc(vehicleTripInvoices.invoiceDate));
+    return query.orderBy(desc(vehicleTripInvoices.invoiceDate));
+  }
+
+  async getVehicleTripInvoice(id: string): Promise<VehicleTripInvoice | undefined> {
+    const [inv] = await db.select().from(vehicleTripInvoices).where(eq(vehicleTripInvoices.id, id));
+    return inv;
+  }
+
+  async createVehicleTripInvoice(data: Omit<VehicleTripInvoice, "id" | "invoiceNumber" | "createdAt" | "updatedAt">): Promise<VehicleTripInvoice> {
+    return db.transaction(async (tx) => {
+      const { nextDocNumberInTx, getFinancialYear } = await import("./lib/doc-numbers");
+      const fyStr = getFinancialYear();
+      const invoiceNumber = await nextDocNumberInTx(tx as any, "HE-VT", fyStr);
+      const [created] = await tx.insert(vehicleTripInvoices).values({ ...data, invoiceNumber, createdAt: new Date(), updatedAt: new Date() }).returning();
+      // Mark trip as invoiced
+      await tx.update(vehicleTrips).set({ status: "invoiced", updatedAt: new Date() }).where(eq(vehicleTrips.id, data.tripId));
+      return created;
+    });
+  }
+
+  async updateVehicleTripInvoice(id: string, data: Partial<Omit<VehicleTripInvoice, "id" | "createdAt" | "updatedAt">>): Promise<VehicleTripInvoice | undefined> {
+    const [updated] = await db.update(vehicleTripInvoices).set({ ...data, updatedAt: new Date() }).where(eq(vehicleTripInvoices.id, id)).returning();
+    return updated;
+  }
+
+  async generateTripInvoiceNumber(): Promise<string> {
+    const { getFinancialYear } = await import("./lib/doc-numbers");
+    const fyStr = getFinancialYear();
+    const result = await db.execute(sql`
+      SELECT COALESCE(last_seq, 0) + 1 AS next_seq
+      FROM doc_number_sequences
+      WHERE doc_type = 'HE-VT' AND fy_str = ${fyStr}
+    `);
+    const seq = Number((result.rows[0] as any)?.next_seq ?? 1);
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    return `HE-VT/${fyStr}/${month}/${String(seq).padStart(4, "0")}`;
+  }
+
+  async computeTripInvoiceOutstanding(invoiceId: string): Promise<number> {
+    const [inv] = await db.select().from(vehicleTripInvoices).where(eq(vehicleTripInvoices.id, invoiceId));
+    if (!inv) return 0;
+    const paidResult = await db.execute(sql`
+      SELECT COALESCE(SUM(amount::numeric), 0) AS paid
+      FROM customer_payments
+      WHERE trip_invoice_id = ${invoiceId}
+    `);
+    const paid = Number((paidResult.rows[0] as any)?.paid ?? 0);
+    const credited = Number(inv.creditedAmount ?? 0);
+    return Math.max(0, Number(inv.grandTotal) - paid - credited);
+  }
+
+  // ── Vehicle Fuel Logs ─────────────────────────────────────────────────────────
+  async getVehicleFuelLogs(vehicleId?: string, tripId?: string): Promise<VehicleFuelLog[]> {
+    const conds: any[] = [];
+    if (vehicleId) conds.push(eq(vehicleFuelLogs.vehicleId, vehicleId));
+    if (tripId) conds.push(eq(vehicleFuelLogs.tripId, tripId));
+    const query = db.select().from(vehicleFuelLogs);
+    if (conds.length) return query.where(and(...conds)).orderBy(desc(vehicleFuelLogs.logDate));
+    return query.orderBy(desc(vehicleFuelLogs.logDate));
+  }
+
+  async createVehicleFuelLog(data: Omit<VehicleFuelLog, "id" | "createdAt">): Promise<VehicleFuelLog> {
+    const [created] = await db.insert(vehicleFuelLogs).values({ ...data, createdAt: new Date() }).returning();
+    return created;
+  }
+
+  async updateVehicleFuelLog(id: string, data: Partial<Omit<VehicleFuelLog, "id" | "createdAt">>): Promise<VehicleFuelLog | undefined> {
+    const [updated] = await db.update(vehicleFuelLogs).set(data).where(eq(vehicleFuelLogs.id, id)).returning();
+    return updated;
+  }
+
+  async deleteVehicleFuelLog(id: string): Promise<boolean> {
+    await db.delete(vehicleFuelLogs).where(eq(vehicleFuelLogs.id, id));
+    return true;
+  }
+
+  // ── Vehicle Maintenance Logs ──────────────────────────────────────────────────
+  async getVehicleMaintenanceLogs(vehicleId?: string): Promise<VehicleMaintenanceLog[]> {
+    if (vehicleId) {
+      return db.select().from(vehicleMaintenanceLogs)
+        .where(eq(vehicleMaintenanceLogs.vehicleId, vehicleId))
+        .orderBy(desc(vehicleMaintenanceLogs.serviceDate));
+    }
+    return db.select().from(vehicleMaintenanceLogs).orderBy(desc(vehicleMaintenanceLogs.serviceDate));
+  }
+
+  async createVehicleMaintenanceLog(data: Omit<VehicleMaintenanceLog, "id" | "createdAt" | "updatedAt">): Promise<VehicleMaintenanceLog> {
+    const [created] = await db.insert(vehicleMaintenanceLogs).values({ ...data, createdAt: new Date(), updatedAt: new Date() }).returning();
+    return created;
+  }
+
+  async updateVehicleMaintenanceLog(id: string, data: Partial<Omit<VehicleMaintenanceLog, "id" | "createdAt" | "updatedAt">>): Promise<VehicleMaintenanceLog | undefined> {
+    const [updated] = await db.update(vehicleMaintenanceLogs).set({ ...data, updatedAt: new Date() }).where(eq(vehicleMaintenanceLogs.id, id)).returning();
+    return updated;
+  }
+
+  async deleteVehicleMaintenanceLog(id: string): Promise<boolean> {
+    await db.delete(vehicleMaintenanceLogs).where(eq(vehicleMaintenanceLogs.id, id));
+    return true;
+  }
+
+  // ── Vehicle Expense Category Seeding ─────────────────────────────────────────
+  async seedVehicleExpenseCategories(): Promise<number> {
+    const VEHICLE_CATEGORIES: Array<{ name: string; color: string; icon: string }> = [
+      { name: "Fuel & Petrol",            color: "#ef4444", icon: "Fuel"       },
+      { name: "Driver Allowance",         color: "#f59e0b", icon: "User"       },
+      { name: "Toll & Road Tax",          color: "#0ea5e9", icon: "Route"      },
+      { name: "Vehicle Operating Expense",color: "#8b5cf6", icon: "Car"        },
+    ];
+    let inserted = 0;
+    const existing = await db.select({ name: expenseCategories.name }).from(expenseCategories);
+    const existingNames = new Set(existing.map(e => e.name));
+    for (let i = 0; i < VEHICLE_CATEGORIES.length; i++) {
+      const cat = VEHICLE_CATEGORIES[i];
+      if (!existingNames.has(cat.name)) {
+        await db.insert(expenseCategories).values({ ...cat, sortOrder: 100 + i, isActive: true });
+        inserted++;
+      }
+    }
+    return inserted;
   }
 }
 

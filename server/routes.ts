@@ -40,6 +40,8 @@ import {
   goodsReceiptNotes, goodsReceiptNoteItems,
   deliveryChallans,
   warehouses as warehousesTable,
+  vehicleTripInvoices, insertVehicleTripInvoiceSchema,
+  vehicles as vehiclesTable, vehicleTrips as vehicleTripsTable,
 } from "@shared/schema";
 import { isCommonMergeField, resolveMergeField, MERGE_FIELD_BY_KEY } from "@shared/mergeFields";
 import { getEntitlement, countLeaveDays, PAID_LEAVE_TYPES } from "@shared/leavePolicy";
@@ -2592,8 +2594,8 @@ export async function registerRoutes(
       if (!updated) return res.status(404).json({ message: "Sales order not found" });
       await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
 
-      // Recompute order totals if discount or delivery fields changed to keep stored totals consistent
-      const totalsAffectingFields = ["discountType", "discountValue", "deliveryCost"];
+      // Recompute order totals if discount, delivery, or rounding fields changed to keep stored totals consistent
+      const totalsAffectingFields = ["discountType", "discountValue", "deliveryCost", "applyRounding", "roundingAmount"];
       if (totalsAffectingFields.some(f => f in req.body)) {
         try {
           const items = await storage.getSalesOrderItems(updated.id);
@@ -2604,10 +2606,13 @@ export async function registerRoutes(
             const dValue = Number(updated.discountValue) || 0;
             const discount = dType === "percentage" ? subtotal * dValue / 100 : dType === "fixed" ? Math.min(dValue, subtotal) : 0;
             const deliveryCost = Number(updated.deliveryCost) || 0;
-            const totalAmount = subtotal - discount + totalTax + deliveryCost;
-            updated = await storage.updateSalesOrder(updated.id, { subtotal: subtotal.toFixed(2), totalTax: totalTax.toFixed(2), totalAmount: totalAmount.toFixed(2) } as any) || updated;
+            const applyRnd = Boolean((updated as any).applyRounding);
+            const rawTotal = subtotal - discount + totalTax + deliveryCost;
+            const roundingAmt = applyRnd ? Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100 : 0;
+            const totalAmount = rawTotal + roundingAmt;
+            updated = await storage.updateSalesOrder(updated.id, { subtotal: subtotal.toFixed(2), totalTax: totalTax.toFixed(2), totalAmount: totalAmount.toFixed(2), roundingAmount: roundingAmt.toFixed(2) } as any) || updated;
           }
-        } catch (err) { console.error("Non-fatal: failed to recompute SO totals after discount/delivery patch:", err); }
+        } catch (err) { console.error("Non-fatal: failed to recompute SO totals after discount/delivery/rounding patch:", err); }
       }
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
@@ -3105,6 +3110,10 @@ export async function registerRoutes(
       }
 
       const fyStr = getFinancialYear(new Date());
+      // Fetch items before transaction so we can write correct subtotal/totalTax on the SO
+      const quotationItems = await storage.getQuotationItems(req.params.id);
+      const quoteSubtotal = quotationItems.reduce((s, qi) => s + Number(qi.totalPrice || 0), 0);
+      const quoteTotalTax = quotationItems.reduce((s, qi) => s + Number((qi as any).taxAmount || 0), 0);
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const order = await db.transaction(async (tx) => {
           const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr);
@@ -3113,10 +3122,14 @@ export async function registerRoutes(
             customerId: quotation.customerId,
             status: "pending",
             totalAmount: quotation.totalAmount,
+            subtotal: String(quoteSubtotal),
+            totalTax: String(quoteTotalTax),
             orderDate: new Date(),
             notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
             discountType: quotation.discountType,
             discountValue: quotation.discountValue,
+            applyRounding: (quotation as any).applyRounding ?? false,
+            roundingAmount: (quotation as any).roundingAmount ?? "0",
             paymentTerms: null,
             advanceAmount: null,
             paidAmount: "0",
@@ -3129,8 +3142,6 @@ export async function registerRoutes(
           } as any).returning();
           return row;
         });
-
-      const quotationItems = await storage.getQuotationItems(req.params.id);
       for (const qi of quotationItems) {
         await storage.createSalesOrderItem({
           orderId: order.id,
@@ -3808,6 +3819,9 @@ export async function registerRoutes(
         updateData.expectedDelivery = null;
       } else if (updateData.expectedDelivery) {
         updateData.expectedDelivery = new Date(updateData.expectedDelivery);
+      }
+      if (updateData.orderDate) {
+        updateData.orderDate = new Date(updateData.orderDate);
       }
       // Phase 6.5 C2: block transitioning into an "issued" status when supplier is incomplete
       const targetStatus = updateData.status as string | undefined;
@@ -6232,6 +6246,50 @@ export async function registerRoutes(
               lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
             }
 
+            // Apply SO-level discount, delivery cost, and rounding to invoice grand total
+            let invDiscountType: string | null = null;
+            let invDiscountValue: string | null = null;
+            let invDiscountAmt = 0;
+            let invDeliveryCost = 0;
+            let invRoundingAmt = 0;
+            if (challan.orderId) {
+              const soFinRes = await tx.execute(sql`
+                SELECT discount_type, discount_value, subtotal, delivery_cost, apply_rounding
+                FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1
+              `);
+              const soFin = soFinRes.rows[0] as any;
+              if (soFin) {
+                invDiscountType = soFin.discount_type ?? null;
+                invDiscountValue = soFin.discount_value ? String(soFin.discount_value) : null;
+                let soSubtotal = Number(soFin.subtotal ?? 0);
+                // Fallback: if SO subtotal was never written (pre-migration), compute from line items
+                if (soSubtotal <= 0) {
+                  const fbRes = await tx.execute(sql`SELECT COALESCE(SUM(total_price::numeric),0) AS sub FROM sales_order_items WHERE order_id = ${challan.orderId}`);
+                  soSubtotal = Number((fbRes.rows[0] as any)?.sub ?? 0);
+                }
+                const soDeliveryCost = Number(soFin.delivery_cost ?? 0);
+                const soApplyRounding = Boolean(soFin.apply_rounding);
+                // Discount: percentage applies directly to invoice subtotal; fixed is pro-rated
+                if (invDiscountType === "percentage" && invDiscountValue) {
+                  invDiscountAmt = Math.round(invSubtotal * Number(invDiscountValue) / 100 * 100) / 100;
+                } else if (invDiscountType === "fixed" && invDiscountValue && soSubtotal > 0) {
+                  invDiscountAmt = Math.round(Number(invDiscountValue) * (invSubtotal / soSubtotal) * 100) / 100;
+                }
+                // Delivery cost: pro-rated by dispatched value
+                if (soDeliveryCost > 0) {
+                  invDeliveryCost = soSubtotal > 0
+                    ? Math.round(soDeliveryCost * (invSubtotal / soSubtotal) * 100) / 100
+                    : soDeliveryCost;
+                }
+                // Rounding: applied independently per invoice (Option A)
+                if (soApplyRounding) {
+                  const rawTotal = invSubtotal - invDiscountAmt + invTotalTax + invDeliveryCost;
+                  invRoundingAmt = Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100;
+                }
+              }
+            }
+            const invGrandTotal = invSubtotal - invDiscountAmt + invTotalTax + invDeliveryCost + invRoundingAmt;
+
             const invoiceDate = req.body?.invoiceDate ? new Date(req.body.invoiceDate) : new Date();
             const invDueDate = computeDueDate(invoiceDate, cust?.payment_terms ?? null);
             // Fix 5: atomic invoice number (same tx — no gap possible)
@@ -6242,13 +6300,16 @@ export async function registerRoutes(
                 id, invoice_number, invoice_date, customer_id, so_id, challan_id,
                 customer_type, customer_gstin, is_inter_state,
                 subtotal, total_cgst, total_sgst, total_igst, total_tax, grand_total,
+                discount_type, discount_value, discount_amount, delivery_cost, rounding_amount,
                 credited_amount, status, due_date, notes, created_by, upload_status, created_at
               ) VALUES (
                 gen_random_uuid(), ${invoiceNumber}, ${invoiceDate}, ${resolvedCustomerId},
                 ${challan.orderId ?? null}, ${challan.id},
                 ${customerType}, ${customerGSTIN}, ${isInterStateInv},
                 ${invSubtotal.toFixed(2)}, ${invTotalCgst.toFixed(2)}, ${invTotalSgst.toFixed(2)},
-                ${invTotalIgst.toFixed(2)}, ${invTotalTax.toFixed(2)}, ${(invSubtotal + invTotalTax).toFixed(2)},
+                ${invTotalIgst.toFixed(2)}, ${invTotalTax.toFixed(2)}, ${invGrandTotal.toFixed(2)},
+                ${invDiscountType}, ${invDiscountValue}, ${invDiscountAmt.toFixed(2)},
+                ${invDeliveryCost.toFixed(2)}, ${invRoundingAmt.toFixed(2)},
                 ${"0"}, ${"pending"}, ${invDueDate ?? null}, ${null},
                 ${req.user.id}, ${"pending_upload"}, now()
               ) RETURNING *
@@ -7203,16 +7264,18 @@ export async function registerRoutes(
           }
           const siAutoNumber = `SI-${siYear}-${String(siNextNum).padStart(4, "0")}`;
           if (!grnPo?.supplierId) throw new Error(`F1: GRN ${grn.grnNumber} has no linked supplier — skipping auto-create`);
+          const siSubtotal  = Number((grnPo as any).subtotal  ?? 0);
+          const siTaxAmount = Number((grnPo as any).totalTax  ?? 0);
           const newInvRes = await db.execute(sql`
             INSERT INTO supplier_invoices
               (id, supplier_id, purchase_order_id, grn_id, invoice_number, invoice_date,
-               tax_amount, total_amount, payment_terms,
+               subtotal, tax_amount, total_amount, payment_terms,
                status, upload_status, notes, created_by, created_at,
                is_credit_grn, credit_amount)
             VALUES
               (gen_random_uuid(), ${grnPo.supplierId}, ${grn.purchaseOrderId}, ${grn.id},
                ${siAutoNumber}, CURRENT_DATE,
-               '0', ${payableAmount.toFixed(2)}, 'net_30',
+               ${siSubtotal.toFixed(2)}, ${siTaxAmount.toFixed(2)}, ${payableAmount.toFixed(2)}, 'net_30',
                'pending', 'pending_upload', ${"Auto-created on GRN " + grn.grnNumber + " confirmation"},
                ${req.user.id}, now(),
                ${(grn as any).isCreditOverride ?? false}, ${(grn as any).creditAmount ?? null})
@@ -9617,7 +9680,7 @@ export async function registerRoutes(
           sri.total_amount::numeric,
           cn.credit_note_number, cn.grand_total::numeric AS credit_amount
         FROM sales_returns sr
-        JOIN sales_return_items sri ON sri.return_id = sr.id
+        JOIN sales_return_items sri ON sri.sales_return_id = sr.id
         LEFT JOIN products p        ON p.id = sri.product_id
         LEFT JOIN credit_notes cn   ON cn.sales_return_id = sr.id
         WHERE sr.customer_id  = ${customerId}
@@ -9683,20 +9746,90 @@ export async function registerRoutes(
         lines.push(blank12);
       }
 
+      // ── Fleet Service Invoices section ────────────────────────────────────
+      const fleetInvRows = await db.execute(sql`
+        SELECT
+          vti.id, vti.invoice_number, vti.invoice_date::date::text AS invoice_date,
+          vti.subtotal::numeric, vti.gst_rate::numeric, vti.tax_amount::numeric,
+          vti.grand_total::numeric, vti.status, vti.due_date::text AS due_date,
+          vti.distance_km::numeric, vti.rate_per_km::numeric
+        FROM vehicle_trip_invoices vti
+        WHERE vti.customer_id = ${customerId}
+          AND vti.status <> 'cancelled'
+          AND vti.invoice_date::date >= ${fromDate}::date
+          AND vti.invoice_date::date <= ${toDate}::date
+        ORDER BY vti.invoice_date
+      `);
+
+      let fleetTotalInvoiced = 0, fleetTotalPaid = 0;
+      const fleetLines: string[][] = [];
+
+      for (const fi of fleetInvRows.rows as any[]) {
+        const fiAmt = Number(fi.grand_total ?? 0);
+        const fiPaidRes = await db.execute(sql`
+          SELECT COALESCE(SUM(amount::numeric), 0) AS paid
+          FROM customer_payments WHERE trip_invoice_id = ${fi.id}
+        `);
+        const fiPaid = Number((fiPaidRes.rows[0] as any)?.paid ?? 0);
+        const fiOutstanding = Math.max(0, fiAmt - fiPaid - Number(0));
+        fleetTotalInvoiced += fiAmt;
+        fleetTotalPaid += fiPaid;
+        fleetLines.push([
+          fi.invoice_number,
+          fi.invoice_date,
+          fi.due_date ?? "",
+          Number(fi.distance_km ?? 0).toFixed(2),
+          Number(fi.rate_per_km ?? 0).toFixed(2),
+          Number(fi.subtotal ?? 0).toFixed(2),
+          Number(fi.gst_rate ?? 0).toFixed(2),
+          Number(fi.tax_amount ?? 0).toFixed(2),
+          fiAmt.toFixed(2),
+          fiPaid.toFixed(2),
+          fiOutstanding.toFixed(2),
+          fi.status,
+        ]);
+      }
+      const fleetTotalOutstanding = fleetTotalInvoiced - fleetTotalPaid;
+
+      if (fleetLines.length > 0) {
+        lines.push(escCsv("=== FLEET SERVICE INVOICES ==="));
+        lines.push([
+          "Invoice No", "Invoice Date", "Due Date",
+          "Distance (km)", "Rate/km", "Subtotal (ex-GST)", "GST %",
+          "GST Amount", "Grand Total", "Amount Paid", "Outstanding", "Status",
+        ].map(escCsv).join(","));
+        for (const r of fleetLines) lines.push(r.map(escCsv).join(","));
+        lines.push([
+          "TOTAL", "", "", "", "", "", "", "",
+          fleetTotalInvoiced.toFixed(2), fleetTotalPaid.toFixed(2), fleetTotalOutstanding.toFixed(2), "",
+        ].map(escCsv).join(","));
+        lines.push(blank12);
+      }
+
       // Summary
       lines.push(escCsv("=== SUMMARY ==="));
       const summaryData = [
-        ["Period",                    `${fromDate} to ${toDate}`],
-        ["Customer Since",            customerSince],
-        ["Total Invoices Raised",     String(totalInvoicesRaised)],
-        ["Average Invoice Value",     avgInvoiceValue.toFixed(2)],
-        ["Total Revenue (Ex GST)",    totalRevExGst.toFixed(2)],
-        ["Total GST Collected",       totalTaxCollected.toFixed(2)],
-        ["Total Revenue (Inc GST)",   totalRevIncGst.toFixed(2)],
-        ["Total Returns",             totalReturns.toFixed(2)],
-        ["Net Revenue After Returns", netRevenueAfterReturns.toFixed(2)],
-        ["Total Paid",                totalPaid.toFixed(2)],
-        ["Total Outstanding",         totalOutstanding.toFixed(2)],
+        ["Period",                          `${fromDate} to ${toDate}`],
+        ["Customer Since",                  customerSince],
+        ["--- Product Sales ---",           ""],
+        ["Total Invoices Raised",           String(totalInvoicesRaised)],
+        ["Average Invoice Value",           avgInvoiceValue.toFixed(2)],
+        ["Total Revenue (Ex GST)",          totalRevExGst.toFixed(2)],
+        ["Total GST Collected",             totalTaxCollected.toFixed(2)],
+        ["Total Revenue (Inc GST)",         totalRevIncGst.toFixed(2)],
+        ["Total Returns",                   totalReturns.toFixed(2)],
+        ["Net Revenue After Returns",       netRevenueAfterReturns.toFixed(2)],
+        ["Product Sales Paid",              totalPaid.toFixed(2)],
+        ["Product Sales Outstanding",       totalOutstanding.toFixed(2)],
+        ["--- Fleet Services ---",          ""],
+        ["Fleet Invoices Raised",           String(fleetLines.length)],
+        ["Fleet Revenue (Inc GST)",         fleetTotalInvoiced.toFixed(2)],
+        ["Fleet Paid",                      fleetTotalPaid.toFixed(2)],
+        ["Fleet Outstanding",               fleetTotalOutstanding.toFixed(2)],
+        ["--- Combined Totals ---",         ""],
+        ["Total Invoiced (All)",            (totalInvoiced + fleetTotalInvoiced).toFixed(2)],
+        ["Total Paid (All)",                (totalPaid + fleetTotalPaid).toFixed(2)],
+        ["Total Outstanding (All)",         (totalOutstanding + fleetTotalOutstanding).toFixed(2)],
       ];
       for (const [k, v] of summaryData) lines.push([escCsv(k), escCsv(v)].join(","));
 
@@ -11019,21 +11152,76 @@ export async function registerRoutes(
     }
   });
 
-  // POST record a customer payment
+  // POST record a customer payment (supports both sales invoices and trip invoices)
   app.post("/api/customer-payments", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
     try {
-      const { invoiceId, customerId, amount, paymentDate, method, reference, notes, cashAccountId, force } = req.body;
-      if (!invoiceId || !amount) return res.status(400).json({ message: "invoiceId and amount are required" });
-      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account where this payment was received" });
+      const { invoiceId, tripInvoiceId, customerId, amount, paymentDate, method, reference, notes, cashAccountId, force } = req.body;
 
-      const inv = await storage.getSalesInvoice(invoiceId);
-      if (!inv) return res.status(404).json({ message: "Invoice not found" });
+      // Exactly one of invoiceId or tripInvoiceId must be provided
+      if (!invoiceId && !tripInvoiceId) return res.status(400).json({ message: "invoiceId or tripInvoiceId is required" });
+      if (invoiceId && tripInvoiceId) return res.status(400).json({ message: "Provide either invoiceId or tripInvoiceId, not both" });
+      if (!amount) return res.status(400).json({ message: "amount is required" });
+      if (!cashAccountId) return res.status(400).json({ message: "cashAccountId is required — select the account where this payment was received" });
 
       const paymentAmount = parseFloat(String(amount));
       if (isNaN(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ message: "Invalid payment amount" });
 
+      // ── Trip invoice payment path ───────────────────────────────────────────
+      if (tripInvoiceId) {
+        const tripInv = await storage.getVehicleTripInvoice(tripInvoiceId);
+        if (!tripInv) return res.status(404).json({ message: "Trip invoice not found" });
+        if (tripInv.status === "cancelled") return res.status(400).json({ message: "Cannot record payment for a cancelled trip invoice" });
+
+        const outstanding = await storage.computeTripInvoiceOutstanding(tripInvoiceId);
+        if (paymentAmount > outstanding + 0.005) {
+          return res.status(400).json({
+            message: `Payment ₹${paymentAmount.toFixed(2)} exceeds the outstanding balance of ₹${outstanding.toFixed(2)} on trip invoice ${tripInv.invoiceNumber}.`,
+            balanceDue: outstanding.toFixed(2),
+          });
+        }
+
+        // Duplicate check on trip invoice
+        if (!force && reference) {
+          const dupRes = await db.execute(sql`
+            SELECT id FROM customer_payments WHERE trip_invoice_id = ${tripInvoiceId} AND reference = ${reference} LIMIT 1
+          `);
+          if ((dupRes.rows as any[]).length > 0) {
+            return res.status(409).json({
+              message: `A payment with reference "${reference}" is already recorded for trip invoice ${tripInv.invoiceNumber}.`,
+              isDuplicate: true,
+            });
+          }
+        }
+
+        const pmt = await storage.createCustomerPayment({
+          invoiceId: null,
+          tripInvoiceId,
+          salesOrderId: null,
+          customerId: customerId ?? tripInv.customerId,
+          amount: paymentAmount.toFixed(2),
+          paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
+          method: method ?? "bank_transfer",
+          reference: reference ?? null,
+          notes: notes ?? null,
+          createdBy: req.user.id,
+          cashAccountId,
+        });
+
+        // Update trip invoice status based on new outstanding
+        const newOutstanding = await storage.computeTripInvoiceOutstanding(tripInvoiceId);
+        const newStatus = newOutstanding < 0.005 ? "paid" : "partial";
+        await storage.updateVehicleTripInvoice(tripInvoiceId, { status: newStatus });
+
+        await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${paymentAmount.toFixed(2)} for trip invoice ${tripInv.invoiceNumber}`);
+        return res.status(201).json(pmt);
+      }
+
+      // ── Sales invoice payment path (existing logic, unchanged) ────────────
+      const inv = await storage.getSalesInvoice(invoiceId!);
+      if (!inv) return res.status(404).json({ message: "Invoice not found" });
+
       // Fix #8 — Overpayment prevention
-      const existingPayments = await storage.getCustomerPayments(invoiceId);
+      const existingPayments = await storage.getCustomerPayments(invoiceId!);
       const alreadyPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
       const creditedAmount = Number(inv.creditedAmount ?? 0);
       const grandTotal = Number(inv.grandTotal);
@@ -11082,7 +11270,7 @@ export async function registerRoutes(
       }
 
       const pmt = await storage.createCustomerPayment({
-        invoiceId,
+        invoiceId: invoiceId!,
         salesOrderId: null,
         customerId: customerId ?? inv.customerId,
         amount: paymentAmount.toFixed(2),
@@ -11095,7 +11283,7 @@ export async function registerRoutes(
       });
 
       // Recompute invoice status accounting for both payments and credit notes
-      await storage.recomputeInvoiceCreditedAmount(invoiceId);
+      await storage.recomputeInvoiceCreditedAmount(invoiceId!);
 
       await logAction(req.user.id, "CREATE", "CustomerPayment", `Payment ₹${paymentAmount.toFixed(2)} for invoice ${inv.invoiceNumber}`);
       res.status(201).json(pmt);
@@ -15768,6 +15956,282 @@ export async function registerRoutes(
       });
     } catch (err: any) {
       res.status(500).json({ message: "Failed to load countdown data" });
+    }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // VEHICLES & TRIPS — Phase 1–3 (fleet management)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // GET /api/vehicles
+  app.get("/api/vehicles", authenticateToken, async (req: any, res) => {
+    try {
+      const includeInactive = req.query.includeInactive === "true";
+      const vList = await storage.getVehicles(includeInactive);
+      res.json(vList);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to fetch vehicles" }); }
+  });
+
+  // POST /api/vehicles
+  app.post("/api/vehicles", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const created = await storage.createVehicle({ ...req.body, createdBy: req.user.id });
+      await logAction(req.user.id, "CREATE", "Vehicle", `Vehicle ${created.name} added`);
+      res.status(201).json(created);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to create vehicle" }); }
+  });
+
+  // PATCH /api/vehicles/:id
+  app.patch("/api/vehicles/:id", authenticateToken, requireRole("admin"), async (req: any, res) => {
+    try {
+      const updated = await storage.updateVehicle(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Vehicle not found" });
+      await logAction(req.user.id, "UPDATE", "Vehicle", `Vehicle ${updated.name} updated`);
+      res.json(updated);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update vehicle" }); }
+  });
+
+  // GET /api/vehicle-trips
+  app.get("/api/vehicle-trips", authenticateToken, async (req: any, res) => {
+    try {
+      const { customerId, vehicleId, driverId, status, from, to } = req.query as Record<string, string>;
+      const tripList = await storage.getVehicleTrips({ customerId, vehicleId, driverId, status, from, to });
+      res.json(tripList);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to fetch trips" }); }
+  });
+
+  // GET /api/vehicle-trips/:id
+  app.get("/api/vehicle-trips/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const trip = await storage.getVehicleTrip(req.params.id);
+      if (!trip) return res.status(404).json({ message: "Trip not found" });
+      res.json(trip);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to fetch trip" }); }
+  });
+
+  // POST /api/vehicle-trips
+  app.post("/api/vehicle-trips", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const created = await storage.createVehicleTrip({ ...req.body, createdBy: req.user.id });
+      await logAction(req.user.id, "CREATE", "VehicleTrip", `Trip ${created.tripNumber} created`);
+      res.status(201).json(created);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to create trip" }); }
+  });
+
+  // PATCH /api/vehicle-trips/:id
+  app.patch("/api/vehicle-trips/:id", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const updated = await storage.updateVehicleTrip(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Trip not found" });
+      await logAction(req.user.id, "UPDATE", "VehicleTrip", `Trip ${updated.tripNumber} updated`);
+      res.json(updated);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update trip" }); }
+  });
+
+  // GET /api/vehicle-fuel-logs
+  app.get("/api/vehicle-fuel-logs", authenticateToken, async (req: any, res) => {
+    try {
+      const logs = await storage.getVehicleFuelLogs(req.query.vehicleId as string, req.query.tripId as string);
+      res.json(logs);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to fetch fuel logs" }); }
+  });
+
+  // POST /api/vehicle-fuel-logs
+  app.post("/api/vehicle-fuel-logs", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const created = await storage.createVehicleFuelLog({ ...req.body, createdBy: req.user.id });
+      res.status(201).json(created);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to create fuel log" }); }
+  });
+
+  // PATCH /api/vehicle-fuel-logs/:id
+  app.patch("/api/vehicle-fuel-logs/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const updated = await storage.updateVehicleFuelLog(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Fuel log not found" });
+      res.json(updated);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update fuel log" }); }
+  });
+
+  // GET /api/vehicle-maintenance-logs
+  app.get("/api/vehicle-maintenance-logs", authenticateToken, async (req: any, res) => {
+    try {
+      const logs = await storage.getVehicleMaintenanceLogs(req.query.vehicleId as string);
+      res.json(logs);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to fetch maintenance logs" }); }
+  });
+
+  // POST /api/vehicle-maintenance-logs
+  app.post("/api/vehicle-maintenance-logs", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const created = await storage.createVehicleMaintenanceLog({ ...req.body, createdBy: req.user.id });
+      res.status(201).json(created);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to create maintenance log" }); }
+  });
+
+  // PATCH /api/vehicle-maintenance-logs/:id
+  app.patch("/api/vehicle-maintenance-logs/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const updated = await storage.updateVehicleMaintenanceLog(req.params.id, req.body);
+      if (!updated) return res.status(404).json({ message: "Maintenance log not found" });
+      res.json(updated);
+    } catch (err: any) { res.status(500).json({ message: err.message || "Failed to update maintenance log" }); }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // VEHICLE TRIP INVOICES — Phase 4 (service invoices, separate from salesInvoices)
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // GET /api/vehicle-trip-invoices — list with optional filters
+  app.get("/api/vehicle-trip-invoices", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const { customerId, tripId, status, from, to } = req.query as Record<string, string>;
+      const invoices = await storage.getVehicleTripInvoices({ customerId, tripId, status, from, to });
+      const withOutstanding = await Promise.all(
+        invoices.map(async inv => ({
+          ...inv,
+          outstanding: await storage.computeTripInvoiceOutstanding(inv.id),
+        }))
+      );
+      res.json(withOutstanding);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch trip invoices" });
+    }
+  });
+
+  // GET /api/vehicle-trip-invoices/:id — single invoice
+  app.get("/api/vehicle-trip-invoices/:id", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const inv = await storage.getVehicleTripInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Trip invoice not found" });
+      const outstanding = await storage.computeTripInvoiceOutstanding(req.params.id);
+      res.json({ ...inv, outstanding });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to fetch trip invoice" });
+    }
+  });
+
+  // GET /api/vehicle-trip-invoices/:id/outstanding — thin route for outstanding check
+  app.get("/api/vehicle-trip-invoices/:id/outstanding", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const inv = await storage.getVehicleTripInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Trip invoice not found" });
+      const outstanding = await storage.computeTripInvoiceOutstanding(req.params.id);
+      res.json({ invoiceId: req.params.id, invoiceNumber: inv.invoiceNumber, grandTotal: inv.grandTotal, outstanding });
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to compute outstanding" });
+    }
+  });
+
+  // POST /api/vehicle-trip-invoices — create from a confirmed trip
+  app.post("/api/vehicle-trip-invoices", authenticateToken, requireRole("admin", "accountant", "sales_manager"), async (req: any, res) => {
+    try {
+      const { tripId, customerId, invoiceDate, dueDate, subtotal, gstRate, taxAmount, grandTotal,
+              distanceKm, ratePerKm, baseCharge, notes } = req.body;
+
+      if (!tripId || !customerId || !invoiceDate || subtotal == null || grandTotal == null) {
+        return res.status(400).json({ message: "tripId, customerId, invoiceDate, subtotal, grandTotal are required" });
+      }
+
+      // Validate trip exists and is confirmed
+      const tripRows = await db.execute(sql`SELECT id, status FROM vehicle_trips WHERE id = ${tripId}`);
+      const trip = (tripRows.rows as any[])[0];
+      if (!trip) return res.status(404).json({ message: "Trip not found" });
+      if (trip.status !== "confirmed") {
+        return res.status(400).json({ message: `Trip must be in 'confirmed' status to invoice. Current status: ${trip.status}` });
+      }
+
+      // Prevent duplicate invoicing of same trip
+      const existingRows = await db.execute(sql`
+        SELECT id FROM vehicle_trip_invoices WHERE trip_id = ${tripId} AND status <> 'cancelled'
+      `);
+      if ((existingRows.rows as any[]).length > 0) {
+        return res.status(409).json({ message: "This trip already has an active invoice. Cancel it first to re-invoice." });
+      }
+
+      const gstRateVal   = Number(gstRate ?? 0);
+      const subtotalVal  = Number(subtotal);
+      const taxAmtVal    = Number(taxAmount ?? subtotalVal * gstRateVal / 100);
+      const grandTotalVal = Number(grandTotal);
+
+      const created = await storage.createVehicleTripInvoice({
+        tripId,
+        customerId,
+        invoiceDate,
+        dueDate: dueDate ?? null,
+        subtotal: subtotalVal.toFixed(2),
+        gstRate: gstRateVal.toFixed(2),
+        taxAmount: taxAmtVal.toFixed(2),
+        grandTotal: grandTotalVal.toFixed(2),
+        creditedAmount: "0",
+        distanceKm: distanceKm ? String(distanceKm) : null,
+        ratePerKm: ratePerKm ? String(ratePerKm) : null,
+        baseCharge: baseCharge ? String(baseCharge) : "0",
+        status: "pending",
+        notes: notes ?? null,
+        createdBy: req.user.id,
+      });
+
+      await logAction(req.user.id, "CREATE", "VehicleTripInvoice", `Trip invoice ${created.invoiceNumber} created for trip ${tripId}`);
+      res.status(201).json(created);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to create trip invoice" });
+    }
+  });
+
+  // PATCH /api/vehicle-trip-invoices/:id — update notes / dueDate / status only (amounts immutable)
+  app.patch("/api/vehicle-trip-invoices/:id", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const inv = await storage.getVehicleTripInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Trip invoice not found" });
+      if (inv.status === "cancelled") return res.status(400).json({ message: "Cannot update a cancelled invoice" });
+
+      // Only allow safe fields — amounts are immutable after creation
+      const { notes, dueDate, status } = req.body;
+      const allowedStatuses = ["pending", "partial", "paid"];
+      if (status !== undefined && !allowedStatuses.includes(status)) {
+        return res.status(400).json({ message: `Invalid status. Allowed: ${allowedStatuses.join(", ")}. Use the /cancel endpoint to cancel.` });
+      }
+
+      const updated = await storage.updateVehicleTripInvoice(req.params.id, {
+        ...(notes !== undefined && { notes }),
+        ...(dueDate !== undefined && { dueDate }),
+        ...(status !== undefined && { status }),
+      });
+      await logAction(req.user.id, "UPDATE", "VehicleTripInvoice", `Trip invoice ${inv.invoiceNumber} updated`);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to update trip invoice" });
+    }
+  });
+
+  // POST /api/vehicle-trip-invoices/:id/cancel — cancel with reason (never delete)
+  app.post("/api/vehicle-trip-invoices/:id/cancel", authenticateToken, requireRole("admin", "accountant"), async (req: any, res) => {
+    try {
+      const inv = await storage.getVehicleTripInvoice(req.params.id);
+      if (!inv) return res.status(404).json({ message: "Trip invoice not found" });
+      if (inv.status === "cancelled") return res.status(400).json({ message: "Invoice is already cancelled" });
+
+      const { reason } = req.body;
+      const cancelNote = reason
+        ? `CANCELLED: ${reason}${inv.notes ? ` | ${inv.notes}` : ""}`
+        : `CANCELLED${inv.notes ? ` | ${inv.notes}` : ""}`;
+
+      const updated = await storage.updateVehicleTripInvoice(req.params.id, {
+        status: "cancelled",
+        notes: cancelNote,
+      });
+
+      // Restore trip status to confirmed so it can be re-invoiced
+      await db.execute(sql`
+        UPDATE vehicle_trips SET status = 'confirmed', updated_at = NOW()
+        WHERE id = ${inv.tripId}
+      `);
+
+      await logAction(req.user.id, "UPDATE", "VehicleTripInvoice", `Trip invoice ${inv.invoiceNumber} cancelled. Reason: ${reason ?? "not specified"}`);
+      res.json(updated);
+    } catch (err: any) {
+      res.status(500).json({ message: err.message || "Failed to cancel trip invoice" });
     }
   });
 

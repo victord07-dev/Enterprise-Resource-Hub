@@ -1098,6 +1098,17 @@ function InvoiceDetailPanel({
           <span>Subtotal</span>
           <span className="text-foreground">{fmt(subtotal)}</span>
         </div>
+        {Number((inv as any).discountAmount ?? 0) > 0 && (
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>
+              Discount
+              {(inv as any).discountType === "percentage" && (inv as any).discountValue
+                ? ` (${Number((inv as any).discountValue)}%)`
+                : (inv as any).discountType === "fixed" ? " (fixed)" : ""}
+            </span>
+            <span className="text-red-600 dark:text-red-400">- {fmt(Number((inv as any).discountAmount))}</span>
+          </div>
+        )}
         {isInterState ? (
           <div className="flex justify-between text-sm text-muted-foreground">
             <span>IGST</span>
@@ -1119,6 +1130,20 @@ function InvoiceDetailPanel({
           <span>Total Tax</span>
           <span className="text-foreground">{fmt(totalTax)}</span>
         </div>
+        {Number((inv as any).deliveryCost ?? 0) > 0 && (
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>Delivery Cost</span>
+            <span className="text-foreground">+ {fmt(Number((inv as any).deliveryCost))}</span>
+          </div>
+        )}
+        {Number((inv as any).roundingAmount ?? 0) !== 0 && (
+          <div className="flex justify-between text-sm text-muted-foreground">
+            <span>Rounding</span>
+            <span className="text-foreground">
+              {Number((inv as any).roundingAmount) > 0 ? "+" : ""}{fmt(Math.abs(Number((inv as any).roundingAmount)))}
+            </span>
+          </div>
+        )}
         <Separator className="my-1" />
         <div className="flex justify-between items-baseline">
           <span className="text-base font-semibold">Grand Total</span>

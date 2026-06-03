@@ -349,6 +349,176 @@ app.use((req, res, next) => {
     ALTER TABLE products ADD COLUMN IF NOT EXISTS non_dcr_compliant boolean NOT NULL DEFAULT false
   `);
 
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Vehicle Trips Module — idempotent startup migrations
+  // All CREATE TABLE / ADD COLUMN statements use IF NOT EXISTS — safe on every restart.
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // ── 1. vehicles (fleet master) ────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS vehicles (
+      id                  varchar      PRIMARY KEY DEFAULT gen_random_uuid(),
+      name                text         NOT NULL,
+      registration_no     text         NOT NULL UNIQUE,
+      type                text         NOT NULL DEFAULT 'car',
+      make                text,
+      model               text,
+      year                integer,
+      ownership_type      text         NOT NULL DEFAULT 'owned',
+      fuel_type           text         NOT NULL DEFAULT 'diesel',
+      fuel_efficiency     numeric(8,2),
+      fuel_rate_per_litre numeric(8,2),
+      rate_per_km         numeric(8,2),
+      base_charge         numeric(10,2) DEFAULT 0,
+      insurance_expiry    date,
+      fitness_expiry      date,
+      permit_expiry       date,
+      current_odometer    numeric(10,2) DEFAULT 0,
+      status              text         NOT NULL DEFAULT 'active',
+      notes               text,
+      created_by          varchar      NOT NULL,
+      created_at          timestamp    NOT NULL DEFAULT now(),
+      updated_at          timestamp    NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicles_status         ON vehicles(status)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicles_type           ON vehicles(type)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicles_registration   ON vehicles(registration_no)`);
+
+  // ── 2. vehicle_trips ──────────────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS vehicle_trips (
+      id                  varchar      PRIMARY KEY DEFAULT gen_random_uuid(),
+      trip_number         text         NOT NULL UNIQUE,
+      customer_id         varchar      NOT NULL,
+      vehicle_id          varchar      NOT NULL REFERENCES vehicles(id),
+      driver_id           varchar      NOT NULL,
+      start_location      text         NOT NULL,
+      end_location        text         NOT NULL,
+      distance_km         numeric(10,2),
+      start_odometer      numeric(10,2),
+      end_odometer        numeric(10,2),
+      trip_date           date         NOT NULL,
+      return_trip         boolean      NOT NULL DEFAULT false,
+      purpose             text,
+      notes               text,
+      status              text         NOT NULL DEFAULT 'draft',
+      fuel_cost_estimate  numeric(10,2),
+      revenue_estimate    numeric(10,2),
+      created_by          varchar      NOT NULL,
+      created_at          timestamp    NOT NULL DEFAULT now(),
+      updated_at          timestamp    NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trips_customer_id ON vehicle_trips(customer_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trips_vehicle_id  ON vehicle_trips(vehicle_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trips_driver_id   ON vehicle_trips(driver_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trips_date        ON vehicle_trips(trip_date)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trips_status      ON vehicle_trips(status)`);
+
+  // ── 3. vehicle_trip_invoices ──────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS vehicle_trip_invoices (
+      id               varchar       PRIMARY KEY DEFAULT gen_random_uuid(),
+      invoice_number   text          NOT NULL UNIQUE,
+      trip_id          varchar       NOT NULL REFERENCES vehicle_trips(id),
+      customer_id      varchar       NOT NULL,
+      invoice_date     date          NOT NULL,
+      due_date         date,
+      subtotal         numeric(12,2) NOT NULL,
+      gst_rate         numeric(5,2)  NOT NULL DEFAULT 0,
+      tax_amount       numeric(12,2) NOT NULL DEFAULT 0,
+      grand_total      numeric(12,2) NOT NULL,
+      credited_amount  numeric(12,2) NOT NULL DEFAULT 0,
+      distance_km      numeric(10,2),
+      rate_per_km      numeric(8,2),
+      base_charge      numeric(10,2) DEFAULT 0,
+      status           text          NOT NULL DEFAULT 'pending',
+      notes            text,
+      created_by       varchar       NOT NULL,
+      created_at       timestamp     NOT NULL DEFAULT now(),
+      updated_at       timestamp     NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trip_invoices_trip_id     ON vehicle_trip_invoices(trip_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trip_invoices_customer_id ON vehicle_trip_invoices(customer_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trip_invoices_date        ON vehicle_trip_invoices(invoice_date)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_trip_invoices_status      ON vehicle_trip_invoices(status)`);
+
+  // ── 4. vehicle_fuel_logs ──────────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS vehicle_fuel_logs (
+      id                varchar       PRIMARY KEY DEFAULT gen_random_uuid(),
+      vehicle_id        varchar       NOT NULL REFERENCES vehicles(id),
+      trip_id           varchar       REFERENCES vehicle_trips(id),
+      log_date          date          NOT NULL,
+      litres            numeric(8,2)  NOT NULL,
+      rate_per_litre    numeric(8,2)  NOT NULL,
+      total_cost        numeric(10,2) NOT NULL,
+      odometer_reading  numeric(10,2),
+      vendor_name       text,
+      notes             text,
+      created_by        varchar       NOT NULL,
+      created_at        timestamp     NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_fuel_logs_vehicle_id ON vehicle_fuel_logs(vehicle_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_fuel_logs_date       ON vehicle_fuel_logs(log_date)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_fuel_logs_trip_id    ON vehicle_fuel_logs(trip_id)`);
+
+  // ── 5. vehicle_maintenance_logs ───────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS vehicle_maintenance_logs (
+      id                       varchar       PRIMARY KEY DEFAULT gen_random_uuid(),
+      vehicle_id               varchar       NOT NULL REFERENCES vehicles(id),
+      service_date             date          NOT NULL,
+      service_type             text          NOT NULL,
+      vendor_name              text,
+      cost                     numeric(10,2) NOT NULL,
+      odometer_reading         numeric(10,2),
+      next_service_date        date,
+      next_service_odometer    numeric(10,2),
+      notes                    text,
+      created_by               varchar       NOT NULL,
+      created_at               timestamp     NOT NULL DEFAULT now(),
+      updated_at               timestamp     NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_vehicle_id ON vehicle_maintenance_logs(vehicle_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_date       ON vehicle_maintenance_logs(service_date)`);
+
+  // ── Additive column migrations for Vehicle Trips (idempotent) ───────────────
+  // vehicles.fixed_asset_id — link owned vehicles to Fixed Asset records
+  await db.execute(sql`
+    ALTER TABLE vehicles
+      ADD COLUMN IF NOT EXISTS fixed_asset_id VARCHAR REFERENCES fixed_assets(id) ON DELETE SET NULL
+  `);
+  // vehicle_trips: OSRM coordinate + duration columns
+  await db.execute(sql`ALTER TABLE vehicle_trips ADD COLUMN IF NOT EXISTS start_lat NUMERIC(10,7)`);
+  await db.execute(sql`ALTER TABLE vehicle_trips ADD COLUMN IF NOT EXISTS start_lng NUMERIC(10,7)`);
+  await db.execute(sql`ALTER TABLE vehicle_trips ADD COLUMN IF NOT EXISTS end_lat   NUMERIC(10,7)`);
+  await db.execute(sql`ALTER TABLE vehicle_trips ADD COLUMN IF NOT EXISTS end_lng   NUMERIC(10,7)`);
+  await db.execute(sql`ALTER TABLE vehicle_trips ADD COLUMN IF NOT EXISTS estimated_duration_minutes INTEGER`);
+
+  // ── Phase 5 & 6 prep: expense-posting tracking columns (idempotent) ─────────
+  // vehicle_fuel_logs — dedup protection + audit trail for "Post to Accounts"
+  await db.execute(sql`ALTER TABLE vehicle_fuel_logs ADD COLUMN IF NOT EXISTS expense_id VARCHAR REFERENCES expenses(id)`);
+  await db.execute(sql`ALTER TABLE vehicle_fuel_logs ADD COLUMN IF NOT EXISTS posted_to_accounts BOOLEAN NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE vehicle_fuel_logs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMP`);
+  await db.execute(sql`ALTER TABLE vehicle_fuel_logs ADD COLUMN IF NOT EXISTS posted_by VARCHAR REFERENCES users(id)`);
+  // vehicle_maintenance_logs — same pattern
+  await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS expense_id VARCHAR REFERENCES expenses(id)`);
+  await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS posted_to_accounts BOOLEAN NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMP`);
+  await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS posted_by VARCHAR REFERENCES users(id)`);
+
+  // ── Seed vehicle-specific expense categories (idempotent) ────────────────────
+  try {
+    await storage.seedVehicleExpenseCategories();
+  } catch (err) {
+    console.error("[STARTUP] Vehicle expense category seeding failed:", err);
+  }
+
   // ── Repair: sync supplier_invoices rows that got out of step with their GRN ──
   // This happens when the GRN's goods_receipt_notes row was updated (supplier
   // invoice uploaded) but the matching supplier_invoices sync query failed mid-

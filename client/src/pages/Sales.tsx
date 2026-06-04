@@ -2985,6 +2985,9 @@ export default function Sales() {
                                           <th className="text-left py-1 font-medium">Description</th>
                                           <th className="text-right py-1 font-medium">Qty</th>
                                           <th className="text-right py-1 font-medium">Unit Price</th>
+                                          <th className="text-right py-1 font-medium">Ex-GST</th>
+                                          <th className="text-right py-1 font-medium">GST%</th>
+                                          <th className="text-right py-1 font-medium">GST Amt</th>
                                           <th className="text-right py-1 font-medium">Total</th>
                                         </tr>
                                       </thead>
@@ -3000,7 +3003,10 @@ export default function Sales() {
                                             <td className="py-1.5">{it.description || "—"}</td>
                                             <td className="py-1.5 text-right">{it.quantity}</td>
                                             <td className="py-1.5 text-right">₹{Number(it.unitPrice).toLocaleString()}</td>
-                                            <td className="py-1.5 text-right font-medium">₹{Number(it.totalPrice).toLocaleString()}</td>
+                                            <td className="py-1.5 text-right">₹{Number(it.totalPrice).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                                            <td className="py-1.5 text-right text-muted-foreground">{Number(it.gstRate)}%</td>
+                                            <td className="py-1.5 text-right text-blue-600 dark:text-blue-400">₹{Number(it.taxAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                                            <td className="py-1.5 text-right font-medium">₹{(Number(it.totalPrice) + Number(it.taxAmount)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
                                           </tr>
                                         ))}
                                       </tbody>

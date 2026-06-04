@@ -867,6 +867,12 @@ export const salesInvoices = pgTable("sales_invoices", {
   cancelledAt: timestamp("cancelled_at"),
   cancelledBy: varchar("cancelled_by"),
   cancellationReason: text("cancellation_reason"),
+  // Session A Step 2 — pricing inheritance fields (populated on new invoices only; legacy invoices default to 0)
+  deliveryCost: decimal("delivery_cost", { precision: 12, scale: 2 }).notNull().default("0"),
+  discountType: text("discount_type"),
+  discountValue: decimal("discount_value", { precision: 12, scale: 2 }),
+  discountAmount: decimal("discount_amount", { precision: 12, scale: 2 }).notNull().default("0"),
+  roundingAmount: decimal("rounding_amount", { precision: 12, scale: 2 }).notNull().default("0"),
 });
 
 export const salesInvoiceItems = pgTable("sales_invoice_items", {

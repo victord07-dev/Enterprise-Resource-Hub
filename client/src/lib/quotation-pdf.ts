@@ -336,7 +336,7 @@ export async function generateQuotationPDF(
     doc.setFont("helvetica", "normal");
     doc.setTextColor(...COLORS.textSecondary);
     doc.text("Rounding", summaryX + 4, lineY);
-    doc.text(`${roundingAmt > 0 ? "+" : ""}${fmt(Math.abs(roundingAmt))}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
+    doc.text(`${roundingAmt > 0 ? "+ " : "- "}${fmt(Math.abs(roundingAmt))}`, summaryX + summaryWidth - 4, lineY, { align: "right" });
     lineY += 7;
   }
 

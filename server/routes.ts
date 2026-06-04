@@ -2486,6 +2486,32 @@ export async function registerRoutes(
   });
 
   // ======================== SALES ORDERS ========================
+
+  /**
+   * Single SO pricing engine — used by every path that touches SO totals
+   * (PATCH header, item save, item delete, quantity change).
+   * Formula: subtotal − discount + tax + delivery ± rounding
+   */
+  function computeSoTotals(
+    subtotal: number,
+    totalTax: number,
+    order: { discountType?: string | null; discountValue?: string | null; deliveryCost?: string | null; applyRounding?: boolean | null },
+  ): { subtotal: number; totalTax: number; discount: number; deliveryCost: number; rawTotal: number; roundingAmt: number; totalAmount: number } {
+    const dType  = order.discountType;
+    const dValue = Number(order.discountValue) || 0;
+    const discount = dType === "percentage"
+      ? subtotal * dValue / 100
+      : dType === "fixed"
+      ? Math.min(dValue, subtotal)
+      : 0;
+    const deliveryCost = Number(order.deliveryCost) || 0;
+    const applyRnd     = Boolean(order.applyRounding);
+    const rawTotal     = subtotal - discount + totalTax + deliveryCost;
+    const roundingAmt  = applyRnd ? Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100 : 0;
+    const totalAmount  = rawTotal + roundingAmt;
+    return { subtotal, totalTax, discount, deliveryCost, rawTotal, roundingAmt, totalAmount };
+  }
+
   app.get("/api/sales-orders", authenticateToken, async (_req, res) => {
     try {
       const data = await storage.getSalesOrders();
@@ -2594,25 +2620,23 @@ export async function registerRoutes(
       if (!updated) return res.status(404).json({ message: "Sales order not found" });
       await logAction(req.user.id, "update", "sales", `Updated sales order ${updated.orderNumber}`);
 
-      // Recompute order totals if discount, delivery, or rounding fields changed to keep stored totals consistent
+      // Recompute order totals whenever any pricing-affecting field changes
       const totalsAffectingFields = ["discountType", "discountValue", "deliveryCost", "applyRounding", "roundingAmount"];
       if (totalsAffectingFields.some(f => f in req.body)) {
         try {
           const items = await storage.getSalesOrderItems(updated.id);
           if (items.length > 0) {
-            const subtotal = items.reduce((s, it) => s + Number(it.quantity) * Number(it.unitPrice), 0);
-            const totalTax = items.reduce((s, it) => s + Number(it.taxAmount || 0), 0);
-            const dType = updated.discountType;
-            const dValue = Number(updated.discountValue) || 0;
-            const discount = dType === "percentage" ? subtotal * dValue / 100 : dType === "fixed" ? Math.min(dValue, subtotal) : 0;
-            const deliveryCost = Number(updated.deliveryCost) || 0;
-            const applyRnd = Boolean((updated as any).applyRounding);
-            const rawTotal = subtotal - discount + totalTax + deliveryCost;
-            const roundingAmt = applyRnd ? Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100 : 0;
-            const totalAmount = rawTotal + roundingAmt;
-            updated = await storage.updateSalesOrder(updated.id, { subtotal: subtotal.toFixed(2), totalTax: totalTax.toFixed(2), totalAmount: totalAmount.toFixed(2), roundingAmount: roundingAmt.toFixed(2) } as any) || updated;
+            const subtotal  = items.reduce((s, it) => s + Number(it.quantity) * Number(it.unitPrice), 0);
+            const totalTax  = items.reduce((s, it) => s + Number(it.taxAmount || 0), 0);
+            const t = computeSoTotals(subtotal, totalTax, updated as any);
+            updated = await storage.updateSalesOrder(updated.id, {
+              subtotal:      t.subtotal.toFixed(2),
+              totalTax:      t.totalTax.toFixed(2),
+              totalAmount:   t.totalAmount.toFixed(2),
+              roundingAmount: t.roundingAmt.toFixed(2),
+            } as any) || updated;
           }
-        } catch (err) { console.error("Non-fatal: failed to recompute SO totals after discount/delivery/rounding patch:", err); }
+        } catch (err) { console.error("Non-fatal: failed to recompute SO totals after pricing patch:", err); }
       }
 
       if (req.body.status === "confirmed" && previousOrder?.status !== "confirmed") {
@@ -2951,24 +2975,17 @@ export async function registerRoutes(
         created.push(c);
       }
 
-      // Recompute order-level totals from saved items (authoritative server calculation)
+      // Recompute order-level totals from saved items — single pricing engine
       const order = await storage.getSalesOrder(req.params.id);
       if (order) {
         const subtotal = created.reduce((sum, it) => sum + Number(it.quantity) * Number(it.unitPrice), 0);
         const totalTax = created.reduce((sum, it) => sum + Number(it.taxAmount || 0), 0);
-        const discountType = order.discountType;
-        const discountValue = Number(order.discountValue) || 0;
-        const discount = discountType === "percentage"
-          ? subtotal * discountValue / 100
-          : discountType === "fixed"
-          ? Math.min(discountValue, subtotal)
-          : 0;
-        const deliveryCost = Number(order.deliveryCost) || 0;
-        const totalAmount = subtotal - discount + totalTax + deliveryCost;
+        const t = computeSoTotals(subtotal, totalTax, order as any);
         const totalsPatch: any = {
-          subtotal: subtotal.toFixed(2),
-          totalTax: totalTax.toFixed(2),
-          totalAmount: totalAmount.toFixed(2),
+          subtotal:       t.subtotal.toFixed(2),
+          totalTax:       t.totalTax.toFixed(2),
+          totalAmount:    t.totalAmount.toFixed(2),
+          roundingAmount: t.roundingAmt.toFixed(2),
         };
         if (breaches.length > 0) {
           totalsPatch.floorOverrideBy = req.user.id;
@@ -3992,7 +4009,8 @@ export async function registerRoutes(
         const uc = Number(item.unitCost);
         const gstRateItem = Number(item.gstRate ?? 0);
         const taxableAmt = qty * uc;
-        const gstAmt = taxableAmt * gstRateItem / 100;
+        // Use client-sent gstAmount so H3 totals match what the form computed and what gets stored.
+        const gstAmt = item.gstAmount != null ? Number(item.gstAmount) : Math.round(taxableAmt * gstRateItem) / 100;
         const itemTotalWithGst = taxableAmt + gstAmt;
         h3Subtotal += taxableAmt;
         h3TotalTax += gstAmt;
@@ -4007,13 +4025,18 @@ export async function registerRoutes(
         const c = await storage.createPurchaseOrderItem(parsed.data as any);
         created.push(c);
       }
-      const h3DeliveryCost = Number(parentPo ? (parentPo as any).deliveryCost ?? 0 : 0);
-      const h3GrandTotal = h3Subtotal + h3TotalTax + h3DeliveryCost;
+      const h3DeliveryCost  = Number(parentPo ? (parentPo as any).deliveryCost  ?? 0 : 0);
+      const h3DiscountAmt   = Number(parentPo ? (parentPo as any).discountAmount ?? 0 : 0);
+      const h3ApplyRounding = Boolean(parentPo ? (parentPo as any).applyRounding : false);
+      const h3RawTotal      = h3Subtotal + h3TotalTax + h3DeliveryCost - h3DiscountAmt;
+      const h3RoundedTotal  = h3ApplyRounding ? Math.round(h3RawTotal) : h3RawTotal;
+      const h3RoundingAmt   = h3ApplyRounding ? Math.round((h3RoundedTotal - h3RawTotal) * 100) / 100 : 0;
       await storage.updatePurchaseOrder(req.params.id, {
-        totalAmount: h3Subtotal.toFixed(2),
-        subtotal: h3Subtotal.toFixed(2),
-        totalTax: h3TotalTax.toFixed(2),
-        grandTotal: h3GrandTotal.toFixed(2),
+        totalAmount:   h3Subtotal.toFixed(2),
+        subtotal:      h3Subtotal.toFixed(2),
+        totalTax:      h3TotalTax.toFixed(2),
+        grandTotal:    h3RoundedTotal.toFixed(2),
+        roundingAmount: h3RoundingAmt.toFixed(2),
       } as any);
 
       // Phase 6.6 C3: sync supplier_products.supplierPrice when PO line cost differs from current.

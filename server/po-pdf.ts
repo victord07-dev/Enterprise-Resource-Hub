@@ -347,7 +347,7 @@ export function generatePOPdfBuffer(
     }
     const roundingAmt = Number((po as any).roundingAmount ?? 0);
     if ((po as any).applyRounding && roundingAmt !== 0) {
-      summaryRows.push({ label: "Rounding", value: `${roundingAmt > 0 ? "+" : ""}${fmt(Math.abs(roundingAmt))}` });
+      summaryRows.push({ label: "Rounding", value: `${roundingAmt > 0 ? "+ " : "- "}${fmt(Math.abs(roundingAmt))}` });
     }
     summaryRows.push({ label: "Grand Total", value: fmt(effectiveGrandTotal), bold: true });
   }

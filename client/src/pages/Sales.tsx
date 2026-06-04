@@ -2975,7 +2975,7 @@ export default function Sales() {
                           </tr>
                           {expandedQuoteId === q.id && (
                             <tr key={`${q.id}-items`} className="border-b">
-                              <td colSpan={8} className="p-0">
+                              <td colSpan={9} className="p-0">
                                 <div className="bg-muted/20 px-6 py-3 space-y-4">
                                   {expandedQuoteItems.length > 0 ? (
                                     <table className="w-full text-xs">
@@ -3008,11 +3008,44 @@ export default function Sales() {
                                   ) : (
                                     <p className="text-xs text-muted-foreground">No line items for this quotation.</p>
                                   )}
-                                  {q.discountType && q.discountValue && (
-                                    <div className="text-xs text-muted-foreground">
-                                      Discount: {q.discountType === "percentage" ? `${Number(q.discountValue)}%` : `₹${Number(q.discountValue).toLocaleString()}`}
-                                    </div>
-                                  )}
+                                  {/* Grand Total summary */}
+                                  {(() => {
+                                    const hasDiscount = q.discountType && q.discountValue && Number(q.discountValue) > 0;
+                                    const hasDelivery = (q as any).deliveryMethod === "delivery" && Number((q as any).deliveryCost) > 0;
+                                    const hasRounding = (q as any).applyRounding && Number((q as any).roundingAmount ?? 0) !== 0;
+                                    const discountAmt = hasDiscount
+                                      ? q.discountType === "percentage"
+                                        ? `${Number(q.discountValue)}% off`
+                                        : `− ₹${Number(q.discountValue).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                                      : null;
+                                    const roundingAmt = Number((q as any).roundingAmount ?? 0);
+                                    return (
+                                      <div className="mt-2 text-xs space-y-1 border-t pt-2">
+                                          {hasDiscount && (
+                                            <div className="flex justify-between text-red-600 dark:text-red-400">
+                                              <span>Discount</span>
+                                              <span>{discountAmt}</span>
+                                            </div>
+                                          )}
+                                          {hasDelivery && (
+                                            <div className="flex justify-between text-muted-foreground">
+                                              <span>Delivery Cost</span>
+                                              <span>+ ₹{Number((q as any).deliveryCost).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                                            </div>
+                                          )}
+                                          {hasRounding && (
+                                            <div className="flex justify-between text-muted-foreground">
+                                              <span>Rounding</span>
+                                              <span>{roundingAmt > 0 ? "+ " : "− "}₹{Math.abs(roundingAmt).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                                            </div>
+                                          )}
+                                          <div className="flex justify-between font-semibold border-t pt-1 text-foreground">
+                                            <span>Grand Total</span>
+                                            <span>₹{Number(q.totalAmount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                                          </div>
+                                      </div>
+                                    );
+                                  })()}
 
                                   {(q as any).deliveryMethod === "delivery" && (
                                     <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-950/20 rounded-md mt-2" data-testid={`text-quote-delivery-info-${q.id}`}>

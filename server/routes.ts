@@ -6287,7 +6287,9 @@ export async function registerRoutes(
               lineItems.push({ productId: ci.productId, description: ci.description ?? prod?.name ?? "Product", qty, unitPrice, hsnCode, gstRate, taxableAmount: taxableAmt, cgst, sgst, igst, taxAmount: tax, totalAmount: taxableAmt + tax });
             }
 
-            // Apply SO-level discount, delivery cost, and rounding to invoice grand total
+            // Apply SO-level discount, delivery cost, and rounding to invoice grand total.
+            // Allocation rule: invoices 1..N-1 use proportional share; final invoice gets the
+            // exact remainder so paise never drift across multi-dispatch scenarios.
             let invDiscountType: string | null = null;
             let invDiscountValue: string | null = null;
             let invDiscountAmt = 0;
@@ -6295,7 +6297,7 @@ export async function registerRoutes(
             let invRoundingAmt = 0;
             if (challan.orderId) {
               const soFinRes = await tx.execute(sql`
-                SELECT discount_type, discount_value, subtotal, delivery_cost, apply_rounding
+                SELECT discount_type, discount_value, subtotal, delivery_cost, rounding_amount
                 FROM sales_orders WHERE id = ${challan.orderId} LIMIT 1
               `);
               const soFin = soFinRes.rows[0] as any;
@@ -6309,23 +6311,45 @@ export async function registerRoutes(
                   soSubtotal = Number((fbRes.rows[0] as any)?.sub ?? 0);
                 }
                 const soDeliveryCost = Number(soFin.delivery_cost ?? 0);
-                const soApplyRounding = Boolean(soFin.apply_rounding);
-                // Discount: percentage applies directly to invoice subtotal; fixed is pro-rated
+                const soRoundingAmt  = Number(soFin.rounding_amount ?? 0);
+
+                // SO total discount amount (derived from type + value)
+                let soTotalDiscountAmt = 0;
                 if (invDiscountType === "percentage" && invDiscountValue) {
-                  invDiscountAmt = Math.round(invSubtotal * Number(invDiscountValue) / 100 * 100) / 100;
-                } else if (invDiscountType === "fixed" && invDiscountValue && soSubtotal > 0) {
-                  invDiscountAmt = Math.round(Number(invDiscountValue) * (invSubtotal / soSubtotal) * 100) / 100;
+                  soTotalDiscountAmt = Math.round(soSubtotal * Number(invDiscountValue) / 100 * 100) / 100;
+                } else if (invDiscountType === "fixed" && invDiscountValue) {
+                  soTotalDiscountAmt = Number(invDiscountValue);
                 }
-                // Delivery cost: pro-rated by dispatched value
-                if (soDeliveryCost > 0) {
-                  invDeliveryCost = soSubtotal > 0
-                    ? Math.round(soDeliveryCost * (invSubtotal / soSubtotal) * 100) / 100
-                    : soDeliveryCost;
-                }
-                // Rounding: applied independently per invoice (Option A)
-                if (soApplyRounding) {
-                  const rawTotal = invSubtotal - invDiscountAmt + invTotalTax + invDeliveryCost;
-                  invRoundingAmt = Math.round((Math.round(rawTotal) - rawTotal) * 100) / 100;
+
+                if (soSubtotal > 0) {
+                  // Sum allocations already used by prior invoices for this SO
+                  const priorRes = await tx.execute(sql`
+                    SELECT
+                      COALESCE(SUM(subtotal::numeric),        0) AS prior_subtotal,
+                      COALESCE(SUM(discount_amount::numeric), 0) AS prior_discount,
+                      COALESCE(SUM(delivery_cost::numeric),   0) AS prior_delivery,
+                      COALESCE(SUM(rounding_amount::numeric), 0) AS prior_rounding
+                    FROM sales_invoices WHERE so_id = ${challan.orderId}
+                  `);
+                  const prior = priorRes.rows[0] as any;
+                  const priorSubtotal = Number(prior?.prior_subtotal ?? 0);
+                  const priorDiscount = Number(prior?.prior_discount  ?? 0);
+                  const priorDelivery = Number(prior?.prior_delivery  ?? 0);
+                  const priorRounding = Number(prior?.prior_rounding  ?? 0);
+
+                  // Final dispatch: remaining SO value is now dispatched → use exact remainder
+                  const isFinalDispatch = (priorSubtotal + invSubtotal + 0.005) >= soSubtotal;
+
+                  if (isFinalDispatch) {
+                    invDiscountAmt  = Math.max(0, Math.round((soTotalDiscountAmt - priorDiscount) * 100) / 100);
+                    invDeliveryCost = Math.max(0, Math.round((soDeliveryCost - priorDelivery) * 100) / 100);
+                    invRoundingAmt  = Math.round((soRoundingAmt - priorRounding) * 100) / 100;
+                  } else {
+                    const ratio = invSubtotal / soSubtotal;
+                    invDiscountAmt  = Math.round(soTotalDiscountAmt * ratio * 100) / 100;
+                    invDeliveryCost = Math.round(soDeliveryCost * ratio * 100) / 100;
+                    invRoundingAmt  = Math.round(soRoundingAmt * ratio * 100) / 100;
+                  }
                 }
               }
             }
@@ -10796,7 +10820,60 @@ export async function registerRoutes(
       const totalSgst = lineItems.reduce((s, i) => s + i.sgst, 0);
       const totalIgst = lineItems.reduce((s, i) => s + i.igst, 0);
       const totalTax = lineItems.reduce((s, i) => s + i.taxAmount, 0);
-      const grandTotal = subtotal + totalTax;
+
+      // Apply SO pricing inheritance (same proportional/remainder logic as dispatch auto-creation)
+      let invDiscountType2: string | null = null;
+      let invDiscountValue2: string | null = null;
+      let invDiscountAmt2 = 0;
+      let invDeliveryCost2 = 0;
+      let invRoundingAmt2 = 0;
+      if (challan.order_id) {
+        const soFin2Res = await db.execute(sql`
+          SELECT discount_type, discount_value, subtotal AS so_subtotal, delivery_cost, rounding_amount
+          FROM sales_orders WHERE id = ${challan.order_id} LIMIT 1
+        `);
+        const soFin2 = soFin2Res.rows[0] as any;
+        if (soFin2) {
+          invDiscountType2 = soFin2.discount_type ?? null;
+          invDiscountValue2 = soFin2.discount_value ? String(soFin2.discount_value) : null;
+          let soSubtotal2 = Number(soFin2.so_subtotal ?? 0);
+          if (soSubtotal2 <= 0) {
+            const fbRes2 = await db.execute(sql`SELECT COALESCE(SUM(total_price::numeric),0) AS sub FROM sales_order_items WHERE order_id = ${challan.order_id}`);
+            soSubtotal2 = Number((fbRes2.rows[0] as any)?.sub ?? 0);
+          }
+          const soDeliveryCost2 = Number(soFin2.delivery_cost ?? 0);
+          const soRoundingAmt2  = Number(soFin2.rounding_amount ?? 0);
+          let soTotalDiscount2 = 0;
+          if (invDiscountType2 === "percentage" && invDiscountValue2) {
+            soTotalDiscount2 = Math.round(soSubtotal2 * Number(invDiscountValue2) / 100 * 100) / 100;
+          } else if (invDiscountType2 === "fixed" && invDiscountValue2) {
+            soTotalDiscount2 = Number(invDiscountValue2);
+          }
+          if (soSubtotal2 > 0) {
+            const prior2Res = await db.execute(sql`
+              SELECT
+                COALESCE(SUM(subtotal::numeric),        0) AS prior_subtotal,
+                COALESCE(SUM(discount_amount::numeric), 0) AS prior_discount,
+                COALESCE(SUM(delivery_cost::numeric),   0) AS prior_delivery,
+                COALESCE(SUM(rounding_amount::numeric), 0) AS prior_rounding
+              FROM sales_invoices WHERE so_id = ${challan.order_id}
+            `);
+            const prior2 = prior2Res.rows[0] as any;
+            const isFinal2 = (Number(prior2?.prior_subtotal ?? 0) + subtotal + 0.005) >= soSubtotal2;
+            if (isFinal2) {
+              invDiscountAmt2  = Math.max(0, Math.round((soTotalDiscount2 - Number(prior2?.prior_discount ?? 0)) * 100) / 100);
+              invDeliveryCost2 = Math.max(0, Math.round((soDeliveryCost2 - Number(prior2?.prior_delivery ?? 0)) * 100) / 100);
+              invRoundingAmt2  = Math.round((soRoundingAmt2 - Number(prior2?.prior_rounding ?? 0)) * 100) / 100;
+            } else {
+              const ratio2 = subtotal / soSubtotal2;
+              invDiscountAmt2  = Math.round(soTotalDiscount2 * ratio2 * 100) / 100;
+              invDeliveryCost2 = Math.round(soDeliveryCost2 * ratio2 * 100) / 100;
+              invRoundingAmt2  = Math.round(soRoundingAmt2 * ratio2 * 100) / 100;
+            }
+          }
+        }
+      }
+      const grandTotal = subtotal + totalTax - invDiscountAmt2 + invDeliveryCost2 + invRoundingAmt2;
 
       const invoiceNumber = await storage.generateSalesInvoiceNumber();
 
@@ -10815,6 +10892,11 @@ export async function registerRoutes(
         totalIgst: String(totalIgst),
         totalTax: String(totalTax),
         grandTotal: String(grandTotal),
+        discountType: invDiscountType2,
+        discountValue: invDiscountValue2,
+        discountAmount: String(invDiscountAmt2),
+        deliveryCost: String(invDeliveryCost2),
+        roundingAmount: String(invRoundingAmt2),
         creditedAmount: "0",
         status: "pending",
         dueDate: dueDate ?? null,

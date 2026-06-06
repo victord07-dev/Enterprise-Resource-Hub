@@ -512,6 +512,11 @@ app.use((req, res, next) => {
   await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS posted_at TIMESTAMP`);
   await db.execute(sql`ALTER TABLE vehicle_maintenance_logs ADD COLUMN IF NOT EXISTS posted_by VARCHAR REFERENCES users(id)`);
 
+  // ── employees: ID-card fields (idempotent) ────────────────────────────────────
+  await db.execute(sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS blood_group TEXT`);
+  await db.execute(sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS address TEXT`);
+  await db.execute(sql`ALTER TABLE employees ADD COLUMN IF NOT EXISTS photo_url TEXT`);
+
   // ── Seed vehicle-specific expense categories (idempotent) ────────────────────
   try {
     await storage.seedVehicleExpenseCategories();

@@ -1293,7 +1293,7 @@ export default function Sales() {
 
   const [quoteDialogOpen, setQuoteDialogOpen] = useState(false);
   const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
-  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
+  const [quoteForm, setQuoteForm] = useState({ quoteNumber: "", customerId: "", status: "draft", quotationDate: new Date().toISOString().slice(0, 10), validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup" as string, deliveryCost: "", deliveryAddress: "" });
   const [quoteItems, setQuoteItems] = useState<LineItem[]>([emptyLineItem()]);
   const [quoteDiscount, setQuoteDiscount] = useState<DiscountState>({ discountType: "none", discountValue: 0 });
   const [quoteApplyRounding, setQuoteApplyRounding] = useState(false);
@@ -1311,6 +1311,15 @@ export default function Sales() {
     newOrderTotal?: number;
   } | null>(null);
   const [duesOverrideReason, setDuesOverrideReason] = useState("");
+  // Convert-to-order date dialog state (Option A — user picks SO date before confirming)
+  const [convertDateDialog, setConvertDateDialog] = useState<{
+    quotationId: string;
+    quoteNumber: string;
+    defaultDate: string;
+    duesOverride?: boolean;
+    duesOverrideReason?: string;
+  } | null>(null);
+  const [convertOrderDate, setConvertOrderDate] = useState<string>("");
   // Phase 4 Cleanup A — floor-price admin override reasons (advisory + override pattern)
   const [orderFloorOverrideReason, setOrderFloorOverrideReason] = useState("");
   const [quoteFloorOverrideReason, setQuoteFloorOverrideReason] = useState("");
@@ -1383,7 +1392,7 @@ export default function Sales() {
   const [dispatchDialogOpen, setDispatchDialogOpen] = useState(false);
   const [dispatchOrderId, setDispatchOrderId] = useState<string | null>(null);
   const [dispatchSummary, setDispatchSummary] = useState<{ productId: string; description: string; qtyOrdered: number; qtyDispatched: number; qtyRemaining: number }[]>([]);
-  const [dispatchForm, setDispatchForm] = useState({ sourceId: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: "" });
+  const [dispatchForm, setDispatchForm] = useState({ sourceId: "", vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: "", challanDate: new Date().toISOString().slice(0, 10) });
   const [dispatchPhoneError, setDispatchPhoneError] = useState("");
   const [dispatchSummaryLoading, setDispatchSummaryLoading] = useState(false);
 
@@ -1673,9 +1682,10 @@ export default function Sales() {
     },
   });
 
-  const convertToOrderMutation = useMutation({
-    mutationFn: async ({ id, duesOverride, duesOverrideReason }: { id: string; duesOverride?: boolean; duesOverrideReason?: string }) => {
+  const convertToOrderMutation = useMutation<any, any, { id: string; orderDate?: string; duesOverride?: boolean; duesOverrideReason?: string }>({
+    mutationFn: async ({ id, orderDate, duesOverride, duesOverrideReason }) => {
       const body: any = {};
+      if (orderDate) body.orderDate = orderDate;
       if (duesOverride) { body.duesOverride = true; body.duesOverrideReason = duesOverrideReason; }
       const res = await apiRequest("POST", `/api/quotations/${id}/convert-to-order`, Object.keys(body).length ? body : undefined);
       return res.json();
@@ -1686,6 +1696,8 @@ export default function Sales() {
       toast({ title: "Quotation converted to order", description: `Order ${order.orderNumber} created` });
       setDuesOverrideDialog(null);
       setDuesOverrideReason("");
+      setConvertDateDialog(null);
+      setConvertOrderDate("");
     },
     onError: (error: any, variables: { id: string }) => {
       if (error instanceof ApiError && error.status === 400 && error.body?.outstanding !== undefined) {
@@ -1989,7 +2001,7 @@ export default function Sales() {
 
   const openNewQuote = () => {
     setEditingQuote(null);
-    setQuoteForm({ quoteNumber: "", customerId: "", status: "draft", validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
+    setQuoteForm({ quoteNumber: "", customerId: "", status: "draft", quotationDate: new Date().toISOString().slice(0, 10), validUntil: "", notes: "", expectedDeliveryDate: "", deliveryMethod: "pickup", deliveryCost: "", deliveryAddress: "" });
     setQuoteItems([emptyLineItem()]);
     setQuoteDiscount({ discountType: "none", discountValue: 0 });
     setQuoteApplyRounding(false);
@@ -2003,6 +2015,9 @@ export default function Sales() {
       quoteNumber: q.quoteNumber,
       customerId: q.customerId,
       status: q.status,
+      quotationDate: (q as any).quotationDate
+        ? new Date((q as any).quotationDate).toISOString().split("T")[0]
+        : new Date(q.createdAt).toISOString().split("T")[0],
       validUntil: q.validUntil ? new Date(q.validUntil).toISOString().split("T")[0] : "",
       notes: q.notes || "",
       expectedDeliveryDate: q.expectedDeliveryDate ? new Date(q.expectedDeliveryDate).toISOString().split("T")[0] : "",
@@ -2102,7 +2117,10 @@ export default function Sales() {
     const customer = customers?.find(c => c.id === (order as any)?.customerId);
     const prefillAddr = (order as any)?.deliveryAddress || customer?.address || "";
     const prefillWarehouse = (order as any)?.warehouseId || "";
-    setDispatchForm({ sourceId: prefillWarehouse, vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: prefillAddr });
+    const inheritedChallanDate = (order as any)?.orderDate
+      ? new Date((order as any).orderDate).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    setDispatchForm({ sourceId: prefillWarehouse, vehicleNumber: "", vehicleOwnerName: "", driverName: "", driverPhone: "", notes: "", deliveryAddress: prefillAddr, challanDate: inheritedChallanDate });
     setDispatchPhoneError("");
     setDispatchSummary([]);
     setDispatchDialogOpen(true);
@@ -2925,6 +2943,10 @@ export default function Sales() {
                                         const result = await fetch(`/api/customers/${q.customerId}/outstanding`, {
                                           headers: { Authorization: `Bearer ${sessionStorage.getItem("token")}` },
                                         }).then((r) => r.json());
+                                        // Determine default order date — inherit from quotation date
+                                        const defaultDate = (q as any).quotationDate
+                                          ? new Date((q as any).quotationDate).toISOString().slice(0, 10)
+                                          : new Date(q.createdAt).toISOString().slice(0, 10);
                                         if (result.outstanding > 0) {
                                           if (isAdmin) {
                                             setDuesOverrideDialog({
@@ -2943,10 +2965,16 @@ export default function Sales() {
                                             });
                                           }
                                         } else {
-                                          convertToOrderMutation.mutate({ id: q.id });
+                                          // Open date-picker dialog (Option A) before confirming conversion
+                                          setConvertOrderDate(defaultDate);
+                                          setConvertDateDialog({ quotationId: q.id, quoteNumber: q.quoteNumber, defaultDate });
                                         }
                                       } catch {
-                                        convertToOrderMutation.mutate({ id: q.id });
+                                        const fallbackDate = (q as any).quotationDate
+                                          ? new Date((q as any).quotationDate).toISOString().slice(0, 10)
+                                          : new Date().toISOString().slice(0, 10);
+                                        setConvertOrderDate(fallbackDate);
+                                        setConvertDateDialog({ quotationId: q.id, quoteNumber: q.quoteNumber, defaultDate: fallbackDate });
                                       } finally {
                                         setConvertingQuoteId(null);
                                       }
@@ -3772,6 +3800,10 @@ export default function Sales() {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label htmlFor="quotationDate">Quotation Date</Label>
+                <Input id="quotationDate" type="date" data-testid="input-quotation-date" value={quoteForm.quotationDate} onChange={(e) => setQuoteForm({ ...quoteForm, quotationDate: e.target.value })} />
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="quoteValidUntil">Valid Until</Label>
                 <Input id="quoteValidUntil" type="date" data-testid="input-quote-valid-until" value={quoteForm.validUntil} onChange={(e) => setQuoteForm({ ...quoteForm, validUntil: e.target.value })} />
               </div>
@@ -4218,6 +4250,12 @@ export default function Sales() {
               <Input id="dispatchNotes" data-testid="input-dispatch-notes" value={dispatchForm.notes} onChange={e => setDispatchForm({ ...dispatchForm, notes: e.target.value })} placeholder="Any special instructions" />
             </div>
 
+            <div className="space-y-1">
+              <Label htmlFor="dispatchChallanDate">Challan Date</Label>
+              <Input id="dispatchChallanDate" data-testid="input-dispatch-challan-date" type="date" value={dispatchForm.challanDate} onChange={e => setDispatchForm({ ...dispatchForm, challanDate: e.target.value })} />
+              <p className="text-xs text-muted-foreground">Defaults to SO date. Change for backdated entries.</p>
+            </div>
+
             {currentUser && (
               <p className="text-xs text-muted-foreground">Printed by: <span className="font-medium text-foreground">{(currentUser as any).fullName || (currentUser as any).username}</span></p>
             )}
@@ -4229,7 +4267,7 @@ export default function Sales() {
               disabled={createFromSOMutation.isPending || (dispatchSummary.length > 0 && dispatchSummary.every(i => i.qtyRemaining === 0)) || !dispatchFormValid}
               onClick={() => {
                 if (!dispatchOrderId) return;
-                createFromSOMutation.mutate({ orderId: dispatchOrderId, data: { ...dispatchForm, printedBy: (currentUser as any)?.fullName || (currentUser as any)?.username || null } });
+                createFromSOMutation.mutate({ orderId: dispatchOrderId, data: { ...dispatchForm, challanDate: dispatchForm.challanDate || new Date().toISOString().slice(0, 10), printedBy: (currentUser as any)?.fullName || (currentUser as any)?.username || null } });
               }}
             >
               {createFromSOMutation.isPending ? "Creating..." : "Create Challan"}
@@ -4391,6 +4429,7 @@ export default function Sales() {
                   if (duesOverrideDialog.quotationId) {
                     convertToOrderMutation.mutate({
                       id: duesOverrideDialog.quotationId,
+                      orderDate: (duesOverrideDialog as any).orderDate || new Date().toISOString().slice(0, 10),
                       duesOverride: true,
                       duesOverrideReason: duesOverrideReason.trim(),
                     });
@@ -4415,6 +4454,49 @@ export default function Sales() {
                 <p className="text-xs text-muted-foreground">Contact admin to authorize this order despite outstanding dues.</p>
               </div>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Convert Quotation → Sales Order: Date Picker Dialog (Option A) */}
+      <Dialog open={!!convertDateDialog} onOpenChange={(o) => { if (!o) { setConvertDateDialog(null); setConvertOrderDate(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Convert to Sales Order</DialogTitle>
+            <DialogDescription>
+              Select the Sales Order date for <strong>{convertDateDialog?.quoteNumber}</strong>.
+              This date determines the FY and month in the SO number and is stored as the business document date.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="convert-order-date">Order Date</Label>
+              <Input
+                id="convert-order-date"
+                data-testid="input-convert-order-date"
+                type="date"
+                value={convertOrderDate}
+                onChange={(e) => setConvertOrderDate(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">Defaults to the quotation date. You may change it for backdated entries.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setConvertDateDialog(null); setConvertOrderDate(""); }}>Cancel</Button>
+            <Button
+              data-testid="button-confirm-convert-date"
+              disabled={!convertOrderDate || convertToOrderMutation.isPending}
+              onClick={() => {
+                if (!convertDateDialog) return;
+                convertToOrderMutation.mutate({
+                  id: convertDateDialog.quotationId,
+                  orderDate: convertOrderDate,
+                  ...(convertDateDialog.duesOverride ? { duesOverride: true, duesOverrideReason: convertDateDialog.duesOverrideReason } : {}),
+                });
+              }}
+            >
+              {convertToOrderMutation.isPending ? "Converting..." : "Confirm & Convert"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

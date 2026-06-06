@@ -89,7 +89,7 @@ export async function generateChallanPDF(
     margin,
     title: `DELIVERY CHALLAN  \u00b7  ${challan.challanNumber}`,
     logoDataUrl: resolvedLogoUrl,
-    bannerSubtitle: fmtDate(challan.createdAt),
+    bannerSubtitle: fmtDate((challan as any).challanDate ?? challan.createdAt),
   });
 
   // ── Info strip (4 cells) ────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ export async function generateChallanPDF(
   const colW = contentW / 4;
   const cells = [
     ["Challan No.", challan.challanNumber],
-    ["Date", fmtDate(challan.createdAt)],
+    ["Date", fmtDate((challan as any).challanDate ?? challan.createdAt)],
     ["Dispatch Date", challan.dispatchDate ? fmtDate(challan.dispatchDate) : "\u2014"],
     ["Vehicle No.", challan.vehicleNumber || "\u2014"],
   ];

@@ -235,6 +235,9 @@ export const quotations = pgTable("quotations", {
   status: text("status").notNull().default("draft"),
   totalAmount: decimal("total_amount", { precision: 12, scale: 2 }).notNull().default("0"),
   validUntil: timestamp("valid_until"),
+  /** Business date of the quotation — user-selected, drives doc number month segment.
+   *  Nullable for backward compat; display falls back to createdAt when null. */
+  quotationDate: timestamp("quotation_date"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   notes: text("notes"),
   discountType: text("discount_type"),
@@ -349,6 +352,9 @@ export const employees = pgTable("employees", {
   isActive: boolean("is_active").notNull().default(true),
   salary: decimal("salary", { precision: 12, scale: 2 }),
   qrCode: text("qr_code"),
+  bloodGroup: text("blood_group"),
+  address: text("address"),
+  photoUrl: text("photo_url"),
 });
 
 export const employeeAdvances = pgTable("employee_advances", {
@@ -610,6 +616,10 @@ export const deliveryChallans = pgTable("delivery_challans", {
   creditReason: text("credit_reason"),
   // Challan form additions
   printedBy: text("printed_by"),
+  /** Business date of the challan — user-selected, drives doc number month segment.
+   *  Separate from createdAt (system audit timestamp). Nullable for backward compat;
+   *  display falls back to createdAt when null. */
+  challanDate: timestamp("challan_date"),
 });
 
 export const deliveryChallanItems = pgTable("delivery_challan_items", {

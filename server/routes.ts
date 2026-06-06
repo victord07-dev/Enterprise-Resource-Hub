@@ -2586,9 +2586,13 @@ export async function registerRoutes(
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
       // Allocation + INSERT in one transaction: counter upsert + document insert share the same tx.
       // If INSERT fails the upsert rolls back → no number is burned → no gap.
-      const fyStr = getFinancialYear(new Date());
+      // Use the user-supplied orderDate (business date) for FY and month segment;
+      // fall back to now() if not provided so existing callers stay unaffected.
+      const soDateRaw = body.orderDate ? new Date(body.orderDate) : new Date();
+      const soDate = isNaN(soDateRaw.getTime()) ? new Date() : soDateRaw;
+      const fyStr = getFinancialYear(soDate);
       const created = await db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr);
+          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr, soDate);
           const parsed = insertSalesOrderSchema.parse({ ...body, orderNumber });
           const [row] = await tx.insert(salesOrdersTable).values(parsed as any).returning();
           return row;
@@ -2698,16 +2702,26 @@ export async function registerRoutes(
       if (body.expectedDeliveryDate && typeof body.expectedDeliveryDate === "string") {
         body.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
       }
+      if (body.quotationDate && typeof body.quotationDate === "string") {
+        body.quotationDate = new Date(body.quotationDate);
+      }
       // Validate payload first (with a placeholder) — bad requests never touch the sequence.
       const preCheck = insertQuotationSchema.safeParse({ ...body, quoteNumber: "PLACEHOLDER" });
       if (!preCheck.success) return res.status(400).json({ message: "Validation error", errors: preCheck.error.errors });
       // Allocation + INSERT in one transaction: counter upsert + document insert share the same tx.
       // If INSERT fails the upsert rolls back → no number is burned → no gap.
-      const fyStr = getFinancialYear(new Date());
+      // Use the user-supplied quotationDate (business date) for FY and month segment;
+      // fall back to now() if not provided so existing callers stay unaffected.
+      const quotationDateRaw = body.quotationDate ? new Date(body.quotationDate) : new Date();
+      const quotationDate = isNaN(quotationDateRaw.getTime()) ? new Date() : quotationDateRaw;
+      const fyStr = getFinancialYear(quotationDate);
       const created = await db.transaction(async (tx) => {
-          const quoteNumber = await nextDocNumberInTx(tx, "HE-Q", fyStr);
+          const quoteNumber = await nextDocNumberInTx(tx, "HE-Q", fyStr, quotationDate);
           const parsed = insertQuotationSchema.parse({ ...body, quoteNumber, createdBy: req.user.id });
-          const [row] = await tx.insert(quotationsTable).values(parsed as any).returning();
+          const [row] = await tx.insert(quotationsTable).values({
+            ...(parsed as any),
+            quotationDate,
+          }).returning();
           return row;
         });
       await logAction(req.user.id, "create", "sales", `Created quotation ${created.quoteNumber}`);
@@ -3126,14 +3140,23 @@ export async function registerRoutes(
         quoteFloorFields.floorOverrideAt = (quotation as any).floorOverrideAt || new Date();
       }
 
-      const fyStr = getFinancialYear(new Date());
+      // Order date for the new SO: use body.orderDate if provided (Option A — user picks
+      // the date in the conversion dialog), otherwise inherit from the quotation's
+      // quotationDate, otherwise fall back to today.
+      const convOrderDateRaw = req.body.orderDate
+        ? new Date(req.body.orderDate)
+        : (quotation as any).quotationDate
+          ? new Date((quotation as any).quotationDate)
+          : new Date();
+      const convOrderDate = isNaN(convOrderDateRaw.getTime()) ? new Date() : convOrderDateRaw;
+      const fyStr = getFinancialYear(convOrderDate);
       // Fetch items before transaction so we can write correct subtotal/totalTax on the SO
       const quotationItems = await storage.getQuotationItems(req.params.id);
       const quoteSubtotal = quotationItems.reduce((s, qi) => s + Number(qi.totalPrice || 0), 0);
       const quoteTotalTax = quotationItems.reduce((s, qi) => s + Number((qi as any).taxAmount || 0), 0);
       // Allocation + INSERT in one transaction so a failed insert never burns a number.
       const order = await db.transaction(async (tx) => {
-          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr);
+          const orderNumber = await nextDocNumberInTx(tx, "HE-SO", fyStr, convOrderDate);
           const [row] = await tx.insert(salesOrdersTable).values({
             orderNumber,
             customerId: quotation.customerId,
@@ -3141,7 +3164,7 @@ export async function registerRoutes(
             totalAmount: quotation.totalAmount,
             subtotal: String(quoteSubtotal),
             totalTax: String(quoteTotalTax),
-            orderDate: new Date(),
+            orderDate: convOrderDate,
             notes: `Converted from quotation ${quotation.quoteNumber}. ${quotation.notes || ""}`.trim(),
             discountType: quotation.discountType,
             discountValue: quotation.discountValue,
@@ -5196,8 +5219,21 @@ export async function registerRoutes(
         }
       }
 
-      const fyDC1 = getFinancialYear(new Date());
-      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC1));
+      // Use the user-supplied challanDate (business date) for FY and month segment;
+      // fall back to the linked SO's orderDate, then to now() if not provided.
+      let challanDateRaw: Date | null = challanData.challanDate ? new Date(challanData.challanDate) : null;
+      if (!challanDateRaw || isNaN(challanDateRaw.getTime())) {
+        // Inherit from SO if available
+        if (challanData.orderId) {
+          const soForDate = await storage.getSalesOrder(challanData.orderId);
+          challanDateRaw = soForDate?.orderDate ? new Date(soForDate.orderDate) : new Date();
+        } else {
+          challanDateRaw = new Date();
+        }
+      }
+      const challanDate1 = challanDateRaw;
+      const fyDC1 = getFinancialYear(challanDate1);
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC1, challanDate1));
 
       let challanDeliveryAddress = challanData.deliveryAddress || null;
       let challanCustomerId = challanData.customerId || null;
@@ -5219,6 +5255,7 @@ export async function registerRoutes(
         ...challanData,
         customerId: challanCustomerId,
         challanNumber,
+        challanDate: challanDate1,
         status: "draft",
         createdBy: req.user.id,
         deliveryAddress: challanDeliveryAddress,
@@ -5272,11 +5309,14 @@ export async function registerRoutes(
       const salesOrder = await storage.getSalesOrder(salesOrderId);
       if (!salesOrder) return res.status(400).json({ message: "Linked sales order not found" });
 
-      const fyDC2 = getFinancialYear(new Date());
-      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC2));
+      // Auto-generated challan from PO — inherit SO's orderDate as the business date
+      const challanDate2 = salesOrder.orderDate ? new Date(salesOrder.orderDate) : new Date();
+      const fyDC2 = getFinancialYear(challanDate2);
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC2, challanDate2));
 
       const challanData: any = {
         challanNumber,
+        challanDate: challanDate2,
         orderId: salesOrderId,
         sourceType: "supplier",
         sourceId: po.supplierId,
@@ -5372,7 +5412,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "All items have already been dispatched" });
       }
 
-      const { vehicleNumber, vehicleOwnerName, driverName, driverPhone, notes, deliveryAddress, printedBy, sourceId: bodySourceId } = req.body;
+      const { vehicleNumber, vehicleOwnerName, driverName, driverPhone, notes, deliveryAddress, printedBy, sourceId: bodySourceId, challanDate: bodyChallanDate3 } = req.body;
       if (!vehicleNumber?.trim() || !vehicleOwnerName?.trim() || !driverName?.trim() || !driverPhone?.trim()) {
         return res.status(400).json({ message: "Transport fields are required: Vehicle No., Vehicle Owner Name, Driver Name, Driver Phone" });
       }
@@ -5395,12 +5435,21 @@ export async function registerRoutes(
         }
       }
 
-      const fyDC3 = getFinancialYear(new Date());
-      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC3));
+      // Use body.challanDate if provided (Option A — user picks date in dialog);
+      // otherwise inherit from SO's orderDate; then fall back to now().
+      const challanDate3Raw = bodyChallanDate3
+        ? new Date(bodyChallanDate3)
+        : order.orderDate
+          ? new Date(order.orderDate)
+          : new Date();
+      const challanDate3 = isNaN(challanDate3Raw.getTime()) ? new Date() : challanDate3Raw;
+      const fyDC3 = getFinancialYear(challanDate3);
+      const challanNumber = await db.transaction(async (tx) => nextDocNumberInTx(tx, "HE-DC", fyDC3, challanDate3));
 
       const challanAddr = deliveryAddress || (order as any).deliveryAddress || null;
       const challan = await storage.createDeliveryChallan({
         challanNumber,
+        challanDate: challanDate3,
         orderId: soId,
         customerId: (order as any).customerId || null,
         sourceType,
@@ -5904,7 +5953,9 @@ export async function registerRoutes(
 
       // Fix 3+5: declare autoInvoice + FY before transaction so they're accessible after
       let autoInvoice: any = null;
-      const fyInv = getFinancialYear(new Date());
+      // Use dispatch date for FY + month so the auto-invoice number matches the dispatch month.
+      const invBusinessDate = req.body?.dispatchDate ? new Date(req.body.dispatchDate) : new Date();
+      const fyInv = getFinancialYear(invBusinessDate);
 
       await db.transaction(async (tx) => {
         const lockedRes = await tx.execute(sql`
@@ -6355,10 +6406,13 @@ export async function registerRoutes(
             }
             const invGrandTotal = invSubtotal - invDiscountAmt + invTotalTax + invDeliveryCost + invRoundingAmt;
 
-            const invoiceDate = req.body?.invoiceDate ? new Date(req.body.invoiceDate) : new Date();
+            // Invoice date: explicit invoiceDate > dispatchDate > today
+            const invoiceDate = req.body?.invoiceDate
+              ? new Date(req.body.invoiceDate)
+              : invBusinessDate;
             const invDueDate = computeDueDate(invoiceDate, cust?.payment_terms ?? null);
-            // Fix 5: atomic invoice number (same tx — no gap possible)
-            const invoiceNumber = await nextDocNumberInTx(tx, "HE-INV", fyInv);
+            // Fix 5: atomic invoice number (same tx — no gap possible); use invoiceDate for month segment
+            const invoiceNumber = await nextDocNumberInTx(tx, "HE-INV", fyInv, invoiceDate);
 
             const invInsertRes = await tx.execute(sql`
               INSERT INTO sales_invoices (
@@ -6968,6 +7022,52 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ message: "Failed to update order date" });
+    }
+  });
+
+  // PATCH /api/quotations/:id/quotation-date — admin only, audit logged
+  app.patch("/api/quotations/:id/quotation-date", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ message: "Admin only" });
+      const quot = await storage.getQuotation(req.params.id);
+      if (!quot) return res.status(404).json({ message: "Quotation not found" });
+      const newDate = new Date(req.body.quotationDate);
+      if (isNaN(newDate.getTime())) return res.status(400).json({ message: "Invalid date" });
+      await db.execute(sql`UPDATE quotations SET quotation_date = ${newDate} WHERE id = ${quot.id}`);
+      await logAction(req.user.id, "date_updated", "quotation", JSON.stringify({
+        recordId: quot.id,
+        recordNumber: (quot as any).quoteNumber,
+        field: "quotationDate",
+        oldDate: (quot as any).quotationDate,
+        newDate,
+      }));
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update quotation date" });
+    }
+  });
+
+  // PATCH /api/delivery-challans/:id/challan-date — admin only, audit logged
+  app.patch("/api/delivery-challans/:id/challan-date", authenticateToken, async (req: any, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ message: "Admin only" });
+      const challan = await storage.getDeliveryChallan(req.params.id);
+      if (!challan) return res.status(404).json({ message: "Challan not found" });
+      const newDate = new Date(req.body.challanDate);
+      if (isNaN(newDate.getTime())) return res.status(400).json({ message: "Invalid date" });
+      await db.execute(sql`UPDATE delivery_challans SET challan_date = ${newDate} WHERE id = ${challan.id}`);
+      await logAction(req.user.id, "date_updated", "delivery_challan", JSON.stringify({
+        recordId: challan.id,
+        recordNumber: challan.challanNumber,
+        field: "challanDate",
+        oldDate: (challan as any).challanDate,
+        newDate,
+      }));
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update challan date" });
     }
   });
 

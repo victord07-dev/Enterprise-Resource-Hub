@@ -80,6 +80,7 @@
     "framer-motion": "^11.13.1",
     "google-auth-library": "^10.5.0",
     "helmet": "^8.2.0",
+    "html2canvas": "^1.4.1",
     "html5-qrcode": "^2.3.8",
     "input-otp": "^1.4.2",
     "jsonwebtoken": "^9.0.3",

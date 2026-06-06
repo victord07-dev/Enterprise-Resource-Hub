@@ -1,149 +1,86 @@
-// Dynamic import — jsPDF + QRCode only load when the user clicks the button.
-import type jsPDF from "jspdf";
+import React from "react";
+import { createRoot } from "react-dom/client";
 import type { Employee } from "@shared/schema";
 
-async function loadJsPDF() {
-  const mod = await import("jspdf");
-  return mod.default || (mod as any).jsPDF;
+// CR80 portrait card dimensions
+const PDF_W_MM  = 54;
+const PDF_H_MM  = 85.6;
+const CARD_W_PX = 340;
+const CARD_H_PX = 540;
+
+async function renderFaceToCanvas(
+  emp: Employee,
+  face: "front" | "back"
+): Promise<HTMLCanvasElement> {
+  const html2canvas = (await import("html2canvas")).default;
+  const { default: EmployeeIdCard } = await import("@/components/EmployeeIdCard");
+
+  // Place on-screen but invisible — html2canvas requires elements to be
+  // within the viewport to capture fixed/absolute positions correctly.
+  const wrapper = document.createElement("div");
+  wrapper.style.cssText = [
+    "position:fixed",
+    "top:0",
+    "left:0",
+    `width:${CARD_W_PX}px`,
+    `height:${CARD_H_PX}px`,
+    "overflow:hidden",
+    "pointer-events:none",
+    "opacity:0",
+    "z-index:99999",
+  ].join(";");
+  document.body.appendChild(wrapper);
+
+  const root = createRoot(wrapper);
+  root.render(
+    React.createElement(EmployeeIdCard, { employee: emp, captureFace: face })
+  );
+
+  // Wait for React render + QR generation (toDataURL) + image loads
+  await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+
+  const faceEl = wrapper.querySelector(`[data-face="${face}"]`) as HTMLElement | null;
+  if (!faceEl) {
+    root.unmount();
+    document.body.removeChild(wrapper);
+    throw new Error(`[id-card-pdf] face element not found: ${face}`);
+  }
+
+  const canvas = await html2canvas(faceEl, {
+    scale: 2,
+    useCORS: true,
+    allowTaint: true,
+    backgroundColor: face === "front" ? "#ffffff" : "#f3f4f7",
+    width: CARD_W_PX,
+    height: CARD_H_PX,
+    scrollX: 0,
+    scrollY: 0,
+    logging: false,
+  });
+
+  root.unmount();
+  document.body.removeChild(wrapper);
+  return canvas;
 }
 
-async function loadQRCode() {
-  return (await import("qrcode")).default;
-}
-import { COMPANY } from "@shared/letterhead";
-import { ensureNotoSansRegistered } from "@/lib/pdf-fonts";
+export async function downloadIdCardPDF(emp: Employee) {
+  const jspdfMod = await import("jspdf");
+  const JsPDF = jspdfMod.default || (jspdfMod as any).jsPDF;
 
-function getInitials(name: string) {
-  return name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
+  // Render both faces sequentially (each in its own clean DOM container)
+  const frontCanvas = await renderFaceToCanvas(emp, "front");
+  const backCanvas  = await renderFaceToCanvas(emp, "back");
 
-export async function downloadIdCardPDF(employee: Employee) {
-  let qrDataUrl: string | null = null;
-  if (employee.qrCode) {
-    try {
-      qrDataUrl = await (await loadQRCode()).toDataURL(employee.qrCode, { width: 300, margin: 1, color: { dark: "#000000", light: "#ffffff" } });
-    } catch {
-    }
-  }
+  const doc = new JsPDF({
+    orientation: "portrait",
+    unit: "mm",
+    format: [PDF_W_MM, PDF_H_MM],
+  });
 
-  const W = 86;
-  const H = 54;
-  const doc = new (await loadJsPDF())({ orientation: "landscape", unit: "mm", format: [H, W] });
-  await ensureNotoSansRegistered(doc);
+  doc.addImage(frontCanvas.toDataURL("image/png"), "PNG", 0, 0, PDF_W_MM, PDF_H_MM);
 
-  const empCode = employee.qrCode
-    ? employee.qrCode.replace("NEXERP-EMP-", "").slice(0, 8).toUpperCase()
-    : employee.id.slice(0, 8).toUpperCase();
+  doc.addPage([PDF_W_MM, PDF_H_MM], "portrait");
+  doc.addImage(backCanvas.toDataURL("image/png"), "PNG", 0, 0, PDF_W_MM, PDF_H_MM);
 
-  doc.setFillColor(15, 23, 42);
-  doc.rect(0, 0, W, H, "F");
-
-  doc.setFillColor(255, 255, 255);
-  for (let i = 0; i < W + H; i += 10) {
-    doc.setDrawColor(255, 255, 255);
-    doc.setLineWidth(0.05);
-    doc.line(i, 0, i - H, H);
-  }
-
-  doc.setFillColor(20, 40, 72);
-  doc.rect(0, 0, W, 9, "F");
-  doc.setDrawColor(255, 255, 255);
-  doc.setLineWidth(0.2);
-  doc.line(0, 9, W, 9);
-
-  doc.setFillColor(59, 130, 246);
-  doc.roundedRect(4, 2, 5, 5, 0.8, 0.8, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(5);
-  doc.setTextColor(255, 255, 255);
-  doc.text("I", 6.5, 5.8, { align: "center" });
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(255, 255, 255);
-  doc.text(COMPANY.shortName, 11, 5.7);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(5.5);
-  doc.setTextColor(147, 197, 253);
-  doc.text("EMPLOYEE ID", W - 4, 5.7, { align: "right" });
-
-  doc.setFillColor(59, 130, 246);
-  doc.circle(11, 25, 7, "F");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(7);
-  doc.setTextColor(255, 255, 255);
-  doc.text(getInitials(employee.name), 11, 27, { align: "center" });
-
-  const textX = 22;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8.5);
-  doc.setTextColor(255, 255, 255);
-  const nameLines = doc.splitTextToSize(employee.name, 38);
-  doc.text(nameLines[0], textX, 17);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(6);
-  doc.setTextColor(147, 197, 253);
-  doc.text(employee.designation, textX, 22);
-
-  doc.setFontSize(5.5);
-  doc.setTextColor(200, 215, 235);
-  const deptLine = [employee.department, employee.company].filter(Boolean).join(" · ");
-  doc.text(deptLine, textX, 27);
-
-  doc.setFillColor(30, 58, 110);
-  doc.setDrawColor(59, 130, 246);
-  doc.setLineWidth(0.3);
-  doc.roundedRect(textX, 30, 20, 5, 0.8, 0.8, "FD");
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(5.5);
-  doc.setTextColor(147, 197, 253);
-  doc.text(`#${empCode}`, textX + 2, 33.5);
-
-  if (employee.joinDate) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(5);
-    doc.setTextColor(180, 200, 225);
-    const sinceText = `Since ${new Date(employee.joinDate).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}`;
-    doc.text(sinceText, textX + 23, 33.5);
-  }
-
-  if (qrDataUrl) {
-    doc.setFillColor(255, 255, 255);
-    doc.roundedRect(W - 24, 11, 20, 20, 1, 1, "F");
-    doc.addImage(qrDataUrl, "PNG", W - 23.5, 11.5, 19, 19);
-  } else {
-    doc.setFillColor(30, 50, 80);
-    doc.roundedRect(W - 24, 11, 20, 20, 1, 1, "F");
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(5);
-    doc.setTextColor(120, 150, 190);
-    doc.text("No QR", W - 14, 22, { align: "center" });
-  }
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(4.5);
-  doc.setTextColor(120, 150, 190);
-  doc.text("SCAN TO CHECK IN", W - 14, 34, { align: "center" });
-
-  doc.setFillColor(0, 0, 0);
-  doc.rect(0, H - 7, W, 7, "F");
-  doc.setDrawColor(255, 255, 255);
-  doc.setLineWidth(0.2);
-  doc.line(0, H - 7, W, H - 7);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(4.5);
-  doc.setTextColor(120, 150, 190);
-  doc.text(employee.phone || employee.email || "", 4, H - 3.5);
-  doc.text("HE ERP System", W - 4, H - 3.5, { align: "right" });
-
-  const safeName = employee.name.replace(/\s+/g, "-");
-  doc.save(`ID-Card-${safeName}.pdf`);
+  doc.save(`ID-Card-${emp.name.replace(/\s+/g, "-")}.pdf`);
 }

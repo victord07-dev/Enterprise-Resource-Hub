@@ -255,7 +255,7 @@ export default function Inventory() {
   const { data: suppliers } = useQuery<Supplier[]>({ queryKey: ["/api/suppliers"] });
 
   const [challanDialogOpen, setChallanDialogOpen] = useState(false);
-  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
+  const [challanForm, setChallanForm] = useState({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "", challanDate: new Date().toISOString().slice(0, 10) });
   const [challanPhoneError, setChallanPhoneError] = useState("");
   const INDIAN_MOBILE_RE = /^(\+91)?[6-9]\d{9}$/;
   const challanFormValid =
@@ -293,7 +293,11 @@ export default function Inventory() {
   const [challanCancelDialog, setChallanCancelDialog] = useState<{ open: boolean; challanId: string; challanNumber: string } | null>(null);
   const [challanSignedCopyFile, setChallanSignedCopyFile] = useState<File | null>(null);
   const [challanCancelReason, setChallanCancelReason] = useState("");
-  // Date-correction dialogs
+  // Pre-dispatch date picker (replaces browser confirm — user picks dispatch date before serial selection)
+  const [pendingDispatchChallan, setPendingDispatchChallan] = useState<any>(null);
+  const [pendingDispatchDate, setPendingDispatchDate] = useState<string>(new Date().toISOString().slice(0, 10));
+
+  // Date-correction dialogs (admin — edit after the fact)
   const [challanDispatchDateDialog, setChallanDispatchDateDialog] = useState<{ challanId: string; challanNumber: string } | null>(null);
   const [challanDispatchDate, setChallanDispatchDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [challanDeliverDateDialog, setChallanDeliverDateDialog] = useState<{ challanId: string; challanNumber: string } | null>(null);
@@ -407,7 +411,132 @@ export default function Inventory() {
     setSerialDispatchSpecs([]);
     setSerialDispatchChallanId(null);
     if (challanId) {
-      dispatchChallanMutation.mutate({ id: challanId, assignments, warrantyMonths });
+      // pendingDispatchDate was set when the user confirmed the pre-dispatch date dialog
+      dispatchChallanMutation.mutate({ id: challanId, assignments, warrantyMonths, dispatchDate: pendingDispatchDate });
+    }
+  }
+
+  /**
+   * Runs the serial/combo/direct dispatch flow for a given challan and dispatch date.
+   * Called after the user confirms the dispatch date in the pre-dispatch dialog.
+   */
+  async function runDispatchFlow(challan: any, dispatchDate: string) {
+    try {
+      const challanItems = challanItemsMap[challan.id] ?? [];
+      const warehouseId  = challan.sourceType === "warehouse" ? challan.sourceId : null;
+      const token        = sessionStorage.getItem("token");
+      const headers      = { Authorization: `Bearer ${token}` };
+      const specs: SerialAssignmentSpec[] = [];
+
+      for (const item of challanItems) {
+        const prod = (products ?? []).find((p: any) => p.id === item.productId);
+        if (!prod) continue;
+        const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+
+        if ((prod as any).type === "bundle") {
+          let comps: any[] = challanBundleCompsMap[item.productId];
+          if (!comps) {
+            try {
+              const r = await fetch(`/api/products/${item.productId}/bundle-items`, { headers });
+              comps = await r.json();
+              if (Array.isArray(comps)) {
+                setChallanBundleCompsMap(prev => ({ ...prev, [item.productId]: comps }));
+              } else {
+                comps = [];
+              }
+            } catch { comps = []; }
+          }
+          for (const comp of (comps ?? [])) {
+            const compProd = (products ?? []).find((p: any) => p.id === comp.componentProductId);
+            if (compProd?.requiresSerialTracking) {
+              const reqQty = Math.round(Number(comp.quantity) * dispatchQty);
+              specs.push({
+                challanItemId:      item.id,
+                componentProductId: comp.componentProductId,
+                displayName:        (compProd as any).name ?? "Component",
+                parentBundleName:   (prod as any).name,
+                requiredQty:        reqQty,
+                warehouseId,
+              });
+            }
+          }
+        } else if ((prod as any).requiresSerialTracking) {
+          specs.push({
+            challanItemId:      item.id,
+            componentProductId: item.productId,
+            displayName:        (prod as any).name ?? "Product",
+            requiredQty:        dispatchQty,
+            warehouseId,
+          });
+        }
+      }
+
+      // Combo type
+      const comboUnits: ComboDispatchPreview["units"] = [];
+      for (const item of challanItems) {
+        const prod = (products ?? []).find((p: any) => p.id === item.productId);
+        if (!prod || (prod as any).type !== "combo") continue;
+        const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
+        let manifest: any[] = [];
+        try {
+          const r = await fetch(`/api/products/${item.productId}/combo-components`, { headers });
+          manifest = await r.json();
+        } catch { manifest = []; }
+        const serialComponents = manifest.filter((c: any) => c.requiresSerialTracking);
+        if (serialComponents.length === 0) continue;
+        const needed = dispatchQty * serialComponents.length;
+        const available = (allComboSerials as any[])
+          .filter((r: any) => r.comboProductId === item.productId && !r.allocatedChallanId && !r.deallocatedAt)
+          .sort((a: any, b: any) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+        if (available.length < needed) {
+          toast({
+            title: "Serial numbers not captured",
+            description: `"${(prod as any).name}": need ${needed} serial record(s) for ${dispatchQty} unit(s) × ${serialComponents.length} tracked component(s), but only ${available.length} captured at GRN. Go to GRN and capture serial numbers first.`,
+            variant: "destructive",
+          });
+          return;
+        }
+        const availByComp: Record<string, Array<{ id: string; serialNumber: string }>> = {};
+        for (const comp of serialComponents) {
+          availByComp[comp.componentName] = available
+            .filter((r: any) => r.componentName === comp.componentName)
+            .map((r: any) => ({ id: r.id, serialNumber: r.serialNumber }));
+        }
+        const usedIds = new Set<string>();
+        for (let u = 0; u < dispatchQty; u++) {
+          const slots: ComboSerialSlot[] = serialComponents.map((comp: any) => {
+            const records = availByComp[comp.componentName] ?? [];
+            const fifo = records.find(r => !usedIds.has(r.id));
+            if (fifo) usedIds.add(fifo.id);
+            return {
+              componentName: comp.componentName,
+              selectedId: fifo?.id ?? "",
+              serialNumber: fifo?.serialNumber ?? "",
+              valid: !!fifo,
+              availableRecords: records,
+            };
+          });
+          comboUnits.push({
+            productName: (prod as any).name,
+            productId: item.productId,
+            unitIndex: u + 1,
+            slots,
+          });
+        }
+      }
+
+      if (specs.length > 0 && challan.customerId) {
+        setSerialDispatchChallanId(challan.id);
+        setSerialDispatchSoId(challan.orderId ?? null);
+        setSerialDispatchCustomerId(challan.customerId);
+        setSerialDispatchSpecs(specs);
+      } else if (comboUnits.length > 0) {
+        setComboDispatchPreview({ challanId: challan.id, units: comboUnits });
+      } else {
+        dispatchChallanMutation.mutate({ id: challan.id, dispatchDate });
+      }
+    } catch {
+      dispatchChallanMutation.mutate({ id: challan.id, dispatchDate });
     }
   }
 
@@ -489,7 +618,7 @@ export default function Inventory() {
   }, [challanItemsMap, products]);
 
   const openCreateChallan = () => {
-    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "" });
+    setChallanForm({ orderId: "", sourceType: "warehouse", sourceId: "", vehicleNumber: "", driverName: "", vehicleOwnerName: "", driverPhone: "", notes: "", deliveryAddress: "", challanDate: new Date().toISOString().slice(0, 10) });
     setChallanPhoneError("");
     setChallanItems([]);
     setChallanStockAvailability({});
@@ -567,6 +696,8 @@ export default function Inventory() {
       queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/reserved-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/incoming-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/serial-numbers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/combo-serials"] });
       toast({ title: "Challan dispatched" });
     },
     onError: (error: Error) => {
@@ -1844,7 +1975,7 @@ export default function Inventory() {
                               <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.deliveryDate ? new Date(challan.deliveryDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
                               <td className="p-3 text-muted-foreground">{challan.vehicleNumber || "—"}</td>
                               <td className="p-3 text-muted-foreground">{challan.driverName || "—"}</td>
-                              <td className="p-3 text-muted-foreground whitespace-nowrap">{challan.createdAt ? new Date(challan.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}</td>
+                              <td className="p-3 text-muted-foreground whitespace-nowrap">{new Date((challan as any).challanDate ?? challan.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
                               <td className="p-3 text-right">
                                 <div className="flex items-center justify-end gap-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
                                   {/* PDF download — always available */}
@@ -2009,131 +2140,13 @@ export default function Inventory() {
                                       data-testid={`button-dispatch-challan-${challan.id}`}
                                       disabled={dispatchChallanMutation.isPending || challanItemsMap[challan.id] === undefined}
                                       title={challanItemsMap[challan.id] === undefined ? "Loading items — please wait" : undefined}
-                                      onClick={async () => {
-                                        if (!confirm("Dispatch this challan? Stock will be deducted if source is a warehouse.")) return;
-                                        // Phase 4E v2: build serial-assignment specs covering both
-                                        // regular tracked products and serialised bundle components.
-                                        try {
-                                          const challanItems = challanItemsMap[challan.id] ?? [];
-                                          const warehouseId  = challan.sourceType === "warehouse" ? challan.sourceId : null;
-                                          const token        = sessionStorage.getItem("token");
-                                          const headers      = { Authorization: `Bearer ${token}` };
-                                          const specs: SerialAssignmentSpec[] = [];
-
-                                          for (const item of challanItems) {
-                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
-                                            if (!prod) continue;
-                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
-
-                                            if ((prod as any).type === "bundle") {
-                                              // Fetch bundle components on-demand if not cached
-                                              let comps: any[] = challanBundleCompsMap[item.productId];
-                                              if (!comps) {
-                                                try {
-                                                  const r = await fetch(`/api/products/${item.productId}/bundle-items`, { headers });
-                                                  comps = await r.json();
-                                                  if (Array.isArray(comps)) {
-                                                    setChallanBundleCompsMap(prev => ({ ...prev, [item.productId]: comps }));
-                                                  } else {
-                                                    comps = [];
-                                                  }
-                                                } catch { comps = []; }
-                                              }
-                                              for (const comp of (comps ?? [])) {
-                                                const compProd = (products ?? []).find((p: any) => p.id === comp.componentProductId);
-                                                if (compProd?.requiresSerialTracking) {
-                                                  const reqQty = Math.round(Number(comp.quantity) * dispatchQty);
-                                                  specs.push({
-                                                    challanItemId:      item.id,
-                                                    componentProductId: comp.componentProductId,
-                                                    displayName:        (compProd as any).name ?? "Component",
-                                                    parentBundleName:   (prod as any).name,
-                                                    requiredQty:        reqQty,
-                                                    warehouseId,
-                                                  });
-                                                }
-                                              }
-                                            } else if ((prod as any).requiresSerialTracking) {
-                                              specs.push({
-                                                challanItemId:      item.id,
-                                                componentProductId: item.productId,
-                                                displayName:        (prod as any).name ?? "Product",
-                                                requiredQty:        dispatchQty,
-                                                warehouseId,
-                                              });
-                                            }
-                                          }
-
-                                          // Combo type — check available serial records and show preview
-                                          const comboUnits: ComboDispatchPreview["units"] = [];
-                                          for (const item of challanItems) {
-                                            const prod = (products ?? []).find((p: any) => p.id === item.productId);
-                                            if (!prod || (prod as any).type !== "combo") continue;
-                                            const dispatchQty = Number((item as any).qtyToDispatch ?? (item as any).qty ?? 1);
-                                            let manifest: any[] = [];
-                                            try {
-                                              const r = await fetch(`/api/products/${item.productId}/combo-components`, { headers });
-                                              manifest = await r.json();
-                                            } catch { manifest = []; }
-                                            const serialComponents = manifest.filter((c: any) => c.requiresSerialTracking);
-                                            if (serialComponents.length === 0) continue;
-                                            const needed = dispatchQty * serialComponents.length;
-                                            const available = (allComboSerials as any[])
-                                              .filter((r: any) => r.comboProductId === item.productId && !r.allocatedChallanId && !r.deallocatedAt)
-                                              .sort((a: any, b: any) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
-                                            if (available.length < needed) {
-                                              toast({
-                                                title: "Serial numbers not captured",
-                                                description: `"${(prod as any).name}": need ${needed} serial record(s) for ${dispatchQty} unit(s) × ${serialComponents.length} tracked component(s), but only ${available.length} captured at GRN. Go to GRN and capture serial numbers first.`,
-                                                variant: "destructive",
-                                              });
-                                              return;
-                                            }
-                                            // Build interactive slots: one per (unit × serial-tracked component)
-                                            // availableRecords per component = all unallocated records for that componentName
-                                            const availByComp: Record<string, Array<{ id: string; serialNumber: string }>> = {};
-                                            for (const comp of serialComponents) {
-                                              availByComp[comp.componentName] = available
-                                                .filter((r: any) => r.componentName === comp.componentName)
-                                                .map((r: any) => ({ id: r.id, serialNumber: r.serialNumber }));
-                                            }
-                                            // Track used IDs so each unit gets a distinct record
-                                            const usedIds = new Set<string>();
-                                            for (let u = 0; u < dispatchQty; u++) {
-                                              const slots: ComboSerialSlot[] = serialComponents.map((comp: any) => {
-                                                const records = availByComp[comp.componentName] ?? [];
-                                                const fifo = records.find(r => !usedIds.has(r.id));
-                                                if (fifo) usedIds.add(fifo.id);
-                                                return {
-                                                  componentName: comp.componentName,
-                                                  selectedId: fifo?.id ?? "",
-                                                  serialNumber: fifo?.serialNumber ?? "",
-                                                  valid: !!fifo,
-                                                  availableRecords: records,
-                                                };
-                                              });
-                                              comboUnits.push({
-                                                productName: (prod as any).name,
-                                                productId: item.productId,
-                                                unitIndex: u + 1,
-                                                slots,
-                                              });
-                                            }
-                                          }
-
-                                          if (specs.length > 0 && challan.customerId) {
-                                            setSerialDispatchChallanId(challan.id);
-                                            setSerialDispatchSoId(challan.orderId ?? null);
-                                            setSerialDispatchCustomerId(challan.customerId);
-                                            setSerialDispatchSpecs(specs);
-                                          } else if (comboUnits.length > 0) {
-                                            setComboDispatchPreview({ challanId: challan.id, units: comboUnits });
-                                          } else {
-                                            dispatchChallanMutation.mutate(challan.id);
-                                          }
-                                        } catch {
-                                          dispatchChallanMutation.mutate(challan.id);
-                                        }
+                                      onClick={() => {
+                                        // Open pre-dispatch date dialog; runDispatchFlow() is called on confirm
+                                        const inherited = (challan as any).challanDate
+                                          ? new Date((challan as any).challanDate).toISOString().slice(0, 10)
+                                          : new Date().toISOString().slice(0, 10);
+                                        setPendingDispatchDate(inherited);
+                                        setPendingDispatchChallan(challan);
                                       }}
                                     >
                                       <Send className="w-3 h-3 mr-1" /> Dispatch
@@ -2849,7 +2862,7 @@ export default function Inventory() {
                                 {s.capturedAt ? new Date(s.capturedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                               </td>
                               <td className="p-2 text-muted-foreground text-xs">
-                                {s.allocatedAt ? new Date(s.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                                {(s.dispatchDate ?? s.allocatedAt) ? new Date(s.dispatchDate ?? s.allocatedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                               </td>
                             </tr>
                           );
@@ -3150,7 +3163,7 @@ export default function Inventory() {
                 if (!preview) return;
                 setComboDispatchPreview(null);
                 const comboSerialIds = preview.units.flatMap(u => u.slots.map(s => s.selectedId)).filter(Boolean);
-                dispatchChallanMutation.mutate({ id: preview.challanId, comboSerialIds } as any);
+                dispatchChallanMutation.mutate({ id: preview.challanId, comboSerialIds, dispatchDate: pendingDispatchDate } as any);
               }}
             >
               {dispatchChallanMutation.isPending ? "Dispatching…" : "Confirm & Dispatch"}
@@ -3360,7 +3373,11 @@ export default function Inventory() {
                 onValueChange={(v) => {
                   const linked = salesOrders?.find(o => o.id === v);
                   const prefillAddr = (linked as any)?.deliveryAddress || "";
-                  setChallanForm({ ...challanForm, orderId: v, deliveryAddress: prefillAddr });
+                  // Inherit challan date from SO's orderDate (user may override)
+                  const inheritedDate = linked?.orderDate
+                    ? new Date(linked.orderDate).toISOString().slice(0, 10)
+                    : new Date().toISOString().slice(0, 10);
+                  setChallanForm({ ...challanForm, orderId: v, deliveryAddress: prefillAddr, challanDate: inheritedDate });
                   loadOrderItems(v);
                 }}
               >
@@ -3373,6 +3390,18 @@ export default function Inventory() {
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="challanDate">Challan Date</Label>
+              <input
+                id="challanDate"
+                data-testid="input-challan-date"
+                type="date"
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+                value={challanForm.challanDate}
+                onChange={(e) => setChallanForm({ ...challanForm, challanDate: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">Defaults to the linked SO date. Change for backdated entries.</p>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -3541,6 +3570,7 @@ export default function Inventory() {
                           driverPhone: challanForm.driverPhone.trim(),
                           notes: challanForm.notes || null,
                           deliveryAddress: challanForm.deliveryAddress.trim() || null,
+                          challanDate: challanForm.challanDate || new Date().toISOString().slice(0, 10),
                           printedBy: (user as any)?.fullName || user?.username || null,
                           items: challanItems.filter(it => it.quantity > 0).map(it => ({
                             productId: it.productId,
@@ -4083,7 +4113,41 @@ export default function Inventory() {
         </DialogContent>
       </Dialog>
 
-      {/* Challan Dispatch Date dialog */}
+      {/* Pre-dispatch date picker — shown before serial/combo selection or direct dispatch */}
+      <Dialog open={!!pendingDispatchChallan} onOpenChange={(o) => { if (!o) setPendingDispatchChallan(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Dispatch Challan</DialogTitle>
+            <DialogDescription>{pendingDispatchChallan?.challanNumber} — Select the dispatch date</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Label>Dispatch Date</Label>
+            <Input
+              type="date"
+              value={pendingDispatchDate}
+              onChange={(e) => setPendingDispatchDate(e.target.value)}
+              className="w-full"
+            />
+            <p className="text-xs text-muted-foreground">Defaults to the challan's business date. Change for backdated entries.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDispatchChallan(null)}>Cancel</Button>
+            <Button
+              disabled={!pendingDispatchDate || dispatchChallanMutation.isPending}
+              onClick={async () => {
+                const challan = pendingDispatchChallan;
+                const date = pendingDispatchDate;
+                setPendingDispatchChallan(null);
+                await runDispatchFlow(challan, date);
+              }}
+            >
+              Continue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Challan Dispatch Date dialog (admin — date correction after the fact) */}
       <Dialog open={!!challanDispatchDateDialog} onOpenChange={(o) => { if (!o) setChallanDispatchDateDialog(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>

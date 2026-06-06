@@ -111,7 +111,7 @@ export async function generateQuotationPDF(
   doc.setFont("helvetica", "bold");
   doc.text(quotation.quoteNumber, c1, y + 12);
   doc.setFont("helvetica", "normal");
-  doc.text(new Date(quotation.createdAt).toLocaleDateString("en-IN"), c2, y + 12);
+  doc.text(new Date((quotation as any).quotationDate ?? quotation.createdAt).toLocaleDateString("en-IN"), c2, y + 12);
   doc.text(
     quotation.validUntil
       ? new Date(quotation.validUntil).toLocaleDateString("en-IN")

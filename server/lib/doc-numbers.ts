@@ -169,6 +169,12 @@ export async function migrateCustomerPaymentsSchema(): Promise<void> {
   await db.execute(sql`ALTER TABLE quotations ADD COLUMN IF NOT EXISTS apply_rounding BOOLEAN NOT NULL DEFAULT FALSE`);
   await db.execute(sql`ALTER TABLE quotations ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
 
+  // 5f-ii. Add quotation_date — business document date, separate from created_at (idempotent)
+  await db.execute(sql`ALTER TABLE quotations ADD COLUMN IF NOT EXISTS quotation_date TIMESTAMP`);
+
+  // 5f-iii. Add challan_date to delivery_challans — business document date, separate from created_at (idempotent)
+  await db.execute(sql`ALTER TABLE delivery_challans ADD COLUMN IF NOT EXISTS challan_date TIMESTAMP`);
+
   // 5g. Add rounding columns to sales_orders (idempotent)
   await db.execute(sql`ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS apply_rounding BOOLEAN NOT NULL DEFAULT FALSE`);
   await db.execute(sql`ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS rounding_amount DECIMAL(12,2) NOT NULL DEFAULT 0`);
@@ -251,13 +257,17 @@ export async function migrateCustomerPaymentsSchema(): Promise<void> {
  * row level, so two concurrent requests cannot receive the same number.
  *
  * @param tx     - Drizzle transaction (same one that will INSERT the document)
- * @param prefix - Document prefix, e.g. "ITFI-SO"
+ * @param prefix - Document prefix, e.g. "HE-SO"
  * @param fyStr  - FY string,       e.g. "2026-27"
+ * @param date   - Business date for the document (optional; defaults to now).
+ *                 Drives the month segment of the number in IST.
+ *                 Does NOT affect the FY-wide sequence counter.
  */
 export async function nextDocNumberInTx(
   tx: typeof db,
   prefix: string,
   fyStr: string,
+  date?: Date,
 ): Promise<string> {
   const result = await tx.execute(sql`
     INSERT INTO doc_number_sequences (doc_type, fy_str, last_seq)
@@ -267,6 +277,13 @@ export async function nextDocNumberInTx(
     RETURNING last_seq
   `);
   const seq = (result.rows[0] as { last_seq: number }).last_seq;
-  const month = String(new Date().getMonth() + 1).padStart(2, "0");
+  // Derive month in IST (Asia/Kolkata) from the supplied business date so that
+  // backdated or future-dated documents carry the correct month segment.
+  const d = date ?? new Date();
+  const monthParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: IST_TZ,
+    month: "2-digit",
+  }).formatToParts(d);
+  const month = monthParts.find((p) => p.type === "month")!.value;
   return `${prefix}/${fyStr}/${month}/${String(seq).padStart(4, "0")}`;
 }

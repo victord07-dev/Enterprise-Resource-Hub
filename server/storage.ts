@@ -3405,6 +3405,7 @@ export class DatabaseStorage implements IStorage {
         p.name             AS combo_product_name,
         g.grn_number       AS grn_number,
         dc.challan_number  AS challan_number,
+        dc.dispatch_date   AS dispatch_date,
         c.name             AS customer_name
       FROM combo_serial_records csr
       JOIN products p          ON p.id  = csr.combo_product_id
@@ -3435,6 +3436,7 @@ export class DatabaseStorage implements IStorage {
       comboProductName: r.combo_product_name,
       grnNumber: r.grn_number,
       challanNumber: r.challan_number ?? null,
+      dispatchDate: r.dispatch_date ?? null,
       customerName: r.customer_name ?? null,
     }));
   }

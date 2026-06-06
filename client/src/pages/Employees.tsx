@@ -36,7 +36,7 @@ export default function Employees() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, bloodGroup: "", address: "", photoUrl: "" });
 
   const [showPortalSection, setShowPortalSection] = useState(false);
   const [portalForm, setPortalForm] = useState({ username: "", password: "", role: "field_staff" });
@@ -296,7 +296,7 @@ export default function Employees() {
 
   const openNew = () => {
     setEditingEmployee(null);
-    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true };
+    const emptyForm = { name: "", email: "", phone: "", company: "", department: "Sales", designation: "", salary: "", isActive: true, bloodGroup: "", address: "", photoUrl: "" };
     setForm(emptyForm);
     setShowPortalSection(false);
     setPortalForm({ username: "", password: "", role: "field_staff" });
@@ -314,6 +314,9 @@ export default function Employees() {
       designation: emp.designation,
       salary: emp.salary ? String(emp.salary) : "",
       isActive: emp.isActive,
+      bloodGroup: (emp as any).bloodGroup || "",
+      address: (emp as any).address || "",
+      photoUrl: (emp as any).photoUrl || "",
     });
     const linkedUser = getLinkedUser(emp);
     if (linkedUser) {
@@ -1661,6 +1664,74 @@ export default function Employees() {
               <Input id="empPhone" data-testid="input-employee-phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
             </div>
             <div className="space-y-2">
+              <Label>Profile Photo <span className="text-xs text-muted-foreground font-normal">(shown on ID card)</span></Label>
+              <div className="flex items-center gap-4">
+                <div
+                  className="w-16 h-16 rounded-full border-2 border-dashed border-muted flex items-center justify-content-center overflow-hidden shrink-0"
+                  style={{ display:"flex", alignItems:"center", justifyContent:"center", background: form.photoUrl ? "transparent" : "#15217a" }}
+                >
+                  {form.photoUrl
+                    ? <img src={form.photoUrl} alt="preview" className="w-full h-full object-cover rounded-full" />
+                    : <span className="text-white font-bold text-lg">{form.name ? form.name.split(" ").map((n:string)=>n[0]).join("").slice(0,2).toUpperCase() : "?"}</span>
+                  }
+                </div>
+                <div className="flex-1 space-y-1">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    id="empPhoto"
+                    data-testid="input-employee-photo"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const canvas = document.createElement("canvas");
+                      canvas.width = 240; canvas.height = 240;
+                      const ctx = canvas.getContext("2d")!;
+                      const img = new Image();
+                      img.onload = () => {
+                        const size = Math.min(img.width, img.height);
+                        const sx = (img.width - size) / 2;
+                        const sy = (img.height - size) / 2;
+                        ctx.drawImage(img, sx, sy, size, size, 0, 0, 240, 240);
+                        const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+                        setForm(prev => ({ ...prev, photoUrl: dataUrl }));
+                        URL.revokeObjectURL(img.src);
+                      };
+                      img.src = URL.createObjectURL(file);
+                      e.target.value = "";
+                    }}
+                  />
+                  <Button type="button" variant="outline" size="sm" className="w-full text-xs" onClick={() => document.getElementById("empPhoto")?.click()}>
+                    {form.photoUrl ? "Change Photo" : "Upload Photo"}
+                  </Button>
+                  {form.photoUrl && (
+                    <Button type="button" variant="ghost" size="sm" className="w-full text-xs text-destructive" onClick={() => setForm(prev => ({ ...prev, photoUrl: "" }))}>
+                      Remove Photo
+                    </Button>
+                  )}
+                  <p className="text-xs text-muted-foreground">Square crop, max ~30KB. JPG/PNG.</p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empBlood">Blood Group</Label>
+              <Select value={form.bloodGroup} onValueChange={(v) => setForm({ ...form, bloodGroup: v })}>
+                <SelectTrigger id="empBlood" data-testid="select-employee-blood-group">
+                  <SelectValue placeholder="Select blood group" />
+                </SelectTrigger>
+                <SelectContent>
+                  {["A+", "A−", "B+", "B−", "O+", "O−", "AB+", "AB−"].map((bg) => (
+                    <SelectItem key={bg} value={bg}>{bg}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="empAddress">Address</Label>
+              <Textarea id="empAddress" data-testid="input-employee-address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Full residential address" rows={2} />
+            </div>
+            <div className="space-y-2">
               <Label htmlFor="empCompany">Company</Label>
               <Select value={form.company} onValueChange={(v) => setForm({ ...form, company: v })}>
                 <SelectTrigger data-testid="select-employee-company">
@@ -1823,19 +1894,20 @@ export default function Employees() {
       </Dialog>
 
       <Dialog open={idCardDialogOpen} onOpenChange={setIdCardDialogOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-h-[96vh] overflow-y-auto" style={{ maxWidth: 400 }}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CreditCard className="w-4 h-4" />
               Employee ID Card
             </DialogTitle>
           </DialogHeader>
-          <div className="flex flex-col items-center gap-5 py-2">
+          <div className="flex flex-col items-center gap-4 py-2">
             {idCardEmployee && (
               <>
                 <EmployeeIdCard employee={idCardEmployee} />
                 <Button
                   className="w-full gap-2"
+                  style={{ width: 340 }}
                   onClick={() => downloadIdCardPDF(idCardEmployee)}
                   data-testid="button-download-id-card-hr"
                 >
